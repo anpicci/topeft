@@ -695,8 +695,9 @@ class AnalysisProcessor(processor.ProcessorABC):
                     raise Exception(f"Unknown channel name: {nlep_cat}")
 
             # Ensure that for data we only have the expected systematic
-            # variations in the Weights object
-            if self._do_systematics and isData:
+            # variations in the Weights object. 4l data has no fake-factor
+            # variations, so skip the check in that case.
+            if self._do_systematics and isData and not nlep_cat.startswith("4l"):
                 expected_vars = set(data_syst_lst)
                 if nlep_cat.startswith("2l") and ("os" not in self.channel):
                     expected_vars.add("fliprate")
@@ -950,7 +951,7 @@ class AnalysisProcessor(processor.ProcessorABC):
                     if self._split_by_lepton_flavor:
                         flav_ch = lep_flav
                         cuts_lst.append(lep_flav)
-                    if dense_axis_name != "njets":
+                    if jet_req is not None:
                         njet_ch = jet_req
                         cuts_lst.append(jet_req)
 
