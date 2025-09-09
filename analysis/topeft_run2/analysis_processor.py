@@ -932,7 +932,7 @@ class AnalysisProcessor(processor.ProcessorABC):
             lep_flav_iter = self._channel_dict["lep_flav_lst"] if self._split_by_lepton_flavor else [None]
 
             for wgt_fluct in wgt_var_lst:
-                if wgt_fluct == "nominal":
+                if wgt_fluct == "nominal" or wgt_fluct in obj_correction_syst_lst:
                     weight = weights_object.weight(None)
                 elif wgt_fluct in weights_object.variations:
                     weight = weights_object.weight(wgt_fluct)
