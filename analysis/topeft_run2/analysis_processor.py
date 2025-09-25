@@ -207,6 +207,8 @@ class AnalysisProcessor(processor.ProcessorABC):
         year               = self._sample["year"]
         xsec               = self._sample["xsec"]
         sow                = self._sample["nSumOfWeights"]
+        current_syst       = self.syst or "nominal"
+        nominal_sow        = sow
 
         is_run3 = False
         if year.startswith("202"):
@@ -218,46 +220,16 @@ class AnalysisProcessor(processor.ProcessorABC):
             run_era = self._sample["path"].split("/")[2].split("-")[0][-1]
 
         # Get up down weights from input dict
-        if (self._do_systematics and not isData):
-            if histAxisName in get_te_param("lo_xsec_samples"):
-                # We have a LO xsec for these samples, so for these systs we will have e.g. xsec_LO*(N_pass_up/N_gen_nom)
-                # Thus these systs will cover the cross section uncty and the acceptance and effeciency and shape
-                # So no NLO rate uncty for xsec should be applied in the text data card
-                sow_ISRUp          = self._sample["nSumOfWeights"]
-                sow_ISRDown        = self._sample["nSumOfWeights"]
-                sow_FSRUp          = self._sample["nSumOfWeights"]
-                sow_FSRDown        = self._sample["nSumOfWeights"]
-                sow_renormUp       = self._sample["nSumOfWeights"]
-                sow_renormDown     = self._sample["nSumOfWeights"]
-                sow_factUp         = self._sample["nSumOfWeights"]
-                sow_factDown       = self._sample["nSumOfWeights"]
-                sow_renormfactUp   = self._sample["nSumOfWeights"]
-                sow_renormfactDown = self._sample["nSumOfWeights"]
-            else:
-                # Otherwise we have an NLO xsec, so for these systs we will have e.g. xsec_NLO*(N_pass_up/N_gen_up)
-                # Thus these systs should only affect acceptance and effeciency and shape
-                # The uncty on xsec comes from NLO and is applied as a rate uncty in the text datacard
-                sow_ISRUp          = self._sample["nSumOfWeights_ISRUp"          ]
-                sow_ISRDown        = self._sample["nSumOfWeights_ISRDown"        ]
-                sow_FSRUp          = self._sample["nSumOfWeights_FSRUp"          ]
-                sow_FSRDown        = self._sample["nSumOfWeights_FSRDown"        ]
-                sow_renormUp       = self._sample["nSumOfWeights_renormUp"       ]
-                sow_renormDown     = self._sample["nSumOfWeights_renormDown"     ]
-                sow_factUp         = self._sample["nSumOfWeights_factUp"         ]
-                sow_factDown       = self._sample["nSumOfWeights_factDown"       ]
-                sow_renormfactUp   = self._sample["nSumOfWeights_renormfactUp"   ]
-                sow_renormfactDown = self._sample["nSumOfWeights_renormfactDown" ]
+        if self._do_systematics and not isData:
+            use_lo_sow = histAxisName in get_te_param("lo_xsec_samples")
+
+            def get_sow(variation):
+                if use_lo_sow:
+                    return nominal_sow
+                return self._sample[f"nSumOfWeights_{variation}"]
         else:
-            sow_ISRUp          = -1
-            sow_ISRDown        = -1
-            sow_FSRUp          = -1
-            sow_FSRDown        = -1
-            sow_renormUp       = -1
-            sow_renormDown     = -1
-            sow_factUp         = -1
-            sow_factDown       = -1
-            sow_renormfactUp   = -1
-            sow_renormfactDown = -1
+            def get_sow(_variation):
+                return nominal_sow
 
         datasets = ["Muon", "SingleMuon", "SingleElectron", "EGamma", "MuonEG", "DoubleMuon", "DoubleElectron", "DoubleEG"]
         for d in datasets:
@@ -447,19 +419,74 @@ class AnalysisProcessor(processor.ProcessorABC):
             elif is_run3:
                 l1prefiring_args = [ak.ones_like(events.nom), ak.ones_like(events.nom), ak.ones_like(events.nom)]
 
-            # Attach PS weights (ISR/FSR) and scale weights (renormalization/factorization) and PDF weights
-            tc_cor.AttachPSWeights(events) #Run3 ready
-            tc_cor.AttachScaleWeights(events) #Run3 ready (with caveat on "nominal")
-            #AttachPdfWeights(events) #TODO
-            # FSR/ISR weights -- corrections come from AttachPSWeights
-            weights_obj_base.add('ISR', events.nom, events.ISRUp*(sow/sow_ISRUp), events.ISRDown*(sow/sow_ISRDown))
-            weights_obj_base.add('FSR', events.nom, events.FSRUp*(sow/sow_FSRUp), events.FSRDown*(sow/sow_FSRDown))
-            # renorm/fact scale  -- corrections come from AttachScaleWeights
-            weights_obj_base.add('renorm', events.nom, events.renormUp*(sow/sow_renormUp), events.renormDown*(sow/sow_renormDown))
-            weights_obj_base.add('fact', events.nom, events.factUp*(sow/sow_factUp), events.factDown*(sow/sow_factDown))
+            include_ISR = self._do_systematics and current_syst in {"nominal", "ISRUp", "ISRDown"}
+            include_FSR = self._do_systematics and current_syst in {"nominal", "FSRUp", "FSRDown"}
+            need_ps_weights = include_ISR or include_FSR
+            if need_ps_weights:
+                # Attach PS weights (ISR/FSR)
+                tc_cor.AttachPSWeights(events)  # Run3 ready
+                if include_ISR:
+                    sow_ISRUp = get_sow("ISRUp")
+                    sow_ISRDown = get_sow("ISRDown")
+                    weights_obj_base.add(
+                        "ISR",
+                        events.nom,
+                        events.ISRUp * (sow / sow_ISRUp),
+                        events.ISRDown * (sow / sow_ISRDown),
+                    )
+                if include_FSR:
+                    sow_FSRUp = get_sow("FSRUp")
+                    sow_FSRDown = get_sow("FSRDown")
+                    weights_obj_base.add(
+                        "FSR",
+                        events.nom,
+                        events.FSRUp * (sow / sow_FSRUp),
+                        events.FSRDown * (sow / sow_FSRDown),
+                    )
+
+            include_renorm = self._do_systematics and current_syst in {"nominal", "renormUp", "renormDown"}
+            include_fact = self._do_systematics and current_syst in {"nominal", "factUp", "factDown"}
+            need_scale_weights = include_renorm or include_fact
+            if need_scale_weights:
+                # Attach renorm/fact scale weights
+                tc_cor.AttachScaleWeights(events)  # Run3 ready (with caveat on "nominal")
+                if include_renorm:
+                    sow_renormUp = get_sow("renormUp")
+                    sow_renormDown = get_sow("renormDown")
+                    weights_obj_base.add(
+                        "renorm",
+                        events.nom,
+                        events.renormUp * (sow / sow_renormUp),
+                        events.renormDown * (sow / sow_renormDown),
+                    )
+                if include_fact:
+                    sow_factUp = get_sow("factUp")
+                    sow_factDown = get_sow("factDown")
+                    weights_obj_base.add(
+                        "fact",
+                        events.nom,
+                        events.factUp * (sow / sow_factUp),
+                        events.factDown * (sow / sow_factDown),
+                    )
+
             # Prefiring and PU (note prefire weights only available in nanoAODv9 and for Run2)
-            weights_obj_base.add('PreFiring', *l1prefiring_args) #Run3 ready
-            weights_obj_base.add('PU', tc_cor.GetPUSF((events.Pileup.nTrueInt), year), tc_cor.GetPUSF(events.Pileup.nTrueInt, year, 'up'), tc_cor.GetPUSF(events.Pileup.nTrueInt, year, 'down')) #Run3 ready
+            include_prefiring_vars = self._do_systematics and current_syst in {"nominal", "PreFiringUp", "PreFiringDown"}
+            if include_prefiring_vars:
+                weights_obj_base.add("PreFiring", *l1prefiring_args)  # Run3 ready
+            else:
+                weights_obj_base.add("PreFiring", l1prefiring_args[0])
+
+            pu_central = tc_cor.GetPUSF(events.Pileup.nTrueInt, year)
+            include_pu_vars = self._do_systematics and current_syst in {"nominal", "PUUp", "PUDown"}
+            if include_pu_vars:
+                weights_obj_base.add(
+                    "PU",
+                    pu_central,
+                    tc_cor.GetPUSF(events.Pileup.nTrueInt, year, "up"),
+                    tc_cor.GetPUSF(events.Pileup.nTrueInt, year, "down"),
+                )  # Run3 ready
+            else:
+                weights_obj_base.add("PU", pu_central)
 
 
         ######### The rest of the processor is inside this loop over systs that affect object kinematics  ###########
