@@ -594,31 +594,47 @@ def _make_cr_fig_2d(h_mc, h_data, axis_specs, unit_norm_bool, lumitag, comtag):
             )
         xedges, yedges = edges
 
+        # ``hist_projected`` carries the resolved dense axes in the order
+        # requested via ``proj_args``.  Capture their labels (falling back to
+        # the axis names when a custom label is not defined) so plotting can
+        # reference the correct axes without relying on the original names
+        # stored in ``axis_specs``.
+        xaxis_obj, yaxis_obj = hist_projected.axes
+        xaxis_label = xaxis_obj.label or xaxis_obj.name
+        yaxis_label = yaxis_obj.label or yaxis_obj.name
+
         if unit_norm_bool:
             total = np.sum(values)
             if total > 0:
                 values = values / total
 
-        return hist_projected, values, xedges, yedges
+        return values, xedges, yedges, xaxis_label, yaxis_label
 
-    def _plot(hist_obj, values, xedges, yedges, title):
+    def _plot(values, xedges, yedges, xaxis_label, yaxis_label, title):
         fig, ax = plt.subplots(1, 1, figsize=(10, 10))
         plt.sca(ax)
         hep.cms.label(lumi=lumitag, com=comtag, fontsize=18.0)
         mesh = ax.pcolormesh(xedges, yedges, values.T, cmap="viridis", shading="auto")
         cbar = fig.colorbar(mesh, ax=ax)
         cbar.set_label("Normalized events" if unit_norm_bool else "Events")
-        ax.set_xlabel(hist_obj.axes[axis_x].label)
-        ax.set_ylabel(hist_obj.axes[axis_y].label)
+        ax.set_xlabel(xaxis_label)
+        ax.set_ylabel(yaxis_label)
         ax.set_title(title)
         return fig
 
-    mc_hist, mc_values, mc_xedges, mc_yedges = _prepare_hist(h_mc)
-    data_hist, data_values, data_xedges, data_yedges = _prepare_hist(h_data)
+    mc_values, mc_xedges, mc_yedges, mc_xlabel, mc_ylabel = _prepare_hist(h_mc)
+    data_values, data_xedges, data_yedges, data_xlabel, data_ylabel = _prepare_hist(h_data)
 
     return {
-        "mc": _plot(mc_hist, mc_values, mc_xedges, mc_yedges, "Total background"),
-        "data": _plot(data_hist, data_values, data_xedges, data_yedges, "Data"),
+        "mc": _plot(mc_values, mc_xedges, mc_yedges, mc_xlabel, mc_ylabel, "Total background"),
+        "data": _plot(
+            data_values,
+            data_xedges,
+            data_yedges,
+            data_xlabel,
+            data_ylabel,
+            "Data",
+        ),
     }
 
 
