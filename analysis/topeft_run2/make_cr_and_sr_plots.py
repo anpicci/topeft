@@ -548,11 +548,44 @@ def _make_cr_fig_2d(h_mc, h_data, axis_specs, unit_norm_bool, lumitag, comtag):
     def _prepare_hist(hist_in):
         hist_out = hist_in[{"process": sum}].as_hist({})
 
+        # The dense axis names in ``hist_out`` may differ from the names stored
+        # in ``axis_specs`` (for example due to suffices added during
+        # histogram construction).  Build a map between the requested axis
+        # names and the actual dense axis names to ensure that the projection
+        # targets the intended axes.
+        dense_axis_types = (
+            hist.axis.Regular,
+            hist.axis.Variable,
+            hist.axis.Integer,
+        )
+        dense_axes = [ax for ax in hist_out.axes if isinstance(ax, dense_axis_types)]
+        if len(dense_axes) < len(axis_specs):
+            raise ValueError(
+                "Histogram is missing one or more dense axes required for the "
+                f"projection. Expected at least {len(axis_specs)} dense axes but "
+                f"found {len(dense_axes)}."
+            )
+
+        axis_name_map = {
+            spec["name"]: axis_obj.name
+            for spec, axis_obj in zip(axis_specs, dense_axes)
+        }
+
+        try:
+            proj_args = (axis_name_map[axis_x], axis_name_map[axis_y])
+        except KeyError as exc:
+            missing_axis = exc.args[0]
+            raise ValueError(
+                "Requested axis '{missing}' is not available in the histogram. "
+                "Available dense axes are: "
+                f"{', '.join(axis_obj.name for axis_obj in dense_axes)}"
+            .format(missing=missing_axis)) from None
+
         # Project onto the requested dense axes to guarantee ordering and
         # obtain the corresponding bin edges.  ``to_numpy`` returns the values
         # array together with a list of edge arrays (one per axis), so unpack
         # the list instead of assuming a fixed tuple length.
-        hist_projected = hist_out.project(axis_x, axis_y)
+        hist_projected = hist_out.project(*proj_args)
         values, edges = hist_projected.to_numpy()
         if len(edges) != 2:
             raise ValueError(
