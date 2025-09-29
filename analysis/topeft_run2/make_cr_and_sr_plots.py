@@ -384,13 +384,13 @@ def make_cr_fig(h_mc, h_data, unit_norm_bool, axis='process', var='lj0pt', bins=
     if group is None:
         group = {}
 
-    axis_specs = get_dense_axis_specs(var)
-
     dense_axis_types = (
         hist.axis.Regular,
         hist.axis.Variable,
         hist.axis.Integer,
     )
+
+    axis_specs = get_dense_axis_specs(var)
 
     def _get_dense_axes(hist_obj):
         return [ax for ax in hist_obj.axes if isinstance(ax, dense_axis_types)]
@@ -405,14 +405,24 @@ def make_cr_fig(h_mc, h_data, unit_norm_bool, axis='process', var='lj0pt', bins=
     mc_dense_axes = _get_dense_axes(h_mc)
     data_dense_axes = _get_dense_axes(h_data)
 
-    mc_dense_axis_names = {ax.name for ax in mc_dense_axes}
-    data_dense_axis_names = {ax.name for ax in data_dense_axes}
+    mc_dense_axis_names = [ax.name for ax in mc_dense_axes]
+    data_dense_axis_names = [ax.name for ax in data_dense_axes]
 
-    reconciled_axis_specs = [
-        spec
-        for spec in axis_specs
-        if spec["name"] in mc_dense_axis_names and spec["name"] in data_dense_axis_names
-    ]
+    reconciled_axis_specs = []
+    for idx, spec in enumerate(axis_specs):
+        axis_name = spec["name"]
+        if axis_name in mc_dense_axis_names and axis_name in data_dense_axis_names:
+            reconciled_axis_specs.append(spec)
+            continue
+
+        mc_axis = mc_dense_axes[idx] if idx < len(mc_dense_axes) else None
+        data_axis = data_dense_axes[idx] if idx < len(data_dense_axes) else None
+
+        if mc_axis is not None and data_axis is not None and mc_axis.name == data_axis.name:
+            spec_copy = spec.copy()
+            spec_copy["name"] = mc_axis.name
+            reconciled_axis_specs.append(spec_copy)
+            continue
 
     if not reconciled_axis_specs:
         missing_mc = [spec["name"] for spec in axis_specs if spec["name"] not in mc_dense_axis_names]
@@ -1278,6 +1288,9 @@ def make_all_cr_plots(dict_of_hists,year,skip_syst_errs,unit_norm_bool,save_dir_
         if not yt.is_split_by_lepflav(dict_of_hists):
             cr_cat_dict = get_dict_with_stripped_bin_names(cr_cat_dict,"lepflav")
         print("\nVar name:",var_name)
+
+        axis_specs = get_dense_axis_specs(var_name)
+        is_multidim = len(axis_specs) > 1
 
         # Extract the MC and data hists
         hist_mc = dict_of_hists[var_name].remove("process", samples_to_rm_from_mc_hist)
