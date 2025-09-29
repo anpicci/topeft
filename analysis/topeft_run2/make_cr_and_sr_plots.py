@@ -557,29 +557,53 @@ def _make_cr_fig_2d(h_mc, h_data, axis_specs, unit_norm_bool, lumitag, comtag):
             hist.axis.Regular,
             hist.axis.Variable,
             hist.axis.Integer,
+            hist.axis.IntCategory,
+            hist.axis.Boolean,
         )
         dense_axes = [ax for ax in hist_out.axes if isinstance(ax, dense_axis_types)]
-        if len(dense_axes) < len(axis_specs):
-            raise ValueError(
-                "Histogram is missing one or more dense axes required for the "
-                f"projection. Expected at least {len(axis_specs)} dense axes but "
-                f"found {len(dense_axes)}."
-            )
 
-        axis_name_map = {
-            spec["name"]: axis_obj.name
-            for spec, axis_obj in zip(axis_specs, dense_axes)
-        }
+        def _resolve_axis(spec):
+            spec_name = spec["name"]
+            spec_label = spec.get("label")
 
-        try:
-            proj_args = (axis_name_map[axis_x], axis_name_map[axis_y])
-        except KeyError as exc:
-            missing_axis = exc.args[0]
-            raise ValueError(
-                "Requested axis '{missing}' is not available in the histogram. "
-                "Available dense axes are: "
-                f"{', '.join(axis_obj.name for axis_obj in dense_axes)}"
-            .format(missing=missing_axis)) from None
+            def _matches(axis_obj):
+                if axis_obj.name == spec_name:
+                    return True
+                if axis_obj.name.startswith(f"{spec_name}_"):
+                    return True
+                return False
+
+            candidates = [ax for ax in dense_axes if _matches(ax)]
+
+            if not candidates and spec_label:
+                candidates = [ax for ax in dense_axes if ax.label == spec_label]
+
+            if not candidates:
+                available_dense = ", ".join(ax.name for ax in dense_axes) or "none"
+                available_all = ", ".join(ax.name for ax in hist_out.axes) or "none"
+                raise ValueError(
+                    "Requested axis '{missing}' is not available in the histogram. "
+                    "Available dense axes are: {dense}. All axes: {all}."
+                    .format(
+                        missing=spec_name,
+                        dense=available_dense,
+                        all=available_all,
+                    )
+                )
+
+            if len(candidates) > 1:
+                raise ValueError(
+                    "Ambiguous dense axis match for '{spec}'. Candidates: {cands}."
+                    .format(
+                        spec=spec_name,
+                        cands=", ".join(ax.name for ax in candidates),
+                    )
+                )
+
+            return candidates[0]
+
+        resolved_axes = [_resolve_axis(spec) for spec in axis_specs]
+        proj_args = tuple(axis_obj.name for axis_obj in resolved_axes)
 
         # Project onto the requested dense axes to guarantee ordering and
         # obtain the corresponding bin edges.  ``to_numpy`` returns the values
@@ -587,6 +611,12 @@ def _make_cr_fig_2d(h_mc, h_data, axis_specs, unit_norm_bool, lumitag, comtag):
         # the list instead of assuming a fixed tuple length.
         hist_projected = hist_out.project(*proj_args)
         values, edges = hist_projected.to_numpy()
+        if len(edges) != len(resolved_axes):
+            raise ValueError(
+                "Expected {expected} dense axes for the projection but received "
+                "{observed} edges."
+                .format(expected=len(resolved_axes), observed=len(edges))
+            )
         if len(edges) != 2:
             raise ValueError(
                 "Expected two dense axes for a 2D histogram but received "
@@ -594,31 +624,47 @@ def _make_cr_fig_2d(h_mc, h_data, axis_specs, unit_norm_bool, lumitag, comtag):
             )
         xedges, yedges = edges
 
+        # ``hist_projected`` carries the resolved dense axes in the order
+        # requested via ``proj_args``.  Capture their labels (falling back to
+        # the axis names when a custom label is not defined) so plotting can
+        # reference the correct axes without relying on the original names
+        # stored in ``axis_specs``.
+        xaxis_obj, yaxis_obj = hist_projected.axes
+        xaxis_label = xaxis_obj.label or xaxis_obj.name
+        yaxis_label = yaxis_obj.label or yaxis_obj.name
+
         if unit_norm_bool:
             total = np.sum(values)
             if total > 0:
                 values = values / total
 
-        return hist_projected, values, xedges, yedges
+        return values, xedges, yedges, xaxis_label, yaxis_label
 
-    def _plot(hist_obj, values, xedges, yedges, title):
+    def _plot(values, xedges, yedges, xaxis_label, yaxis_label, title):
         fig, ax = plt.subplots(1, 1, figsize=(10, 10))
         plt.sca(ax)
         hep.cms.label(lumi=lumitag, com=comtag, fontsize=18.0)
         mesh = ax.pcolormesh(xedges, yedges, values.T, cmap="viridis", shading="auto")
         cbar = fig.colorbar(mesh, ax=ax)
         cbar.set_label("Normalized events" if unit_norm_bool else "Events")
-        ax.set_xlabel(hist_obj.axes[axis_x].label)
-        ax.set_ylabel(hist_obj.axes[axis_y].label)
+        ax.set_xlabel(xaxis_label)
+        ax.set_ylabel(yaxis_label)
         ax.set_title(title)
         return fig
 
-    mc_hist, mc_values, mc_xedges, mc_yedges = _prepare_hist(h_mc)
-    data_hist, data_values, data_xedges, data_yedges = _prepare_hist(h_data)
+    mc_values, mc_xedges, mc_yedges, mc_xlabel, mc_ylabel = _prepare_hist(h_mc)
+    data_values, data_xedges, data_yedges, data_xlabel, data_ylabel = _prepare_hist(h_data)
 
     return {
-        "mc": _plot(mc_hist, mc_values, mc_xedges, mc_yedges, "Total background"),
-        "data": _plot(data_hist, data_values, data_xedges, data_yedges, "Data"),
+        "mc": _plot(mc_values, mc_xedges, mc_yedges, mc_xlabel, mc_ylabel, "Total background"),
+        "data": _plot(
+            data_values,
+            data_xedges,
+            data_yedges,
+            data_xlabel,
+            data_ylabel,
+            "Data",
+        ),
     }
 
 
