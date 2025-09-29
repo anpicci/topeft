@@ -404,16 +404,25 @@ def make_cr_fig(h_mc, h_data, unit_norm_bool, axis='process', var='lj0pt', bins=
     # back to the one-dimensional plotting code when necessary.
     mc_dense_axes = _get_dense_axes(h_mc)
     data_dense_axes = _get_dense_axes(h_data)
-    available_dense_axes = min(len(axis_specs), len(mc_dense_axes), len(data_dense_axes))
 
-    if available_dense_axes == 0:
+    mc_dense_axis_names = {ax.name for ax in mc_dense_axes}
+    data_dense_axis_names = {ax.name for ax in data_dense_axes}
+
+    reconciled_axis_specs = [
+        spec
+        for spec in axis_specs
+        if spec["name"] in mc_dense_axis_names and spec["name"] in data_dense_axis_names
+    ]
+
+    if not reconciled_axis_specs:
+        missing_mc = [spec["name"] for spec in axis_specs if spec["name"] not in mc_dense_axis_names]
+        missing_data = [spec["name"] for spec in axis_specs if spec["name"] not in data_dense_axis_names]
         raise ValueError(
-            "No dense axes available in either the MC or data histogram for "
-            f"variable '{var}'."
+            "No dense axes available in common between the MC and data histogram for "
+            f"variable '{var}'. Missing in MC: {missing_mc}; missing in data: {missing_data}."
         )
 
-    if available_dense_axes < len(axis_specs):
-        axis_specs = axis_specs[:available_dense_axes]
+    axis_specs = reconciled_axis_specs
 
     if len(axis_specs) > 1:
         return _make_cr_fig_2d(
