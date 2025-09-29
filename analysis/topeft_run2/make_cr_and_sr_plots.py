@@ -383,6 +383,20 @@ def make_cr_fig(h_mc, h_data, unit_norm_bool, axis='process', var='lj0pt', bins=
         bins = []
     if group is None:
         group = {}
+
+    axis_specs = get_dense_axis_specs(var)
+    if len(axis_specs) > 1:
+        return _make_cr_fig_2d(
+            h_mc,
+            h_data,
+            axis_specs=axis_specs,
+            unit_norm_bool=unit_norm_bool,
+            lumitag=lumitag,
+            comtag=comtag,
+        )
+
+    dense_axis_name = axis_specs[0]["name"]
+
     default_colors = [
         "tab:blue", "darkgreen", "tab:orange", "tab:cyan", "tab:purple", "tab:pink",
         "tan", "mediumseagreen", "tab:red", "brown", "goldenrod", "yellow",
@@ -420,8 +434,6 @@ def make_cr_fig(h_mc, h_data, unit_norm_bool, axis='process', var='lj0pt', bins=
     )
     fig.subplots_adjust(hspace=.07)
 
-    # Set up the colors for each stacked process
-
     # Normalize if we want to do that
     if unit_norm_bool:
         sum_mc = 0
@@ -451,7 +463,8 @@ def make_cr_fig(h_mc, h_data, unit_norm_bool, axis='process', var='lj0pt', bins=
         for proc in grouping
     }
 
-    bins = h_data[{'process': sum}].as_hist({}).axes[var].edges
+    if not bins:
+        bins = h_data[{'process': sum}].as_hist({}).axes[dense_axis_name].edges
     bins = np.append(bins, [bins[-1] + (bins[-1] - bins[-2])*0.3])
     hep.histplot(
         list(mc_vals.values()),
@@ -467,13 +480,11 @@ def make_cr_fig(h_mc, h_data, unit_norm_bool, axis='process', var='lj0pt', bins=
     #Plot the data
     hep.histplot(
         h_data[{'process':sum}].as_hist({}).values(flow=True)[1:],
-        #error_opts = DATA_ERR_OPS,
         ax=ax,
         bins=bins,
         stack=False,
         density=unit_norm_bool,
         label='Data',
-        #flow='show',
         histtype='errorbar',
         **DATA_ERR_OPS,
     )
@@ -482,23 +493,17 @@ def make_cr_fig(h_mc, h_data, unit_norm_bool, axis='process', var='lj0pt', bins=
     hep.histplot(
         (h_data[{'process':sum}].as_hist({}).values(flow=True)/h_mc[{"process": sum}].as_hist({}).values(flow=True))[1:],
         yerr=(np.sqrt(h_data[{'process':sum}].as_hist({}).values(flow=True)) / h_data[{'process':sum}].as_hist({}).values(flow=True))[1:],
-        #error_opts = DATA_ERR_OPS,
         ax=rax,
         bins=bins,
         stack=False,
         density=unit_norm_bool,
-        #flow='show',
         histtype='errorbar',
         **DATA_ERR_OPS,
     )
 
     # Plot the syst error
     if plot_syst_err:
-        bin_edges_arr = h_mc.axes[var].edges
-        #err_p = np.append(err_p,0) # Work around off by one error
-        #err_m = np.append(err_m,0) # Work around off by one error
-        #err_ratio_p = np.append(err_ratio_p,0) # Work around off by one error
-        #err_ratio_m = np.append(err_ratio_m,0) # Work around off by one error
+        bin_edges_arr = h_mc.axes[dense_axis_name].edges
         ax.fill_between(bin_edges_arr,err_m,err_p, step='post', facecolor='none', edgecolor='gray', label='Syst err', hatch='////')
         rax.fill_between(bin_edges_arr,err_ratio_m,err_ratio_p,step='post', facecolor='none', edgecolor='gray', label='Syst err', hatch='////')
     err_m = np.append(h_mc[{'process': sum}].as_hist({}).values(flow=True)[1:]-np.sqrt(h_mc[{'process': sum}].as_hist({}).values(flow=True)[1:]), 1)
@@ -524,13 +529,62 @@ def make_cr_fig(h_mc, h_data, unit_norm_bool, axis='process', var='lj0pt', bins=
     rax.tick_params(axis='both', labelsize=18)   # both x and y ticks
 
     # Set the x axis lims
-    if set_x_lim: plt.xlim(set_x_lim)
+    if set_x_lim:
+        plt.xlim(set_x_lim)
     box = ax.get_position()
     ax.set_position([box.x0, box.y0, box.width, box.height])
     # Put a legend to the right of the current axis
     ax.legend(loc='lower center', bbox_to_anchor=(0.5,1.02), ncol=4, fontsize=16)
     plt.subplots_adjust(top=0.88, bottom=0.05, right=0.95, left=0.11)
     return fig
+
+
+def _make_cr_fig_2d(h_mc, h_data, axis_specs, unit_norm_bool, lumitag, comtag):
+    hep.style.use("CMS")
+
+    axis_x = axis_specs[0]["name"]
+    axis_y = axis_specs[1]["name"]
+
+    def _prepare_hist(hist_in):
+        hist_out = hist_in[{"process": sum}].as_hist({})
+        # Project onto the requested dense axes to guarantee ordering and
+        # obtain the corresponding bin edges.  ``to_numpy`` returns the values
+        # array together with a list of edge arrays (one per axis), so unpack
+        # the list instead of assuming a fixed tuple length.
+        hist_projected = hist_out.project(axis_x, axis_y)
+        values, edges = hist_projected.to_numpy()
+        if len(edges) != 2:
+            raise ValueError(
+                "Expected two dense axes for a 2D histogram but received "
+                f"{len(edges)} edges."
+            )
+        xedges, yedges = edges
+        if unit_norm_bool:
+            total = np.sum(values)
+            if total > 0:
+                values = values / total
+        return hist_projected, values, xedges, yedges
+
+    def _plot(hist_obj, values, xedges, yedges, title):
+        fig, ax = plt.subplots(1, 1, figsize=(10, 10))
+        plt.sca(ax)
+        hep.cms.label(lumi=lumitag, com=comtag, fontsize=18.0)
+        mesh = ax.pcolormesh(xedges, yedges, values.T, cmap="viridis", shading="auto")
+        cbar = fig.colorbar(mesh, ax=ax)
+        cbar.set_label("Normalized events" if unit_norm_bool else "Events")
+        ax.set_xlabel(hist_obj.axes[axis_x].label)
+        ax.set_ylabel(hist_obj.axes[axis_y].label)
+        ax.set_title(title)
+        return fig
+
+    mc_hist, mc_values, mc_xedges, mc_yedges = _prepare_hist(h_mc)
+    data_hist, data_values, data_xedges, data_yedges = _prepare_hist(h_data)
+
+    return {
+        "mc": _plot(mc_hist, mc_values, mc_xedges, mc_yedges, "Total background"),
+        "data": _plot(data_hist, data_values, data_xedges, data_yedges, "Data"),
+    }
+
 
 # Takes a hist with one sparse axis and one dense axis, overlays everything on the sparse axis
 def make_single_fig(histo,unit_norm_bool,axis=None,bins=[],group=[]):
@@ -887,11 +941,28 @@ def make_all_sr_data_mc_plots(dict_of_hists,year,save_dir_path):
                 print("Warning: empty data histo, continuing")
                 continue
 
-            fig = make_cr_fig(hist_mc, hist_data, var=var_name, unit_norm_bool=False, bins=axes_info[var_name]['variable'],group=SR_GRP_MAP, lumitag=LUMI_COM_PAIRS[year][0], comtag=LUMI_COM_PAIRS[year][1])
-            if year is not None: year_str = year
-            else: year_str = "ULall"
-            title = chan_name + "_" + var_name + "_" + year_str
-            fig.savefig(os.path.join(save_dir_path_tmp,title))
+            axis_specs = get_dense_axis_specs(var_name)
+            bin_edges = axes_info[var_name].get('variable') if len(axis_specs) == 1 else None
+            fig_obj = make_cr_fig(
+                hist_mc,
+                hist_data,
+                var=var_name,
+                unit_norm_bool=False,
+                bins=bin_edges,
+                group=SR_GRP_MAP,
+                lumitag=LUMI_COM_PAIRS[year][0],
+                comtag=LUMI_COM_PAIRS[year][1]
+            )
+            if year is not None:
+                year_str = year
+            else:
+                year_str = "ULall"
+            title_base = chan_name + "_" + var_name + "_" + year_str
+            if isinstance(fig_obj, dict):
+                for suffix, subfig in fig_obj.items():
+                    subfig.savefig(os.path.join(save_dir_path_tmp, f"{title_base}_{suffix}"))
+            else:
+                fig_obj.savefig(os.path.join(save_dir_path_tmp, title_base))
 
             # Make an index.html file if saving to web area
             if "www" in save_dir_path_tmp: make_html(save_dir_path_tmp)
@@ -950,6 +1021,10 @@ def make_all_sr_plots(dict_of_hists,year,unit_norm_bool,save_dir_path,split_by_c
         else:
             sr_cat_dict = SR_CHAN_DICT
         print("\nVar name:",var_name)
+
+        axis_specs = get_dense_axis_specs(var_name)
+        is_multidim = len(axis_specs) > 1
+
         print("sr_cat_dict:",sr_cat_dict)
 
         # Extract the signal hists, and integrate over systematic axis
@@ -1156,7 +1231,7 @@ def make_all_cr_plots(dict_of_hists,year,skip_syst_errs,unit_norm_bool,save_dir_
             m_err_arr = None
             p_err_arr_ratio = None
             m_err_arr_ratio = None
-            if not skip_syst_errs:
+            if not skip_syst_errs and not is_multidim:
                 # Get plus and minus rate and shape arrs
                 rate_systs_summed_arr_m , rate_systs_summed_arr_p = get_rate_syst_arrs(hist_mc_integrated, CR_GRP_MAP)
                 shape_systs_summed_arr_m , shape_systs_summed_arr_p = get_shape_syst_arrs(hist_mc_integrated)
@@ -1203,7 +1278,7 @@ def make_all_cr_plots(dict_of_hists,year,skip_syst_errs,unit_norm_bool,save_dir_
             if var_name == "ht": x_range = (0,250)
             group = {k:v for k,v in CR_GRP_MAP.items() if v} # Remove empty groups
 
-            fig = make_cr_fig(
+            fig_obj = make_cr_fig(
                 hist_mc_integrated,
                 hist_data_integrated,
                 unit_norm_bool,
@@ -1219,8 +1294,13 @@ def make_all_cr_plots(dict_of_hists,year,skip_syst_errs,unit_norm_bool,save_dir_
             )
 
             title = hist_cat+"_"+var_name
-            if unit_norm_bool: title = title + "_unitnorm"
-            fig.savefig(os.path.join(save_dir_path_tmp,title))
+            if unit_norm_bool:
+                title = title + "_unitnorm"
+            if isinstance(fig_obj, dict):
+                for suffix, subfig in fig_obj.items():
+                    subfig.savefig(os.path.join(save_dir_path_tmp, f"{title}_{suffix}"))
+            else:
+                fig_obj.savefig(os.path.join(save_dir_path_tmp,title))
 
             # Make an index.html file if saving to web area
             if "www" in save_dir_path_tmp: make_html(save_dir_path_tmp)
