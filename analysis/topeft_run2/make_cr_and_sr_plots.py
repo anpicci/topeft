@@ -547,12 +547,26 @@ def _make_cr_fig_2d(h_mc, h_data, axis_specs, unit_norm_bool, lumitag, comtag):
 
     def _prepare_hist(hist_in):
         hist_out = hist_in[{"process": sum}].as_hist({})
-        values, xedges, yedges = hist_out.to_numpy()
+
+        # Project onto the requested dense axes to guarantee ordering and
+        # obtain the corresponding bin edges.  ``to_numpy`` returns the values
+        # array together with a list of edge arrays (one per axis), so unpack
+        # the list instead of assuming a fixed tuple length.
+        hist_projected = hist_out.project(axis_x, axis_y)
+        values, edges = hist_projected.to_numpy()
+        if len(edges) != 2:
+            raise ValueError(
+                "Expected two dense axes for a 2D histogram but received "
+                f"{len(edges)} edges."
+            )
+        xedges, yedges = edges
+
         if unit_norm_bool:
             total = np.sum(values)
             if total > 0:
                 values = values / total
-        return hist_out, values, xedges, yedges
+
+        return hist_projected, values, xedges, yedges
 
     def _plot(hist_obj, values, xedges, yedges, title):
         fig, ax = plt.subplots(1, 1, figsize=(10, 10))
