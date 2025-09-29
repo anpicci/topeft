@@ -11,7 +11,7 @@ from cycler import cycler
 import mplhep as hep
 import hist
 from topcoffea.modules.histEFT import HistEFT
-from topeft.modules.axes import info as axes_info, get_dense_axis_specs
+from topeft.modules.axes import info as axes_info
 
 from topcoffea.scripts.make_html import make_html
 import topcoffea.modules.utils as utils
@@ -383,69 +383,6 @@ def make_cr_fig(h_mc, h_data, unit_norm_bool, axis='process', var='lj0pt', bins=
         bins = []
     if group is None:
         group = {}
-
-    dense_axis_types = (
-        hist.axis.Regular,
-        hist.axis.Variable,
-        hist.axis.Integer,
-    )
-
-    axis_specs = get_dense_axis_specs(var)
-
-    def _get_dense_axes(hist_obj):
-        return [ax for ax in hist_obj.axes if isinstance(ax, dense_axis_types)]
-
-    # ``axis_specs`` encodes the nominal dimensionality of the histogram, but
-    # in some production configurations the stored histogram can end up with
-    # fewer dense axes (e.g. when one dimension was marginalised during
-    # template creation).  In that case ``_make_cr_fig_2d`` would later raise a
-    # hard error when attempting to project onto the missing axis.  Instead,
-    # reconcile the specification with the actually available axes and fall
-    # back to the one-dimensional plotting code when necessary.
-    mc_dense_axes = _get_dense_axes(h_mc)
-    data_dense_axes = _get_dense_axes(h_data)
-
-    mc_dense_axis_names = [ax.name for ax in mc_dense_axes]
-    data_dense_axis_names = [ax.name for ax in data_dense_axes]
-
-    reconciled_axis_specs = []
-    for idx, spec in enumerate(axis_specs):
-        axis_name = spec["name"]
-        if axis_name in mc_dense_axis_names and axis_name in data_dense_axis_names:
-            reconciled_axis_specs.append(spec)
-            continue
-
-        mc_axis = mc_dense_axes[idx] if idx < len(mc_dense_axes) else None
-        data_axis = data_dense_axes[idx] if idx < len(data_dense_axes) else None
-
-        if mc_axis is not None and data_axis is not None and mc_axis.name == data_axis.name:
-            spec_copy = spec.copy()
-            spec_copy["name"] = mc_axis.name
-            reconciled_axis_specs.append(spec_copy)
-            continue
-
-    if not reconciled_axis_specs:
-        missing_mc = [spec["name"] for spec in axis_specs if spec["name"] not in mc_dense_axis_names]
-        missing_data = [spec["name"] for spec in axis_specs if spec["name"] not in data_dense_axis_names]
-        raise ValueError(
-            "No dense axes available in common between the MC and data histogram for "
-            f"variable '{var}'. Missing in MC: {missing_mc}; missing in data: {missing_data}."
-        )
-
-    axis_specs = reconciled_axis_specs
-
-    if len(axis_specs) > 1:
-        return _make_cr_fig_2d(
-            h_mc,
-            h_data,
-            axis_specs=axis_specs,
-            unit_norm_bool=unit_norm_bool,
-            lumitag=lumitag,
-            comtag=comtag,
-        )
-
-    dense_axis_name = axis_specs[0]["name"]
-
     default_colors = [
         "tab:blue", "darkgreen", "tab:orange", "tab:cyan", "tab:purple", "tab:pink",
         "tan", "mediumseagreen", "tab:red", "brown", "goldenrod", "yellow",
@@ -483,6 +420,8 @@ def make_cr_fig(h_mc, h_data, unit_norm_bool, axis='process', var='lj0pt', bins=
     )
     fig.subplots_adjust(hspace=.07)
 
+    # Set up the colors for each stacked process
+
     # Normalize if we want to do that
     if unit_norm_bool:
         sum_mc = 0
@@ -512,8 +451,7 @@ def make_cr_fig(h_mc, h_data, unit_norm_bool, axis='process', var='lj0pt', bins=
         for proc in grouping
     }
 
-    if not bins:
-        bins = h_data[{'process': sum}].as_hist({}).axes[dense_axis_name].edges
+    bins = h_data[{'process': sum}].as_hist({}).axes[var].edges
     bins = np.append(bins, [bins[-1] + (bins[-1] - bins[-2])*0.3])
     hep.histplot(
         list(mc_vals.values()),
@@ -529,11 +467,13 @@ def make_cr_fig(h_mc, h_data, unit_norm_bool, axis='process', var='lj0pt', bins=
     #Plot the data
     hep.histplot(
         h_data[{'process':sum}].as_hist({}).values(flow=True)[1:],
+        #error_opts = DATA_ERR_OPS,
         ax=ax,
         bins=bins,
         stack=False,
         density=unit_norm_bool,
         label='Data',
+        #flow='show',
         histtype='errorbar',
         **DATA_ERR_OPS,
     )
@@ -542,17 +482,23 @@ def make_cr_fig(h_mc, h_data, unit_norm_bool, axis='process', var='lj0pt', bins=
     hep.histplot(
         (h_data[{'process':sum}].as_hist({}).values(flow=True)/h_mc[{"process": sum}].as_hist({}).values(flow=True))[1:],
         yerr=(np.sqrt(h_data[{'process':sum}].as_hist({}).values(flow=True)) / h_data[{'process':sum}].as_hist({}).values(flow=True))[1:],
+        #error_opts = DATA_ERR_OPS,
         ax=rax,
         bins=bins,
         stack=False,
         density=unit_norm_bool,
+        #flow='show',
         histtype='errorbar',
         **DATA_ERR_OPS,
     )
 
     # Plot the syst error
     if plot_syst_err:
-        bin_edges_arr = h_mc.axes[dense_axis_name].edges
+        bin_edges_arr = h_mc.axes[var].edges
+        #err_p = np.append(err_p,0) # Work around off by one error
+        #err_m = np.append(err_m,0) # Work around off by one error
+        #err_ratio_p = np.append(err_ratio_p,0) # Work around off by one error
+        #err_ratio_m = np.append(err_ratio_m,0) # Work around off by one error
         ax.fill_between(bin_edges_arr,err_m,err_p, step='post', facecolor='none', edgecolor='gray', label='Syst err', hatch='////')
         rax.fill_between(bin_edges_arr,err_ratio_m,err_ratio_p,step='post', facecolor='none', edgecolor='gray', label='Syst err', hatch='////')
     err_m = np.append(h_mc[{'process': sum}].as_hist({}).values(flow=True)[1:]-np.sqrt(h_mc[{'process': sum}].as_hist({}).values(flow=True)[1:]), 1)
@@ -578,123 +524,13 @@ def make_cr_fig(h_mc, h_data, unit_norm_bool, axis='process', var='lj0pt', bins=
     rax.tick_params(axis='both', labelsize=18)   # both x and y ticks
 
     # Set the x axis lims
-    if set_x_lim:
-        plt.xlim(set_x_lim)
+    if set_x_lim: plt.xlim(set_x_lim)
     box = ax.get_position()
     ax.set_position([box.x0, box.y0, box.width, box.height])
     # Put a legend to the right of the current axis
     ax.legend(loc='lower center', bbox_to_anchor=(0.5,1.02), ncol=4, fontsize=16)
     plt.subplots_adjust(top=0.88, bottom=0.05, right=0.95, left=0.11)
     return fig
-
-
-def _make_cr_fig_2d(h_mc, h_data, axis_specs, unit_norm_bool, lumitag, comtag):
-    hep.style.use("CMS")
-
-    axis_x = axis_specs[0]["name"]
-    axis_y = axis_specs[1]["name"]
-
-    def _prepare_hist(hist_in):
-        hist_collapsed = hist_in[{"process": sum}]
-
-        dense_axes = [
-            axis
-            for axis in getattr(hist_collapsed, "dense_axes", [])
-            if axis.name != "quadratic_term"
-        ]
-
-        hist_out = hist_collapsed.as_hist({})
-
-        if not dense_axes:
-            dense_axis_types = (
-                hist.axis.Regular,
-                hist.axis.Variable,
-                hist.axis.Integer,
-            )
-            dense_axes = [
-                ax for ax in hist_out.axes if isinstance(ax, dense_axis_types)
-            ]
-
-        if len(dense_axes) < len(axis_specs):
-            raise ValueError(
-                "Histogram is missing one or more dense axes required for the "
-                f"projection. Expected at least {len(axis_specs)} dense axes but "
-                f"found {len(dense_axes)}."
-            )
-
-        axis_name_map = {
-            spec["name"]: axis_obj.name
-            for spec, axis_obj in zip(axis_specs, dense_axes)
-        }
-
-        try:
-            proj_args = (axis_name_map[axis_x], axis_name_map[axis_y])
-        except KeyError as exc:
-            missing_axis = exc.args[0]
-            raise ValueError(
-                "Requested axis '{missing}' is not available in the histogram. "
-                "Available dense axes are: "
-                f"{', '.join(axis_obj.name for axis_obj in dense_axes)}"
-            .format(missing=missing_axis)) from None
-
-        # Project onto the requested dense axes to guarantee ordering and
-        # obtain the corresponding bin edges.  ``to_numpy`` returns the values
-        # array together with a list of edge arrays (one per axis), so unpack
-        # the list instead of assuming a fixed tuple length.
-        hist_projected = hist_out.project(*proj_args)
-        to_numpy_result = hist_projected.to_numpy()
-        values = to_numpy_result[0]
-        edges = to_numpy_result[1:]
-        if len(edges) != 2:
-            raise ValueError(
-                "Expected two dense axes for a 2D histogram but received "
-                f"{len(edges)} edges."
-            )
-        xedges, yedges = edges
-
-        # ``hist_projected`` carries the resolved dense axes in the order
-        # requested via ``proj_args``.  Capture their labels (falling back to
-        # the axis names when a custom label is not defined) so plotting can
-        # reference the correct axes without relying on the original names
-        # stored in ``axis_specs``.
-        xaxis_obj, yaxis_obj = hist_projected.axes
-        xaxis_label = xaxis_obj.label or xaxis_obj.name
-        yaxis_label = yaxis_obj.label or yaxis_obj.name
-
-        if unit_norm_bool:
-            total = np.sum(values)
-            if total > 0:
-                values = values / total
-
-        return values, xedges, yedges, xaxis_label, yaxis_label
-
-    def _plot(values, xedges, yedges, xaxis_label, yaxis_label, title):
-        fig, ax = plt.subplots(1, 1, figsize=(10, 10))
-        plt.sca(ax)
-        hep.cms.label(lumi=lumitag, com=comtag, fontsize=18.0)
-        mesh = ax.pcolormesh(xedges, yedges, values.T, cmap="viridis", shading="auto")
-        cbar = fig.colorbar(mesh, ax=ax)
-        cbar.set_label("Normalized events" if unit_norm_bool else "Events")
-        ax.set_xlabel(xaxis_label)
-        ax.set_ylabel(yaxis_label)
-        ax.set_title(title)
-        return fig
-
-    mc_values, mc_xedges, mc_yedges, mc_xlabel, mc_ylabel = _prepare_hist(h_mc)
-    data_values, data_xedges, data_yedges, data_xlabel, data_ylabel = _prepare_hist(h_data)
-
-    return {
-        "mc": _plot(mc_values, mc_xedges, mc_yedges, mc_xlabel, mc_ylabel, "Total background"),
-        "data": _plot(
-            data_values,
-            data_xedges,
-            data_yedges,
-            data_xlabel,
-            data_ylabel,
-            "Data",
-        ),
-    }
-
 
 # Takes a hist with one sparse axis and one dense axis, overlays everything on the sparse axis
 def make_single_fig(histo,unit_norm_bool,axis=None,bins=[],group=[]):
@@ -1051,28 +887,11 @@ def make_all_sr_data_mc_plots(dict_of_hists,year,save_dir_path):
                 print("Warning: empty data histo, continuing")
                 continue
 
-            axis_specs = get_dense_axis_specs(var_name)
-            bin_edges = axes_info[var_name].get('variable') if len(axis_specs) == 1 else None
-            fig_obj = make_cr_fig(
-                hist_mc,
-                hist_data,
-                var=var_name,
-                unit_norm_bool=False,
-                bins=bin_edges,
-                group=SR_GRP_MAP,
-                lumitag=LUMI_COM_PAIRS[year][0],
-                comtag=LUMI_COM_PAIRS[year][1]
-            )
-            if year is not None:
-                year_str = year
-            else:
-                year_str = "ULall"
-            title_base = chan_name + "_" + var_name + "_" + year_str
-            if isinstance(fig_obj, dict):
-                for suffix, subfig in fig_obj.items():
-                    subfig.savefig(os.path.join(save_dir_path_tmp, f"{title_base}_{suffix}"))
-            else:
-                fig_obj.savefig(os.path.join(save_dir_path_tmp, title_base))
+            fig = make_cr_fig(hist_mc, hist_data, var=var_name, unit_norm_bool=False, bins=axes_info[var_name]['variable'],group=SR_GRP_MAP, lumitag=LUMI_COM_PAIRS[year][0], comtag=LUMI_COM_PAIRS[year][1])
+            if year is not None: year_str = year
+            else: year_str = "ULall"
+            title = chan_name + "_" + var_name + "_" + year_str
+            fig.savefig(os.path.join(save_dir_path_tmp,title))
 
             # Make an index.html file if saving to web area
             if "www" in save_dir_path_tmp: make_html(save_dir_path_tmp)
@@ -1131,10 +950,6 @@ def make_all_sr_plots(dict_of_hists,year,unit_norm_bool,save_dir_path,split_by_c
         else:
             sr_cat_dict = SR_CHAN_DICT
         print("\nVar name:",var_name)
-
-        axis_specs = get_dense_axis_specs(var_name)
-        is_multidim = len(axis_specs) > 1
-
         print("sr_cat_dict:",sr_cat_dict)
 
         # Extract the signal hists, and integrate over systematic axis
@@ -1298,9 +1113,6 @@ def make_all_cr_plots(dict_of_hists,year,skip_syst_errs,unit_norm_bool,save_dir_
             cr_cat_dict = get_dict_with_stripped_bin_names(cr_cat_dict,"lepflav")
         print("\nVar name:",var_name)
 
-        axis_specs = get_dense_axis_specs(var_name)
-        is_multidim = len(axis_specs) > 1
-
         # Extract the MC and data hists
         hist_mc = dict_of_hists[var_name].remove("process", samples_to_rm_from_mc_hist)
         hist_data = dict_of_hists[var_name].remove("process", samples_to_rm_from_data_hist)
@@ -1322,14 +1134,8 @@ def make_all_cr_plots(dict_of_hists,year,skip_syst_errs,unit_norm_bool,save_dir_
             axes_to_integrate_dict = {}
             axes_to_integrate_dict["channel"] = cr_cat_dict[hist_cat]
             try:
-                hist_mc_appl = yt.integrate_out_appl(hist_mc, hist_cat)
-                hist_data_appl = yt.integrate_out_appl(hist_data, hist_cat)
-
-                hist_mc_integrated = yt.integrate_out_cats(hist_mc_appl, axes_to_integrate_dict)
-                hist_data_integrated = yt.integrate_out_cats(hist_data_appl, axes_to_integrate_dict)
-
-                hist_mc_integrated = hist_mc_integrated[{"channel": sum}]
-                hist_data_integrated = hist_data_integrated[{"channel": sum}]
+                hist_mc_integrated   = yt.integrate_out_cats(yt.integrate_out_appl(hist_mc,hist_cat)   ,axes_to_integrate_dict)[{"channel": sum}]
+                hist_data_integrated = yt.integrate_out_cats(yt.integrate_out_appl(hist_data,hist_cat) ,axes_to_integrate_dict)[{"channel": sum}]
             except:
                 continue
             # Remove samples that are not relevant for the given category
@@ -1350,7 +1156,7 @@ def make_all_cr_plots(dict_of_hists,year,skip_syst_errs,unit_norm_bool,save_dir_
             m_err_arr = None
             p_err_arr_ratio = None
             m_err_arr_ratio = None
-            if not skip_syst_errs and not is_multidim:
+            if not skip_syst_errs:
                 # Get plus and minus rate and shape arrs
                 rate_systs_summed_arr_m , rate_systs_summed_arr_p = get_rate_syst_arrs(hist_mc_integrated, CR_GRP_MAP)
                 shape_systs_summed_arr_m , shape_systs_summed_arr_p = get_shape_syst_arrs(hist_mc_integrated)
@@ -1397,7 +1203,7 @@ def make_all_cr_plots(dict_of_hists,year,skip_syst_errs,unit_norm_bool,save_dir_
             if var_name == "ht": x_range = (0,250)
             group = {k:v for k,v in CR_GRP_MAP.items() if v} # Remove empty groups
 
-            fig_obj = make_cr_fig(
+            fig = make_cr_fig(
                 hist_mc_integrated,
                 hist_data_integrated,
                 unit_norm_bool,
@@ -1413,13 +1219,8 @@ def make_all_cr_plots(dict_of_hists,year,skip_syst_errs,unit_norm_bool,save_dir_
             )
 
             title = hist_cat+"_"+var_name
-            if unit_norm_bool:
-                title = title + "_unitnorm"
-            if isinstance(fig_obj, dict):
-                for suffix, subfig in fig_obj.items():
-                    subfig.savefig(os.path.join(save_dir_path_tmp, f"{title}_{suffix}"))
-            else:
-                fig_obj.savefig(os.path.join(save_dir_path_tmp,title))
+            if unit_norm_bool: title = title + "_unitnorm"
+            fig.savefig(os.path.join(save_dir_path_tmp,title))
 
             # Make an index.html file if saving to web area
             if "www" in save_dir_path_tmp: make_html(save_dir_path_tmp)
