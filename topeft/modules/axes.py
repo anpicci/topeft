@@ -119,6 +119,22 @@ info = {
         "label": r"Scalar sum of met at leading leptons (GeV)",
     },
 
+    "met_vs_ht": {
+        "label": r"MET vs $H_{T}$",
+        "axes": [
+            {
+                "name": "met",
+                "regular": (40, 0, 400),
+                "label": r"MET (GeV)",
+            },
+            {
+                "name": "ht",
+                "regular": (40, 0, 1000),
+                "label": r"H$_{T}$ (GeV)",
+            },
+        ],
+    },
+
     "l0_gen_pdgId": {
        "regular": (28, -1.5, 26.5),
        "label": r"pdgid of l0 genparticle",
@@ -209,3 +225,38 @@ info = {
        "label": r"GenParton Flavor of subleading medium b jet",
    }
 }
+
+
+def get_dense_axis_specs(hist_name: str) -> list[dict]:
+    """Return the dense axis specifications for the histogram ``hist_name``.
+
+    Each specification dictionary contains the keys ``name`` and ``label`` in
+    addition to either ``regular`` or ``variable`` describing the binning.  If
+    the histogram is one-dimensional the returned list has a single element,
+    while multi-dimensional histograms contain one entry per axis.
+    """
+
+    if hist_name not in info:
+        raise KeyError(f"Histogram '{hist_name}' is not defined in the axes configuration.")
+
+    axis_info = info[hist_name]
+    axis_specs = axis_info.get("axes")
+    if axis_specs is None:
+        axis_specs = [axis_info]
+
+    resolved_specs = []
+    for idx, spec in enumerate(axis_specs):
+        spec_copy = spec.copy()
+        if "name" not in spec_copy:
+            spec_copy["name"] = hist_name if len(axis_specs) == 1 else f"{hist_name}_{idx}"
+        if "label" not in spec_copy and "label" in axis_info:
+            spec_copy["label"] = axis_info["label"]
+        resolved_specs.append(spec_copy)
+
+    return resolved_specs
+
+
+def get_axis_names(hist_name: str) -> list[str]:
+    """Return the ordered list of dense axis names for ``hist_name``."""
+
+    return [spec["name"] for spec in get_dense_axis_specs(hist_name)]

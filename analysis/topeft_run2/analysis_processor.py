@@ -18,7 +18,7 @@ import topcoffea.modules.event_selection as tc_es
 import topcoffea.modules.object_selection as tc_os
 import topcoffea.modules.corrections as tc_cor
 
-from topeft.modules.axes import info as axes_info
+from topeft.modules.axes import info as axes_info, get_dense_axis_specs
 from topeft.modules.paths import topeft_path
 from topeft.modules.corrections import ApplyJetCorrections, GetBtagEff, AttachMuonSF, AttachElectronSF, AttachElectronCorrections, AttachTauSF, ApplyTES, ApplyTESSystematic, ApplyFESSystematic, AttachPerLeptonFR, ApplyRochesterCorrections, ApplyJetSystematics, GetTriggerSF, ApplyJetVetoMaps
 import topeft.modules.event_selection as te_es
@@ -72,28 +72,23 @@ class AnalysisProcessor(processor.ProcessorABC):
         syst_axis = hist.axis.StrCategory([], name="systematic", label=r"Systematic Uncertainty", growth=True)
         appl_axis = hist.axis.StrCategory([], name="appl", label=r"AR/SR", growth=True)
 
+        self._dense_axis_specs = {
+            name: get_dense_axis_specs(name) for name in axes_info
+        }
+        self._dense_axis_name_map = {
+            name: [spec["name"] for spec in specs]
+            for name, specs in self._dense_axis_specs.items()
+        }
         histograms = {}
         for name, info in axes_info.items():
-            if not rebin and "variable" in info:
-                dense_axis = hist.axis.Variable(
-                    info["variable"], name=name, label=info["label"]
-                )
-                sumw2_axis = hist.axis.Variable(
-                    info["variable"], name=name+"_sumw2", label=info["label"] + " sum of w^2"
-                )
-            else:
-                dense_axis = hist.axis.Regular(
-                    *info["regular"], name=name, label=info["label"]
-                )
-                sumw2_axis = hist.axis.Regular(
-                    *info["regular"], name=name+"_sumw2", label=info["label"] + " sum of w^2"
-                )
+            dense_axes = self._build_hist_axes(name, rebin=rebin)
+            sumw2_axes = self._build_hist_axes(name, suffix="_sumw2", rebin=rebin, sumw2=True)
             histograms[name] = HistEFT(
                 proc_axis,
                 chan_axis,
                 syst_axis,
                 appl_axis,
-                dense_axis,
+                *dense_axes,
                 wc_names=wc_names_lst,
                 label=r"Events",
             )
@@ -102,7 +97,7 @@ class AnalysisProcessor(processor.ProcessorABC):
                 chan_axis,
                 syst_axis,
                 appl_axis,
-                sumw2_axis,
+                *sumw2_axes,
                 wc_names=wc_names_lst,
                 label=r"Events",
             )
@@ -138,6 +133,22 @@ class AnalysisProcessor(processor.ProcessorABC):
     @property
     def columns(self):
         return self._columns
+
+    def _build_hist_axes(self, hist_name, suffix="", rebin=False, sumw2=False):
+        axis_specs = self._dense_axis_specs[hist_name]
+        axes_out = []
+        for spec in axis_specs:
+            axis_name = spec["name"] + suffix
+            axis_label = spec.get("label", spec["name"])
+            if sumw2:
+                axis_label = axis_label + " sum of w^2"
+            variable_bins = spec.get("variable")
+            if (not rebin) and (variable_bins is not None):
+                axis_obj = hist.axis.Variable(variable_bins, name=axis_name, label=axis_label)
+            else:
+                axis_obj = hist.axis.Regular(*spec["regular"], name=axis_name, label=axis_label)
+            axes_out.append(axis_obj)
+        return axes_out
 
     # Main function: run on a given dataset
     def process(self, events):
@@ -947,6 +958,7 @@ class AnalysisProcessor(processor.ProcessorABC):
             varnames = {}
             varnames["ht"]      = ht
             varnames["met"]     = met.pt
+            varnames["met_vs_ht"] = {"met": met.pt, "ht": ht}
             varnames["ljptsum"] = ljptsum
             varnames["l0conept"]    = l0.conept
             varnames["l0pt"]    = l0.pt_raw
@@ -1214,11 +1226,22 @@ class AnalysisProcessor(processor.ProcessorABC):
                                         weights_flat = weight[all_cuts_mask]
                                         eft_coeffs_cut = eft_coeffs[all_cuts_mask] if eft_coeffs is not None else None
 
-                                        values_cut = dense_axis_vals[all_cuts_mask]
+                                        axis_names = self._dense_axis_name_map.get(dense_axis_name, [dense_axis_name])
+                                        if isinstance(dense_axis_vals, dict):
+                                            axis_value_sources = dense_axis_vals
+                                        else:
+                                            axis_value_sources = {axis_names[0]: dense_axis_vals}
+                                        axis_values_cut = {}
+                                        for axis_name in axis_names:
+                                            if axis_name not in axis_value_sources:
+                                                raise KeyError(
+                                                    f"Missing values for axis '{axis_name}' while filling histogram '{dense_axis_name}'."
+                                                )
+                                            axis_values_cut[axis_name] = axis_value_sources[axis_name][all_cuts_mask]
 
                                         # Fill the histos
                                         axes_fill_info_dict = {
-                                            dense_axis_name : values_cut,
+                                            **{axis_name: axis_values_cut[axis_name] for axis_name in axis_names},
                                             "channel"       : ch_name,
                                             "appl"          : appl,
                                             "process"       : histAxisName,
@@ -1244,8 +1267,12 @@ class AnalysisProcessor(processor.ProcessorABC):
                                         if ((dense_axis_name in ["o0pt","b0pt","bl0pt"]) & ("CR" in ch_name)): continue
 
                                         hout[dense_axis_name].fill(**axes_fill_info_dict)
+                                        sumw2_axis_names = [f"{axis_name}_sumw2" for axis_name in axis_names]
                                         axes_fill_info_dict = {
-                                            dense_axis_name+"_sumw2" : values_cut,
+                                            **{
+                                                sum_axis_name: axis_values_cut[axis_name]
+                                                for axis_name, sum_axis_name in zip(axis_names, sumw2_axis_names)
+                                            },
                                             "channel"       : ch_name,
                                             "appl"          : appl,
                                             "process"       : histAxisName,
