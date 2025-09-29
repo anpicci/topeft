@@ -385,6 +385,36 @@ def make_cr_fig(h_mc, h_data, unit_norm_bool, axis='process', var='lj0pt', bins=
         group = {}
 
     axis_specs = get_dense_axis_specs(var)
+
+    dense_axis_types = (
+        hist.axis.Regular,
+        hist.axis.Variable,
+        hist.axis.Integer,
+    )
+
+    def _get_dense_axes(hist_obj):
+        return [ax for ax in hist_obj.axes if isinstance(ax, dense_axis_types)]
+
+    # ``axis_specs`` encodes the nominal dimensionality of the histogram, but
+    # in some production configurations the stored histogram can end up with
+    # fewer dense axes (e.g. when one dimension was marginalised during
+    # template creation).  In that case ``_make_cr_fig_2d`` would later raise a
+    # hard error when attempting to project onto the missing axis.  Instead,
+    # reconcile the specification with the actually available axes and fall
+    # back to the one-dimensional plotting code when necessary.
+    mc_dense_axes = _get_dense_axes(h_mc)
+    data_dense_axes = _get_dense_axes(h_data)
+    available_dense_axes = min(len(axis_specs), len(mc_dense_axes), len(data_dense_axes))
+
+    if available_dense_axes == 0:
+        raise ValueError(
+            "No dense axes available in either the MC or data histogram for "
+            f"variable '{var}'."
+        )
+
+    if available_dense_axes < len(axis_specs):
+        axis_specs = axis_specs[:available_dense_axes]
+
     if len(axis_specs) > 1:
         return _make_cr_fig_2d(
             h_mc,
