@@ -245,8 +245,8 @@ class AnalysisProcessor(processor.ProcessorABC):
         if is_run3:
             AttachElectronCorrections(ele, run, year, isData) #need to apply electron energy corrections before calculating conept
             jetsRho = events.Rho["fixedGridRhoFastjetAll"]
-            #btagAlgo = "btagDeepFlavB" #DeepJet branch
-            btagAlgo = "btagPNetB"    #PNet branch
+            btagAlgo = "btagDeepFlavB" #DeepJet branch
+            #btagAlgo = "btagPNetB"    #PNet branch
             leptonSelection = te_os.run3leptonselection(useMVA=self.useRun3MVA, btagger=btagAlgo)
         elif is_run2:
             jetsRho = events.fixedGridRhoFastjetAll
@@ -982,8 +982,8 @@ class AnalysisProcessor(processor.ProcessorABC):
             varnames["lt"]      = lt
             varnames["npvs"]    = pv.npvs
             varnames["npvsGood"]= pv.npvsGood
-            varnames["eleseedetax"] = seed_etaorx
-            varnames["eleseedphiy"] = seed_phiory
+            #varnames["eleseedetax"] = seed_etaorx
+            #varnames["eleseedphiy"] = seed_phiory
 
             if not isData:
                 l0_gen_pdgId = ak.fill_none(l0["gen_pdgId"], -1)

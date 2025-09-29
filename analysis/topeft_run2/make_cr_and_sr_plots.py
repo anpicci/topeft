@@ -11,7 +11,7 @@ from cycler import cycler
 import mplhep as hep
 import hist
 from topcoffea.modules.histEFT import HistEFT
-from topeft.modules.axes import info as axes_info
+from topeft.modules.axes import info as axes_info, get_dense_axis_specs
 
 from topcoffea.scripts.make_html import make_html
 import topcoffea.modules.utils as utils
@@ -547,6 +547,7 @@ def _make_cr_fig_2d(h_mc, h_data, axis_specs, unit_norm_bool, lumitag, comtag):
 
     def _prepare_hist(hist_in):
         hist_out = hist_in[{"process": sum}].as_hist({})
+
         # Project onto the requested dense axes to guarantee ordering and
         # obtain the corresponding bin edges.  ``to_numpy`` returns the values
         # array together with a list of edge arrays (one per axis), so unpack
@@ -559,10 +560,12 @@ def _make_cr_fig_2d(h_mc, h_data, axis_specs, unit_norm_bool, lumitag, comtag):
                 f"{len(edges)} edges."
             )
         xedges, yedges = edges
+
         if unit_norm_bool:
             total = np.sum(values)
             if total > 0:
                 values = values / total
+
         return hist_projected, values, xedges, yedges
 
     def _plot(hist_obj, values, xedges, yedges, title):
