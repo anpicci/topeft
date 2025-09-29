@@ -377,6 +377,64 @@ def get_diboson_njets_syst_arr(njets_histo_vals_arr,bin0_njets):
 
 ######### Plotting functions #########
 
+
+def _integrate_axis_if_present(histo, axis_name, category):
+    """Return ``histo`` with ``axis_name`` integrated over ``category`` if present."""
+
+    if axis_name in histo.axes.name:
+        return histo.integrate(axis_name, category)
+    return histo
+
+
+def _unit_normalize_hist(histo, axis_name="process"):
+    """Scale ``histo`` so that the sum over ``axis_name`` equals one."""
+
+    hist_to_sum = histo
+    if axis_name in hist_to_sum.axes.name:
+        hist_to_sum = hist_to_sum[{axis_name: sum}]
+    total = hist_to_sum.as_hist({}).values(flow=True).sum()
+    if total > 0:
+        histo.scale(1.0 / float(total))
+
+
+def _project_hist_to_dense(histo, sum_process=True, eval_point=None):
+    """Return a ``hist.Hist`` view of ``histo`` evaluated at ``eval_point``."""
+
+    if eval_point is None:
+        eval_point = {}
+    hist_tmp = histo
+    if sum_process and "process" in hist_tmp.axes.name:
+        hist_tmp = hist_tmp[{"process": sum}]
+    return hist_tmp.as_hist(eval_point)
+
+
+def make_cr_heatmap_fig(h_mc, h_data, var_name, lumitag="138", comtag="13"):
+    """Make a heatmap comparing MC prediction and data for a two-dimensional histogram."""
+
+    if len(h_mc.dense_axes) != 2:
+        raise ValueError("Heatmap plot requires exactly two dense axes.")
+
+    plot_label = axes_info.get(var_name, {}).get("label", var_name)
+
+    plot_specs = [("MC prediction", _project_hist_to_dense(h_mc))]
+    if (h_data is not None) and (not h_data.empty()):
+        plot_specs.append(("Data", _project_hist_to_dense(h_data)))
+
+    n_cols = len(plot_specs)
+    fig, axes = plt.subplots(1, n_cols, figsize=(7 * n_cols, 6), squeeze=False)
+
+    hep.style.use("CMS")
+    for ax, (title, hist2d) in zip(axes[0], plot_specs):
+        pcm = hist.plot2d(hist2d, ax=ax)
+        hep.cms.label(ax=ax, lumi=lumitag, com=comtag, fontsize=16.0, data=(title == "Data"))
+        ax.set_title(title)
+        fig.colorbar(pcm[0], ax=ax, label="Events")
+
+    fig.suptitle(plot_label)
+    fig.tight_layout(rect=[0, 0, 1, 0.95])
+    return fig
+
+
 # Takes two histograms and makes a plot (with only one sparse axis, whihc should be "process"), one hist should be mc and one should be data
 def make_cr_fig(h_mc, h_data, unit_norm_bool, axis='process', var='lj0pt', bins=None, group=None, set_x_lim=None, err_p=None, err_m=None, err_ratio_p=None, err_ratio_m=None, lumitag="138", comtag="13"):
     if bins is None:
@@ -1150,6 +1208,43 @@ def make_all_cr_plots(dict_of_hists,year,skip_syst_errs,unit_norm_bool,save_dir_
                     pass
             hist_mc_integrated = hist_mc_integrated.remove("process", samples_to_rm)
 
+            is_multi_dense = len(hist_mc_integrated.dense_axes) > 1
+
+            if is_multi_dense:
+                hist_mc_nominal = _integrate_axis_if_present(hist_mc_integrated, "systematic", "nominal")
+                hist_data_nominal = _integrate_axis_if_present(hist_data_integrated, "systematic", "nominal")
+
+                if hist_mc_nominal.empty():
+                    print(f'Empty {hist_mc_nominal=}')
+                    continue
+
+                data_hist_for_plot = None
+                if hist_data_nominal.empty():
+                    print(f'Empty {hist_data_nominal=}')
+                else:
+                    data_hist_for_plot = hist_data_nominal
+
+                if unit_norm_bool:
+                    _unit_normalize_hist(hist_mc_nominal)
+                    if data_hist_for_plot is not None:
+                        _unit_normalize_hist(data_hist_for_plot)
+
+                fig = make_cr_heatmap_fig(
+                    hist_mc_nominal,
+                    data_hist_for_plot,
+                    var_name,
+                    lumitag=LUMI_COM_PAIRS[year][0],
+                    comtag=LUMI_COM_PAIRS[year][1],
+                )
+
+                title = hist_cat+"_"+var_name
+                if unit_norm_bool:
+                    title = title + "_unitnorm"
+                fig.savefig(os.path.join(save_dir_path_tmp,title))
+                plt.close(fig)
+
+                if "www" in save_dir_path_tmp: make_html(save_dir_path_tmp)
+                continue
 
             # Calculate the syst errors
             p_err_arr = None
@@ -1221,6 +1316,7 @@ def make_all_cr_plots(dict_of_hists,year,skip_syst_errs,unit_norm_bool,save_dir_
             title = hist_cat+"_"+var_name
             if unit_norm_bool: title = title + "_unitnorm"
             fig.savefig(os.path.join(save_dir_path_tmp,title))
+            plt.close(fig)
 
             # Make an index.html file if saving to web area
             if "www" in save_dir_path_tmp: make_html(save_dir_path_tmp)
