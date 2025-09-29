@@ -595,19 +595,26 @@ def _make_cr_fig_2d(h_mc, h_data, axis_specs, unit_norm_bool, lumitag, comtag):
     axis_y = axis_specs[1]["name"]
 
     def _prepare_hist(hist_in):
-        hist_out = hist_in[{"process": sum}].as_hist({})
+        hist_collapsed = hist_in[{"process": sum}]
 
-        # The dense axis names in ``hist_out`` may differ from the names stored
-        # in ``axis_specs`` (for example due to suffices added during
-        # histogram construction).  Build a map between the requested axis
-        # names and the actual dense axis names to ensure that the projection
-        # targets the intended axes.
-        dense_axis_types = (
-            hist.axis.Regular,
-            hist.axis.Variable,
-            hist.axis.Integer,
-        )
-        dense_axes = [ax for ax in hist_out.axes if isinstance(ax, dense_axis_types)]
+        dense_axes = [
+            axis
+            for axis in getattr(hist_collapsed, "dense_axes", [])
+            if axis.name != "quadratic_term"
+        ]
+
+        hist_out = hist_collapsed.as_hist({})
+
+        if not dense_axes:
+            dense_axis_types = (
+                hist.axis.Regular,
+                hist.axis.Variable,
+                hist.axis.Integer,
+            )
+            dense_axes = [
+                ax for ax in hist_out.axes if isinstance(ax, dense_axis_types)
+            ]
+
         if len(dense_axes) < len(axis_specs):
             raise ValueError(
                 "Histogram is missing one or more dense axes required for the "
@@ -635,7 +642,9 @@ def _make_cr_fig_2d(h_mc, h_data, axis_specs, unit_norm_bool, lumitag, comtag):
         # array together with a list of edge arrays (one per axis), so unpack
         # the list instead of assuming a fixed tuple length.
         hist_projected = hist_out.project(*proj_args)
-        values, edges = hist_projected.to_numpy()
+        to_numpy_result = hist_projected.to_numpy()
+        values = to_numpy_result[0]
+        edges = to_numpy_result[1:]
         if len(edges) != 2:
             raise ValueError(
                 "Expected two dense axes for a 2D histogram but received "
@@ -1313,8 +1322,14 @@ def make_all_cr_plots(dict_of_hists,year,skip_syst_errs,unit_norm_bool,save_dir_
             axes_to_integrate_dict = {}
             axes_to_integrate_dict["channel"] = cr_cat_dict[hist_cat]
             try:
-                hist_mc_integrated   = yt.integrate_out_cats(yt.integrate_out_appl(hist_mc,hist_cat)   ,axes_to_integrate_dict)[{"channel": sum}]
-                hist_data_integrated = yt.integrate_out_cats(yt.integrate_out_appl(hist_data,hist_cat) ,axes_to_integrate_dict)[{"channel": sum}]
+                hist_mc_appl = yt.integrate_out_appl(hist_mc, hist_cat)
+                hist_data_appl = yt.integrate_out_appl(hist_data, hist_cat)
+
+                hist_mc_integrated = yt.integrate_out_cats(hist_mc_appl, axes_to_integrate_dict)
+                hist_data_integrated = yt.integrate_out_cats(hist_data_appl, axes_to_integrate_dict)
+
+                hist_mc_integrated = hist_mc_integrated[{"channel": sum}]
+                hist_data_integrated = hist_data_integrated[{"channel": sum}]
             except:
                 continue
             # Remove samples that are not relevant for the given category
