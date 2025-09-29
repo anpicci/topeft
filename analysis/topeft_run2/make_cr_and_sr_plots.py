@@ -11,7 +11,7 @@ from cycler import cycler
 import mplhep as hep
 import hist
 from topcoffea.modules.histEFT import HistEFT
-from topeft.modules.axes import info as axes_info
+from topeft.modules.axes import info as axes_info, get_dense_axis_specs
 
 from topcoffea.scripts.make_html import make_html
 import topcoffea.modules.utils as utils
