@@ -455,7 +455,7 @@ class AnalysisProcessor(processor.ProcessorABC):
             vsjet_disc = (
                 tau.idDeepTau2017v2p1VSjet if is_run2 else tau.idDeepTau2018v2p5VSjet
             )
-            tau["isTight"] = tauSelection.isTightTau(vsjet_disc) # use these to veto
+            tau["isTight"] = tauSelection.isVLooseTau(vsjet_disc) # use these to veto
 
         ######### Systematics ###########
 
