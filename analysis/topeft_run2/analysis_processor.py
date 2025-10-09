@@ -452,7 +452,10 @@ class AnalysisProcessor(processor.ProcessorABC):
             tau["isClean"] = te_os.isClean(tau, l_loose, drmin=0.3)
             tau["isGood"]  =  tau["isClean"] & tau["isPres"]
             tau = tau[tau.isGood] # use these to clean jets
-            tau["isTight"] = tauSelection.isVLooseTau(vsjet_disc) # use these to veto
+            vsjet_disc = (
+                tau.idDeepTau2017v2p1VSjet if is_run2 else tau.idDeepTau2018v2p5VSjet
+            )
+            tau["isTight"] = tauSelection.isTightTau(vsjet_disc) # use these to veto
 
         ######### Systematics ###########
 
