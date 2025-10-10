@@ -1018,6 +1018,7 @@ class AnalysisProcessor(processor.ProcessorABC):
             ptz = te_es.get_Z_pt(l_fo_conept_sorted_padded[:,0:3],10.0)
             if self.tau_h_analysis:
                 ptz_wtau = te_es.get_Zlt_pt(l0, l1, tau0)
+                ptz_wtau = ak.values_astype(ak.fill_none(ptz_wtau, -1), np.float32)
 
             if self.offZ_3l_split:
                 ptz = te_es.get_ll_pt(l_fo_conept_sorted_padded[:,0:3],10.0)
@@ -1202,8 +1203,10 @@ class AnalysisProcessor(processor.ProcessorABC):
             }
 
             if self.tau_h_analysis:
+                tau0_pt = ak.values_astype(ak.fill_none(tau0.pt, -1), np.float32)
+
                 varnames["ptz_wtau"] = ptz_wtau
-                varnames["tau0pt"] = tau0.pt
+                varnames["tau0pt"] = tau0_pt
                 pass
 
             ########## Fill the histograms ##########
