@@ -289,7 +289,7 @@ if __name__ == "__main__":
         if len(port) > 2:
             raise ValueError("More than one port range was specified.")
         if len(port) == 1:
-            # convert singale values into a range of one element
+            # convert single values into a range of one element
             port.append(port[0])
 
     # Figure out which hists to include
@@ -496,7 +496,7 @@ if __name__ == "__main__":
 
     if executor in ["work_queue", "taskvine"]:
         executor_args = {
-            "master_name": f"{os.environ['USER']}-workqueue-coffea",
+            "master_name": f"{os.environ['USER']}-workqueue-coffea_{outname}",
             # find a port to run work queue in this range:
             "port": port,
             "debug_log": "debug.log",
@@ -511,7 +511,7 @@ if __name__ == "__main__":
             # use mid-range compression for chunks results.
             # Valid values are 0 (minimum compression, less memory
             # usage) to 16 (maximum compression, more memory usage).
-            "compression": 0,
+            "compression": 9,
             # automatically find an adequate resource allocation for tasks.
             # tasks are first tried using the maximum resources seen of previously ran
             # tasks. on resource exhaustion, they are retried with the maximum resource
