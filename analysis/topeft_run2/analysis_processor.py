@@ -35,6 +35,7 @@ from topeft.modules.btag_weights import register_btag_sf_weights
 import topeft.modules.event_selection as te_es
 import topeft.modules.object_selection as te_os
 from topeft.modules.systematics import (
+    LEPTON_SF_CONFIGURATION,
     add_fake_factor_weights,
     apply_theory_weight_variations,
     register_lepton_sf_weight,
@@ -353,6 +354,64 @@ class AnalysisProcessor(processor.ProcessorABC):
     def _debug(self, message: str, *args) -> None:
         if self._debug_logging:
             logger.debug(message, *args)
+
+    def _register_channel_lepton_sf_weights(
+        self,
+        *,
+        channel_prefix: str,
+        nlep_cat: str,
+        weights_object,
+        events,
+        include_muon_sf_variations: bool,
+        include_elec_sf_variations: bool,
+        include_tau_real_sf_variations: bool,
+        include_tau_fake_sf_variations: bool,
+        variation_name: str,
+        logger_obj,
+    ) -> None:
+        try:
+            channel_config = LEPTON_SF_CONFIGURATION[channel_prefix]
+        except KeyError as exc:
+            raise Exception(f"Unknown channel name: {nlep_cat}") from exc
+
+        for lepton_type, include_variations in (
+            ("muon", include_muon_sf_variations),
+            ("electron", include_elec_sf_variations),
+        ):
+            weight_label, central_attr, up_attr, down_attr = channel_config[lepton_type]
+            register_lepton_sf_weight(
+                weights_object,
+                events,
+                weight_label,
+                central_attr,
+                up_attr,
+                down_attr,
+                include_variations,
+                variation_name=variation_name,
+                logger_obj=logger_obj,
+            )
+
+        tau_config = channel_config.get("tau", {})
+        if self.tau_h_analysis and tau_config.get("available"):
+            for tau_type, include_variations in (
+                ("real", include_tau_real_sf_variations),
+                ("fake", include_tau_fake_sf_variations),
+            ):
+                tau_entry = tau_config.get(tau_type)
+                if tau_entry is None:
+                    continue
+                weight_label, central_attr, up_attr, down_attr = tau_entry
+                register_lepton_sf_weight(
+                    weights_object,
+                    events,
+                    weight_label,
+                    central_attr,
+                    up_attr,
+                    down_attr,
+                    include_variations,
+                    variation_name=variation_name,
+                    logger_obj=logger_obj,
+                )
 
     # Main function: run on a given dataset
     def process(self, events):
@@ -990,169 +1049,18 @@ class AnalysisProcessor(processor.ProcessorABC):
                     AttachTauSF(events, tau, year=year)
 
                 # Lepton (and optional tau) scale factors depend on the lepton category.
-                if channel_prefix == "1l":
-                    register_lepton_sf_weight(
-                        weights_object,
-                        events,
-                        "lepSF_muon",
-                        "sf_1l_muon",
-                        "sf_1l_hi_muon",
-                        "sf_1l_lo_muon",
-                        include_muon_sf_variations,
-                        variation_name=variation_name,
-                        logger_obj=logger,
-                    )
-                    register_lepton_sf_weight(
-                        weights_object,
-                        events,
-                        "lepSF_elec",
-                        "sf_1l_elec",
-                        "sf_1l_hi_elec",
-                        "sf_1l_lo_elec",
-                        include_elec_sf_variations,
-                        variation_name=variation_name,
-                        logger_obj=logger,
-                    )
-                    if self.tau_h_analysis:
-                        register_lepton_sf_weight(
-                            weights_object,
-                            events,
-                            "lepSF_taus_real",
-                            "sf_2l_taus_real",
-                            "sf_2l_taus_real_hi",
-                            "sf_2l_taus_real_lo",
-                            include_tau_real_sf_variations,
-                            variation_name=variation_name,
-                            logger_obj=logger,
-                        )
-                        register_lepton_sf_weight(
-                            weights_object,
-                            events,
-                            "lepSF_taus_fake",
-                            "sf_2l_taus_fake",
-                            "sf_2l_taus_fake_hi",
-                            "sf_2l_taus_fake_lo",
-                            include_tau_fake_sf_variations,
-                            variation_name=variation_name,
-                            logger_obj=logger,
-                        )
-                elif channel_prefix == "2l":
-                    register_lepton_sf_weight(
-                        weights_object,
-                        events,
-                        "lepSF_muon",
-                        "sf_2l_muon",
-                        "sf_2l_hi_muon",
-                        "sf_2l_lo_muon",
-                        include_muon_sf_variations,
-                        variation_name=variation_name,
-                        logger_obj=logger,
-                    )
-                    register_lepton_sf_weight(
-                        weights_object,
-                        events,
-                        "lepSF_elec",
-                        "sf_2l_elec",
-                        "sf_2l_hi_elec",
-                        "sf_2l_lo_elec",
-                        include_elec_sf_variations,
-                        variation_name=variation_name,
-                        logger_obj=logger,
-                    )
-                    if self.tau_h_analysis:
-                        register_lepton_sf_weight(
-                            weights_object,
-                            events,
-                            "lepSF_taus_real",
-                            "sf_2l_taus_real",
-                            "sf_2l_taus_real_hi",
-                            "sf_2l_taus_real_lo",
-                            include_tau_real_sf_variations,
-                            variation_name=variation_name,
-                            logger_obj=logger,
-                        )
-                        register_lepton_sf_weight(
-                            weights_object,
-                            events,
-                            "lepSF_taus_fake",
-                            "sf_2l_taus_fake",
-                            "sf_2l_taus_fake_hi",
-                            "sf_2l_taus_fake_lo",
-                            include_tau_fake_sf_variations,
-                            variation_name=variation_name,
-                            logger_obj=logger,
-                        )
-                elif channel_prefix == "3l":
-                    register_lepton_sf_weight(
-                        weights_object,
-                        events,
-                        "lepSF_muon",
-                        "sf_3l_muon",
-                        "sf_3l_hi_muon",
-                        "sf_3l_lo_muon",
-                        include_muon_sf_variations,
-                        variation_name=variation_name,
-                        logger_obj=logger,
-                    )
-                    register_lepton_sf_weight(
-                        weights_object,
-                        events,
-                        "lepSF_elec",
-                        "sf_3l_elec",
-                        "sf_3l_hi_elec",
-                        "sf_3l_lo_elec",
-                        include_elec_sf_variations,
-                        variation_name=variation_name,
-                        logger_obj=logger,
-                    )
-                    if self.tau_h_analysis:
-                        register_lepton_sf_weight(
-                            weights_object,
-                            events,
-                            "lepSF_taus_real",
-                            "sf_2l_taus_real",
-                            "sf_2l_taus_real_hi",
-                            "sf_2l_taus_real_lo",
-                            include_tau_real_sf_variations,
-                            variation_name=variation_name,
-                            logger_obj=logger,
-                        )
-                        register_lepton_sf_weight(
-                            weights_object,
-                            events,
-                            "lepSF_taus_fake",
-                            "sf_2l_taus_fake",
-                            "sf_2l_taus_fake_hi",
-                            "sf_2l_taus_fake_lo",
-                            include_tau_fake_sf_variations,
-                            variation_name=variation_name,
-                            logger_obj=logger,
-                        )
-                elif channel_prefix == "4l":
-                    register_lepton_sf_weight(
-                        weights_object,
-                        events,
-                        "lepSF_muon",
-                        "sf_4l_muon",
-                        "sf_4l_hi_muon",
-                        "sf_4l_lo_muon",
-                        include_muon_sf_variations,
-                        variation_name=variation_name,
-                        logger_obj=logger,
-                    )
-                    register_lepton_sf_weight(
-                        weights_object,
-                        events,
-                        "lepSF_elec",
-                        "sf_4l_elec",
-                        "sf_4l_hi_elec",
-                        "sf_4l_lo_elec",
-                        include_elec_sf_variations,
-                        variation_name=variation_name,
-                        logger_obj=logger,
-                    )
-                else:
-                    raise Exception(f"Unknown channel name: {nlep_cat}")
+                self._register_channel_lepton_sf_weights(
+                    channel_prefix=channel_prefix,
+                    nlep_cat=nlep_cat,
+                    weights_object=weights_object,
+                    events=events,
+                    include_muon_sf_variations=include_muon_sf_variations,
+                    include_elec_sf_variations=include_elec_sf_variations,
+                    include_tau_real_sf_variations=include_tau_real_sf_variations,
+                    include_tau_fake_sf_variations=include_tau_fake_sf_variations,
+                    variation_name=variation_name,
+                    logger_obj=logger,
+                )
 
             ######### Event weights that do depend on the lep cat ###########
 
