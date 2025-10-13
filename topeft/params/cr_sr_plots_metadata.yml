@@ -317,16 +317,31 @@ SR_CHAN_DICT:
     - 2lss_ee_m_1tau_onZ_5j
     - 2lss_ee_m_1tau_onZ_6j
     - 2lss_ee_m_1tau_onZ_7j
+    - 2lss_ee_p_1tau_onZ_3j
+    - 2lss_ee_p_1tau_onZ_4j
+    - 2lss_ee_p_1tau_onZ_5j
+    - 2lss_ee_p_1tau_onZ_6j
+    - 2lss_ee_p_1tau_onZ_7j
     - 2lss_em_m_1tau_onZ_3j
     - 2lss_em_m_1tau_onZ_4j
     - 2lss_em_m_1tau_onZ_5j
     - 2lss_em_m_1tau_onZ_6j
     - 2lss_em_m_1tau_onZ_7j
+    - 2lss_em_p_1tau_onZ_3j
+    - 2lss_em_p_1tau_onZ_4j
+    - 2lss_em_p_1tau_onZ_5j
+    - 2lss_em_p_1tau_onZ_6j
+    - 2lss_em_p_1tau_onZ_7j
     - 2lss_mm_m_1tau_onZ_3j
     - 2lss_mm_m_1tau_onZ_4j
     - 2lss_mm_m_1tau_onZ_5j
     - 2lss_mm_m_1tau_onZ_6j
     - 2lss_mm_m_1tau_onZ_7j
+    - 2lss_mm_p_1tau_onZ_3j
+    - 2lss_mm_p_1tau_onZ_4j
+    - 2lss_mm_p_1tau_onZ_5j
+    - 2lss_mm_p_1tau_onZ_6j
+    - 2lss_mm_p_1tau_onZ_7j
   2lss_1tau_offZ_SR:
     - 2lss_ee_m_1tau_offZ_3j
     - 2lss_ee_m_1tau_offZ_4j
