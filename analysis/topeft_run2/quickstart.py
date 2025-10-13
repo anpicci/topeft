@@ -233,6 +233,7 @@ def run_quickstart(
     wc_list: Optional[Iterable[str]] = None,
     pretend: bool = False,
     test: bool = False,
+    debug_logging: bool = False,
 ) -> RunConfig:
     """Execute the Run 2 processor with conservative defaults.
 
@@ -268,6 +269,7 @@ def run_quickstart(
         skip_cr=skip_cr,
         do_np=do_np,
         wc_list=unique_preserving_order(normalize_sequence(wc_list)),
+        debug_logging=bool(debug_logging),
     )
 
     sample_loader = SampleLoader(

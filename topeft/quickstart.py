@@ -111,6 +111,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Validate everything but do not execute the Coffea processor.",
     )
     parser.add_argument(
+        "--debug-logging",
+        action="store_true",
+        help="Enable verbose debug logging inside the histogram processor.",
+    )
+    parser.add_argument(
         "--treename",
         help="Override the tree name advertised by the sample JSON.",
     )
@@ -177,6 +182,7 @@ def main(argv: Optional[Iterable[str]] = None) -> None:
         skip_cr=args.skip_cr,
         wc_list=wc_list,
         pretend=args.pretend,
+        debug_logging=args.debug_logging,
     )
 
 
