@@ -323,6 +323,7 @@ class RunConfig:
     ecut: Optional[float] = None
     summary_verbosity: str = "brief"
     log_tasks: bool = False
+    debug_logging: bool = False
 
 
 class RunConfigBuilder:
@@ -372,6 +373,7 @@ class RunConfigBuilder:
             "port": ("port", coerce_port),
             "summary_verbosity": ("summary_verbosity", coerce_summary_verbosity),
             "log_tasks": ("log_tasks", coerce_bool),
+            "debug_logging": ("debug_logging", coerce_bool),
         }
 
         def _apply_source(source: Mapping[str, Any]):
@@ -479,6 +481,7 @@ class RunConfigBuilder:
                 "wc_list": "wc_list",
                 "ecut": "ecut",
                 "port": "port",
+                "debug_logging": "debug_logging",
             }
 
             defaults = self.defaults
