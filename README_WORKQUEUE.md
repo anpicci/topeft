@@ -80,9 +80,9 @@ rebuild the environment accordingly.
 
 ## Executing the topcoffea application
 
-The script `run_analysis.py` expects a configuration file that describes
-which files of events to process. One small configuration to test is:
-
+The modern workflow leans on YAML option bundles to keep the command line
+minimal.  After activating your environment and changing into the
+`analysis/topeft_run2` directory, launch the manager with a preset:
 
 ```sh
 conda activate topcoffea-env
@@ -92,12 +92,50 @@ cd analysis/topeft_run2
 ## It is not needed if the .cfg file is using root files from local paths.
 # voms-proxy-init2
 
-python run_analysis.py --chunksize 128000 ../../input_samples/sample_jsons/test_samples/UL17_private_ttH_for_CI.json
+python run_analysis.py --options configs/fullR2_run.yml
 ```
 
-The first time you run `work_queue_run.py` it will spend a handful of minutes
+Profiles defined inside the options file can be selected with the
+`path.yml:profile` suffix.  For example, `python run_analysis.py --options
+configs/fullR2_run.yml:sr` limits processing to the signal-region profile used
+throughout the rest of the documentation set.【F:docs/quickstart_top22_006.md†L71-L99】
+
+By default the workflow references `topeft/params/metadata.yml`.  To point at an
+alternate metadata bundle, pass the manifest explicitly:
+
+```sh
+python run_analysis.py --options configs/fullR2_run.yml --metadata /path/to/metadata.yml
+```
+
+The [metadata configuration guide](docs/run_analysis_configuration.md#metadata-configuration)
+and the [`run_analysis.py` CLI/YAML reference](docs/run_analysis_cli_reference.md)
+describe the expected structure along with additional override patterns.
+
+When running long campaigns under Work Queue, consider enabling extra logging
+from the manager:
+
+* `--summary-verbosity full` to capture the complete run plan prior to dispatch.【F:docs/run_analysis_cli_reference.md†L60-L63】
+* `--log-tasks` for a per-task progress line.【F:docs/run_analysis_cli_reference.md†L60-L63】
+* `--debug-logging` to emit verbose Coffea diagnostics during execution.【F:analysis/topeft_run2/run_analysis.py†L144-L150】
+* `--pretend` or `--test` for dry-run and smoke-test cycles when validating new
+  bundles.【F:docs/run_analysis_cli_reference.md†L54-L58】
+
+The CLI reference linked above documents further knobs that can be toggled as
+needed for large-scale operations.【F:docs/run_analysis_cli_reference.md†L46-L85】
+
+The first time you run `run_analysis.py` it will spend a handful of minutes
 constructing the environment that will be sent to the workers. After that, it
 will wait for workers to connect.
+
+> **Manual override (legacy CLI)** – Older `.cfg`-style workflows still function
+> by supplying manifest paths directly on the command line.  For example:
+>
+> ```sh
+> python run_analysis.py --chunksize 128000 ../../input_samples/sample_jsons/test_samples/UL17_private_ttH_for_CI.json
+> ```
+>
+> Prefer the YAML bundles above for new campaigns so that configuration is
+> shared with the rest of the documentation set.
 
 
 ## Launching workers
