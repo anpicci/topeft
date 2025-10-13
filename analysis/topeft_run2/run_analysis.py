@@ -141,6 +141,13 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--debug-logging",
+        action="store_true",
+        help=(
+            "Enable verbose debug logging in the histogram processor."
+        ),
+    )
+    parser.add_argument(
         "--scenario",
         dest="scenarios",
         action="append",
