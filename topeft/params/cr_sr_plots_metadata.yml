@@ -311,6 +311,111 @@ SR_CHAN_DICT:
     - 4l_3j
   4l_4j:
     - 4l_4j
+  2lss_1tau_onZ_SR:
+    - 2lss_ee_m_1tau_onZ_3j
+    - 2lss_ee_m_1tau_onZ_4j
+    - 2lss_ee_m_1tau_onZ_5j
+    - 2lss_ee_m_1tau_onZ_6j
+    - 2lss_ee_m_1tau_onZ_7j
+    - 2lss_em_m_1tau_onZ_3j
+    - 2lss_em_m_1tau_onZ_4j
+    - 2lss_em_m_1tau_onZ_5j
+    - 2lss_em_m_1tau_onZ_6j
+    - 2lss_em_m_1tau_onZ_7j
+    - 2lss_mm_m_1tau_onZ_3j
+    - 2lss_mm_m_1tau_onZ_4j
+    - 2lss_mm_m_1tau_onZ_5j
+    - 2lss_mm_m_1tau_onZ_6j
+    - 2lss_mm_m_1tau_onZ_7j
+  2lss_1tau_offZ_SR:
+    - 2lss_ee_m_1tau_offZ_3j
+    - 2lss_ee_m_1tau_offZ_4j
+    - 2lss_ee_m_1tau_offZ_5j
+    - 2lss_ee_m_1tau_offZ_6j
+    - 2lss_ee_m_1tau_offZ_7j
+    - 2lss_ee_p_1tau_offZ_3j
+    - 2lss_ee_p_1tau_offZ_4j
+    - 2lss_ee_p_1tau_offZ_5j
+    - 2lss_ee_p_1tau_offZ_6j
+    - 2lss_ee_p_1tau_offZ_7j
+    - 2lss_em_m_1tau_offZ_3j
+    - 2lss_em_m_1tau_offZ_4j
+    - 2lss_em_m_1tau_offZ_5j
+    - 2lss_em_m_1tau_offZ_6j
+    - 2lss_em_m_1tau_offZ_7j
+    - 2lss_em_p_1tau_offZ_3j
+    - 2lss_em_p_1tau_offZ_4j
+    - 2lss_em_p_1tau_offZ_5j
+    - 2lss_em_p_1tau_offZ_6j
+    - 2lss_em_p_1tau_offZ_7j
+    - 2lss_mm_m_1tau_offZ_3j
+    - 2lss_mm_m_1tau_offZ_4j
+    - 2lss_mm_m_1tau_offZ_5j
+    - 2lss_mm_m_1tau_offZ_6j
+    - 2lss_mm_m_1tau_offZ_7j
+    - 2lss_mm_p_1tau_offZ_3j
+    - 2lss_mm_p_1tau_offZ_4j
+    - 2lss_mm_p_1tau_offZ_5j
+    - 2lss_mm_p_1tau_offZ_6j
+    - 2lss_mm_p_1tau_offZ_7j
+  2lss_1tau_Ftau_SR:
+    - 2lss_ee_1tau_Ftau_2j
+    - 2lss_ee_1tau_Ftau_3j
+    - 2lss_ee_1tau_Ftau_4j
+    - 2lss_em_1tau_Ftau_2j
+    - 2lss_em_1tau_Ftau_3j
+    - 2lss_em_1tau_Ftau_4j
+    - 2lss_mm_1tau_Ftau_2j
+    - 2lss_mm_1tau_Ftau_3j
+    - 2lss_mm_1tau_Ftau_4j
+  2lss_1tau_Ttau_SR:
+    - 2lss_ee_1tau_Ttau_2j
+    - 2lss_ee_1tau_Ttau_3j
+    - 2lss_ee_1tau_Ttau_4j
+    - 2lss_em_1tau_Ttau_2j
+    - 2lss_em_1tau_Ttau_3j
+    - 2lss_em_1tau_Ttau_4j
+    - 2lss_mm_1tau_Ttau_2j
+    - 2lss_mm_1tau_Ttau_3j
+    - 2lss_mm_1tau_Ttau_4j
+  2los_1tau_SR:
+    - 2los_ee_onZ_1tau_5j
+    - 2los_em_onZ_1tau_5j
+    - 2los_mm_onZ_1tau_5j
+  3l_1tau_1b_SR:
+    - 3l_eee_1tau_1b_2j
+    - 3l_eee_1tau_1b_3j
+    - 3l_eee_1tau_1b_4j
+    - 3l_eee_1tau_1b_5j
+    - 3l_eem_1tau_1b_2j
+    - 3l_eem_1tau_1b_3j
+    - 3l_eem_1tau_1b_4j
+    - 3l_eem_1tau_1b_5j
+    - 3l_emm_1tau_1b_2j
+    - 3l_emm_1tau_1b_3j
+    - 3l_emm_1tau_1b_4j
+    - 3l_emm_1tau_1b_5j
+    - 3l_mmm_1tau_1b_2j
+    - 3l_mmm_1tau_1b_3j
+    - 3l_mmm_1tau_1b_4j
+    - 3l_mmm_1tau_1b_5j
+  3l_1tau_2b_SR:
+    - 3l_eee_1tau_2b_2j
+    - 3l_eee_1tau_2b_3j
+    - 3l_eee_1tau_2b_4j
+    - 3l_eee_1tau_2b_5j
+    - 3l_eem_1tau_2b_2j
+    - 3l_eem_1tau_2b_3j
+    - 3l_eem_1tau_2b_4j
+    - 3l_eem_1tau_2b_5j
+    - 3l_emm_1tau_2b_2j
+    - 3l_emm_1tau_2b_3j
+    - 3l_emm_1tau_2b_4j
+    - 3l_emm_1tau_2b_5j
+    - 3l_mmm_1tau_2b_2j
+    - 3l_mmm_1tau_2b_3j
+    - 3l_mmm_1tau_2b_4j
+    - 3l_mmm_1tau_2b_5j
 CR_GRP_MAP:
   Data:
     color: black
