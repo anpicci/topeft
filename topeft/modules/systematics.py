@@ -24,6 +24,72 @@ import topcoffea.modules.corrections as tc_cor
 
 from topeft.modules.paths import topeft_path
 
+
+LEPTON_SF_CONFIGURATION: Dict[str, Dict[str, object]] = {
+    "1l": {
+        "muon": ("lepSF_muon", "sf_1l_muon", "sf_1l_hi_muon", "sf_1l_lo_muon"),
+        "electron": ("lepSF_elec", "sf_1l_elec", "sf_1l_hi_elec", "sf_1l_lo_elec"),
+        "tau": {
+            "available": True,
+            "real": (
+                "lepSF_taus_real",
+                "sf_2l_taus_real",
+                "sf_2l_taus_real_hi",
+                "sf_2l_taus_real_lo",
+            ),
+            "fake": (
+                "lepSF_taus_fake",
+                "sf_2l_taus_fake",
+                "sf_2l_taus_fake_hi",
+                "sf_2l_taus_fake_lo",
+            ),
+        },
+    },
+    "2l": {
+        "muon": ("lepSF_muon", "sf_2l_muon", "sf_2l_hi_muon", "sf_2l_lo_muon"),
+        "electron": ("lepSF_elec", "sf_2l_elec", "sf_2l_hi_elec", "sf_2l_lo_elec"),
+        "tau": {
+            "available": True,
+            "real": (
+                "lepSF_taus_real",
+                "sf_2l_taus_real",
+                "sf_2l_taus_real_hi",
+                "sf_2l_taus_real_lo",
+            ),
+            "fake": (
+                "lepSF_taus_fake",
+                "sf_2l_taus_fake",
+                "sf_2l_taus_fake_hi",
+                "sf_2l_taus_fake_lo",
+            ),
+        },
+    },
+    "3l": {
+        "muon": ("lepSF_muon", "sf_3l_muon", "sf_3l_hi_muon", "sf_3l_lo_muon"),
+        "electron": ("lepSF_elec", "sf_3l_elec", "sf_3l_hi_elec", "sf_3l_lo_elec"),
+        "tau": {
+            "available": True,
+            "real": (
+                "lepSF_taus_real",
+                "sf_2l_taus_real",
+                "sf_2l_taus_real_hi",
+                "sf_2l_taus_real_lo",
+            ),
+            "fake": (
+                "lepSF_taus_fake",
+                "sf_2l_taus_fake",
+                "sf_2l_taus_fake_hi",
+                "sf_2l_taus_fake_lo",
+            ),
+        },
+    },
+    "4l": {
+        "muon": ("lepSF_muon", "sf_4l_muon", "sf_4l_hi_muon", "sf_4l_lo_muon"),
+        "electron": ("lepSF_elec", "sf_4l_elec", "sf_4l_hi_elec", "sf_4l_lo_elec"),
+        "tau": {"available": False},
+    },
+}
+
 logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
