@@ -132,3 +132,39 @@ scenarios declared in ``topeft/params/metadata.yml``.
 
     Launching ``python run_analysis.py --options configs/fullR2_run_tau_fwd.yml``
     keeps the validation loop short while layering on the extra categories.
+
+### Processor debug logging
+
+The :mod:`analysis.topeft_run2.run_analysis` CLI exposes the same
+``--debug-logging`` flag used by the quickstart helper.  Enabling it allows the
+processor to emit additional ``logging.debug`` instrumentation when it inspects
+sum-of-weights groups, prepares systematic variations, and submits histogram
+tasks.【F:analysis/topeft_run2/run_analysis.py†L132-L206】【F:analysis/topeft_run2/analysis_processor.py†L47-L654】【F:analysis/topeft_run2/workflow.py†L700-L744】
+Because those messages respect the global logging configuration, ensure the
+root logger is set to ``DEBUG`` (for example by calling
+``logging.basicConfig(level="DEBUG")`` in a short wrapper script or IPython
+notebook) before expecting them to appear.【F:analysis/topeft_run2/run_analysis_helpers.py†L320-L392】
+
+A minimal CLI invocation looks like:
+
+```bash
+python run_analysis.py \
+    ../../input_samples/sample_jsons/test_samples/UL17_private_ttH_for_CI.json \
+    --options configs/fullR2_run.yml \
+    --debug-logging
+```
+
+To keep the toggle in a reproducible YAML preset, add ``debug_logging: true``
+to the relevant section and continue launching the job via ``--options``:
+
+```yaml
+# analysis/topeft_run2/configs/fullR2_run.yml
+profiles:
+  cr:
+    debug_logging: true
+  sr:
+    debug_logging: true
+```
+
+When the YAML profile is selected, no additional CLI flags are required to keep
+debug logging active, provided your logging setup still allows ``DEBUG`` output.
