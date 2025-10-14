@@ -185,3 +185,43 @@ arguments used by the main workflow (``--split-lep-flavor``, ``--skip-sr``,
 run generated through the quickstart utilities is reproducible via the returned
 :class:`analysis.topeft_run2.run_analysis_helpers.RunConfig`, which records all
 relevant switches.
+
+### Processor debug logging
+
+The quickstart entry point also exposes the ``--debug-logging`` flag.  When it
+is enabled, the :class:`analysis.topeft_run2.analysis_processor.AnalysisProcessor`
+emits additional ``logging.debug`` messages while it builds systematic
+variations, maps sum-of-weights groups, and schedules histogram fills.【F:analysis/topeft_run2/analysis_processor.py†L47-L654】
+Those messages are still filtered through Python's global logging
+configuration—by default the root logger stays at ``WARNING``—so remember to
+lower your logging threshold (for example with
+``logging.basicConfig(level="DEBUG")`` in a short wrapper script or IPython
+session) before launching a run.【F:analysis/topeft_run2/run_analysis_helpers.py†L320-L392】【F:analysis/topeft_run2/workflow.py†L700-L744】
+
+To exercise the helper from the command line:
+
+```bash
+python -m topeft.quickstart \
+    input_samples/sample_jsons/test_samples/UL17_private_ttH_for_CI.json \
+    --prefix root://cmsxrootd.fnal.gov/ \
+    --debug-logging
+```
+
+If you prefer to capture the configuration in YAML alongside the rest of your
+options, set ``debug_logging`` in your preset and select it with ``--options``
+when you scale up to the full workflow:
+
+```yaml
+# analysis/topeft_run2/configs/fullR2_debug.yml
+defaults:
+  debug_logging: true
+profiles:
+  cr:
+    debug_logging: true
+  sr:
+    debug_logging: true
+```
+
+Running ``python run_analysis.py --options configs/fullR2_debug.yml`` keeps the
+processor debug output active in both profiles (as long as your logging
+configuration allows ``DEBUG`` messages).

@@ -80,6 +80,39 @@ You can still run without YAML by calling the scripts in
 `analysis/topeft_run2/examples/`, but the config-based approach keeps SR/CR
 toggles, output names, and executor settings in a single place.
 
+#### Processor debug logging
+
+Both the quickstart helper and :mod:`analysis.topeft_run2.run_analysis` CLI
+offer a ``--debug-logging`` flag that forwards ``debug_logging=True`` to the
+histogram processor.【F:analysis/topeft_run2/run_analysis.py†L132-L206】【F:analysis/topeft_run2/workflow.py†L700-L744】
+When it is enabled the processor records additional ``logging.debug`` messages
+around systematic preparation, sum-of-weights selection, and histogram
+submissions.【F:analysis/topeft_run2/analysis_processor.py†L47-L654】 Those logs
+still obey Python's global logging configuration, so lower your root logger to
+``DEBUG`` (for example by calling ``logging.basicConfig(level="DEBUG")`` in a
+wrapper script or notebook) before expecting the extra lines to appear.【F:analysis/topeft_run2/run_analysis_helpers.py†L320-L392】
+
+CLI-driven runs can toggle the behaviour directly:
+
+```bash
+python run_analysis.py \
+    ../../input_samples/sample_jsons/test_samples/UL17_private_ttH_for_CI.json \
+    --debug-logging \
+    --executor futures --nworkers 1 --chunksize 128000
+```
+
+For YAML-first workflows, add the boolean to your preset so that every profile
+inherits the same debug setting:
+
+```yaml
+# analysis/topeft_run2/configs/fullR2_run.yml
+defaults:
+  debug_logging: true
+```
+
+Selecting the YAML with ``--options configs/fullR2_run.yml`` keeps the flag
+active without extra CLI switches.
+
 #### Supported metadata scenarios
 
 The default metadata bundle matches the TOP-22-006 reinterpretation categories,
