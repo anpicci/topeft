@@ -51,6 +51,39 @@ LOGGER = logging.getLogger(__name__)
 _TAU_HISTOGRAM_REQUIRED_AXES = ("process", "channel", "systematic", "tau0pt")
 
 
+def _format_axis_endpoints(values):
+    if not values:
+        return ""
+    if len(values) == 1:
+        return f" {values[0]}"
+    return f" {values[0]} … {values[-1]}"
+
+
+def _log_histogram_axes(histogram, label):
+    """Emit a concise summary of the histogram axes when debug logging is enabled."""
+
+    if not LOGGER.isEnabledFor(logging.DEBUG):
+        return
+
+    axis_summaries = []
+    for axis in histogram.axes:
+        axis_name = getattr(axis, "name", "<unnamed>")
+        if hasattr(axis, "edges"):
+            edges = list(np.asarray(axis.edges, dtype=float))
+            summary = f"{axis_name}: {max(len(edges) - 1, 0)} bins"
+            if edges:
+                summary += _format_axis_endpoints([f"{edge:g}" for edge in (edges[0], edges[-1])])
+        else:
+            categories = [str(cat) for cat in axis]
+            summary = f"{axis_name}: {len(categories)} categories"
+            if categories:
+                summary += _format_axis_endpoints([categories[0], categories[-1]])
+        axis_summaries.append(summary)
+
+    if axis_summaries:
+        LOGGER.debug("%s axes: %s", label, "; ".join(axis_summaries))
+
+
 def _extract_jet_suffix(jet_label):
     jet_digits = "".join(ch for ch in jet_label if ch.isdigit())
     if not jet_digits:
@@ -616,10 +649,7 @@ def getPoints(dict_of_hists, ftau_channels, ttau_channels):
     var_name = "tau0pt"
     tau_hist = dict_of_hists[var_name]
 
-    # print("\n\n\n\n\n")
-    # print("BEFORE: tau_hist axes = ", [ax.name for ax in tau_hist.axes])
-    for ax in tau_hist.axes:
-        print(f"  {ax.name}: {[str(cat) for cat in ax]}")
+    _log_histogram_axes(tau_hist, "Tau histogram (input)")
 
     _validate_histogram_axes(tau_hist, _TAU_HISTOGRAM_REQUIRED_AXES, var_name)
     _validate_tau_channel_coverage(
@@ -638,6 +668,9 @@ def getPoints(dict_of_hists, ftau_channels, ttau_channels):
     hist_mc = tau_hist.remove("process",samples_to_rm_from_mc_hist)
     hist_data = tau_hist.remove("process",samples_to_rm_from_data_hist)
 
+    _log_histogram_axes(hist_mc, "Tau histogram (MC subset)")
+    _log_histogram_axes(hist_data, "Tau histogram (data subset)")
+
     # print("AFTERREMOVAL\nhist_mc axes = ", [ax.name for ax in hist_mc.axes])
     # for ax in hist_mc.axes:
     #     print(f"  {ax.name}: {[str(cat) for cat in ax]}")
@@ -651,6 +684,11 @@ def getPoints(dict_of_hists, ftau_channels, ttau_channels):
     mc_tight    = hist_mc.integrate("channel", ttau_channels)[{"channel": sum}]
     data_fake   = hist_data.integrate("channel", ftau_channels)[{"channel": sum}]
     data_tight  = hist_data.integrate("channel", ttau_channels)[{"channel": sum}]
+
+    _log_histogram_axes(mc_fake, "MC fake histogram")
+    _log_histogram_axes(mc_tight, "MC tight histogram")
+    _log_histogram_axes(data_fake, "Data fake histogram")
+    _log_histogram_axes(data_tight, "Data tight histogram")
 
     # print("AFTERINTEGRATE\nmc_fake axes = ", [ax.name for ax in mc_fake.axes])
     # for ax in mc_fake.axes:
@@ -826,7 +864,18 @@ def main():
             " The script continues after dumping."
         ),
     )
+    parser.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+        help="Enable verbose logging output including histogram axis summaries.",
+    )
     args = parser.parse_args()
+
+    logging.basicConfig(
+        level=logging.DEBUG if args.verbose else logging.INFO,
+        format="%(levelname)s: %(message)s",
+    )
 
     # Whether or not to unit norm the plots
     #unit_norm_bool = args.unit_norm
@@ -850,7 +899,7 @@ def main():
         else:
             with open(args.dump_channels, "w") as dump_file:
                 json.dump(dump_payload, dump_file, indent=2)
-            print(f"Tau channel lists written to {args.dump_channels}")
+            LOGGER.info("Tau channel lists written to %s", args.dump_channels)
 
     # Get the histograms
     hin_dict = utils.get_hist_from_pkl(args.pkl_file_path,allow_empty=False)
@@ -866,28 +915,41 @@ def main():
     yerr_mc   = np.array(yerr_mc, dtype=float).flatten()
     x_data    = np.array(x_data, dtype=float).flatten()
 
-    print("\n\nTau fake-rate points:")
-    print("----------------------")
-    print(f" Tau pT bin edges: {TAU_PT_BIN_EDGES}")
-    print("y_mc:", list(y_mc))
-    print("y_data:", list(y_data))
-    print("yerr_mc:", list(yerr_mc))
-    print("yerr_data:", list(yerr_data))
-    print("x_data:", list(x_data))
-    print("----------------------")
-    print("")
+    edges = np.asarray(TAU_PT_BIN_EDGES, dtype=float)
+    bin_labels = []
+    for idx in range(y_data.size):
+        if idx + 1 < edges.size:
+            label = f"{edges[idx]:.0f}-{edges[idx + 1]:.0f}"
+        elif edges.size:
+            label = f">={edges[-1]:.0f}"
+        else:
+            label = f"bin {idx}"
+        bin_labels.append(label)
 
-    def _format_vector(label, values):
-        formatted = np.array2string(
-            np.asarray(values, dtype=float),
-            precision=6,
-            floatmode="fixed",
-            separator=", ",
+    LOGGER.info("Tau fake-rate points")
+    fake_rate_header = (
+        f"{'pT bin [GeV]':>15}  {'center':>8}  "
+        f"{'FR(data)':>12}  {'σ(data)':>12}  {'FR(MC)':>12}  {'σ(MC)':>12}"
+    )
+    LOGGER.info(fake_rate_header)
+    LOGGER.info("-" * len(fake_rate_header))
+    for label, center, fr_data, err_data, fr_mc, err_mc in zip(
+        bin_labels,
+        x_data,
+        y_data,
+        yerr_data,
+        y_mc,
+        yerr_mc,
+    ):
+        LOGGER.info(
+            "%15s  %8.1f  %12.6f  %12.6f  %12.6f  %12.6f",
+            label,
+            center,
+            fr_data,
+            err_data,
+            fr_mc,
+            err_mc,
         )
-        print(f"{label:<8}= {formatted}")
-
-    _format_vector("fr data", y_data)
-    _format_vector("fr mc", y_mc)
 
     SF = np.divide(
         y_data,
@@ -948,22 +1010,47 @@ def main():
             f"only {SF.size} bin(s) remain after filtering."
         )
 
-    print('SF',SF)
-    print('sfERR',SF_e)
-    print('x',x_data)
+    if LOGGER.isEnabledFor(logging.DEBUG):
+        LOGGER.debug(
+            "Filtered tau fake-rate centres: %s",
+            np.array2string(
+                x_data,
+                precision=6,
+                floatmode="fixed",
+                separator=", ",
+            ),
+        )
+        LOGGER.debug(
+            "Filtered tau fake-rate scale factors: %s",
+            np.array2string(
+                SF,
+                precision=6,
+                floatmode="fixed",
+                separator=", ",
+            ),
+        )
+        LOGGER.debug(
+            "Filtered tau fake-rate uncertainties: %s",
+            np.array2string(
+                SF_e,
+                precision=6,
+                floatmode="fixed",
+                separator=", ",
+            ),
+        )
 
     #fitting...
     c0,c1,cov = SF_fit(SF,SF_e,x_data)
-    print(c0)
-    print(c1)
-    print(cov)
+    LOGGER.info("Tau fake-rate linear fit: SF(pT) = %.6f + %.6f·pT", c0, c1)
+    LOGGER.debug("Fit covariance matrix:\n%s", cov)
 
 
     eigenvalues, eigenvectors = eig(cov)
-    print('eige',eigenvalues,eigenvectors)
-    #eval y using fit:
-    y_fit = c1*x_data+c0
-
+    LOGGER.debug(
+        "Covariance eigen-decomposition: eigenvalues=%s eigenvectors=%s",
+        np.array2string(eigenvalues, precision=6, floatmode="fixed", separator=", "),
+        np.array2string(eigenvectors, precision=6, floatmode="fixed", separator=", "),
+    )
     lv0 = np.sqrt(abs(eigenvalues.dot(eigenvectors[0])))
     lv1 = np.sqrt(abs(eigenvalues.dot(eigenvectors[1])))
     #systunc_up = (1 + lv0)*c0 + (1 + lv1)*c1*x_data
@@ -978,22 +1065,14 @@ def main():
     v01 = eigenvectors[0][1]
     v10 = eigenvectors[1][0]
     v11 = eigenvectors[1][1]
-    print(l0,l1,v00,v01,v10,v11)
     perr = np.sqrt(np.diag(cov))
-    print(perr)
-    print(lv0,lv1)
-    systunc_1st_up = c0 + np.sqrt(l0)*v00   +  (c1 + np.sqrt(l0)*v01)*x_data
-    systunc_1st_dn = c0 - np.sqrt(l0)*v00   +  (c1 - np.sqrt(l0)*v01)*x_data
-    systunc_2nd_up = c0 + np.sqrt(l1)*v10   +  (c1 + np.sqrt(l1)*v11)*x_data
-    systunc_2nd_dn = c0 - np.sqrt(l1)*v10   +  (c1 - np.sqrt(l1)*v11)*x_data
-    print('           c0,c1')
-    print('nom',c0,c1)
-    print('up1',c0 + np.sqrt(l0)*v00,(c1 + np.sqrt(l0)*v01))
-    print('up2',c0 + np.sqrt(l1)*v10,(c1 + np.sqrt(l0)*v01))
+    LOGGER.debug(
+        "Fit parameter uncertainties: %s",
+        np.array2string(perr, precision=6, floatmode="fixed", separator=", "),
+    )
+    LOGGER.debug("Eigenvector norms: lv0=%.6f lv1=%.6f", lv0, lv1)
     #c0 = 1.16534
     #c1 = -0.0017
-    c2 = (c1 + np.sqrt(l0)*v01)
-    c3 = np.sqrt(l0)*v00+c0
     if report_pt_values.size == 0:
         report_pt_values = x_data
 
@@ -1001,15 +1080,17 @@ def main():
     sf_up = (1 + lv0) * c0 + (1 + lv1) * c1 * report_pt_values
     sf_down = (1 - lv0) * c0 + (1 - lv1) * c1 * report_pt_values
 
-    header = f"{'pT [GeV]':>9}  {'SF':>10}  {'SF_up':>10}  {'SF_down':>10}"
-    print(header)
-    print("-" * len(header))
+    LOGGER.info("Tau fake-rate scale factors")
+    sf_header = f"{'pT [GeV]':>9}  {'SF':>10}  {'SF_up':>10}  {'SF_down':>10}"
+    LOGGER.info(sf_header)
+    LOGGER.info("-" * len(sf_header))
     for pt, nom, up_val, down_val in zip(report_pt_values, nominal_sf, sf_up, sf_down):
-        print(
-            f"{pt:9.0f}  "
-            f"{nom:10.6f}  "
-            f"{up_val:10.6f}  "
-            f"{down_val:10.6f}"
+        LOGGER.info(
+            "%9.0f  %10.6f  %10.6f  %10.6f",
+            pt,
+            nom,
+            up_val,
+            down_val,
         )
 
 if __name__ == "__main__":
