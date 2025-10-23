@@ -173,13 +173,12 @@ def get_yields_in_bins(
                     f"ak.to_numpy for process '{proc}' on histogram '{hist_name}'."
                 ) from exc
 
-            # Reduce all axes except the histogram axis, ensuring stable indices by
-            # summing from the highest axis index downward.
-            reduce_indices = [
-                idx for idx, name in enumerate(axis_names) if name != hist_name
-            ]
-            for axis_idx in sorted(reduce_indices, reverse=True):
-                values_np = values_np.sum(axis=axis_idx)
+            hist_axis_index = axis_names.index(hist_name)
+            reduce_axes = tuple(
+                idx for idx in range(values_np.ndim) if idx != hist_axis_index
+            )
+            if reduce_axes:
+                values_np = values_np.sum(axis=reduce_axes)
 
             axis = h_sel.axes[hist_name]
             if not hasattr(axis, "edges"):
