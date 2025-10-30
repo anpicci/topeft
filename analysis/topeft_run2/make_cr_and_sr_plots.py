@@ -8,6 +8,7 @@ from collections import OrderedDict
 import logging
 from decimal import Decimal
 import inspect
+import warnings
 import matplotlib as mpl
 mpl.use('Agg')
 import matplotlib.pyplot as plt
@@ -478,6 +479,8 @@ def _draw_stacked_panel(
         "cms_label": cms_label,
         "mc_sumw2_vals": mc_sumw2_vals,
         "mc_totals": mc_totals,
+        "ratio_points": ratio_vals_flow[1:],
+        "ratio_errors": ratio_yerr_flow[1:],
     }
 
 
@@ -682,7 +685,15 @@ def _compute_uncertainty_bands(
             columnspacing=1.0,
         )
 
-    return {"main_band_handles": main_band_handles}
+    return {
+        "main_band_handles": main_band_handles,
+        "ratio_stat_band_up": ratio_stat_band_up,
+        "ratio_stat_band_down": ratio_stat_band_down,
+        "ratio_total_band_up": ratio_total_band_up,
+        "ratio_total_band_down": ratio_total_band_down,
+        "ratio_syst_band_up": ratio_syst_band_up,
+        "ratio_syst_band_down": ratio_syst_band_down,
+    }
 
 
 
@@ -2667,18 +2678,85 @@ def make_region_stacked_ratio_fig(
 
     main_band_handles = band_info.get("main_band_handles", [])
 
+    def _collect_ratio_arrays():
+        ratio_values = []
+
+        ratio_points = panel_info.get("ratio_points")
+        ratio_errors = panel_info.get("ratio_errors")
+
+        if ratio_points is not None:
+            ratio_points = np.asarray(ratio_points, dtype=float)
+            ratio_values.append(ratio_points)
+            if ratio_errors is not None:
+                ratio_errs = np.asarray(ratio_errors, dtype=float)
+                ratio_values.append(ratio_points + ratio_errs)
+                ratio_values.append(ratio_points - ratio_errs)
+
+        for key in (
+            "ratio_stat_band_up",
+            "ratio_stat_band_down",
+            "ratio_total_band_up",
+            "ratio_total_band_down",
+            "ratio_syst_band_up",
+            "ratio_syst_band_down",
+        ):
+            arr = band_info.get(key)
+            if arr is not None:
+                ratio_values.append(np.asarray(arr, dtype=float))
+
+        finite_chunks = []
+        for arr in ratio_values:
+            if arr.size == 0:
+                continue
+            finite = np.asarray(arr, dtype=float).ravel()
+            finite = finite[np.isfinite(finite)]
+            if finite.size:
+                finite_chunks.append(finite)
+
+        if not finite_chunks:
+            return 1.0, 1.0
+
+        combined = np.concatenate(finite_chunks)
+        return float(np.min(combined)), float(np.max(combined))
+
+    ratio_min, ratio_max = _collect_ratio_arrays()
+
+    ratio_ranges = [(0.5, 1.5), (0.0, 2.0), (-1.0, 3.0)]
+    tolerance = 1e-8
+    selected_range = ratio_ranges[-1]
+    for low, high in ratio_ranges:
+        if ratio_min >= low - tolerance and ratio_max <= high + tolerance:
+            selected_range = (low, high)
+            break
+
+    if ratio_max > selected_range[1] + tolerance or ratio_min < selected_range[0] - tolerance:
+        warnings.warn(
+            "Ratio content lies outside the supported display range; values beyond the axis limits will be clipped.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+
     ax.autoscale(axis='y')
     ax.autoscale(axis='y')
     ax.set_xlabel(None)
     ax.tick_params(axis='both', labelsize=18, width=1.5, length=6)
-    ax.ticklabel_format(axis='y', style='scientific', scilimits=(0,6), useMathText=True)
+    if ax.get_yaxis().get_scale() == "linear":
+        ax.ticklabel_format(axis='y', style='scientific', scilimits=(0, 6), useMathText=True)
     ax.yaxis.set_offset_position("left")
     ax.yaxis.offsetText.set_x(-0.07)
     ax.yaxis.offsetText.set_fontsize(18)
 
     rax.set_ylabel('Ratio', loc='center', fontsize=18)
-    rax.set_ylim(0.5,1.5)
+    rax.set_ylim(*selected_range)
     rax.tick_params(axis='both', labelsize=18, width=1.5, length=6)
+
+    fig.canvas.draw()
+
+    y_ticks = list(rax.get_yticks())
+    if not any(np.isclose(tick, 1.0, atol=1e-8) for tick in y_ticks):
+        y_ticks.append(1.0)
+        y_ticks = sorted(y_ticks)
+        rax.set_yticks(y_ticks)
 
     fig.canvas.draw()
     xticks = rax.get_xticks()
@@ -2719,13 +2797,16 @@ def make_region_stacked_ratio_fig(
             if label not in filtered:
                 filtered[label] = handle
         if filtered:
+            max_rows = 3
+            n_entries = len(filtered)
+            ncol = max(1, (n_entries + max_rows - 1) // max_rows)
             legend = fig.legend(
                 list(filtered.values()),
                 list(filtered.keys()),
                 loc='upper center',
                 bbox_to_anchor=(0.5, 1.0),
                 borderaxespad=0.0,
-                ncol=4,
+                ncol=ncol,
                 fontsize=16,
             )
     if main_band_handles:
