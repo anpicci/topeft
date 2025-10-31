@@ -66,7 +66,7 @@ This directory contains scripts for the Full Run 2 EFT analysis. This README doc
     - Example usage: `python run_topeft.py ../../topcoffea/cfg/your_cfg.cfg`
 
 * `run_analysis.py`:
-    - Thin wrapper around `analysis_processor.py` used for the standard CR/analysis histogram production. The canned histogram lists now include the 2D `lepton_pt_vs_eta` observable (and `lepton_pt_vs_eta_sumw2` when `--do-errors` is set) so downstream tools can rely on a consistent pt vs $|\eta|$ binning description.
+    - Thin wrapper around `analysis_processor.py` used for the standard CR/analysis histogram production. The canned histogram lists now include the 2D `lepton_pt_vs_eta` observable, and by default the processor also fills the matching `_sumw2` companions. Pass `--no-sumw2` when you explicitly want to skip those variance histograms (which also disables the associated EFT $w^2$ bookkeeping) and produce a lighter-weight pickle.
 
 * `run_sow.py` for `sow_processor.py`:
     - This script runs over the provided json files and calculates the properer sum of weights
@@ -103,7 +103,7 @@ Common invocation patterns (`-y/--year` now accepts multiple tokens for combined
 * Summing luminosities across multiple years: `python make_cr_and_sr_plots.py -f histos/plotsCR_Run2.pkl.gz -y 2016APV 2016 2017 2018`
 * Signal-region pass where the filename already encodes `SR`: `python make_cr_and_sr_plots.py -f histos/SR2018.pkl.gz -o ~/www/sr --variables lj0pt ptz`
 * Overriding the heuristic and forcing a blinded SR workflow: `python make_cr_and_sr_plots.py -f histos/plotsTopEFT.pkl.gz --sr --blind`
-* Producing unblinded CR plots with explicit tagging and timestamped directories: `python make_cr_and_sr_plots.py -f histos/CR2018.pkl.gz --cr -t -n cr_2018_scan`
+* Producing unblinded CR plots with explicit tagging, timestamped directories, and logarithmic stacked axes: `python make_cr_and_sr_plots.py -f histos/CR2018.pkl.gz --cr -t -n cr_2018_scan --log-y`
 
 #### run_plotter.sh shell wrapper quickstart
 

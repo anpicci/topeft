@@ -787,7 +787,7 @@ def _validate_tau_channel_coverage(
         raise RuntimeError(summary)
 
 
-def getPoints(dict_of_hists, ftau_channels, ttau_channels):
+def getPoints(dict_of_hists, ftau_channels, ttau_channels, *, years=None):
     # Construct list of MC samples
     mc_wl = []
     mc_bl = ["data"]
@@ -800,6 +800,28 @@ def getPoints(dict_of_hists, ftau_channels, ttau_channels):
     all_samples = yt.get_cat_lables(dict_of_hists,"process")
     mc_sample_lst = utils.filter_lst_of_strs(all_samples,substr_whitelist=mc_wl,substr_blacklist=mc_bl)
     data_sample_lst = utils.filter_lst_of_strs(all_samples,substr_whitelist=data_wl,substr_blacklist=data_bl)
+
+    def _matches_year(label):
+        if not years:
+            return True
+        sample_name = label.lower()
+        return any(year.lower() in sample_name for year in years)
+
+    if years:
+        years = tuple(dict.fromkeys(years))
+        mc_sample_lst = [sample for sample in mc_sample_lst if _matches_year(sample)]
+        data_sample_lst = [sample for sample in data_sample_lst if _matches_year(sample)]
+
+        if not mc_sample_lst:
+            raise RuntimeError(
+                "No MC samples match the requested year tokens: "
+                f"{', '.join(years)}"
+            )
+        if not data_sample_lst:
+            raise RuntimeError(
+                "No data samples match the requested year tokens: "
+                f"{', '.join(years)}"
+            )
 
     # print("\n\n\n\n\n")
     # print("all samples = ", all_samples)
@@ -1038,6 +1060,19 @@ def main():
         ),
     )
     parser.add_argument(
+        "-y",
+        "--year",
+        dest="years",
+        action="extend",
+        nargs="+",
+        default=None,
+        help=(
+            "One or more year tokens (e.g. 2022EE, 2023BPix) used to filter"
+            " data and MC samples before extracting fake rates."
+            " Omit to keep every year present in the pickle."
+        ),
+    )
+    parser.add_argument(
         "--dump-channels",
         nargs="?",
         const="-",
@@ -1075,10 +1110,18 @@ def main():
 
     # Get the histograms
     hin_dict = utils.get_hist_from_pkl(args.pkl_file_path,allow_empty=False)
+    selected_years = tuple(args.years) if args.years else None
+    if selected_years:
+        LOGGER.info(
+            "Restricting fake-rate inputs to samples matching year tokens: %s",
+            ", ".join(selected_years),
+        )
+
     x_mc, y_mc, yerr_mc, x_data, y_data, yerr_data, stage_details = getPoints(
         hin_dict,
         ftau_channels,
         ttau_channels,
+        years=selected_years,
     )
 
     for label, (values, errors) in stage_details["native_yields"].items():

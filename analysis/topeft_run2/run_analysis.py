@@ -100,9 +100,9 @@ if __name__ == "__main__":
         help="Name of the tree inside the files",
     )
     parser.add_argument(
-        "--do-errors",
+        "--no-sumw2",
         action="store_true",
-        help="Save the w**2 coefficients",
+        help="Disable filling the sum of weights squared histograms",
     )
     parser.add_argument(
         "--do-systs",
@@ -211,7 +211,7 @@ if __name__ == "__main__":
     outpath = args.outpath
     pretend = args.pretend
     treename = args.treename
-    do_errors = args.do_errors
+    produce_sumw2 = not args.no_sumw2
     do_systs = args.do_systs
     split_lep_flavor = args.split_lep_flavor
     offZ_split = args.offZ_split
@@ -243,7 +243,10 @@ if __name__ == "__main__":
         outpath = ops.pop("outpath",outpath)
         pretend = ops.pop("pretend",pretend)
         treename = ops.pop("treename",treename)
-        do_errors = ops.pop("do_errors",do_errors)
+        if "no_sumw2" in ops:
+            produce_sumw2 = not bool(ops.pop("no_sumw2"))
+        if "do_errors" in ops:
+            produce_sumw2 = bool(ops.pop("do_errors"))
         do_systs = ops.pop("do_systs",do_systs)
         split_lep_flavor = ops.pop("split_lep_flavor",split_lep_flavor)
         offZ_split = ops.pop("offZ_split",offZ_split)
@@ -322,15 +325,15 @@ if __name__ == "__main__":
             hist_lst.append("l1_SeedEtaOrX_vs_SeedPhiOrY")
         if "l1_eta_vs_phi" not in hist_lst:
             hist_lst.append("l1_eta_vs_phi")
-        if do_errors and "lepton_pt_vs_eta_sumw2" not in hist_lst:
+        if produce_sumw2 and "lepton_pt_vs_eta_sumw2" not in hist_lst:
             hist_lst.append("lepton_pt_vs_eta_sumw2")
-        if do_errors and "l0_SeedEtaOrX_vs_SeedPhiOrY_sumw2" not in hist_lst:
+        if produce_sumw2 and "l0_SeedEtaOrX_vs_SeedPhiOrY_sumw2" not in hist_lst:
             hist_lst.append("l0_SeedEtaOrX_vs_SeedPhiOrY_sumw2")
-        if do_errors and "l0_eta_vs_phi_sumw2" not in hist_lst:
+        if produce_sumw2 and "l0_eta_vs_phi_sumw2" not in hist_lst:
             hist_lst.append("l0_eta_vs_phi_sumw2")
-        if do_errors and "l1_SeedEtaOrX_vs_SeedPhiOrY_sumw2" not in hist_lst:
+        if produce_sumw2 and "l1_SeedEtaOrX_vs_SeedPhiOrY_sumw2" not in hist_lst:
             hist_lst.append("l1_SeedEtaOrX_vs_SeedPhiOrY_sumw2")
-        if do_errors and "l1_eta_vs_phi_sumw2" not in hist_lst:
+        if produce_sumw2 and "l1_eta_vs_phi_sumw2" not in hist_lst:
             hist_lst.append("l1_eta_vs_phi_sumw2")
     elif args.hist_list == ["cr"]:
         # Here we hardcode a list of hists used for the CRs
@@ -388,6 +391,9 @@ if __name__ == "__main__":
         # We want to specify a custom list
         # If we don't specify this argument, it will be None, and the processor will fill all hists
         hist_lst = args.hist_list
+
+    if hist_lst is not None and not produce_sumw2:
+        hist_lst = [name for name in hist_lst if not name.endswith("_sumw2")]
 
     ### Load samples from json
     samplesdict = {}
@@ -524,7 +530,7 @@ if __name__ == "__main__":
         wc_lst,
         hist_lst,
         ecut_threshold,
-        do_errors,
+        produce_sumw2,
         do_systs,
         split_lep_flavor,
         skip_sr,

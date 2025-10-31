@@ -36,12 +36,16 @@ does not write output files—so the printed tables are the main products.
 
 ### Running the script
 
-Run the fitter from the repository root so relative paths resolve correctly:
+Run the fitter from the repository root so relative paths resolve correctly. Use
+`-y/--year` to restrict the MC/data samples to specific campaigns when your
+pickle contains multiple eras (e.g. `2022EE`, `2023BPix`). Omit the option to
+keep every year present in the histogram file.
 
 ```bash
 python analysis/topeft_run2/tauFitter.py \
   -f /path/to/plotsTopEFT.pkl.gz \
-  --channels-json /path/to/ch_lst.json
+  --channels-json /path/to/ch_lst.json \
+  -y 2022EE 2023BPix
 ```
 
 The regrouped tau-pT binning defaults to

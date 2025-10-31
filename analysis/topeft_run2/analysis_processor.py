@@ -1420,7 +1420,7 @@ class AnalysisProcessor(processor.ProcessorABC):
 
             for dense_axis_name, dense_axis_vals in varnames.items():
                 fill_base_hist = dense_axis_name in self._hist_lst
-                fill_sumw2_hist = (dense_axis_name+"_sumw2") in self._hist_lst
+                fill_sumw2_hist = self._do_errors and (dense_axis_name+"_sumw2") in self._hist_lst
                 if not (fill_base_hist or fill_sumw2_hist):
                     continue
 

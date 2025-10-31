@@ -3,6 +3,12 @@
 `diboson_sf_run3.py` derives diboson scale factors from the `njets` distribution.
 The default binning is `[0, 1, 2, 3, 4, 5, 6]`.
 
+When preparing the input pickle with `run_analysis.py`, keep the default
+sum-of-weights-squared histograms so the script can propagate statistical
+uncertainties without approximation. If you intentionally disable them via
+`--no-sumw2`, the diboson fitter will still run but the ratio uncertainties
+reflect the raw histogram variances only.
+
 ## Scale factor calculation
 
 For each requested year, the script loads the `njets` histogram, removes any
