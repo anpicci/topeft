@@ -77,8 +77,9 @@ class DataDrivenProducer:
                                 nonPromptName='flips%s'%year
                             else:
                                 nonPromptName='flipsUL%s'%year
+                            normalizedName = nonPromptName.lower()
                             if self.dataName==sampleName:
-                                newNameDictData[nonPromptName].append(process)
+                                newNameDictData[normalizedName].append(process)
                         hFlips=hAR.group('process', newNameDictData)
 
                         # remove any up/down FF variations from the flip histo since we don't use that info
@@ -110,10 +111,11 @@ class DataDrivenProducer:
                                 nonPromptName='nonprompt%s'%year
                             else:
                                 nonPromptName='nonpromptUL%s'%year
+                            normalizedName = nonPromptName.lower()
                             if self.dataName==sampleName:
-                                newNameDictData[nonPromptName].append(process)
+                                newNameDictData[normalizedName].append(process)
                             elif sampleName in self.promptSubtractionSamples:
-                                newNameDictNoData[nonPromptName].append(process)
+                                newNameDictNoData[normalizedName].append(process)
                             else:
                                 print(f"We won't consider {sampleName} for the prompt subtraction in the appl. region")
                         hFakes=hAR.group('process', newNameDictData)
