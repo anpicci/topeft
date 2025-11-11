@@ -176,10 +176,30 @@ class AnalysisProcessor(processor.ProcessorABC):
             self._hist_lst = list(self._accumulator.keys())
         else:
             # Otherwise, just fill the specified subset of hists
+            expanded_hist_lst = []
+            seen_hists = set()
+
+            def _append_hist_if_needed(hist_name):
+                if hist_name in seen_hists:
+                    return
+                if hist_name not in self._accumulator:
+                    raise Exception(
+                        f"Error: Cannot specify hist \"{hist_name}\", it is not defined in the processor."
+                    )
+                expanded_hist_lst.append(hist_name)
+                seen_hists.add(hist_name)
+
             for hist_to_include in hist_lst:
-                if hist_to_include not in self._accumulator.keys():
-                    raise Exception(f"Error: Cannot specify hist \"{hist_to_include}\", it is not defined in the processor.")
-            self._hist_lst = hist_lst # Which hists to fill
+                _append_hist_if_needed(hist_to_include)
+                if (
+                    self._fill_sumw2_hist
+                    and not hist_to_include.endswith("_sumw2")
+                ):
+                    companion_name = f"{hist_to_include}_sumw2"
+                    if companion_name in self._accumulator:
+                        _append_hist_if_needed(companion_name)
+
+            self._hist_lst = expanded_hist_lst  # Which hists to fill
 
         # Set the energy threshold to cut on
         self._ecut_threshold = ecut_threshold
