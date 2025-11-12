@@ -1,10 +1,14 @@
-# .github/workflows/codex-review.yml
 name: Codex review on PRs
 
 on:
   pull_request_target:
-    types: [opened, reopened, synchronize, ready_for_review, labeled]
-  workflow_dispatch: {}
+    types: [opened, reopened, synchronize, labeled, ready_for_review]
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: "PR number to run @codex review on"
+        required: true
+        type: number
 
 permissions:
   contents: read
@@ -12,49 +16,55 @@ permissions:
   issues: write
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  group: codex-review-${{ github.event.pull_request.number || github.run_id }}
   cancel-in-progress: false
 
 jobs:
-  trigger-codex-review:
-    # Repo guard: attivo solo sul tuo fork (evita upstream)
-    # Label guard: serve la label "codex"
-    # Niente draft
+  codex-on-pr:
     if: >
+      github.event_name == 'pull_request_target' &&
       github.repository_owner == 'anpicci' &&
-      (!github.event.pull_request.draft) &&
-      contains(github.event.pull_request.labels.*.name, 'codex')
+      !github.event.pull_request.draft
     runs-on: ubuntu-latest
-
     steps:
-      - name: Debug context
+      - name: Debug event context
         run: |
-          echo "Repo: ${{ github.repository }}"
-          echo "Owner: ${{ github.repository_owner }}"
           echo "Event: ${{ github.event_name }}"
-          echo "Labels: ${{ toJson(github.event.pull_request.labels.*.name) }}"
+          echo "Repo owner: ${{ github.repository_owner }}"
+          echo "PR #: ${{ github.event.pull_request.number }}"
+          echo "Labels: ${{ toJson(github.event.pull_request.labels) }}"
 
-      - name: Comment "@codex review" (deduplicated)
-        uses: actions/github-script@v7
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          script: |
-            const { owner, repo, number } = context.issue;
+      - name: Check for 'codex' label
+        id: guard
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          if gh pr view "$PR" --json labels -q '.labels[].name' | grep -qx codex; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          fi
 
-            // evita duplicati: controlla se esiste già un commento identico recente
-            const comments = await github.paginate(
-              github.rest.issues.listComments,
-              { owner, repo, issue_number: number, per_page: 100 }
-            );
-            const already = comments.some(c =>
-              c.user?.type === 'Bot' && c.body?.trim() === '@codex review'
-            );
-            if (already) {
-              core.info('Commento "@codex review" già presente: salto.');
-              return;
-            }
+      - name: Post '@codex review'
+        if: steps.guard.outputs.run == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          gh pr comment "$PR" --body "@codex review"
 
-            await github.rest.issues.createComment({
-              owner, repo, issue_number: number, body: '@codex review'
-            });
-            core.info(`Commentato PR #${number}.`);
+      - name: Skip note
+        if: steps.guard.outputs.run != 'true'
+        run: echo "Skipping: PR lacks 'codex' label."
+
+  codex-dispatch:
+    if: github.event_name == 'workflow_dispatch' && github.repository_owner == 'anpicci'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Post '@codex review' (manual)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ inputs.pr }}
+        run: |
+          gh pr comment "$PR" --body "@codex review"
