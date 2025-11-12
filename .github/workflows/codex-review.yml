@@ -1,70 +1,58 @@
-name: Codex review on PRs
+name: Codex PR Review
 
 on:
   pull_request_target:
     types: [opened, reopened, synchronize, labeled, ready_for_review]
+
   workflow_dispatch:
     inputs:
-      pr:
-        description: "PR number to run @codex review on"
+      pr_number:
+        description: 'PR number on which to post @codex review'
         required: true
-        type: number
 
 permissions:
-  contents: read
-  pull-requests: write
   issues: write
-
-concurrency:
-  group: codex-review-${{ github.event.pull_request.number || github.run_id }}
-  cancel-in-progress: false
+  pull-requests: write
 
 jobs:
-  codex-on-pr:
+  codex-review:
+    # Repo-guard: execute only on anpicci/topeft
     if: >
-      github.event_name == 'pull_request_target' &&
-      github.repository_owner == 'anpicci' &&
-      !github.event.pull_request.draft
+      (github.repository == 'anpicci/topeft') &&
+      (github.event_name == 'workflow_dispatch' || github.event.pull_request.base.ref != 'master')
     runs-on: ubuntu-latest
+    concurrency:
+      group: codex-review-${{ github.repository }}-${{ github.event.pull_request.number || github.event.inputs.pr_number || 'manual' }}
+      cancel-in-progress: false
+
     steps:
-      - name: Debug event context
-        run: |
-          echo "Event: ${{ github.event_name }}"
-          echo "Repo owner: ${{ github.repository_owner }}"
-          echo "PR #: ${{ github.event.pull_request.number }}"
-          echo "Labels: ${{ toJson(github.event.pull_request.labels) }}"
+      - name: Post @codex review (auto su PR)
+        if: ${{ github.event_name == 'pull_request_target' }}
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const pr = context.payload.pull_request;
+            const hasLabel = (pr.labels || []).some(l => (l.name || '').toLowerCase() === 'codex');
+            if (!hasLabel) { core.info('Label "codex" non presente: skip.'); return; }
+            if (pr.base.ref === 'master') { core.info('Base = master: policy → skip.'); return; }
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: pr.number,
+              body: '@codex review'
+            });
+            core.info('Commento "@codex review" postato.');
 
-      - name: Check for 'codex' label
-        id: guard
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PR: ${{ github.event.pull_request.number }}
-        run: |
-          if gh pr view "$PR" --json labels -q '.labels[].name' | grep -qx codex; then
-            echo "run=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "run=false" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Post '@codex review'
-        if: steps.guard.outputs.run == 'true'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PR: ${{ github.event.pull_request.number }}
-        run: |
-          gh pr comment "$PR" --body "@codex review"
-
-      - name: Skip note
-        if: steps.guard.outputs.run != 'true'
-        run: echo "Skipping: PR lacks 'codex' label."
-
-  codex-dispatch:
-    if: github.event_name == 'workflow_dispatch' && github.repository_owner == 'anpicci'
-    runs-on: ubuntu-latest
-    steps:
-      - name: Post '@codex review' (manual)
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PR: ${{ inputs.pr }}
-        run: |
-          gh pr comment "$PR" --body "@codex review"
+      - name: Post @codex review (manual)
+        if: ${{ github.event_name == 'workflow_dispatch' }}
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const pr_number = parseInt(core.getInput('pr_number'),10);
+            const {owner, repo} = context.repo;
+            const { data: pr } = await github.rest.pulls.get({ owner, repo, pull_number: pr_number });
+            if (pr.base.ref === 'master') { core.info('Base = master: policy → skip.'); return; }
+            const hasLabel = (pr.labels || []).some(l => (l.name || '').toLowerCase() === 'codex');
+            if (!hasLabel) { core.info('Label "codex" non presente: skip.'); return; }
+            await github.rest.issues.createComment({ owner, repo, issue_number: pr_number, body: '@codex review' });
+            core.info('Comment "@codex review" posted (manual).')
