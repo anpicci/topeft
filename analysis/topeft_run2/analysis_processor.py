@@ -745,12 +745,12 @@ class AnalysisProcessor(processor.ProcessorABC):
             tmp = ak.cartesian([ak.local_index(jets.pt), vetos_tocleanjets.jetIdx], nested=True)
             cleanedJets = jets[~ak.any(tmp.slot0 == tmp.slot1, axis=-1)] # this line should go before *any selection*, otherwise lep.jetIdx is not aligned with the jet index
 
-            print("\n\n\n\n\n\n")
-            print("[Debug] Number of jets before cleaning: ", ak.num(jets))
-            print("jets", list(jets))
-            print("[Debug] Number of vetos to clean jets against: ", ak.num(vetos_tocleanjets))
-            print("[Debug] Number of jets after cleaning: ", ak.num(cleanedJets))
-            print("\n\n\n\n\n\n")
+            # print("\n\n\n\n\n\n")
+            # print("[Debug] Number of jets before cleaning: ", ak.num(jets))
+            # print("jets", list(jets))
+            # print("[Debug] Number of vetos to clean jets against: ", ak.num(vetos_tocleanjets))
+            # print("[Debug] Number of jets after cleaning: ", ak.num(cleanedJets))
+            # print("\n\n\n\n\n\n")
 
             # Jet Veto Maps
             # Removes events that have ANY jet in a specific eta-phi space (not required for Run 2)
