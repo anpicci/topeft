@@ -21,7 +21,7 @@ Follow these steps on a clean machine to get to your first `run_analysis.py` cal
    conda activate coffea-env
    pip install -e .
    ```
-3. **Install the matching `topcoffea` checkout and data bundle** (default branch: `run3_test_mmerged`)
+3. **Install the matching `topcoffea` checkout and data bundle** (Run 2 default branch: `run3_test_mmerged_coffeadev`)
    ```bash
    scripts/install_topcoffea.sh
    python -c "import topeft, topcoffea"  # Sanity check
@@ -60,7 +60,7 @@ The `topeft/topeft` directory is set up to be installed as a pip installable pac
 ## Environment notes
 `scripts/install_topcoffea.sh` vendors `topcoffea` into `external/topcoffea`, checks out the repository's default branch (or whichever branch you request via `TOPCOFFEA_GIT_REF`), and performs an editable install so that the `topcoffea` package is immediately importable inside the current virtual environment. **This step is mandatory:** the helper is also responsible for staging the official `topcoffea/data` payloads (pileup profiles, scale factors, golden JSONs, etc.), so skipping it will leave `run_analysis.py` unable to complete its startup data checks. Override `TOPCOFFEA_GIT_REF`, `TOPCOFFEA_REPO_URL`, or `TOPCOFFEA_DIR` if you need a different branch, fork, or destination.
 
-`analysis/topeft_run2/run_analysis.py` verifies that the shared `topcoffea` data bundle is reachable by resolving a representative file (`data/pileup/pileup_2016GH.root`) through `topcoffea_path`. When the lookup fails the CLI exits early with guidance to re-run `scripts/install_topcoffea.sh`, ensure the expected branch (currently `run3_test_mmerged`) is available, and retry. Pass `--skip-topcoffea-data-check` only if you manage the pileup files yourself and understand the consequences—the default should remain enabled so typical runs fail fast instead of crashing deep inside the processing step.
+`analysis/topeft_run2/run_analysis.py` verifies that the shared `topcoffea` data bundle is reachable by resolving a representative file (`data/pileup/pileup_2016GH.root`) through `topcoffea_path`. When the lookup fails the CLI exits early with guidance to re-run `scripts/install_topcoffea.sh`, ensure the expected branch (currently `run3_test_mmerged_coffeadev` for Run 2 processing) is available, and retry. Pass `--skip-topcoffea-data-check` only if you manage the pileup files yourself and understand the consequences—the default should remain enabled so typical runs fail fast instead of crashing deep inside the processing step.
 
 The next time you return to the repository, all you have to do is activate the environment via `conda activate coffea-env` (the editable installs keep `import topeft` and `import topcoffea` working).
 

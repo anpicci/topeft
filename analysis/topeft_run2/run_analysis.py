@@ -45,7 +45,7 @@ def _ensure_topcoffea_data_available(skip_check=False):
     target_relpath = "data/pileup/pileup_2016GH.root"
     guidance = (
         "Topcoffea shared data files are missing. Re-run scripts/install_topcoffea.sh "
-        "from the topeft checkout so the matching topcoffea branch (e.g. run3_test_mmerged) "
+        "from the topeft checkout so the matching topcoffea branch (e.g. run3_test_mmerged_coffeadev) "
         "and its data bundles are installed, or pass --skip-topcoffea-data-check if your setup "
         "provides the resources elsewhere."
     )
