@@ -14,6 +14,8 @@ import gzip
 import pickle
 import correctionlib
 import json
+import inspect
+import warnings
 from coffea.jetmet_tools import CorrectedMETFactory
 ### workaround while waiting the correcion-lib integration will be provided in the coffea package
 from topcoffea.modules.CorrectedJetsFactory import CorrectedJetsFactory
@@ -1862,12 +1864,49 @@ def AttachPdfWeights(events):
 
 def ApplyJetCorrections(year, corr_type, isData, era, useclib=True, savelevels=False):
     usejecstack = not useclib
+    fallback_to_jecstack = False
+    jec_stack = None
 
     if year not in clib_year_map.keys():
         raise Exception(f"Error: Unknown year \"{year}\".")
 
     jec_year = clib_year_map[year]
-    if usejecstack:
+    if useclib:
+        # Handle clib case
+        jet_algo, jec_tag, jec_levels, jer_tag, junc_types = get_jerc_keys(year, isData, era)
+        json_path = topcoffea_path(f"data/POG/JME/{jec_year}/jet_jerc.json.gz")
+
+        # Create JECStack for clib scenario (guarding against older topcoffea versions)
+        jec_kwargs = {
+            "jec_tag": jec_tag,
+            "jec_levels": jec_levels,
+            "jer_tag": jer_tag,
+            "jet_algo": jet_algo,
+            "junc_types": junc_types,
+            "json_path": json_path,
+            "use_clib": useclib,
+        }
+
+        jecstack_signature = inspect.signature(JECStack)
+        if "savecorr" in jecstack_signature.parameters:
+            jec_kwargs["savecorr"] = savelevels
+        elif savelevels:
+            warnings.warn(
+                "Requested savelevels=True but the installed topcoffea JECStack"
+                " does not accept the savecorr argument; continuing without"
+                " persisting per-level jet corrections.",
+            )
+
+        try:
+            jec_stack = JECStack(**jec_kwargs)
+        except TypeError as exc:
+            warnings.warn(
+                "Falling back to the coffea JECStack implementation because the"
+                f" CLib interface is incompatible with this topcoffea version: {exc}",
+            )
+            fallback_to_jecstack = True
+
+    if usejecstack or fallback_to_jecstack:
         jec_tag = jerc_tag_map[year][0]
         jer_tag = jerc_tag_map[year][1]
         jet_algo = "AK4PFchs"
@@ -1909,23 +1948,6 @@ def ApplyJetCorrections(year, corr_type, isData, era, useclib=True, savelevels=F
         JECevaluator = extJEC.make_evaluator()
         jec_inputs = {name: JECevaluator[name.replace("Regrouped_", "")] for name in jec_names}
         jec_stack = JECStack(jec_inputs)
-
-    elif useclib:
-        # Handle clib case
-        jet_algo, jec_tag, jec_levels, jer_tag, junc_types = get_jerc_keys(year, isData, era)
-        json_path = topcoffea_path(f"data/POG/JME/{jec_year}/jet_jerc.json.gz")
-
-        # Create JECStack for clib scenario
-        jec_stack = JECStack(
-            jec_tag=jec_tag,
-            jec_levels=jec_levels,
-            jer_tag=jer_tag,
-            jet_algo=jet_algo,
-            junc_types=junc_types,
-            json_path=json_path,
-            use_clib=useclib,
-            savecorr=savelevels
-        )
 
     # Name map for jet or MET corrections
     name_map = {
