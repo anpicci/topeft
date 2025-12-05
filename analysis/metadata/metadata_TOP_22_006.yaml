@@ -31,29 +31,29 @@ channels:
           tags:
           - bmask_atleast1m2l
           - bmask_atmost2m
-        - name: 2lss_m
-          channel: 2lss
-          subchannel: 2l_m
-          tags:
-          - bmask_atleast1m2l
-          - bmask_atmost2m
-        - name: 2lss_4t_p
-          channel: 2lss
-          subchannel: 2l_p
-          tags:
-          - bmask_atleast1m2l
-          - bmask_atleast3m
-        - name: 2lss_4t_m
-          channel: 2lss
-          subchannel: 2l_m
-          tags:
-          - bmask_atleast1m2l
-          - bmask_atleast3m
+        # - name: 2lss_m
+        #   channel: 2lss
+        #   subchannel: 2l_m
+        #   tags:
+        #   - bmask_atleast1m2l
+        #   - bmask_atmost2m
+        # - name: 2lss_4t_p
+        #   channel: 2lss
+        #   subchannel: 2l_p
+        #   tags:
+        #   - bmask_atleast1m2l
+        #   - bmask_atleast3m
+        # - name: 2lss_4t_m
+        #   channel: 2lss
+        #   subchannel: 2l_m
+        #   tags:
+        #   - bmask_atleast1m2l
+        #   - bmask_atleast3m
         jet_bins:
         - =4
-        - =5
-        - =6
-        - '>7'
+        # - =5
+        # - =6
+        # - '>7'
         histogram_variables:
           exclude:
           - ptz
@@ -65,100 +65,100 @@ channels:
           - isAR_2lSS
           data:
           - isAR_2lSS_OS
-      - lepton_category: 3l
-        lepton_flavors:
-        - eee
-        - eem
-        - emm
-        - mmm
-        region_definitions:
-        - name: 3l_onZ_1b
-          channel: 3l
-          subchannel: 3l_onZ
-          tags:
-          - bmask_exactly1m
-          histogram_variables:
-            exclude:
-            - ptz_wtau
-            - tau0pt
-        - name: 3l_onZ_2b
-          channel: 3l
-          subchannel: 3l_onZ
-          tags:
-          - bmask_atleast2m
-          histogram_variables:
-            exclude:
-            - ptz_wtau
-            - tau0pt
-        - name: 3l_m_offZ_1b
-          channel: 3l_m
-          subchannel: 3l_offZ
-          tags:
-          - bmask_exactly1m
-          histogram_variables:
-            exclude:
-            - ptz
-            - ptz_wtau
-            - tau0pt
-        - name: 3l_m_offZ_2b
-          channel: 3l_m
-          subchannel: 3l_offZ
-          tags:
-          - bmask_atleast2m
-          histogram_variables:
-            exclude:
-            - ptz
-            - ptz_wtau
-            - tau0pt
-        - name: 3l_p_offZ_1b
-          channel: 3l_p
-          subchannel: 3l_offZ
-          tags:
-          - bmask_exactly1m
-          histogram_variables:
-            exclude:
-            - ptz
-            - ptz_wtau
-            - tau0pt
-        - name: 3l_p_offZ_2b
-          channel: 3l_p
-          subchannel: 3l_offZ
-          tags:
-          - bmask_atleast2m
-          histogram_variables:
-            exclude:
-            - ptz
-            - ptz_wtau
-            - tau0pt
-        jet_bins:
-        - =2
-        - =3
-        - =4
-        - '>5'
-        application_tags:
-          mc:
-          - isSR_3l
-          - isAR_3l
-      - lepton_category: 4l
-        lepton_flavors:
-        - llll
-        region_definitions:
-        - name: 4l
-          channel: 4l
-          tags:
-          - bmask_atleast1m2l
-        jet_bins:
-        - =2
-        - =3
-        - '>4'
-        histogram_variables:
-          exclude:
-          - ptz
-          - ptz_wtau
-          - tau0pt
-        application_tags:
-          mc:
-          - isSR_4l
+      # - lepton_category: 3l
+      #   lepton_flavors:
+      #   - eee
+      #   - eem
+      #   - emm
+      #   - mmm
+      #   region_definitions:
+      #   - name: 3l_onZ_1b
+      #     channel: 3l
+      #     subchannel: 3l_onZ
+      #     tags:
+      #     - bmask_exactly1m
+      #     histogram_variables:
+      #       exclude:
+      #       - ptz_wtau
+      #       - tau0pt
+      #   - name: 3l_onZ_2b
+      #     channel: 3l
+      #     subchannel: 3l_onZ
+      #     tags:
+      #     - bmask_atleast2m
+      #     histogram_variables:
+      #       exclude:
+      #       - ptz_wtau
+      #       - tau0pt
+      #   - name: 3l_m_offZ_1b
+      #     channel: 3l_m
+      #     subchannel: 3l_offZ
+      #     tags:
+      #     - bmask_exactly1m
+      #     histogram_variables:
+      #       exclude:
+      #       - ptz
+      #       - ptz_wtau
+      #       - tau0pt
+      #   - name: 3l_m_offZ_2b
+      #     channel: 3l_m
+      #     subchannel: 3l_offZ
+      #     tags:
+      #     - bmask_atleast2m
+      #     histogram_variables:
+      #       exclude:
+      #       - ptz
+      #       - ptz_wtau
+      #       - tau0pt
+      #   - name: 3l_p_offZ_1b
+      #     channel: 3l_p
+      #     subchannel: 3l_offZ
+      #     tags:
+      #     - bmask_exactly1m
+      #     histogram_variables:
+      #       exclude:
+      #       - ptz
+      #       - ptz_wtau
+      #       - tau0pt
+      #   - name: 3l_p_offZ_2b
+      #     channel: 3l_p
+      #     subchannel: 3l_offZ
+      #     tags:
+      #     - bmask_atleast2m
+      #     histogram_variables:
+      #       exclude:
+      #       - ptz
+      #       - ptz_wtau
+      #       - tau0pt
+      #   jet_bins:
+      #   - =2
+      #   - =3
+      #   - =4
+      #   - '>5'
+      #   application_tags:
+      #     mc:
+      #     - isSR_3l
+      #     - isAR_3l
+      # - lepton_category: 4l
+      #   lepton_flavors:
+      #   - llll
+      #   region_definitions:
+      #   - name: 4l
+      #     channel: 4l
+      #     tags:
+      #     - bmask_atleast1m2l
+      #   jet_bins:
+      #   - =2
+      #   - =3
+      #   - '>4'
+      #   histogram_variables:
+      #     exclude:
+      #     - ptz
+      #     - ptz_wtau
+      #     - tau0pt
+      #   application_tags:
+      #     mc:
+      #     - isSR_4l
     OFFZ_SPLIT_CH_LST_SR:
       description: Alternative signal-region grouping with finer off-Z splitting for
         the trilepton channel.
@@ -389,31 +389,31 @@ channels:
           - isSR_3l
           - isAR_3l
 variables:
-  ptz:
-    regular:
-    - 12
-    - 0
-    - 600
-    variable:
-    - 0
-    - 200
-    - 300
-    - 400
-    - 500
-    label: '$p_{T}$ Z (GeV) '
-    definition: ptz
-  lj0pt:
-    regular:
-    - 12
-    - 0
-    - 600
-    variable:
-    - 0
-    - 150
-    - 250
-    - 500
-    label: 'Leading pt of pair from l+j collection (GeV) '
-    definition: lj0pt
+  # ptz:
+  #   regular:
+  #   - 12
+  #   - 0
+  #   - 600
+  #   variable:
+  #   - 0
+  #   - 200
+  #   - 300
+  #   - 400
+  #   - 500
+  #   label: '$p_{T}$ Z (GeV) '
+  #   definition: ptz
+  # lj0pt:
+  #   regular:
+  #   - 12
+  #   - 0
+  #   - 600
+  #   variable:
+  #   - 0
+  #   - 150
+  #   - 250
+  #   - 500
+  #   label: 'Leading pt of pair from l+j collection (GeV) '
+  #   definition: lj0pt
   njets:
     regular:
     - 10

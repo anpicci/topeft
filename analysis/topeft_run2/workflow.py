@@ -1316,10 +1316,6 @@ class RunWorkflow:
             if not channel_dict:
                 continue
 
-            if task.clean_channel != "3l_m_offZ_1b_2j":
-                logging.info("Skipping task for channel %s", task.clean_channel)
-                continue
-
             if self._config.debug_logging:
                 logger.info("Channel %s metadata: %s", task.clean_channel, channel_dict)
                 logger.info("Task detail: %s", task)
@@ -1621,7 +1617,7 @@ def run_workflow(config: RunConfig) -> None:
         metadata_file = candidate_path.resolve(strict=True)
     except FileNotFoundError as exc:
         raise FileNotFoundError(
-            f"Metadata file '{metadata_source}' could not be found."
+            f"Metadata file '{candidate_path}' could not be found."
         ) from exc
 
     config.metadata_path = str(metadata_file)
