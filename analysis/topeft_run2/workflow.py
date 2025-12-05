@@ -102,7 +102,7 @@ if TYPE_CHECKING:  # pragma: no cover - used only for type checking
     from topeft.modules.channel_metadata import ChannelMetadataHelper
     from topeft.modules.systematics import SystematicsHelper
 
-LST_OF_KNOWN_EXECUTORS = ["futures", "iterative", "taskvine", "ddr"]
+LST_OF_KNOWN_EXECUTORS = ["futures", "iterative", "taskvine"]
 
 
 @dataclass(frozen=True)
@@ -1040,13 +1040,13 @@ class RunWorkflow:
             from topcoffea.modules import dynamic_data_reduction as ddr_helpers
         except ImportError as exc:  # pragma: no cover - dependency guard
             raise RuntimeError(
-                "The 'ddr' executor requires topcoffea.modules.dynamic_data_reduction. "
+                "The 'taskvine' executor requires topcoffea.modules.dynamic_data_reduction. "
                 "Update the topcoffea checkout to include tc/feat-ddr-helpers."
             ) from exc
 
         from coffea.nanoevents import NanoAODSchema
 
-        context = self._executor_factory.taskvine_context("ddr")
+        context = self._executor_factory.taskvine_context("taskvine")
         data = ddr_helpers.build_ddr_data_from_flist(
             flist,
             object_path=self._config.treename or "Events",
@@ -1060,10 +1060,10 @@ class RunWorkflow:
             ecut_threshold=ecut_threshold,
         )
         if not processors:
-            logger.warning("DDR executor selected but no histogram tasks were constructed; returning empty output.")
+            logger.warning("TaskVine executor selected but no histogram tasks were constructed; returning empty output.")
             return {}
 
-        logger.info("[ddr] Launching CoffeaDynamicDataReduction with %d processors", len(processors))
+        logger.info("[taskvine] Launching CoffeaDynamicDataReduction with %d processors", len(processors))
         manager = self._create_ddr_manager(context)
         log_configurator = taskvine_log_configurator(context.logs_dir)
         try:
@@ -1079,7 +1079,7 @@ class RunWorkflow:
         except Exception:
             logger.debug("DDR manager tuning failed", exc_info=True)
 
-        results_dir = context.logs_dir.parent / "ddr-results"
+        results_dir = context.logs_dir.parent / "taskvine-results"
         results_dir.mkdir(parents=True, exist_ok=True)
         ddr_kwargs = {
             "results_directory": str(results_dir),
@@ -1119,7 +1119,7 @@ class RunWorkflow:
             channel_dict = task.channel_metadata
             if not channel_dict:
                 logger.debug(
-                    "[ddr] Skipping task %s (%s/%s) due to missing channel metadata",
+                    "[taskvine] Skipping task %s (%s/%s) due to missing channel metadata",
                     idx,
                     task.sample,
                     task.clean_channel,
@@ -1129,7 +1129,7 @@ class RunWorkflow:
             sample_info = samplesdict.get(sample_name)
             if sample_info is None:
                 logger.warning(
-                    "[ddr] Skipping task %s (%s/%s) because sample is absent from samplesdict",
+                    "[taskvine] Skipping task %s (%s/%s) because sample is absent from samplesdict",
                     idx,
                     sample_name,
                     task.clean_channel,
@@ -1147,7 +1147,7 @@ class RunWorkflow:
             processor_key = self._ddr_processor_key(idx, task)
             processors[processor_key] = processor_instance
             logger.debug(
-                "[ddr] Added processor %s for sample=%s channel=%s variable=%s application=%s",
+                "[taskvine] Added processor %s for sample=%s channel=%s variable=%s application=%s",
                 processor_key,
                 task.sample,
                 task.clean_channel,
@@ -1155,7 +1155,7 @@ class RunWorkflow:
                 task.application,
             )
         logger.info(
-            "[ddr] Constructed %d processors from %d histogram tasks",
+            "[taskvine] Constructed %d processors from %d histogram tasks",
             len(processors),
             total_tasks,
         )
@@ -1262,7 +1262,14 @@ class RunWorkflow:
 
         tstart = time.time()
         executor_mode = (self._config.executor or "taskvine").strip().lower()
-        if executor_mode == "ddr":
+        allowed_executors = set(LST_OF_KNOWN_EXECUTORS)
+        if executor_mode not in allowed_executors:
+            raise ValueError(
+                f"Unsupported executor mode '{executor_mode}'. Expected one of: {', '.join(LST_OF_KNOWN_EXECUTORS)}."
+            )
+        self._config.executor = executor_mode
+
+        if executor_mode == "taskvine":
             output = self._execute_ddr(
                 histogram_plan=histogram_plan,
                 samplesdict=samplesdict,
@@ -1275,13 +1282,13 @@ class RunWorkflow:
             dt = time.time() - tstart
             if nevts_total:
                 logger.info(
-                    "[ddr] Processed %d events in %.2f seconds (%.2f evts/sec)",
+                    "[taskvine] Processed %d events in %.2f seconds (%.2f evts/sec)",
                     nevts_total,
                     dt,
                     (nevts_total / dt) if dt else 0.0,
                 )
             else:
-                logger.info("[ddr] CoffeaDynamicDataReduction finished in %.2f seconds", dt)
+                logger.info("[taskvine] CoffeaDynamicDataReduction finished in %.2f seconds", dt)
             self._store_output(output)
             return
 
@@ -1382,14 +1389,6 @@ class RunWorkflow:
             output.update(out)
 
         dt = time.time() - tstart
-
-        if self._config.executor == "taskvine" and nevts_total:
-            logger.info(
-                "Processed %d events in %.2f seconds (%.2f evts/sec)",
-                nevts_total,
-                dt,
-                (nevts_total / dt) if dt else 0.0,
-            )
 
         if self._config.executor == "futures":
             logger.info(

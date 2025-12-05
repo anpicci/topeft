@@ -73,10 +73,7 @@ logger = logging.getLogger(__name__)
 
 remote_environment = topcoffea.modules.remote_environment
 
-EXECUTOR_ALIASES = {
-    "taskvine_ddr": "ddr",
-    "work_queue": "taskvine",
-}
+SUPPORTED_EXECUTORS: tuple[str, ...] = ("futures", "iterative", "taskvine")
 
 
 EXECUTOR_CLI = ExecutorCLIHelper(
@@ -317,12 +314,19 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _normalize_executor_name(value: str | None) -> str:
-    """Return a normalized executor identifier after applying aliases."""
+    """Return a canonical executor identifier without applying aliases."""
 
-    normalized = (value or "").strip().lower()
-    if not normalized:
-        return ""
-    return EXECUTOR_ALIASES.get(normalized, normalized)
+    return (value or "").strip().lower()
+
+
+def _ensure_supported_executor(value: str) -> None:
+    """Raise an error when ``value`` is not a supported executor."""
+
+    if value and value not in SUPPORTED_EXECUTORS:
+        raise ValueError(
+            f"Unsupported executor '{value}'. "
+            f"Valid options are: {', '.join(SUPPORTED_EXECUTORS)}."
+        )
 
 
 def _resolve_logging_controls(config: RunConfig) -> tuple[str, bool]:
@@ -479,6 +483,7 @@ def main(argv: Sequence[str] | None = None) -> None:
         current_executor = executor_choice
     elif not current_executor:
         current_executor = executor_choice
+    _ensure_supported_executor(current_executor)
     config.executor = current_executor
     logger.info(
         "Using executor: %s | chunksize=%s | maxchunks=%s",
