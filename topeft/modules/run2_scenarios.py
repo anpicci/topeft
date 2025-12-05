@@ -13,8 +13,11 @@ from topeft.modules.paths import topeft_path
 
 RUN2_SCENARIOS_PATH = Path(topeft_path("../analysis/metadata/run2_scenarios.yaml"))
 GROUP_METADATA_PATHS = (
-    Path(topeft_path("../analysis/metadata/metadata_TOP_22_006.yaml")),
-    Path(topeft_path("../analysis/metadata/metadata_tau_analysis.yaml")),
+    # Canonical metadata bundle with the full systematics catalog and the
+    # baseline Run-2 channel groups.
+    Path(topeft_path("params/metadata.yml")),
+    # Supplemental derived Run-2 groups that are not yet mirrored inside
+    # params/metadata.yml (off-Z split combinations, forward-only layouts, etc.).
     Path(topeft_path("../analysis/metadata/metadata_run2_groups.yaml")),
 )
 

@@ -1,3 +1,6 @@
+# DEPRECATED: retained only for archival channel-group layouts. Run-2 metadata
+# now lives in topeft/params/metadata.yml; this file is no longer referenced by
+# scenario_registry.
 scenario:
   name: tau_analysis
   description: Run-2 multilepton analysis with hadronic tau categories.

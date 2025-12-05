@@ -1,3 +1,6 @@
+# DEPRECATED: this metadata bundle is superseded by topeft/params/metadata.yml
+# and remains only for reference. Scenario resolution now points at the
+# canonical metadata file instead of this copy.
 scenario:
   name: fwd_analysis
   description: Run-2 multilepton analysis with forward-jet categories.

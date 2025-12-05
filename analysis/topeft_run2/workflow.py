@@ -95,6 +95,10 @@ from .run_analysis_helpers import (
     weight_variations_from_metadata,
 )
 from .nanoevents_helpers import nanoevents_factory_from_root
+from .systematics_validation import (
+    metadata_non_nominal_bases,
+    validate_histogram_plan_systematics,
+)
 
 DEFAULT_SCENARIO_NAME = "TOP_22_006"
 
@@ -1222,12 +1226,6 @@ class RunWorkflow:
 
         nevts_total = sum(sample["nEvents"] for sample in samplesdict.values())
 
-        if self._config.pretend:
-            logger.info("Pretend mode active; skipping execution after configuration phase.")
-            return
-
-        self._ensure_wilson_coefficients(samplesdict)
-
         golden_jsons = self._metadata.get("golden_jsons", {}) if self._metadata else {}
         if not golden_jsons:
             raise ValueError(
@@ -1248,15 +1246,35 @@ class RunWorkflow:
         }
 
         active_features = set(self._channel_planner.active_features)
+        tau_analysis = "requires_tau" in active_features
         systematics_helper = SystematicsHelper(
             self._metadata,
             sample_years=sample_years,
-            tau_analysis="requires_tau" in active_features,
+            tau_analysis=tau_analysis,
         )
 
         histogram_plan = self._histogram_planner.plan(samplesdict, systematics_helper)
+        has_mc_samples = any(not sample.get("isData") for sample in samplesdict.values())
+        has_data_samples = any(sample.get("isData") for sample in samplesdict.values())
+        validate_histogram_plan_systematics(
+            metadata=self._metadata,
+            tasks=histogram_plan.tasks,
+            do_systs=self._config.do_systs,
+            has_mc_samples=has_mc_samples,
+            has_data_samples=has_data_samples,
+            tau_analysis=tau_analysis,
+            metadata_source=self._metadata_path,
+        )
 
         self._emit_histogram_summary(histogram_plan)
+
+        if self._config.pretend:
+            logger.info(
+                "Pretend mode active; validated configuration and histogram plan without executing."
+            )
+            return
+
+        self._ensure_wilson_coefficients(samplesdict)
 
         ecut_threshold = self._config.ecut if self._config.ecut is None else float(self._config.ecut)
 
@@ -1623,6 +1641,27 @@ def run_workflow(config: RunConfig) -> None:
 
     with metadata_file.open("r", encoding="utf-8") as handle:
         metadata = yaml.safe_load(handle) or {}
+
+    metadata_variations = metadata_non_nominal_bases(metadata)
+    if metadata_variations:
+        logger.info(
+            "Metadata '%s' exposes %d non-nominal systematics: %s",
+            metadata_file,
+            len(metadata_variations),
+            ", ".join(sorted(metadata_variations)),
+        )
+    else:
+        logger.info("Metadata '%s' defines only the nominal variation.", metadata_file)
+
+    if config.do_systs and not metadata_variations:
+        raise ValueError(
+            f"--do-systs requested but metadata '{metadata_file}' does not define non-nominal systematics."
+        )
+    if not config.do_systs and metadata_variations:
+        logger.info(
+            "Systematic variations are available but disabled (--do-systs not set). "
+            "Only nominal histograms will be produced."
+        )
 
     weight_variations = weight_variations_from_metadata(metadata, DEFAULT_WEIGHT_VARIATIONS)
     sample_loader = SampleLoader(
