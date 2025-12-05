@@ -8,7 +8,7 @@ from typing import Iterable, List, Tuple
 import yaml
 
 from analysis.topeft_run2.scenario_registry import resolve_scenario_choice
-from topeft.modules import run2_scenarios
+from topeft.modules import scenario_groups
 from topeft.modules.channel_metadata import ChannelMetadataHelper
 
 # This script does some basic checks of the cards and templates produced by the `make_cards.py` script.
@@ -136,9 +136,9 @@ def resolve_scenario_metadata(scenario_args: Iterable[str]) -> Tuple[str, str, C
 
     channels_metadata = metadata.get("channels")
     channels_data = channels_metadata
-    if run2_scenarios.is_run2_scenario(scenario_name):
+    if scenario_groups.is_run2_scenario(scenario_name):
         try:
-            channels_data = run2_scenarios.load_run2_channels_for_scenario(
+            channels_data = scenario_groups.load_run2_channels_for_scenario(
                 scenario_name
             )
         except Exception as exc:

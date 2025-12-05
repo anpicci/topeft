@@ -19,7 +19,7 @@ from topeft.modules.compatibility import add_sumw2_stub
 
 regex_match = topcoffea.modules.utils.regex_match
 
-with open(topeft_path("params/metadata.yml"), "r") as f:
+with open(topeft_path("analysis/metadata/metadata.yml"), "r") as f:
     metadata = yaml.safe_load(f)
 axes_info = metadata["variables"]
 

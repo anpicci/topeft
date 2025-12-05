@@ -27,7 +27,7 @@ df_pt_j = output["pt_j"].value
 
 * When initializing the histogram, adjust the bins to include the top events with clear divisions. If the bin is not there, add the event quantity to the variable list. Then add the bin to the histogram.
 * Run `topeft.py` on the MC samples for a specific group of events. Histogram contents are now
-  controlled through the `histogram_variables` include/exclude lists in `params/metadata.yml`.
+  controlled through the `histogram_variables` include/exclude lists in `analysis/metadata/metadata.yml`.
   Adjust those metadata entries if additional observables are required. An example command for
   top jet multiplicity events in signal samples using the TaskVine executor:
 
@@ -43,4 +43,3 @@ python run_extreme_events.py ../../topcoffea/cfg/mc_signal_samples_NDSkim.cfg --
 * Add `events["yield"]` to the initial dataframe as a column like other event quantities (e.g. nleps).
 * After the events are further filtered by interesting characteristics, get the output dataframe (e.g. df_nleps).
 * Calculate the yield by summing up the yield column (e.g. `df_nleps['yield'].sum()`).
-

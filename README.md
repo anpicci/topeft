@@ -54,7 +54,7 @@ toggles, output names, and executor settings in a single place.
 
 The default metadata bundle matches the TOP-22-006 reinterpretation categories,
 but the YAML and CLI entry points can target additional scenarios defined in
-`topeft/params/metadata.yml`:
+`analysis/metadata/metadata.yml`:
 
 - `TOP_22_006` – Baseline Run 2 reinterpretation with the shared control suite.
 - `tau_analysis` – Adds the tau-enriched signal/control regions needed for the
@@ -81,7 +81,7 @@ the [YAML configuration guide](docs/run_analysis_configuration.md), and the
 ### Metadata configuration
 
 The Run 2 helpers, quickstarts, and processors all read from
-`topeft/params/metadata.yml`.  This YAML file is the single source of truth for
+`analysis/metadata/metadata.yml`.  This YAML file is the single source of truth for
 which regions run, which histogram variables are kept, and which systematic
 variations are evaluated.  Key sections include:
 
@@ -124,7 +124,7 @@ expands on the available keys and shows how the planners consume them.
 
 As of this release, the ``--channel-feature`` flag has been retired.  Channel
 activation is now driven entirely by the metadata scenarios documented in
-``topeft/params/metadata.yml``.  Use ``--scenario`` (either repeated on the
+``analysis/metadata/metadata.yml``.  Use ``--scenario`` (either repeated on the
 command line or listed in a YAML profile) to enable the tau, forward, or other
 specialised selections.  The [Run 2 metadata scenarios guide](docs/run2_scenarios.md)
 collects end-to-end examples of the recommended combinations.

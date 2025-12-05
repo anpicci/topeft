@@ -5,9 +5,9 @@ from pathlib import Path
 # Paths – tweak as needed
 
 region = "TOP22_006_CH_LST_SR"
-new_metadata = "metadata_TOP_22_006.yaml"
+new_metadata = "metadata.yml"  # Override to compare against an alternate metadata file
 base = Path(".")
-params_yml = base / "topeft" / "params" / "metadata.yml"
+params_yml = base / "analysis" / "metadata" / "metadata.yml"
 top_scenario_yml = base / "analysis" / "metadata" / new_metadata
 
 def load_yaml(path):

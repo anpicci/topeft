@@ -3,7 +3,7 @@
 
 The processor responsibilities, expected inputs, and extension hooks are
 documented in ``docs/analysis_processing.md``.  That guide also links the
-systematic catalogue exposed through ``topeft/params/metadata.yml`` with the
+systematic catalogue exposed through ``analysis/metadata/metadata.yml`` with the
 ``RunWorkflow`` planner and the YAML quickstart workflow.
 """
 

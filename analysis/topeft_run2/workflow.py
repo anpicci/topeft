@@ -1674,11 +1674,11 @@ def run_workflow(config: RunConfig) -> None:
     config.scenario_names = list(scenario_names)
     primary_scenario = config.scenario_names[0]
 
-    from topeft.modules import run2_scenarios
+    from topeft.modules import scenario_groups
 
     channels_metadata = metadata.get("channels")
     channels_data = channels_metadata
-    use_run2_channels = run2_scenarios.is_run2_scenario(primary_scenario)
+    use_run2_channels = scenario_groups.is_run2_scenario(primary_scenario)
     if use_run2_channels:
         if len(config.scenario_names) > 1:
             logger.warning(
@@ -1690,7 +1690,7 @@ def run_workflow(config: RunConfig) -> None:
             )
             config.scenario_names = [primary_scenario]
         try:
-            channels_data = run2_scenarios.load_run2_channels_for_scenario(
+            channels_data = scenario_groups.load_run2_channels_for_scenario(
                 primary_scenario
             )
             logger.info(

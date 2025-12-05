@@ -61,5 +61,8 @@ topeft = [
     "data/btagSF/UL/*.pkl.gz",
     "data/btagSF/UL/*.csv",
     "modules/*.json",
-    "params/metadata.yml",
+]
+analysis = [
+    "metadata/*.yml",
+    "metadata/*.yaml",
 ]

@@ -35,7 +35,7 @@ helpers or downstream plotting tools.
 
 When ``isData`` is ``false`` the loader will look for extra ``nSumOfWeights_*``
 entries that correspond to metadata-driven systematic variations.  The keys must
-match the variations extracted from ``topeft/params/metadata.yml`` via
+match the variations extracted from ``analysis/metadata/metadata.yml`` via
 :func:`analysis.topeft_run2.run_analysis_helpers.weight_variations_from_metadata`.
 Any variation found in the JSON is converted to ``float`` before being attached
 to the sample record. 【F:analysis/topeft_run2/run_analysis_helpers.py†L232-L241】

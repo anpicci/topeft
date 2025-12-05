@@ -4,15 +4,15 @@ Run‑2 executions are driven entirely by metadata rather than ad‑hoc JSON lis
 Two layers work together:
 
 * **Groups** – Logical bundles of channels defined in
-  `analysis/metadata/metadata_run2_groups.yaml`. Each group enumerates the
+  `analysis/metadata/metadata.yml`. Each group enumerates the
   regions, applications, and histogram selections that the processor should
   evaluate. The `ChannelMetadataHelper` from `topeft.modules.channel_metadata`
   reads this file and exposes the groups by name.
 * **Scenarios** – Named combinations of one or more groups. The mapping lives in
-  `analysis/metadata/run2_scenarios.yaml` and is loaded by
-  `analysis/topeft_run2/run2_scenarios.py`. The CLI and quickstart helpers look
+`analysis/metadata/run2_scenarios.yaml` and is loaded by
+`topeft/modules/scenario_groups.py`. The CLI and quickstart helpers look
   up scenarios through `analysis/topeft_run2/scenario_registry.py`, which
-  returns the correct metadata bundle (for example `metadata_TOP_22_006.yaml`)
+  returns the canonical metadata bundle (`analysis/metadata/metadata.yml`)
   and tracks the names exposed to `--scenario` and YAML profiles.
 
 When `run_analysis.py` or `full_run.sh` receives a `--scenario` value, the
@@ -78,8 +78,7 @@ for convenience.
 ## Adding or modifying a scenario
 
 1. **Update the metadata groups** – Extend
-   `analysis/metadata/metadata_run2_groups.yaml` (or the relevant metadata file)
-   with the new regions, variables, or applications. Run
+   `analysis/metadata/metadata.yml` with the new regions, variables, or applications. Run
    `python -m topeft.quickstart --emit-options` to sanity‑check your changes.
 2. **Register the group composition** – Edit
    `analysis/metadata/run2_scenarios.yaml` to add or modify the scenario name
@@ -87,9 +86,7 @@ for convenience.
    canonical identifiers above unless you intend to redefine them.
 3. **Expose the scenario to the CLI** – If the metadata bundle changed, update
    `analysis/topeft_run2/scenario_registry.py` so the new metadata path is
-   discoverable via `--scenario`. For Run‑2 additions this typically means
-   reusing `metadata_run2_groups.yaml` and pointing the registry to the same
-   file.
+   discoverable via `--scenario`.
 4. **Validate** – Run the Step‑5 validators from `scratch/` to confirm the new
    scenario is internally consistent:
 

@@ -15,11 +15,11 @@ from typing import Dict, Iterable, List, Sequence, Tuple
 # Paths are stored relative to the topeft repository root.  The CLI converts
 # them into absolute paths via ``topeft.modules.paths.topeft_path`` before
 # passing them to the workflow.
-_CANONICAL_METADATA_PATH = "topeft/params/metadata.yml"
+_CANONICAL_METADATA_PATH = "analysis/metadata/metadata.yml"
 _SCENARIO_REGISTRY: Dict[str, str] = {
     # Run-2 scenarios all point at the canonical metadata bundle with the full
     # systematics catalog. Channel groups continue to come from
-    # analysis/metadata/run2_scenarios.yaml via ``topeft.modules.run2_scenarios``.
+    # analysis/metadata/run2_scenarios.yaml via ``topeft.modules.scenario_groups``.
     "TOP_22_006": _CANONICAL_METADATA_PATH,
     "tau_analysis": _CANONICAL_METADATA_PATH,
     "fwd_analysis": _CANONICAL_METADATA_PATH,

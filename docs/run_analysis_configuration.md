@@ -19,7 +19,7 @@ makes it easy to share presets with collaborators.
 ## Metadata configuration {#metadata-configuration}
 
 The workflow resolves all region, variable, and systematic choices from
-``topeft/params/metadata.yml`` before it touches the Coffea executors.  The file
+``analysis/metadata/metadata.yml`` before it touches the Coffea executors.  The file
 is packaged with the module so that quickstarts, CLI runs, and YAML-driven
 profiles all agree on the same catalogue of tasks.  The table below summarises
 the metadata sections that feed directly into the planners:
@@ -36,7 +36,7 @@ the metadata sections that feed directly into the planners:
 When customising an analysis, clone the file rather than editing the baseline in
 place.  A common workflow is:
 
-1. Copy ``topeft/params/metadata.yml`` to ``analysis/topeft_run2/configs/metadata_<tag>.yml`` (or another tracked location).
+1. Copy ``analysis/metadata/metadata.yml`` to ``analysis/topeft_run2/configs/metadata_<tag>.yml`` (or another tracked location).
 2. Update the cloned YAML with any new regions, variables, or systematics.
 3. Point ``python -m topeft.quickstart`` at the clone with ``--metadata`` to test
    the changes quickly.  For ``run_analysis.py`` runs, set ``metadata:
@@ -202,7 +202,7 @@ Systematic switches are managed collaboratively by the helpers:
 * ``RunConfig.do_systs`` enables systematic planning.  The builder honours YAML
   booleans (``true``/``false``) and CLI flags.
 * :func:`analysis.topeft_run2.run_analysis_helpers.weight_variations_from_metadata`
-  inspects ``topeft/params/metadata.yml`` to identify all available sum-of-weight
+  inspects ``analysis/metadata/metadata.yml`` to identify all available sum-of-weight
   variations.  Supplying a YAML options file with a ``systematics`` block lets
   you add or restrict variations on a per-profile basis.
 * :class:`SampleLoader` makes the variations available on each sample entry so

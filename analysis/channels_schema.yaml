@@ -15,7 +15,7 @@ channels:
     description: Baseline Run 2 ttH multilepton signal regions used in the
       TOP-22-006 reinterpretation. Regions are organised by lepton multiplicity
       with jet binning and application tags derived from the grouped channel
-      metadata stored in topeft/params/metadata.yml.
+      metadata stored in analysis/metadata/metadata.yml.
     scenarios:
       - TOP_22_006
     regions:

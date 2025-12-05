@@ -15,7 +15,7 @@ both the SR and CR jobs can be launched from the same configuration file.  When
 you are ready to extend the quickstart to the tau or forward-jet regions, refer
 to the [Run 2 metadata scenarios guide](run2_scenarios.md) for the additional
 scenario combinations.  Channel activation is handled entirely by the metadata
-scenarios declared in ``topeft/params/metadata.yml``.
+scenarios declared in ``analysis/metadata/metadata.yml``.
 
 1. Change into the Run 2 analysis directory:
 
@@ -82,7 +82,7 @@ scenarios declared in ``topeft/params/metadata.yml``.
    ``--options`` is provided, command-line flags (such as ``--executor`` or
    ``--outname``) are ignored so that the captured configuration remains
    reproducible. Drop ``--options`` entirely if you need a one-off CLI-driven
-   run. When testing metadata changes, clone ``topeft/params/metadata.yml``,
+   run. When testing metadata changes, clone ``analysis/metadata/metadata.yml``,
    reference it via ``metadata: …`` near the top of your options file, and
    commit the override alongside the preset.
 
@@ -108,7 +108,7 @@ scenarios declared in ``topeft/params/metadata.yml``.
     ```yaml
     # analysis/topeft_run2/configs/fullR2_run_tau_fwd.yml
     metadata: configs/metadata_dev.yml
-    # (clone topeft/params/metadata.yml to configs/metadata_dev.yml before editing)
+    # (clone analysis/metadata/metadata.yml to configs/metadata_dev.yml before editing)
     jsonFiles:
       - ../../input_samples/sample_jsons/test_samples/UL17_private_ttH_for_CI.json
     scenarios:

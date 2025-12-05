@@ -16,7 +16,7 @@ import topcoffea
 from topeft.modules.paths import topeft_path
 from topeft.modules.topcoffea_imports import require_script
 
-metadata_path = topeft_path("params/metadata.yml")
+metadata_path = topeft_path("analysis/metadata/metadata.yml")
 with open(metadata_path, "r") as f:
     metadata = yaml.safe_load(f)
 axes_info = metadata["variables"]
