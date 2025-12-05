@@ -25,7 +25,7 @@ set -euo pipefail
 PrintUsage() {
   cat <<'USAGE'
 Usage: full_run.sh [-y YEAR [YEAR ...]] [-t TAG] [--cr | --sr] \
-                   [--executor {taskvine,futures,iterative,ddr}] [--outdir PATH] [--manager NAME] \
+                   [--executor {taskvine,futures,iterative}] [--outdir PATH] [--manager NAME] \
                    [--samples PATH [PATH ...]] [--scenario NAME] [--log-level LEVEL] \
                    [--debug-logging] [--dry-run] [extra run_analysis args]
 
@@ -381,7 +381,7 @@ main() {
     executor="taskvine"
   fi
 
-  if [[ "$executor" != "taskvine" && "$executor" != "futures" && "$executor" != "iterative" && "$executor" != "ddr" ]]; then
+  if [[ "$executor" != "taskvine" && "$executor" != "futures" && "$executor" != "iterative" ]]; then
     echo "Error: executor must be one of taskvine, futures, or iterative (got '$executor')" >&2
     return 1
   fi
