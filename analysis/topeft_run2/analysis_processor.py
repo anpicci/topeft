@@ -254,10 +254,15 @@ def _build_jerc_allowed_variations(
     *,
     is_mc: bool,
 ) -> Dict[str, object]:
-    """Summarise JES/JER/UES requests for Tc2 variation gating."""
+    """Summarise JES/JER/UES variation requests for Tc2 gating.
+
+    The returned mapping only controls which shifted branches Tc2 materialises;
+    nominal jet and MET corrections always run independently of this payload.
+    """
 
     jes_components: Set[str] = set()
     jes_requested = False
+    jer_requested = False
     ues_requested = False
 
     if systematic_variations:
@@ -277,6 +282,10 @@ def _build_jerc_allowed_variations(
                     jes_components.add(str(component))
                 continue
 
+            if base_key == "jer":
+                jer_requested = True
+                continue
+
             if _is_ues_base(base_key):
                 ues_requested = True
 
@@ -291,7 +300,7 @@ def _build_jerc_allowed_variations(
 
     allowed = {
         "jes": jes_value,
-        "jer": bool(is_mc),
+        "jer": bool(is_mc and jer_requested),
         "ues": bool(ues_requested),
     }
 
@@ -636,6 +645,8 @@ class AnalysisProcessor(processor.ProcessorABC):
             self._systematic_variations,
             is_mc=is_mc_sample,
         )
+        # ``allowed_jerc_variations`` gates only shifted JES/JER/UES branches.
+        # Central jet/MET corrections always run regardless of this payload.
         if self._debug_logging:
             self._debug(
                 "Resolved allowed JERC variations for %s: %s",
@@ -1609,6 +1620,8 @@ class AnalysisProcessor(processor.ProcessorABC):
         if jet_caches:
             jet_lazy_cache = jet_caches[0]
 
+        # ``allowed_variations`` only controls which shifted branches Tc2 builds;
+        # the nominal corrections configured below always run.
         corrected_jets = build_corrected_jets(
             ApplyJetCorrections(
                 dataset.year,
@@ -1645,6 +1658,8 @@ class AnalysisProcessor(processor.ProcessorABC):
                 tuple(ak.fields(corrected_jets)),
             )
 
+        # Same semantics apply to MET: central recomputation always runs, and
+        # ``allowed_variations`` just restricts auxiliary systematic branches.
         met = build_corrected_met(
             ApplyJetCorrections(
                 dataset.year,

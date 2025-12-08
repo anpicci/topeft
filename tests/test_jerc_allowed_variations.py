@@ -12,9 +12,9 @@ def _variation(base, *, name=None, variation_type="object", component=None, appl
     )
 
 
-def test_allowed_variations_nominal_mc_only_enables_jer():
+def test_allowed_variations_nominal_mc_disables_jer_variations():
     allowed = _build_jerc_allowed_variations((), is_mc=True)
-    assert allowed["jer"] is True
+    assert allowed["jer"] is False
     assert allowed["jes"] is False
     assert allowed["ues"] is False
 
@@ -41,3 +41,14 @@ def test_allowed_variations_handles_ues_aliases_and_data_sample():
     assert allowed["jer"] is False
     assert allowed["jes"] == {"components": ["FlavorQCD"]}
     assert allowed["ues"] is True
+
+
+def test_allowed_variations_jer_branch_only_when_requested_and_mc():
+    variations = (
+        _variation("jer", name="JER_2018Up"),
+        _variation("jer", name="JER_2018Down"),
+    )
+    allowed_mc = _build_jerc_allowed_variations(variations, is_mc=True)
+    allowed_data = _build_jerc_allowed_variations(variations, is_mc=False)
+    assert allowed_mc["jer"] is True
+    assert allowed_data["jer"] is False

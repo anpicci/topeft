@@ -1495,7 +1495,9 @@ def ApplyJetCorrections(
         'UnClusteredEnergyDeltaY': 'MetUnclustEnUpDeltaY'
     }
 
-    # Return appropriate factory based on correction type
+    # Return appropriate factory based on correction type. ``allowed_variations``
+    # restricts the extra JES/JER/UES branches Tc2 materialises; the nominal
+    # corrections configured above always run.
     if corr_type == 'met':
         return CorrectedMETFactory(name_map, allowed_variations=allowed_variations)
     return CorrectedJetsFactory(name_map, jec_stack, allowed_variations=allowed_variations)

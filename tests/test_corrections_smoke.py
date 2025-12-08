@@ -30,7 +30,7 @@ def test_apply_jet_corrections_factory_creation(year):
 
 
 def test_apply_jet_corrections_build_with_allowed_variations():
-    """Smoke-test building jets/MET when only a subset of variations are allowed."""
+    """Smoke-test that central corrections run even when all variations are gated off."""
 
     jets = ak.Array(
         [
@@ -61,7 +61,7 @@ def test_apply_jet_corrections_build_with_allowed_variations():
         ]
     )
 
-    allowed = {"jes": False, "jer": True, "ues": False}
+    allowed = {"jes": False, "jer": False, "ues": False}
     jet_factory = ApplyJetCorrections(
         "2018",
         "jet",
@@ -71,7 +71,10 @@ def test_apply_jet_corrections_build_with_allowed_variations():
         allowed_variations=allowed,
     )
     corrected_jets = build_corrected_jets(jet_factory, jets)
-    assert "pt" in ak.fields(corrected_jets)
+    jet_fields = set(ak.fields(corrected_jets))
+    assert "pt" in jet_fields
+    assert "jet_energy_correction" in jet_fields  # central correction applied
+    assert "JER" not in jet_fields
 
     met_factory = ApplyJetCorrections(
         "2018",
@@ -83,6 +86,62 @@ def test_apply_jet_corrections_build_with_allowed_variations():
     )
     corrected_met = build_corrected_met(met_factory, met, corrected_jets)
     assert "MET_UnclusteredEnergy" not in ak.fields(corrected_met)
+
+
+def test_apply_jet_corrections_builds_variation_branches_when_enabled():
+    jets = ak.Array(
+        [
+            [
+                {
+                    "pt": np.float32(45.0),
+                    "eta": np.float32(0.2),
+                    "phi": np.float32(0.1),
+                    "mass": np.float32(10.0),
+                    "rawFactor": np.float32(0.1),
+                    "area": np.float32(0.5),
+                    "pt_gen": np.float32(44.0),
+                    "pt_raw": np.float32(40.5),
+                    "mass_raw": np.float32(9.0),
+                    "rho": np.float32(0.5),
+                }
+            ]
+        ]
+    )
+    met = ak.Array(
+        [
+            {
+                "pt": np.float32(50.0),
+                "phi": np.float32(0.0),
+                "MetUnclustEnUpDeltaX": np.float32(0.0),
+                "MetUnclustEnUpDeltaY": np.float32(0.0),
+            }
+        ]
+    )
+
+    allowed = {"jes": {"components": ["FlavorQCD"]}, "jer": True, "ues": True}
+    jet_factory = ApplyJetCorrections(
+        "2018",
+        "jet",
+        isData=False,
+        era=None,
+        useclib=True,
+        allowed_variations=allowed,
+    )
+    corrected_jets = build_corrected_jets(jet_factory, jets)
+    jet_fields = set(ak.fields(corrected_jets))
+    assert "JER" in jet_fields
+    assert any(field.startswith("JES_") for field in jet_fields)
+
+    met_factory = ApplyJetCorrections(
+        "2018",
+        "met",
+        isData=False,
+        era=None,
+        useclib=True,
+        allowed_variations=allowed,
+    )
+    corrected_met = build_corrected_met(met_factory, met, corrected_jets)
+    assert "MET_UnclusteredEnergy" in ak.fields(corrected_met)
 
 
 @pytest.mark.parametrize("year", ["2018", "2023", "2023BPix"])
