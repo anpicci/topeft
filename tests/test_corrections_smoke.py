@@ -1,6 +1,7 @@
 import correctionlib
 import numpy as np
 import pytest
+import awkward as ak
 
 import topcoffea
 
@@ -8,6 +9,8 @@ from coffea.btag_tools import BTagScaleFactor
 
 from topeft.modules.corrections import (
     ApplyJetCorrections,
+    build_corrected_jets,
+    build_corrected_met,
     clib_year_map,
     egm_tag_map,
     get_jerc_keys,
@@ -24,6 +27,62 @@ def test_apply_jet_corrections_factory_creation(year):
     met_factory = ApplyJetCorrections(year, "met", isData=False, era=None, useclib=True)
     assert jet_factory is not None
     assert met_factory is not None
+
+
+def test_apply_jet_corrections_build_with_allowed_variations():
+    """Smoke-test building jets/MET when only a subset of variations are allowed."""
+
+    jets = ak.Array(
+        [
+            [
+                {
+                    "pt": np.float32(45.0),
+                    "eta": np.float32(0.2),
+                    "phi": np.float32(0.1),
+                    "mass": np.float32(10.0),
+                    "rawFactor": np.float32(0.1),
+                    "area": np.float32(0.5),
+                    "pt_gen": np.float32(44.0),
+                    "pt_raw": np.float32(40.5),
+                    "mass_raw": np.float32(9.0),
+                    "rho": np.float32(0.5),
+                }
+            ]
+        ]
+    )
+    met = ak.Array(
+        [
+            {
+                "pt": np.float32(50.0),
+                "phi": np.float32(0.0),
+                "MetUnclustEnUpDeltaX": np.float32(0.0),
+                "MetUnclustEnUpDeltaY": np.float32(0.0),
+            }
+        ]
+    )
+
+    allowed = {"jes": False, "jer": True, "ues": False}
+    jet_factory = ApplyJetCorrections(
+        "2018",
+        "jet",
+        isData=False,
+        era=None,
+        useclib=True,
+        allowed_variations=allowed,
+    )
+    corrected_jets = build_corrected_jets(jet_factory, jets)
+    assert "pt" in ak.fields(corrected_jets)
+
+    met_factory = ApplyJetCorrections(
+        "2018",
+        "met",
+        isData=False,
+        era=None,
+        useclib=True,
+        allowed_variations=allowed,
+    )
+    corrected_met = build_corrected_met(met_factory, met, corrected_jets)
+    assert "MET_UnclusteredEnergy" not in ak.fields(corrected_met)
 
 
 @pytest.mark.parametrize("year", ["2018", "2023", "2023BPix"])

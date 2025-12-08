@@ -22,7 +22,7 @@ import hist
 import topcoffea
 from coffea.analysis_tools import PackedSelection
 from coffea.lumi_tools import LumiMask
-from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
+from typing import Any, Dict, List, Optional, Sequence, Set, Tuple, Union
 
 from topeft.modules.paths import topeft_path
 from topeft.modules.corrections import (
@@ -50,6 +50,7 @@ from topeft.modules.systematics import (
     register_trigger_sf_weight,
     register_weight_variation,
     validate_data_weight_variations,
+    SystematicVariation,
 )
 
 HistEFT = topcoffea.modules.HistEFT.HistEFT
@@ -230,6 +231,71 @@ class VariationState:
     include_elec_sf: bool = False
     include_tau_real_sf: bool = False
     include_tau_fake_sf: bool = False
+
+
+def _is_ues_base(base: Optional[str]) -> bool:
+    """Return ``True`` if *base* matches the MET unclustered-energy family."""
+
+    if base is None:
+        return False
+
+    base_key = str(base).strip().lower()
+    if not base_key:
+        return False
+
+    if base_key == "ues" or base_key.startswith("ues_") or base_key.endswith("_ues"):
+        return True
+
+    return "unclustered" in base_key
+
+
+def _build_jerc_allowed_variations(
+    systematic_variations: Optional[Sequence["SystematicVariation"]],
+    *,
+    is_mc: bool,
+) -> Dict[str, object]:
+    """Summarise JES/JER/UES requests for Tc2 variation gating."""
+
+    jes_components: Set[str] = set()
+    jes_requested = False
+    ues_requested = False
+
+    if systematic_variations:
+        for variation in systematic_variations:
+            if variation is None or getattr(variation, "type", None) != "object":
+                continue
+
+            base_name = getattr(variation, "base", None)
+            if not base_name:
+                continue
+
+            base_key = str(base_name).strip().lower()
+            if base_key == "jes":
+                jes_requested = True
+                component = getattr(variation, "component", None)
+                if component:
+                    jes_components.add(str(component))
+                continue
+
+            if _is_ues_base(base_key):
+                ues_requested = True
+
+    if jes_requested:
+        jes_value: Union[bool, Dict[str, object]]
+        if jes_components:
+            jes_value = {"components": sorted(jes_components)}
+        else:
+            jes_value = True
+    else:
+        jes_value = False
+
+    allowed = {
+        "jes": jes_value,
+        "jer": bool(is_mc),
+        "ues": bool(ues_requested),
+    }
+
+    return allowed
 
 
 @dataclass(frozen=True)
@@ -563,6 +629,18 @@ class AnalysisProcessor(processor.ProcessorABC):
         if self._systematic_variations and self._systematic_info is None:
             raise ValueError(
                 "systematic_variations must contain at least one entry when provided"
+            )
+
+        is_mc_sample = not bool(self._sample.get("isData"))
+        self._allowed_jerc_variations = _build_jerc_allowed_variations(
+            self._systematic_variations,
+            is_mc=is_mc_sample,
+        )
+        if self._debug_logging:
+            self._debug(
+                "Resolved allowed JERC variations for %s: %s",
+                self._sample.get("histAxisName"),
+                self._allowed_jerc_variations,
             )
 
     @staticmethod
@@ -1537,6 +1615,7 @@ class AnalysisProcessor(processor.ProcessorABC):
                 corr_type="jet",
                 isData=dataset.is_data,
                 era=dataset.run_era,
+                allowed_variations=self._allowed_jerc_variations,
             ),
             cleaned_jets,
             lazy_cache=jet_lazy_cache,
@@ -1572,6 +1651,7 @@ class AnalysisProcessor(processor.ProcessorABC):
                 corr_type="met",
                 isData=dataset.is_data,
                 era=dataset.run_era,
+                allowed_variations=self._allowed_jerc_variations,
             ),
             met_raw,
             cleaned_jets,
