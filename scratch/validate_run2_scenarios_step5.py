@@ -6,7 +6,7 @@ import argparse
 from typing import Dict, Iterable, List, Mapping, Sequence
 
 from topeft.modules.channel_metadata import ChannelGroup, ChannelMetadataHelper
-from topeft.modules.run2_scenarios import (
+from topeft.modules.scenario_groups import (
     load_run2_channels_for_scenario,
     load_run2_scenarios,
 )

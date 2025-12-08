@@ -1,4 +1,4 @@
-"""Utilities for working with channel metadata from params/metadata.yml.
+"""Utilities for working with channel metadata from analysis/metadata/metadata.yml.
 
 The helper classes defined here convert the structured YAML representation
 of channel groups into convenient Python objects that can be consumed by the

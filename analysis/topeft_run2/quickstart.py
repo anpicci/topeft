@@ -78,7 +78,7 @@ def _load_metadata(metadata_path: Optional[str]) -> Tuple[MutableMapping[str, ob
         raise ImportError("PyYAML is required to use the quickstart helpers") from exc
 
     if metadata_path is None:
-        metadata_path = topeft_path("params/metadata.yml")
+        metadata_path = topeft_path("analysis/metadata/metadata.yml")
     candidate = Path(metadata_path).expanduser()
     if not candidate.is_absolute():
         candidate = Path.cwd() / candidate

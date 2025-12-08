@@ -15,16 +15,17 @@ from typing import Dict, Iterable, List, Sequence, Tuple
 # Paths are stored relative to the topeft repository root.  The CLI converts
 # them into absolute paths via ``topeft.modules.paths.topeft_path`` before
 # passing them to the workflow.
+_CANONICAL_METADATA_PATH = "analysis/metadata/metadata.yml"
 _SCENARIO_REGISTRY: Dict[str, str] = {
-    "TOP_22_006": "analysis/metadata/metadata_TOP_22_006.yaml",
-    "tau_analysis": "analysis/metadata/metadata_tau_analysis.yaml",
-    "fwd_analysis": "analysis/metadata/metadata_fwd_analysis.yaml",
-    # Supplemental Run-2 layouts reuse the closest metadata bundle for
-    # variables/systematics while their channel groups are driven by
-    # analysis/metadata/run2_scenarios.yaml.
-    "offz_tau_analysis": "analysis/metadata/metadata_tau_analysis.yaml",
-    "offz_fwd_analysis": "analysis/metadata/metadata_fwd_analysis.yaml",
-    "all_analysis": "analysis/metadata/metadata_tau_analysis.yaml",
+    # Run-2 scenarios all point at the canonical metadata bundle with the full
+    # systematics catalog. Channel groups continue to come from
+    # analysis/metadata/run2_scenarios.yaml via ``topeft.modules.scenario_groups``.
+    "TOP_22_006": _CANONICAL_METADATA_PATH,
+    "tau_analysis": _CANONICAL_METADATA_PATH,
+    "fwd_analysis": _CANONICAL_METADATA_PATH,
+    "offz_tau_analysis": _CANONICAL_METADATA_PATH,
+    "offz_fwd_analysis": _CANONICAL_METADATA_PATH,
+    "all_analysis": _CANONICAL_METADATA_PATH,
 }
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]

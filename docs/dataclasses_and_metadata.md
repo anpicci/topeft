@@ -77,14 +77,14 @@ For concrete manifest examples and troubleshooting checklists, see the
 
 ## YAML metadata catalogue
 
-The canonical metadata bundle (`topeft/params/metadata.yml`) contains several
+The canonical metadata bundle (`analysis/metadata/metadata.yml`) contains several
 sections that drive channel discovery and systematic planning:
 
 - `golden_jsons` maps each year to the luminosity mask used when running on
-  collision data. 【F:topeft/params/metadata.yml†L1-L7】
+  collision data. 【F:analysis/metadata/metadata.yml†L1-L7】
 - `channels.groups` defines scenario-specific region lists, including jet-bin
   expansions, histogram include/exclude lists, and separate application tags for
-  data vs. MC. 【F:topeft/params/metadata.yml†L9-L111】
+  data vs. MC. 【F:analysis/metadata/metadata.yml†L9-L111】
 - `variables` (further down in the file) describes histogram axes, binning, and
   callable expressions that populate the planner’s `variable_info` payloads.
 - `scenarios` binds friendly scenario names to channel groups so the CLI/YAML
@@ -109,7 +109,7 @@ summaries without additional glue code.
 Use this checklist when introducing or modifying Run‑2 metadata:
 
 1. **Edit locations**
-   - Clone ``topeft/params/metadata.yml`` to a tracked file (for example
+   - Clone ``analysis/metadata/metadata.yml`` to a tracked file (for example
      ``analysis/topeft_run2/configs/metadata_dev.yml``) before making changes.
    - Update scenario/group compositions in
      ``analysis/metadata/run2_scenarios.yaml`` and related metadata files under

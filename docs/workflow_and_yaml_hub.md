@@ -70,7 +70,7 @@ Both executors emit tuple-keyed histogram pickles in the `(variable, channel, ap
 
 Options files allow you to keep executor choices, region toggles, and metadata overrides in one place. The workflow consumes them in a predictable order:
 
-- `defaults` – applied first and always active. Good for repository-wide settings such as `summary_verbosity: full`, `do_systs: true`, or a custom `metadata` file cloned from `topeft/params/metadata.yml`.
+- `defaults` – applied first and always active. Good for repository-wide settings such as `summary_verbosity: full`, `do_systs: true`, or a custom `metadata` file cloned from `analysis/metadata/metadata.yml`.
 - `profiles` – named overlays that activate with a `:profile` suffix (for example `configs/fullR2_run.yml:cr`). If only one profile exists, it is applied automatically. Profiles commonly toggle `scenarios`, `regions`, or `executor` values.
 - Top-level keys – any values placed alongside `defaults` or `profiles` are merged last. Use them sparingly for ad-hoc tweaks you do not want to codify in a profile.
 
@@ -87,7 +87,7 @@ When `--options` is provided, the YAML becomes the single source of truth: CLI f
 
 1. Copy the nearest preset (for example `cp analysis/topeft_run2/configs/fullR2_run.yml analysis/topeft_run2/configs/fullR2_run_taskvine.yml`).
 2. Update `defaults.executor` to `taskvine` and add TaskVine resource hints if you want a dedicated distributed profile; keep a separate profile for local futures runs if needed.
-3. Clone `topeft/params/metadata.yml` to a tracked location and reference it via the `metadata` key when testing new variables or systematics.
+3. Clone `analysis/metadata/metadata.yml` to a tracked location and reference it via the `metadata` key when testing new variables or systematics.
 4. Check the merged configuration with `python run_analysis.py ... --options <file>:<profile> --summary-verbosity full --dry-run` to confirm the chosen samples, channels, and executor before launching a long run.
 
 Keeping these edits in YAML ensures collaborators can reproduce the exact configuration without hunting through older notebooks or shell history.

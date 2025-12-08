@@ -2,7 +2,7 @@
 # The paths are resolved from the analysis/topeft_run2 working directory used
 # in the documentation examples.
 # Point this key at whichever metadata bundle you would like to exercise.
-metadata: ../../topeft/params/metadata.yml
+metadata: ../metadata/metadata.yml
 jsonFiles:
   - ../../input_samples/sample_jsons/test_samples/UL17_private_ttH_for_CI.json
 prefix: ""

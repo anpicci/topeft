@@ -149,7 +149,7 @@ The prefix ensures that the remote EOS path is opened via XRootD.
 
 ## Metadata configuration
 
-Quickstart jobs lean entirely on ``topeft/params/metadata.yml`` to decide which
+Quickstart jobs lean entirely on ``analysis/metadata/metadata.yml`` to decide which
 regions, histograms, and weight variations to run.  Before editing the file,
 consult the [metadata configuration guide](run_analysis_configuration.md#metadata-configuration)
 for a full breakdown of each section.  The highlights are:
@@ -163,7 +163,7 @@ for a full breakdown of each section.  The highlights are:
 * ``systematics`` lists the available weight/object variations.  The helper
   inspects this block whenever ``--do-systs`` is requested.
 
-To test custom metadata, copy ``topeft/params/metadata.yml`` to a new location,
+To test custom metadata, copy ``analysis/metadata/metadata.yml`` to a new location,
 edit the clone, and pass it to the helper via ``--metadata``.  Keeping the clone
 under version control (for example ``analysis/topeft_run2/configs/metadata_dev.yml``)
 makes it easy to promote the same configuration to the full workflow once the
@@ -175,7 +175,7 @@ allowing the CLI to keep relying on the scenario registry for standard runs.
 
 ### Metadata scenarios
 
-The Run 2 metadata (``topeft/params/metadata.yml``) defines the channel bundles
+The Run 2 metadata (``analysis/metadata/metadata.yml``) defines the channel bundles
 exposed by the quickstart helpers.  Channel activation is now controlled solely
 through the scenario list:
 
@@ -237,7 +237,7 @@ misconfigurations are caught early.
     ```yaml
     # analysis/topeft_run2/configs/fullR2_run_tau_fwd.yml
     metadata: configs/metadata_dev.yml
-    # (clone topeft/params/metadata.yml to configs/metadata_dev.yml before editing)
+    # (clone analysis/metadata/metadata.yml to configs/metadata_dev.yml before editing)
     jsonFiles:
       - ../../input_samples/sample_jsons/test_samples/UL17_private_ttH_for_CI.json
     scenarios:
@@ -260,7 +260,7 @@ misconfigurations are caught early.
 Systematic variations are disabled by default to keep the run lightweight.
 Add ``--do-systs`` when you want to exercise the same code paths used in the
 full analysis.  The helper automatically inspects
-``topeft/params/metadata.yml`` to determine which sum-of-weights variations are
+``analysis/metadata/metadata.yml`` to determine which sum-of-weights variations are
 available and enables them in the Coffea processor.  Because only a single
 histogram is processed, enabling systematics keeps the runtime manageable while
 still producing variations in the output pickle.

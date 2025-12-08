@@ -10,18 +10,19 @@ import yaml
 
 TOPEFT_ROOT = Path(__file__).resolve().parents[1]
 JSON_PATH = TOPEFT_ROOT / "scratch" / "ch_lst_step5.json"
+CANONICAL_METADATA = TOPEFT_ROOT / "analysis" / "metadata" / "metadata.yml"
 
 METADATA_FILES = {
-    "TOP22_006_CH_LST_SR": TOPEFT_ROOT / "analysis" / "metadata" / "metadata_TOP_22_006.yaml",
-    "CH_LST_CR": TOPEFT_ROOT / "analysis" / "metadata" / "metadata_TOP_22_006.yaml",
-    "TAU_CH_LST_SR": TOPEFT_ROOT / "analysis" / "metadata" / "metadata_tau_analysis.yaml",
-    "TAU_CH_LST_CR": TOPEFT_ROOT / "analysis" / "metadata" / "metadata_tau_analysis.yaml",
-    "OFFZ_TAU_SPLIT_CH_LST_SR": TOPEFT_ROOT / "analysis" / "metadata" / "metadata_run2_groups.yaml",
-    "ALL_CH_LST_SR": TOPEFT_ROOT / "analysis" / "metadata" / "metadata_run2_groups.yaml",
+    "TOP22_006_CH_LST_SR": CANONICAL_METADATA,
+    "CH_LST_CR": CANONICAL_METADATA,
+    "TAU_CH_LST_SR": CANONICAL_METADATA,
+    "TAU_CH_LST_CR": CANONICAL_METADATA,
+    "OFFZ_TAU_SPLIT_CH_LST_SR": CANONICAL_METADATA,
+    "ALL_CH_LST_SR": CANONICAL_METADATA,
 }
 
 DERIVED_ONLY_GROUP = "OFFZ_FWD_SPLIT_CH_LST_SR"
-DERIVED_FILE = TOPEFT_ROOT / "analysis" / "metadata" / "metadata_run2_groups.yaml"
+DERIVED_FILE = CANONICAL_METADATA
 
 def normalize_jet_category(jet_cat: str | None) -> str:
     if not jet_cat:

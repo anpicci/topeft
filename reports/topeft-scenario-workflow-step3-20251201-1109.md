@@ -1,7 +1,7 @@
 # Step 3 – scenario metadata wiring
 
 ## Summary
-- `run_workflow` now requires `RunConfig.metadata_path` to be set by the CLI/options resolver and loads only that YAML, removing the legacy fallback to `params/metadata.yml`.
+- `run_workflow` now requires `RunConfig.metadata_path` to be set by the CLI/options resolver and loads only that YAML, removing the legacy fallback to `analysis/metadata/metadata.yml`.
 - `ChannelMetadataHelper` exposes `selected_group_names`, which returns the requested scenario groups when a legacy `channels.scenarios` block exists and otherwise yields every group defined in the per-scenario YAML.
 - `ChannelPlanner` retrieves the active groups via this helper and splits SR/CR purely by group names, keeping feature aggregation while staying agnostic to the legacy scenario map.
 

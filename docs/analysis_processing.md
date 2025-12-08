@@ -17,7 +17,7 @@ The high-level flow is:
    input manifests and returns a normalized ``samplesdict`` together with the
    expanded file list per sample.
 3. :class:`analysis.topeft_run2.workflow.ChannelPlanner` resolves the metadata
-   scenarios declared in ``topeft/params/metadata.yml`` and attaches the
+   scenarios declared in ``analysis/metadata/metadata.yml`` and attaches the
    resulting channel dictionaries to each histogram task.
 4. :class:`analysis.topeft_run2.workflow.HistogramPlanner` enumerates histogram
    combinations by crossing samples, channel metadata, Coffea applications, and
@@ -125,7 +125,7 @@ Systematic variations originate from two sources and meet inside the workflow:
   :func:`analysis.topeft_run2.run_analysis_helpers.weight_variations_from_metadata`
   and attached to each sample during ``SampleLoader.load``.  The workflow checks
   that every MC sample declares the required ``nSumOfWeights`` entries.
-* **Application variations** – defined in ``topeft/params/metadata.yml`` under
+* **Application variations** – defined in ``analysis/metadata/metadata.yml`` under
   the ``systematics`` block.  :class:`SystematicsHelper` projects them onto the
   selected channel features and returns a dictionary with the variations grouped
   by type.  The processor interprets those labels to register weight and object

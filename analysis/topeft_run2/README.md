@@ -68,8 +68,8 @@ This directory contains scripts for the Full Run 2 EFT analysis. This README doc
             --options configs/fullR2_run.yml
 
       Switch to the signal-region preset by appending ``:sr`` to the YAML path (``--options configs/fullR2_run.yml:sr``).  When ``--options`` is present the YAML file becomes the single source of truth—embed any extra overrides (for example executor choices or log verbosity) directly in the configuration or drop ``--options`` for an ad-hoc CLI run.
-    - Metadata scenarios from ``topeft/params/metadata.yml`` can be selected via ``--scenario`` when running without YAML (defaults to ``TOP_22_006``).  Additional bundles include ``tau_analysis`` for the tau-enriched categories and ``fwd_analysis`` for the forward-jet study.  Repeat the argument to combine scenarios on CLI-only runs or edit your YAML presets to keep the combinations version-controlled.
-    - When you need to test a custom metadata bundle, clone ``topeft/params/metadata.yml`` and reference it from the profile you launch with ``--options`` via the top-level ``metadata`` key.  This keeps overrides version-controlled while letting scenario-only runs continue to draw from the registry-backed defaults.
+    - Metadata scenarios from ``analysis/metadata/metadata.yml`` can be selected via ``--scenario`` when running without YAML (defaults to ``TOP_22_006``).  Additional bundles include ``tau_analysis`` for the tau-enriched categories and ``fwd_analysis`` for the forward-jet study.  Repeat the argument to combine scenarios on CLI-only runs or edit your YAML presets to keep the combinations version-controlled.
+    - When you need to test a custom metadata bundle, clone ``analysis/metadata/metadata.yml`` and reference it from the profile you launch with ``--options`` via the top-level ``metadata`` key.  This keeps overrides version-controlled while letting scenario-only runs continue to draw from the registry-backed defaults.
 
     - When running with the futures executor you can now tune the local workflow directly from the CLI (or the matching YAML keys).  The most common toggles are::
 

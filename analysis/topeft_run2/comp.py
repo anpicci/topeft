@@ -28,7 +28,7 @@ GetParam = topcoffea.modules.get_param_from_jsons.GetParam
 topcoffea_path = topcoffea.modules.paths.topcoffea_path
 get_tc_param = GetParam(topcoffea_path("params/params.json"))
 
-metadata_path = topeft_path("params/metadata.yml")
+metadata_path = topeft_path("analysis/metadata/metadata.yml")
 with open(metadata_path, "r") as f:
     metadata = yaml.safe_load(f)
 axes_info = metadata["variables"]
