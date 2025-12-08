@@ -1,10 +1,6 @@
-"""Deprecated shim for :mod:`topeft.modules.scenario_groups`."""
+"""Hard-decommissioned Run-2 scenario loader module."""
 
-from .scenario_groups import *  # noqa: F401,F403
-import warnings
-
-warnings.warn(
-    "topeft.modules.run2_scenarios is deprecated; use topeft.modules.scenario_groups instead.",
-    DeprecationWarning,
-    stacklevel=2,
+raise RuntimeError(
+    "topeft.modules.run2_scenarios has been removed. "
+    "Import topeft.modules.scenario_groups instead."
 )
