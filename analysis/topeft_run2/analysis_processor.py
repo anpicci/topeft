@@ -15,6 +15,7 @@ import awkward as ak
 import os
 import re
 import logging
+from copy import copy, deepcopy
 
 import coffea
 import coffea.processor as processor
@@ -22,7 +23,7 @@ import hist
 import topcoffea
 from coffea.analysis_tools import PackedSelection
 from coffea.lumi_tools import LumiMask
-from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
+from typing import Any, Dict, List, Optional, Sequence, Set, Tuple, Union
 
 from topeft.modules.paths import topeft_path
 from topeft.modules.corrections import (
@@ -50,6 +51,7 @@ from topeft.modules.systematics import (
     register_trigger_sf_weight,
     register_weight_variation,
     validate_data_weight_variations,
+    SystematicVariation,
 )
 
 HistEFT = topcoffea.modules.HistEFT.HistEFT
@@ -158,26 +160,26 @@ class VariationObjects:
     @classmethod
     def from_base(cls, base: BaseObjectState) -> "VariationObjects":
         return cls(
-            met=ak.copy(base.met),
-            electrons=ak.copy(base.electrons),
-            muons=ak.copy(base.muons),
-            taus=ak.copy(base.taus),
-            jets=ak.copy(base.jets),
-            loose_leptons=ak.copy(base.loose_leptons),
-            fakeable_leptons=ak.copy(base.fakeable_leptons),
-            fakeable_sorted=ak.copy(base.fakeable_sorted),
+            met=base.met,
+            electrons=base.electrons,
+            muons=base.muons,
+            taus=base.taus,
+            jets=base.jets,
+            loose_leptons=base.loose_leptons,
+            fakeable_leptons=base.fakeable_leptons,
+            fakeable_sorted=base.fakeable_sorted,
             cleaning_taus=(
-                ak.copy(base.cleaning_taus) if base.cleaning_taus is not None else None
+                base.cleaning_taus if base.cleaning_taus is not None else None
             ),
             n_loose_taus=(
-                ak.copy(base.n_loose_taus) if base.n_loose_taus is not None else None
+                base.n_loose_taus if base.n_loose_taus is not None else None
             ),
-            tau0=ak.copy(base.tau0) if base.tau0 is not None else None,
+            tau0=base.tau0 if base.tau0 is not None else None,
             shifted_cleaning_taus=(
-                ak.copy(base.cleaning_taus) if base.cleaning_taus is not None else None
+                base.cleaning_taus if base.cleaning_taus is not None else None
             ),
             central_cleaning_taus=(
-                ak.copy(base.cleaning_taus) if base.cleaning_taus is not None else None
+                base.cleaning_taus if base.cleaning_taus is not None else None
             ),
         )
 
@@ -230,6 +232,80 @@ class VariationState:
     include_elec_sf: bool = False
     include_tau_real_sf: bool = False
     include_tau_fake_sf: bool = False
+
+
+def _is_ues_base(base: Optional[str]) -> bool:
+    """Return ``True`` if *base* matches the MET unclustered-energy family."""
+
+    if base is None:
+        return False
+
+    base_key = str(base).strip().lower()
+    if not base_key:
+        return False
+
+    if base_key == "ues" or base_key.startswith("ues_") or base_key.endswith("_ues"):
+        return True
+
+    return "unclustered" in base_key
+
+
+def _build_jerc_allowed_variations(
+    systematic_variations: Optional[Sequence["SystematicVariation"]],
+    *,
+    is_mc: bool,
+) -> Dict[str, object]:
+    """Summarise JES/JER/UES variation requests for Tc2 gating.
+
+    The returned mapping only controls which shifted branches Tc2 materialises;
+    nominal jet and MET corrections always run independently of this payload.
+    """
+
+    jes_components: Set[str] = set()
+    jes_requested = False
+    jer_requested = False
+    ues_requested = False
+
+    if systematic_variations:
+        for variation in systematic_variations:
+            if variation is None or getattr(variation, "type", None) != "object":
+                continue
+
+            base_name = getattr(variation, "base", None)
+            if not base_name:
+                continue
+
+            base_key = str(base_name).strip().lower()
+            if base_key == "jes":
+                jes_requested = True
+                component = getattr(variation, "component", None)
+                if component:
+                    jes_components.add(str(component))
+                continue
+
+            if base_key == "jer":
+                jer_requested = True
+                continue
+
+            if _is_ues_base(base_key):
+                ues_requested = True
+
+    if jes_requested:
+        jes_value: Union[bool, Dict[str, object]]
+        if jes_components:
+            jes_value = {"components": sorted(jes_components)}
+        else:
+            jes_value = True
+    else:
+        jes_value = False
+
+    allowed = {
+        "jes": jes_value,
+        "jer": bool(is_mc and jer_requested),
+        "ues": bool(ues_requested),
+    }
+
+    return allowed
 
 
 @dataclass(frozen=True)
@@ -563,6 +639,20 @@ class AnalysisProcessor(processor.ProcessorABC):
         if self._systematic_variations and self._systematic_info is None:
             raise ValueError(
                 "systematic_variations must contain at least one entry when provided"
+            )
+
+        is_mc_sample = not bool(self._sample.get("isData"))
+        self._allowed_jerc_variations = _build_jerc_allowed_variations(
+            self._systematic_variations,
+            is_mc=is_mc_sample,
+        )
+        # ``allowed_jerc_variations`` gates only shifted JES/JER/UES branches.
+        # Central jet/MET corrections always run regardless of this payload.
+        if self._debug_logging:
+            self._debug(
+                "Resolved allowed JERC variations for %s: %s",
+                self._sample.get("histAxisName"),
+                self._allowed_jerc_variations,
             )
 
     @staticmethod
@@ -1370,33 +1460,36 @@ class AnalysisProcessor(processor.ProcessorABC):
             return variation_state
 
         tau = variation_state.objects.taus
+
+        # Always keep the central cleaning taus / counts from the base state
         central_cleaning_taus = variation_state.objects.central_cleaning_taus
         if central_cleaning_taus is None:
             central_cleaning_taus = variation_state.objects.cleaning_taus
-
         if central_cleaning_taus is None:
             central_cleaning_taus = tau[tau["isLoose"] > 0]
 
-        shifted_cleaning_taus = central_cleaning_taus
-
         if not dataset.is_data:
+            # Legacy semantics: TES/FES change tau kinematics only,
+            # but NOT which taus are used to clean jets.
             tau_pt, tau_mass = ApplyTESSystematic(
                 dataset.year, tau, dataset.is_data, variation_state.object_variation
             )
             tau["pt"], tau["mass"] = tau_pt, tau_mass
+
             tau_pt, tau_mass = ApplyFESSystematic(
                 dataset.year, tau, dataset.is_data, variation_state.object_variation
             )
             tau["pt"], tau["mass"] = tau_pt, tau_mass
-            shifted_cleaning_taus = tau[tau["isLoose"] > 0]
-            variation_state.objects.n_loose_taus = ak.num(shifted_cleaning_taus)
-            tau_padded = ak.pad_none(tau, 1)
-            variation_state.objects.tau0 = tau_padded[:, 0]
 
-        variation_state.objects.shifted_cleaning_taus = shifted_cleaning_taus
+            # Do NOT recompute cleaning_taus / n_loose_taus / tau0 here.
+            # They stay as in the central (TES-applied) base state.
+
         variation_state.objects.central_cleaning_taus = central_cleaning_taus
-        variation_state.objects.cleaning_taus = shifted_cleaning_taus
+        variation_state.objects.shifted_cleaning_taus = central_cleaning_taus
+        variation_state.objects.cleaning_taus = central_cleaning_taus
+        # Keep n_loose_taus and tau0 from BaseObjectState/VariationObjects.from_base
         variation_state.objects.taus = tau
+
         return variation_state
 
     def _build_cleaned_jets(
@@ -1416,55 +1509,6 @@ class AnalysisProcessor(processor.ProcessorABC):
         )
         met_raw = objects.met
 
-        def _log_jet_layout(label: str, arr: ak.Array) -> None:
-            if not self._debug_logging:
-                return
-
-            original_type = ak.type(arr)
-
-            try:
-                target = arr
-                selected_field = None
-
-                fields = ak.fields(target)
-                if fields:
-                    for candidate in ("jets", "Jet"):
-                        if candidate in fields:
-                            selected_field = candidate
-                            break
-
-                    if selected_field is None:
-                        selected_field = fields[0]
-
-                    target = target[selected_field]
-
-                target_fields = ak.fields(target)
-                if "pt" in target_fields:
-                    counts = ak.num(target.pt, axis=-1)
-                else:
-                    counts = ak.num(target, axis=-1)
-
-                counts = ak.values_astype(ak.fill_none(counts, 0), np.int64)
-            except Exception as exc:
-                raise TypeError(
-                    f"Unable to log jet layout for '{label}': "
-                    f"original_type={original_type!r}, target_type={ak.type(target)!r}, error={exc}"
-                ) from exc
-
-            preview = ak.to_list(counts[:5])
-            nonempty = ak.to_list((counts > 0)[:5])
-            self._debug(
-                "\n\n%s layout: type=%s selected_field=%s counts=%s nonempty=%s (len=%d)\n",
-                label,
-                ak.type(target),
-                selected_field,
-                preview,
-                nonempty,
-                len(counts),
-            )
-
-        _log_jet_layout("jets before cleaning", jets)
-
         if self.tau_h_analysis:
             vetos_tocleanjets = ak.with_name(
                 ak.concatenate([cleaning_taus, l_fo], axis=1),
@@ -1482,9 +1526,8 @@ class AnalysisProcessor(processor.ProcessorABC):
         jet_indices, veto_indices = ak.unzip(tmp)
         cleaned_jets = jets[~ak.any(jet_indices == veto_indices, axis=-1)]
 
-        _log_jet_layout("jets after cleaning", cleaned_jets)
-
-        jetptname = "pt_nom" if hasattr(cleaned_jets, "pt_nom") else "pt"
+        jetptname = "pt"
+        logging.info("jetptname: %s", jetptname)
 
         cleaned_jets["pt_raw"] = (1 - cleaned_jets.rawFactor) * cleaned_jets.pt
         cleaned_jets["mass_raw"] = (1 - cleaned_jets.rawFactor) * cleaned_jets.mass
@@ -1494,42 +1537,18 @@ class AnalysisProcessor(processor.ProcessorABC):
 
         if not dataset.is_data:
             pt_gen = None
-
-            try:
-                matched_gen = cleaned_jets.matched_gen
-            except Exception:
-                matched_gen = None
-
-            if matched_gen is not None:
-                pt_gen = matched_gen.pt
-            else:
-                genjet_idx = getattr(cleaned_jets, "genJetIdx", None)
-                event_record = getattr(cleaned_jets, "_events", None)
-                gen_jets = getattr(event_record, "GenJet", None)
-                if gen_jets is not None and genjet_idx is not None:
-                    try:
-                        valid_genjet_idx = genjet_idx >= 0
-                        safe_genjet_idx = ak.where(valid_genjet_idx, genjet_idx, None)
-                        pt_gen = ak.where(
-                            valid_genjet_idx,
-                            gen_jets[safe_genjet_idx].pt,
-                            ak.zeros_like(cleaned_jets.pt),
-                        )
-                    except Exception:
-                        pt_gen = None
-
-            if pt_gen is None:
-                pt_gen = ak.zeros_like(cleaned_jets.pt)
-
-            cleaned_jets["pt_gen"] = ak.values_astype(
-                ak.fill_none(pt_gen, 0), np.float32
+            # Use coffea's NanoAOD-style matching:
+            matched_gen = cleaned_jets.matched_gen
+            # matched_gen is a GenJetArray with None where no match
+            pt_gen = ak.values_astype(
+                ak.fill_none(matched_gen.pt, 0.0),
+                np.float32,
             )
+            cleaned_jets["pt_gen"] = pt_gen
 
-        jet_lazy_cache = None
-        jet_events = getattr(cleaned_jets, "_events", None)
-        jet_caches = getattr(jet_events, "caches", None) if jet_events is not None else None
-        if jet_caches:
-            jet_lazy_cache = jet_caches[0]
+
+        # ``allowed_variations`` only controls which shifted branches Tc2 builds;
+        # the nominal corrections configured below always run.
 
         corrected_jets = build_corrected_jets(
             ApplyJetCorrections(
@@ -1537,16 +1556,17 @@ class AnalysisProcessor(processor.ProcessorABC):
                 corr_type="jet",
                 isData=dataset.is_data,
                 era=dataset.run_era,
+                allowed_variations=self._allowed_jerc_variations,
             ),
             cleaned_jets,
-            lazy_cache=jet_lazy_cache,
         )
-        _log_jet_layout("jets after build_corrected_jets", corrected_jets)
+        logging.info("Corrected jets pt: %s", ak.to_list(corrected_jets.pt))
 
         cleaned_jets = ApplyJetSystematics(
             dataset.year, corrected_jets, variation_state.object_variation
         )
-        _log_jet_layout("jets after ApplyJetSystematics", cleaned_jets)
+
+        logging.info("Cleaned jets pt: %s", ak.to_list(cleaned_jets.pt))
 
         central_jet_counts = ak.num(corrected_jets.pt, axis=-1)
         variation_jet_counts = ak.num(cleaned_jets.pt, axis=-1)
@@ -1566,12 +1586,15 @@ class AnalysisProcessor(processor.ProcessorABC):
                 tuple(ak.fields(corrected_jets)),
             )
 
+        # Same semantics apply to MET: central recomputation always runs, and
+        # ``allowed_variations`` just restricts auxiliary systematic branches.
         met = build_corrected_met(
             ApplyJetCorrections(
                 dataset.year,
                 corr_type="met",
                 isData=dataset.is_data,
                 era=dataset.run_era,
+                allowed_variations=self._allowed_jerc_variations,
             ),
             met_raw,
             cleaned_jets,
@@ -1580,8 +1603,6 @@ class AnalysisProcessor(processor.ProcessorABC):
         objects.met = met
         objects.jets = cleaned_jets
         objects.fakeable_sorted = l_fo_conept_sorted
-
-        _log_jet_layout("jets after JEC/JER", cleaned_jets)
 
         def _ensure_boolean_mask(mask: ak.Array, reference: ak.Array, *, label: str):
             mask = ak.fill_none(mask, False)
@@ -1641,8 +1662,6 @@ class AnalysisProcessor(processor.ProcessorABC):
                     f"{label} must be a 1D numeric per-event array, not {counts_layout.purelist_depth}D"
                 )
             return ak.Array(counts_layout)
-
-        _log_jet_layout("good jets", good_jets)
 
         variation_state.cleaned_jets = cleaned_jets
         variation_state.good_jets = good_jets
@@ -2505,8 +2524,6 @@ class AnalysisProcessor(processor.ProcessorABC):
             ptbl_leading_b_pt = None
             b0pt = None
 
-        logging.info("ptbl: %s", ak.to_list(ptbl)) if ptbl is not None else None
-
         if "ptz" in var_def:
             ptz = te_es.get_Z_pt(l_fo_conept_sorted_padded[:, 0:3], 10.0)
             if self.offZ_3l_split:
@@ -2788,10 +2805,6 @@ class AnalysisProcessor(processor.ProcessorABC):
     @property
     def available_systematics(self):
         return self._available_systematics
-
-    @property
-    def columns(self):
-        return self._columns
 
     def _resolve_dataset_names(self, dataset_name: str) -> Tuple[str, str]:
         """Return the dataset label for histogram keys and the trigger dataset name."""

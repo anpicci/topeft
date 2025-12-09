@@ -1703,29 +1703,6 @@ channels:
           application_tags:
             mc:
               - isSR_4l
-  scenarios:
-    - name: TOP_22_006
-      description: Default Run 2 reinterpretation that combines the baseline
-        signal regions with shared control regions and, where needed, the off-Z
-        trilepton split.
-      groups:
-        - TOP22_006_CH_LST_SR
-        - CH_LST_CR
-        - OFFZ_SPLIT_CH_LST_SR
-    - name: tau_analysis
-      description: Analysis variant focusing on hadronic tau categories, pairing
-        tau-enriched signal regions with their dedicated control regions and the
-        common control set.
-      groups:
-        - TAU_CH_LST_SR
-        - TAU_CH_LST_CR
-        - CH_LST_CR
-    - name: fwd_analysis
-      description: Forward-lepton signal-region focus that reuses the common
-        control regions to constrain backgrounds.
-      groups:
-        - FWD_CH_LST_SR
-        - CH_LST_CR
 systematics:
   nominal:
     type: nominal

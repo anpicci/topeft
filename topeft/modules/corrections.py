@@ -1403,7 +1403,15 @@ def AttachPdfWeights(events):
 # JER: https://twiki.cern.ch/twiki/bin/viewauth/CMS/JetResolution
 # JES: https://twiki.cern.ch/twiki/bin/view/CMS/JECDataMC
 
-def ApplyJetCorrections(year, corr_type, isData, era, useclib=True, savelevels=False):
+def ApplyJetCorrections(
+    year,
+    corr_type,
+    isData,
+    era,
+    useclib=True,
+    savelevels=False,
+    allowed_variations=None,
+):
     usejecstack = not useclib
 
     if year not in clib_year_map.keys():
@@ -1487,26 +1495,18 @@ def ApplyJetCorrections(year, corr_type, isData, era, useclib=True, savelevels=F
         'UnClusteredEnergyDeltaY': 'MetUnclustEnUpDeltaY'
     }
 
-    # Return appropriate factory based on correction type
+    # Return appropriate factory based on correction type. ``allowed_variations``
+    # restricts the extra JES/JER/UES branches Tc2 materialises; the nominal
+    # corrections configured above always run.
     if corr_type == 'met':
-        return CorrectedMETFactory(name_map)
-    return CorrectedJetsFactory(name_map, jec_stack)
+        return CorrectedMETFactory(name_map, allowed_variations=allowed_variations)
+    return CorrectedJetsFactory(name_map, jec_stack, allowed_variations=allowed_variations)
 
 
-def build_corrected_jets(jet_factory, jets, lazy_cache=None):
-    """Materialise corrected jets, providing an awkward lazy cache when available."""
+def build_corrected_jets(jet_factory, jets):
+    """Materialise corrected jets."""
 
-    if lazy_cache is None:
-        events = getattr(jets, "_events", None)
-        caches = getattr(events, "caches", None) if events is not None else None
-        if caches:
-            lazy_cache = caches[0]
-
-    try:
-        corrected = jet_factory.build(jets, lazy_cache=lazy_cache)
-    except TypeError:
-        corrected = jet_factory.build(jets)
-
+    corrected = jet_factory.build(jets)
     return ak.Array(corrected)
 
 
