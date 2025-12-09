@@ -1503,20 +1503,10 @@ def ApplyJetCorrections(
     return CorrectedJetsFactory(name_map, jec_stack, allowed_variations=allowed_variations)
 
 
-def build_corrected_jets(jet_factory, jets, lazy_cache=None):
-    """Materialise corrected jets, providing an awkward lazy cache when available."""
+def build_corrected_jets(jet_factory, jets):
+    """Materialise corrected jets."""
 
-    if lazy_cache is None:
-        events = getattr(jets, "_events", None)
-        caches = getattr(events, "caches", None) if events is not None else None
-        if caches:
-            lazy_cache = caches[0]
-
-    try:
-        corrected = jet_factory.build(jets, lazy_cache=lazy_cache)
-    except TypeError:
-        corrected = jet_factory.build(jets)
-
+    corrected = jet_factory.build(jets)
     return ak.Array(corrected)
 
 
