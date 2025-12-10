@@ -84,7 +84,9 @@ def load_run2_channels_for_scenario(
     included so callers can still rely on ``ChannelMetadataHelper`` helpers that
     need the scenario → group map. Callers should pass either the already-loaded
     metadata mapping or a metadata path; when neither is provided the canonical
-    Run 2 bundle is used as a fallback.
+    Run 2 bundle is used as a fallback. This ensures that custom runs which
+    inject metadata remain consistent—only users who omit both inputs pay the
+    price of the legacy fallback to the canonical bundle.
     """
 
     scenario = resolve_scenario_groups(name)

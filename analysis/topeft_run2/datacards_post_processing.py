@@ -120,7 +120,12 @@ def resolve_scenario_metadata(
     metadata_path: str | None = None,
     require_variables: bool = False,
 ) -> Tuple[str, MetadataBundle, ChannelMetadataHelper]:
-    """Return the scenario name, metadata bundle, and helper for ``scenario_args``."""
+    """Return the scenario name, metadata bundle, and helper for ``scenario_args``.
+
+    The returned :class:`MetadataBundle` mirrors the metadata already loaded by
+    the workflow so downstream helpers (datacards, plotting, etc.) stay aligned
+    with the user-selected metadata file instead of reopening canonical paths.
+    """
 
     scenario_names = [name for name in (scenario_args or []) if name]
     if not scenario_names:

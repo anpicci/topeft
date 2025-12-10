@@ -1,4 +1,9 @@
-"""Shared helpers for loading metadata bundles once per execution."""
+"""Shared helpers for loading metadata bundles once per execution.
+
+This module is the canonical entry point for reading metadata YAML files.
+Callers elsewhere in the codebase should inject metadata loaded here instead
+of reopening YAML files directly.
+"""
 
 from __future__ import annotations
 

@@ -14,6 +14,7 @@ def _install_topcoffea_stub() -> None:
     utils_mod = ModuleType("topcoffea.modules.utils")
     utils_mod.get_hist_from_pkl = lambda *args, **kwargs: {}
     utils_mod.dump_to_pkl = lambda *args, **kwargs: None
+    utils_mod.regex_match = lambda choices, patterns: list(choices)
     remote_env_mod = ModuleType("topcoffea.modules.remote_environment")
     remote_env_mod.PIP_LOCAL_TO_WATCH = {}
     remote_env_mod.get_environment = lambda **kwargs: "env.tar.gz"
@@ -95,6 +96,7 @@ def _install_matplotlib_stubs() -> None:
         hist_mod.Hist = type("DummyHist", (), {})
         axis_mod = ModuleType("hist.axis")
         axis_mod.Variable = lambda *args, **kwargs: None
+        axis_mod.Regular = lambda *args, **kwargs: None
         hist_mod.axis = axis_mod
         sys.modules["hist"] = hist_mod
     if "cycler" not in sys.modules:
@@ -104,6 +106,27 @@ def _install_matplotlib_stubs() -> None:
 
 
 _install_matplotlib_stubs()
+def _install_boost_histogram_stub() -> None:
+    if "boost_histogram" in sys.modules:
+        return
+    module = ModuleType("boost_histogram")
+    storage_mod = ModuleType("boost_histogram.storage")
+    storage_mod.Weight = lambda *args, **kwargs: object()
+    module.storage = storage_mod
+    sys.modules["boost_histogram"] = module
+    sys.modules["boost_histogram.storage"] = storage_mod
+
+
+def _install_uproot_stub() -> None:
+    if "uproot" in sys.modules:
+        return
+    uproot_mod = ModuleType("uproot")
+    uproot_mod.open = lambda *args, **kwargs: object()
+    sys.modules["uproot"] = uproot_mod
+
+
+_install_boost_histogram_stub()
+_install_uproot_stub()
 def _install_coffea_stub() -> None:
     if "coffea" in sys.modules:
         return

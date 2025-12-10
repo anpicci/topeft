@@ -154,6 +154,14 @@ class MissingParton(RateSystematic):
         pass
 
 class DatacardMaker():
+    """Datacard builder that operates on histogram pickles and injected metadata.
+
+    Instances must be constructed with explicit histogram variable definitions
+    (either via ``metadata`` or ``variable_definitions``). No built-in fallback
+    to the canonical ``analysis/metadata/metadata.yml`` exists—callers are
+    responsible for loading and passing the metadata they used during histogram
+    production.
+    """
     # TODO:
     #   We are abusing the grouping mechanism to also handle renaming processes, but might want to
     #   separate into two distinct actions to make things easier to follow for the reader
