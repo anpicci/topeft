@@ -40,7 +40,8 @@ DEFAULT_WEIGHT_VARIATIONS = [
     "nSumOfWeights_renormfactDown",
 ]
 
-VALID_LOG_LEVELS = {"CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG"}
+VALID_LOG_LEVELS = {"NONE", "INFO", "WARNING", "ERROR"}
+VALID_LOG_LEVELS_DISPLAY = "none, info, warning, error"
 
 def normalize_sequence(value: Any) -> List[str]:
     """Flatten ``value`` into a list of strings."""
@@ -206,14 +207,63 @@ def coerce_log_level(value: Any) -> Optional[str]:
     if value is None:
         return None
     if isinstance(value, str):
-        normalized = value.strip().upper()
+        normalized = value.strip()
         if not normalized:
             return None
-        if normalized in VALID_LOG_LEVELS:
-            return normalized
-    raise ValueError(
-        f"log_level must be one of {', '.join(sorted(VALID_LOG_LEVELS))}"
-    )
+        lowered = normalized.lower()
+        if lowered == "debug":
+            raise ValueError(
+                "DEBUG log level is reserved for internal development and cannot be set via --log-level. "
+                f"Use one of: {VALID_LOG_LEVELS_DISPLAY}."
+            )
+        upper_normalized = lowered.upper()
+        if upper_normalized in VALID_LOG_LEVELS:
+            return upper_normalized
+    raise ValueError(f"log_level must be one of: {VALID_LOG_LEVELS_DISPLAY}")
+
+
+def _normalize_executor_name(value: str | None) -> str:
+    """Return a canonical executor identifier without applying aliases."""
+
+    return (value or "").strip().lower()
+
+
+def _resolve_effective_log_level(config: "RunConfig") -> str:
+    """Return the effective log level after applying CLI defaults."""
+
+    normalized = (config.log_level or "INFO").upper()
+    if normalized not in VALID_LOG_LEVELS:
+        raise ValueError(
+            f"log level '{normalized}' is not supported. Use one of: {VALID_LOG_LEVELS_DISPLAY}."
+        )
+    return normalized
+
+
+def _reject_legacy_debug_flags(obj: Any) -> None:
+    """Raise when legacy debug flags are supplied via CLI or options."""
+
+    if getattr(obj, "debug_logging", False):
+        raise ValueError(
+            "The --debug-logging flag has been removed. Use --log-level (none, info, warning, error). "
+            "DEBUG-level logging is reserved for internal development."
+        )
+    if getattr(obj, "processor_debug", False):
+        raise ValueError(
+            "The --processor-debug flag has been removed. Processor instrumentation is no longer controlled via the CLI. "
+            "Use --log-level for user-facing logs."
+        )
+
+
+def _enforce_taskvine_logging_policy(executor: str, log_level: str) -> None:
+    """Ensure TaskVine only runs with log-level 'none'."""
+
+    normalized_executor = _normalize_executor_name(executor)
+    normalized_level = (log_level or "").strip().upper()
+    if normalized_executor == "taskvine" and normalized_level != "NONE":
+        raise ValueError(
+            "TaskVine runs require '--log-level none' to avoid worker log spam. "
+            "Either set --log-level none or use a non-TaskVine executor."
+        )
 
 
 class SampleLoader:

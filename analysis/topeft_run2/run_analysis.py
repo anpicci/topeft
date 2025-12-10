@@ -58,7 +58,14 @@ def _verify_numpy_pandas_abi() -> None:
             "refreshed environment for both futures and TaskVine runs."
         ) from exc
 
-from run_analysis_helpers import RunConfig, RunConfigBuilder
+from run_analysis_helpers import (
+    RunConfig,
+    RunConfigBuilder,
+    _enforce_taskvine_logging_policy,
+    _normalize_executor_name,
+    _reject_legacy_debug_flags,
+    _resolve_effective_log_level,
+)
 from topeft.modules.executor_cli import (
     ExecutorCLIHelper,
     FuturesArgumentSpec,
@@ -214,8 +221,8 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         default=False,
         help=(
-            "Enable verbose AnalysisProcessor debugging/instrumentation. "
-            "Leave unset to suppress debug logs during normal production runs."
+            "Deprecated flag; no longer supported. Using this flag will raise an error. "
+            "Use --log-level (none, info, warning, error); DEBUG is reserved for internal development."
         ),
     )
     parser.add_argument(
@@ -223,15 +230,16 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         default=False,
         help=(
-            "Enable AnalysisProcessor-specific debug instrumentation without raising the global log level."
+            "Deprecated flag; no longer supported. Using this flag will raise an error. "
+            "Processor instrumentation is no longer controlled via the CLI."
         ),
     )
     parser.add_argument(
         "--log-level",
         default=None,
         help=(
-            "Set the Python logging level "
-            "(DEBUG, INFO, WARNING, ERROR, CRITICAL). Defaults to INFO when unset."
+            "Set the Python logging level to control topeft/topcoffea output. "
+            "Allowed values: none, info, warning, error. Defaults to info when unset."
         ),
     )
     parser.add_argument(
@@ -313,12 +321,6 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _normalize_executor_name(value: str | None) -> str:
-    """Return a canonical executor identifier without applying aliases."""
-
-    return (value or "").strip().lower()
-
-
 def _ensure_supported_executor(value: str) -> None:
     """Raise an error when ``value`` is not a supported executor."""
 
@@ -327,17 +329,6 @@ def _ensure_supported_executor(value: str) -> None:
             f"Unsupported executor '{value}'. "
             f"Valid options are: {', '.join(SUPPORTED_EXECUTORS)}."
         )
-
-
-def _resolve_logging_controls(config: RunConfig) -> tuple[str, bool]:
-    """Return the log level and processor-debug flag based on CLI inputs."""
-
-    if config.debug_logging:
-        return "DEBUG", True
-    if config.log_level:
-        normalized = config.log_level.upper()
-        return normalized, normalized == "DEBUG"
-    return "INFO", False
 
 
 def _apply_scenario_metadata_defaults(config: RunConfig) -> tuple[str, str, bool]:
@@ -397,6 +388,11 @@ def main(argv: Sequence[str] | None = None) -> None:
         argv_list = list(argv)
     args = parser.parse_args(argv_list)
 
+    try:
+        _reject_legacy_debug_flags(args)
+    except ValueError as exc:
+        parser.error(str(exc))
+
     if getattr(args, "options", None) and getattr(args, "scenarios", None):
         parser.error(
             "Scenario selection must come from either --scenario or --options. "
@@ -409,22 +405,24 @@ def main(argv: Sequence[str] | None = None) -> None:
     executor_default = _normalize_executor_name(getattr(parser_defaults, "executor", ""))
     if not executor_default:
         executor_default = "taskvine"
-    logger.info(
-        "[DEBUG CHECK] args.log_level=%r, args.debug_logging=%r, args.processor_debug=%r",
-        getattr(args, "log_level", None),
-        getattr(args, "debug_logging", None),
-        getattr(args, "processor_debug", None),
-    )
     executor_choice = _normalize_executor_name(getattr(args, "executor", ""))
     if not executor_choice:
         executor_choice = executor_default
     setattr(args, "executor", executor_choice)
 
     config_builder = RunConfigBuilder(parser_defaults)
-    config = config_builder.build(
-        args,
-        getattr(args, "options", None),
-    )
+    try:
+        config = config_builder.build(
+            args,
+            getattr(args, "options", None),
+        )
+    except (ValueError, TypeError, KeyError) as exc:
+        parser.error(str(exc))
+
+    try:
+        _reject_legacy_debug_flags(config)
+    except ValueError as exc:
+        parser.error(str(exc))
 
     try:
         scenario_name, metadata_path, metadata_from_options = _apply_scenario_metadata_defaults(config)
@@ -436,24 +434,35 @@ def main(argv: Sequence[str] | None = None) -> None:
             logger.error("Failed to resolve metadata scenario")
         sys.exit(1)
 
-    run_cfg = config
-    logger.info(
-        "[DEBUG CHECK] builder input: log_level from args=%r",
-        getattr(args, "log_level", None),
-    )
-    logger.info(
-        "[DEBUG CHECK] builder output: run_cfg.log_level=%r, run_cfg.debug_logging=%r, run_cfg.processor_debug=%r",
-        run_cfg.log_level,
-        run_cfg.debug_logging,
-        getattr(run_cfg, "processor_debug", None),
-    )
+    try:
+        effective_log_level = _resolve_effective_log_level(config)
+    except ValueError as exc:
+        parser.error(str(exc))
 
-    effective_log_level, driver_debug = _resolve_logging_controls(config)
+    if chunksize_from_cli:
+        config.chunksize = getattr(args, "chunksize", config.chunksize)
+    if nchunks_from_cli:
+        config.nchunks = getattr(args, "nchunks", config.nchunks)
+
+    current_executor = _normalize_executor_name(getattr(config, "executor", ""))
+    if executor_from_cli:
+        current_executor = executor_choice
+    elif not current_executor:
+        current_executor = executor_choice
+    _ensure_supported_executor(current_executor)
+    config.executor = current_executor
+
+    try:
+        _enforce_taskvine_logging_policy(config.executor, effective_log_level)
+    except ValueError as exc:
+        parser.error(str(exc))
+
     # Currently configures logging for the driver process; futures workers keep
     # their default handlers until we plumb a per-worker hook.
-    configure_logging(effective_log_level)
-
-    logger.info("[DEBUG CHECK] effective_log_level=%r", effective_log_level)
+    configure_logging(
+        effective_log_level,
+        allow_dev_debug=(config.executor != "taskvine"),
+    )
 
     if metadata_from_options:
         logger.info(
@@ -468,23 +477,9 @@ def main(argv: Sequence[str] | None = None) -> None:
             metadata_path,
         )
 
-    processor_debug = bool(getattr(config, "processor_debug", False) or driver_debug)
     config.log_level = effective_log_level
-    config.debug_logging = driver_debug
-    config.processor_debug = processor_debug
-
-    if chunksize_from_cli:
-        config.chunksize = getattr(args, "chunksize", config.chunksize)
-    if nchunks_from_cli:
-        config.nchunks = getattr(args, "nchunks", config.nchunks)
-
-    current_executor = _normalize_executor_name(getattr(config, "executor", ""))
-    if executor_from_cli:
-        current_executor = executor_choice
-    elif not current_executor:
-        current_executor = executor_choice
-    _ensure_supported_executor(current_executor)
-    config.executor = current_executor
+    config.debug_logging = False
+    config.processor_debug = False
     logger.info(
         "Using executor: %s | chunksize=%s | maxchunks=%s",
         config.executor,

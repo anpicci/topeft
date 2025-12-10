@@ -1527,7 +1527,7 @@ class AnalysisProcessor(processor.ProcessorABC):
         cleaned_jets = jets[~ak.any(jet_indices == veto_indices, axis=-1)]
 
         jetptname = "pt"
-        logging.info("jetptname: %s", jetptname)
+        logger.info("jetptname: %s", jetptname)
 
         cleaned_jets["pt_raw"] = (1 - cleaned_jets.rawFactor) * cleaned_jets.pt
         cleaned_jets["mass_raw"] = (1 - cleaned_jets.rawFactor) * cleaned_jets.mass
@@ -1560,13 +1560,13 @@ class AnalysisProcessor(processor.ProcessorABC):
             ),
             cleaned_jets,
         )
-        logging.info("Corrected jets pt: %s", ak.to_list(corrected_jets.pt))
+        logger.info("Corrected jets pt: %s", ak.to_list(corrected_jets.pt))
 
         cleaned_jets = ApplyJetSystematics(
             dataset.year, corrected_jets, variation_state.object_variation
         )
 
-        logging.info("Cleaned jets pt: %s", ak.to_list(cleaned_jets.pt))
+        logger.info("Cleaned jets pt: %s", ak.to_list(cleaned_jets.pt))
 
         central_jet_counts = ak.num(corrected_jets.pt, axis=-1)
         variation_jet_counts = ak.num(cleaned_jets.pt, axis=-1)
@@ -2633,14 +2633,14 @@ class AnalysisProcessor(processor.ProcessorABC):
         else:
             ecut_mask = None
 
-        logging.info("Variable name: %s", self._var)
-        logging.info("Variable definition: %s", self._var_def)
+        logger.info("Variable name: %s", self._var)
+        logger.info("Variable definition: %s", self._var_def)
         dense_axis_name = self._var
         dense_axis_vals = eval(self._var_def, {"ak": ak, "np": np}, locals())
         dense_axis_vals = self._check_dense_axis_invariants(
             dense_axis_name, dense_axis_vals, n_events
         )
-        logging.info("Variable values: %s", ak.to_list(dense_axis_vals))
+        logger.info("Variable values: %s", ak.to_list(dense_axis_vals))
         
         weight_variations_to_run = list(variation_state.weight_variations)
         if weight_variations_to_run:
