@@ -182,7 +182,7 @@ def test_load_metadata_prefers_custom_file(tmp_path):
     assert "foo" in (bundle.variables or {})
 
 
-def test_run2_scenario_channels_use_provided_metadata(monkeypatch):
+def test_scenario_channels_use_provided_metadata(monkeypatch):
     metadata = {
         "channels": {
             "groups": {
@@ -196,7 +196,7 @@ def test_run2_scenario_channels_use_provided_metadata(monkeypatch):
         raise AssertionError("Fallback loader should not be used when metadata is provided")
 
     monkeypatch.setattr(scenario_groups, "_load_group_metadata", fail_fallback)
-    result = scenario_groups.load_run2_channels_for_scenario(
+    result = scenario_groups.load_channels_for_scenario(
         "TOP_22_006", metadata=metadata
     )
 

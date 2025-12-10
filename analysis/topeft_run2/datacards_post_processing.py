@@ -149,7 +149,7 @@ def resolve_scenario_metadata(
     channels_data = channels_metadata
     if scenario_groups.is_run2_scenario(scenario_name):
         try:
-            channels_data = scenario_groups.load_run2_channels_for_scenario(
+            channels_data = scenario_groups.load_channels_for_scenario(
                 scenario_name,
                 metadata=metadata,
                 metadata_path=bundle.path,

@@ -57,10 +57,10 @@ def test_run2_scenarios_resolve_to_canonical_metadata():
 
 
 def test_run2_channel_groups_cover_canonical_and_derived_sets():
-    top_channels = scenario_groups.load_run2_channels_for_scenario("TOP_22_006")
+    top_channels = scenario_groups.load_channels_for_scenario("TOP_22_006")
     assert "TOP22_006_CH_LST_SR" in (top_channels.get("groups") or {})
 
-    derived_channels = scenario_groups.load_run2_channels_for_scenario("all_analysis")
+    derived_channels = scenario_groups.load_channels_for_scenario("all_analysis")
     assert "ALL_CH_LST_SR" in (derived_channels.get("groups") or {})
 
 

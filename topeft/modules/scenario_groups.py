@@ -71,7 +71,7 @@ def is_run2_scenario(name: str) -> bool:
     return name in _load_run2_scenarios()
 
 
-def load_run2_channels_for_scenario(
+def load_channels_for_scenario(
     name: str,
     *,
     metadata: Mapping[str, object] | None = None,

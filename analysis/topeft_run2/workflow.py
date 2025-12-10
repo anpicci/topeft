@@ -1680,7 +1680,7 @@ def run_workflow(config: RunConfig) -> None:
             )
             config.scenario_names = [primary_scenario]
         try:
-            channels_data = scenario_groups.load_run2_channels_for_scenario(
+            channels_data = scenario_groups.load_channels_for_scenario(
                 primary_scenario
             )
             logger.info(
