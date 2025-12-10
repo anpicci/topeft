@@ -3,7 +3,6 @@ import os
 import copy
 import datetime
 import argparse
-import yaml
 import matplotlib as mpl
 mpl.use('Agg')
 import matplotlib.pyplot as plt
@@ -15,11 +14,10 @@ import topcoffea
 
 from topeft.modules.paths import topeft_path
 from topeft.modules.topcoffea_imports import require_script
+from analysis.topeft_run2.metadata_loader import load_metadata
 
-metadata_path = topeft_path("analysis/metadata/metadata.yml")
-with open(metadata_path, "r") as f:
-    metadata = yaml.safe_load(f)
-axes_info = metadata["variables"]
+_CANONICAL_METADATA_PATH = topeft_path("analysis/metadata/metadata.yml")
+_AXES_INFO = None
 
 from topeft.modules.yield_tools import YieldTools
 import topeft.modules.get_rate_systs as grs
@@ -139,6 +137,20 @@ SR_GRP_MAP = {
     "tttt" : [],
     "tXq" : [],
 }
+
+
+def _set_axes_info(axes_info):
+    global _AXES_INFO
+    _AXES_INFO = axes_info
+
+
+def _require_axes_info():
+    if not _AXES_INFO:
+        raise RuntimeError(
+            "Histogram variable definitions have not been loaded. "
+            "Pass --metadata or call _set_axes_info with the desired mapping."
+        )
+    return _AXES_INFO
 
 # Best fit point from TOP-19-001 with madup numbers for the 10 new WCs
 WCPT_EXAMPLE = {
@@ -918,6 +930,7 @@ def make_all_sr_data_mc_plots(dict_of_hists,year,save_dir_path):
     #        '4l': [2,3,4,dict_of_hists['njets'].axis('njets').edges()[-1]]
     #    }
     #}
+    axes_info = _require_axes_info()
     analysis_bins['ptz'] = axes_info['ptz']['variable']
     analysis_bins['lj0pt'] = axes_info['lj0pt']['variable']
 
@@ -979,7 +992,14 @@ def make_all_sr_data_mc_plots(dict_of_hists,year,save_dir_path):
                 print("Warning: empty data histo, continuing")
                 continue
 
-            fig = make_cr_fig(hist_mc, hist_data, var=var_name, unit_norm_bool=False, bins=axes_info[var_name]['variable'],group=SR_GRP_MAP)
+            fig = make_cr_fig(
+                hist_mc,
+                hist_data,
+                var=var_name,
+                unit_norm_bool=False,
+                bins=axes_info[var_name]['variable'],
+                group=SR_GRP_MAP,
+            )
             if year is not None: year_str = year
             else: year_str = "ULall"
             title = chan_name + "_" + var_name + "_" + year_str
@@ -1061,7 +1081,11 @@ def make_all_sr_plots(dict_of_hists,year,unit_norm_bool,save_dir_path,split_by_c
                 if not hist_sig_integrated_ch.eval({}):
                     print("Warning: empty mc histo, continuing")
                     continue
-                fig = make_single_fig(hist_sig_integrated_ch,unit_norm_bool,bins=axes_info[var_name]['variable'])
+                fig = make_single_fig(
+                    hist_sig_integrated_ch,
+                    unit_norm_bool,
+                    bins=axes_info[var_name]['variable'],
+                )
                 title = hist_cat+"_"+var_name
                 if unit_norm_bool: title = title + "_unitnorm"
                 fig.savefig(os.path.join(save_dir_path_tmp,title))
@@ -1103,7 +1127,11 @@ def make_all_sr_plots(dict_of_hists,year,unit_norm_bool,save_dir_path,split_by_c
                         continue
 
                     # Make plots
-                    fig = make_single_fig(hist_sig_grouped_tmp[{'channel': sr_cat_dict[grouped_hist_cat]}][{'channel': sum}],unit_norm_bool,bins=axes_info[var_name]['variable'])
+                    fig = make_single_fig(
+                        hist_sig_grouped_tmp[{'channel': sr_cat_dict[grouped_hist_cat]}][{'channel': sum}],
+                        unit_norm_bool,
+                        bins=axes_info[var_name]['variable'],
+                    )
                     title = proc_name+"_"+grouped_hist_cat+"_"+var_name
                     if unit_norm_bool: title = title + "_unitnorm"
                     fig.savefig(os.path.join(save_dir_path_tmp,title))
@@ -1324,7 +1352,23 @@ def main():
     parser.add_argument("-y", "--year", default=None, help = "The year of the sample")
     parser.add_argument("-u", "--unit-norm", action="store_true", help = "Unit normalize the plots")
     parser.add_argument("-s", "--skip-syst", default=False, action="store_true", help = "Skip syst errs in plots, only relevant for CR plots right now")
+    parser.add_argument(
+        "--metadata",
+        default=None,
+        help=(
+            "Metadata YAML describing histogram variables. Defaults to the canonical "
+            "analysis/metadata/metadata.yml bundle."
+        ),
+    )
     args = parser.parse_args()
+
+    metadata_file = args.metadata or _CANONICAL_METADATA_PATH
+    bundle = load_metadata(metadata_file, required_sections=("variables",))
+    _set_axes_info(bundle.variables or {})
+    if args.metadata is None:
+        print(
+            "No metadata override provided; using canonical analysis/metadata/metadata.yml for binning."
+        )
 
     # Whether or not to unit norm the plots
     unit_norm_bool = args.unit_norm

@@ -94,6 +94,7 @@ from .run_analysis_helpers import (
     unique_preserving_order,
     weight_variations_from_metadata,
 )
+from .metadata_loader import load_metadata
 from .nanoevents_helpers import nanoevents_factory_from_root
 from .systematics_validation import (
     metadata_non_nominal_bases,
@@ -1618,7 +1619,6 @@ class RunWorkflow:
 def run_workflow(config: RunConfig) -> None:
     """Convenience wrapper mirroring the behaviour of ``run_analysis.py``."""
 
-    import yaml
     from topeft.modules.channel_metadata import ChannelMetadataHelper
 
     metadata_source = config.metadata_path
@@ -1627,20 +1627,10 @@ def run_workflow(config: RunConfig) -> None:
             "RunConfig.metadata_path is not set. The scenario registry or options profile "
             "must select a metadata bundle before launching run_workflow."
         )
-    candidate_path = Path(metadata_source).expanduser()
-    if not candidate_path.is_absolute():
-        candidate_path = Path.cwd() / candidate_path
-    try:
-        metadata_file = candidate_path.resolve(strict=True)
-    except FileNotFoundError as exc:
-        raise FileNotFoundError(
-            f"Metadata file '{candidate_path}' could not be found."
-        ) from exc
-
+    bundle = load_metadata(metadata_source)
+    metadata_file = bundle.path
+    metadata = bundle.payload
     config.metadata_path = str(metadata_file)
-
-    with metadata_file.open("r", encoding="utf-8") as handle:
-        metadata = yaml.safe_load(handle) or {}
 
     metadata_variations = metadata_non_nominal_bases(metadata)
     if metadata_variations:
@@ -1678,23 +1668,23 @@ def run_workflow(config: RunConfig) -> None:
 
     channels_metadata = metadata.get("channels")
     channels_data = channels_metadata
-    use_run2_channels = scenario_groups.is_run2_scenario(primary_scenario)
-    if use_run2_channels:
+    use_canonical_scenario_channels = scenario_groups.is_scenario(primary_scenario)
+    if use_canonical_scenario_channels:
         if len(config.scenario_names) > 1:
             logger.warning(
-                "Run 2 scenario '%s' requested alongside additional scenarios (%s). "
-                "Only the primary scenario can be used for channel selection; "
-                "ignoring the rest.",
+                "Scenario '%s' from the canonical scenario definitions was requested "
+                "alongside additional scenarios (%s). Only the primary scenario can be "
+                "used for channel selection; ignoring the rest.",
                 primary_scenario,
                 ", ".join(config.scenario_names[1:]),
             )
             config.scenario_names = [primary_scenario]
         try:
-            channels_data = scenario_groups.load_run2_channels_for_scenario(
+            channels_data = scenario_groups.load_channels_for_scenario(
                 primary_scenario
             )
             logger.info(
-                "Loaded %d Run 2 channel groups for scenario '%s'.",
+                "Loaded %d canonical channel groups for scenario '%s'.",
                 len((channels_data or {}).get("groups", {})),
                 primary_scenario,
             )
@@ -1709,7 +1699,7 @@ def run_workflow(config: RunConfig) -> None:
     if not channels_data:
         raise ValueError(
             f"Channel metadata is missing for scenario '{primary_scenario}'. "
-            f"Checked canonical Run 2 definitions and metadata YAML ({metadata_file})."
+            f"Checked canonical scenario definitions and metadata YAML ({metadata_file})."
         )
 
     channel_helper = ChannelMetadataHelper(channels_data)

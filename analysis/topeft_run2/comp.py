@@ -21,24 +21,40 @@ import time
 import json
 import os
 import topcoffea
-import yaml
 from topeft.modules.paths import topeft_path
+from analysis.topeft_run2.metadata_loader import load_metadata
 
 GetParam = topcoffea.modules.get_param_from_jsons.GetParam
 topcoffea_path = topcoffea.modules.paths.topcoffea_path
 get_tc_param = GetParam(topcoffea_path("params/params.json"))
 
-metadata_path = topeft_path("analysis/metadata/metadata.yml")
-with open(metadata_path, "r") as f:
-    metadata = yaml.safe_load(f)
-axes_info = metadata["variables"]
+_CANONICAL_METADATA_PATH = topeft_path("analysis/metadata/metadata.yml")
+BINNING = {}
 
-BINNING = {k: v['variable'] for k,v in axes_info.items() if 'variable' in v}
+
+def _set_binning(metadata_path: str):
+    bundle = load_metadata(metadata_path, required_sections=("variables",))
+    variables = bundle.variables or {}
+    global BINNING
+    BINNING = {
+        name: value["variable"]
+        for name, value in variables.items()
+        if isinstance(value, dict) and "variable" in value
+    }
+
+
+def _require_binning():
+    if not BINNING:
+        raise RuntimeError(
+            "Histogram variable binning is unavailable. Load metadata via --metadata before running comparisons."
+        )
+    return BINNING
 
 def comp(fin1, fin2, hists1, hists2, newHist1, newHist2, tolerance):
     fout = open('comp_log.txt', 'w')
     old_hist = True if 'kmohrman' in fin2 else False # Official anatest25 was made _before_ the luminosity step was added
     match = True
+    binning = _require_binning()
     if '_np' in fin1 and '_np' in fin2:
         for hname in hists2:
             if 'njets' in hname: continue
@@ -137,12 +153,12 @@ def comp(fin1, fin2, hists1, hists2, newHist1, newHist2, tolerance):
                             # Rebin old histogram to match new variable binning
                             if 'njets' not in hname and not newHist1:
                                 v1norebin = h1_syst.values(overflow='all')[()]
-                                bins = BINNING[hname]
+                                bins = binning[hname]
                                 v1rebin = h1_syst.rebin(hname, Bin(hname, h1_syst.axis(hname).label, bins))
                                 v1 = v1rebin.values(overflow='all')[()]
                                 #v1norebin = h1_syst.rebin(hname, Bin(hname, h1_syst.axis(hname).label, bins)).values(overflow='all')[()]
                             if 'njets' not in hname and not newHist2:
-                                bins = BINNING[hname]
+                                bins = binning[hname]
                                 v2 = h2_syst.rebin(hname, Bin(hname, h2_syst.axis(hname).label, bins)).values(overflow='all')[()]
                             if old_hist and 'data' not in proc:
                                 v2 = v2*lumi
@@ -163,7 +179,7 @@ def comp(fin1, fin2, hists1, hists2, newHist1, newHist2, tolerance):
                                     edg = h1_syst.axes()[0].edges()[:-1]
                                 else:
                                     edg = h1_syst.axes[0].edges[:-1]
-                                bins = BINNING[hname]#[:-1]
+                                bins = binning[hname]
                                 #if not newHist1 and 'TTTo2L2Nu_centralUL18' in proc: print(proc, 'full1', edg, v1norebin)
                                 #if 'TTTo2L2Nu_centralUL18' in proc: print(proc, 'rebin', bins, v1)
                                 #if not newHist1 and 'TTTo2L2Nu_centralUL18' in proc: print(proc, 'manre', bins, [v1norebin[0], sum(v1norebin[1:3]), sum(v1norebin[4:5]), sum(v1norebin[6:11])])
@@ -295,10 +311,10 @@ def comp(fin1, fin2, hists1, hists2, newHist1, newHist2, tolerance):
                             else: v2 = h2_syst.values(overflow='all')[()]
                             # Rebin old histogram to match new variable binning
                             if 'njets' not in hname and not newHist1:
-                                bins = BINNING[hname]
+                                bins = binning[hname]
                                 v1 = h1_syst.rebin(hname, Bin(hname, h1_syst.axis(hname).label, bins)).values(overflow='all')[()]
                             if 'njets' not in hname and not newHist2:
-                                bins = BINNING[hname]
+                                bins = binning[hname]
                                 v2 = h2_syst.rebin(hname, Bin(hname, h2_syst.axis(hname).label, bins)).values(overflow='all')[()]
                             if old_hist and 'data' not in proc:
                                 v2 = v2*lumi
@@ -335,12 +351,26 @@ if __name__ == '__main__':
     parser.add_argument('--newHist1', action='store_true', help='First file was made with the new histEFT')
     parser.add_argument('--newHist2', action='store_true', help='Second file was made with the new histEFT')
     parser.add_argument('--tolerance', '-t', default='1e-3', help='Tolerance for warnings')
+    parser.add_argument(
+        '--metadata',
+        default=None,
+        help=(
+            "Metadata YAML describing histogram binning. Defaults to the canonical "
+            "analysis/metadata/metadata.yml bundle."
+        ),
+    )
     args    = parser.parse_args()
     fin1    = args.fin1
     fin2    = args.fin2
     newHist1 = args.newHist1
     newHist2 = args.newHist2
     tolerance = float(args.tolerance)
+    metadata_file = args.metadata or _CANONICAL_METADATA_PATH
+    _set_binning(metadata_file)
+    if args.metadata is None:
+        print(
+            "No metadata override provided; using canonical analysis/metadata/metadata.yml for histogram binning."
+        )
 
     if ('_np' in fin1 and '_np' not in fin2) or ('_np' in fin2 and '_np' not in fin1):
         raise Exception("Looks like you're trying to compare a non-prompt subtracted file to one without!")

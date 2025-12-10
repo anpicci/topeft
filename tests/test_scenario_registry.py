@@ -47,7 +47,7 @@ def _tail_components(path: str, depth: int = 3) -> tuple[str, ...]:
     return parts[-depth:]
 
 
-def test_run2_scenarios_resolve_to_canonical_metadata():
+def test_scenarios_resolve_to_canonical_metadata():
     resolution = scenario_registry.resolve_scenario_choice("TOP_22_006")
     assert _tail_components(resolution.metadata_path) == (
         "analysis",
@@ -56,15 +56,15 @@ def test_run2_scenarios_resolve_to_canonical_metadata():
     )
 
 
-def test_run2_channel_groups_cover_canonical_and_derived_sets():
-    top_channels = scenario_groups.load_run2_channels_for_scenario("TOP_22_006")
+def test_scenario_channel_groups_cover_canonical_and_derived_sets():
+    top_channels = scenario_groups.load_channels_for_scenario("TOP_22_006")
     assert "TOP22_006_CH_LST_SR" in (top_channels.get("groups") or {})
 
-    derived_channels = scenario_groups.load_run2_channels_for_scenario("all_analysis")
+    derived_channels = scenario_groups.load_channels_for_scenario("all_analysis")
     assert "ALL_CH_LST_SR" in (derived_channels.get("groups") or {})
 
 
-def test_run2_scenarios_reference_known_metadata_groups(tmp_path=None):
+def test_scenarios_reference_known_metadata_groups(tmp_path=None):
     repo_root = Path(__file__).resolve().parents[1]
     scenarios_path = repo_root / "analysis" / "metadata" / "run2_scenarios.yaml"
     metadata_path = repo_root / "analysis" / "metadata" / "metadata.yml"

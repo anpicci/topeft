@@ -2,14 +2,17 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
-from typing import Dict, Mapping, MutableMapping, Sequence, Tuple
+from typing import Dict, Mapping, MutableMapping, Sequence, Tuple, Union
 
 import yaml
 
 from topeft.modules.paths import topeft_path
+
+logger = logging.getLogger(__name__)
 
 SCENARIO_DEFINITIONS_PATH = Path(
     topeft_path("../analysis/metadata/run2_scenarios.yaml")
@@ -34,16 +37,16 @@ class ScenarioDefinition:
         return self.group_names
 
 
-def load_run2_scenarios() -> Dict[str, ScenarioDefinition]:
-    """Return the scenarios enumerated in ``run2_scenarios.yaml`` keyed by name."""
+def load_scenarios() -> Dict[str, ScenarioDefinition]:
+    """Return the scenarios enumerated in the scenario definition YAML keyed by name."""
 
-    return dict(_load_run2_scenarios())
+    return dict(_load_scenarios())
 
 
 def resolve_scenario_groups(name: str) -> ScenarioDefinition:
     """Return the :class:`ScenarioDefinition` matching ``name``."""
 
-    scenarios = load_run2_scenarios()
+    scenarios = load_scenarios()
     try:
         return scenarios[name]
     except KeyError as exc:
@@ -54,31 +57,66 @@ def resolve_scenario_groups(name: str) -> ScenarioDefinition:
         ) from exc
 
 
-def known_run2_scenarios() -> Tuple[str, ...]:
-    """Return the scenario names enumerated in ``run2_scenarios.yaml``."""
+def known_scenarios() -> Tuple[str, ...]:
+    """Return the scenario names enumerated in the scenario definition YAML."""
 
-    return tuple(_load_run2_scenarios().keys())
+    return tuple(_load_scenarios().keys())
 
 
-def is_run2_scenario(name: str) -> bool:
-    """Return ``True`` when ``name`` is defined in ``run2_scenarios.yaml``."""
+def is_scenario(name: str) -> bool:
+    """Return ``True`` when ``name`` is defined in the scenario definition YAML."""
 
     if not name:
         return False
-    return name in _load_run2_scenarios()
+    return name in _load_scenarios()
 
 
-def load_run2_channels_for_scenario(name: str) -> Mapping[str, object]:
+def load_channels_for_scenario(
+    name: str,
+    *,
+    metadata: Mapping[str, object] | None = None,
+    metadata_path: Union[str, Path, None] = None,
+) -> Mapping[str, object]:
     """Return metadata suitable for :class:`ChannelMetadataHelper`.
 
     The returned mapping follows the ``metadata['channels']`` structure and
     contains only the groups requested by ``name``.  Scenario information is
     included so callers can still rely on ``ChannelMetadataHelper`` helpers that
-    need the scenario → group map.
+    need the scenario → group map. Callers should pass either the already-loaded
+    metadata mapping or a metadata path; when neither is provided the canonical
+    canonical bundle is used as a fallback. This ensures that custom runs which
+    inject metadata remain consistent—only users who omit both inputs pay the
+    price of the legacy fallback to the bundled metadata.
     """
 
     scenario = resolve_scenario_groups(name)
-    available_groups = _load_group_metadata()
+    available_groups = None
+    source_label = None
+
+    if metadata is not None:
+        available_groups = _extract_groups_from_payload(metadata, "<in-memory metadata>")
+        source_label = "provided metadata payload"
+    elif metadata_path is not None:
+        candidate = Path(metadata_path).expanduser()
+        if not candidate.is_absolute():
+            candidate = Path.cwd() / candidate
+        payload = _read_yaml_mapping(candidate.resolve())
+        available_groups = _extract_groups_from_payload(payload, str(candidate))
+        source_label = str(candidate)
+    else:
+        logger.warning(
+            "No metadata supplied when resolving scenario '%s'. Falling back to canonical %s; "
+            "custom runs may diverge if metadata differs.",
+            name,
+            ", ".join(str(path) for path in GROUP_METADATA_PATHS),
+        )
+        available_groups = _load_group_metadata()
+        source_label = "canonical metadata"
+
+    if not available_groups:
+        raise ValueError(
+            f"No channel groups available for scenario '{name}' (metadata source: {source_label})."
+        )
 
     selected_groups: Dict[str, Mapping[str, object]] = {}
     for group_name in scenario.groups:
@@ -103,7 +141,7 @@ def load_run2_channels_for_scenario(name: str) -> Mapping[str, object]:
 
 
 @lru_cache(maxsize=1)
-def _load_run2_scenarios() -> Mapping[str, ScenarioDefinition]:
+def _load_scenarios() -> Mapping[str, ScenarioDefinition]:
     payload = _read_yaml_mapping(SCENARIO_DEFINITIONS_PATH)
     scenarios_section = payload.get("scenarios") or {}
     if not isinstance(scenarios_section, Mapping):
@@ -159,31 +197,10 @@ def _load_group_metadata() -> Dict[str, Mapping[str, object]]:
     groups: Dict[str, Mapping[str, object]] = {}
     for metadata_path in GROUP_METADATA_PATHS:
         payload = _read_yaml_mapping(metadata_path)
-        channels = payload.get("channels") or {}
-        if not isinstance(channels, Mapping):
-            raise TypeError(
-                f"'channels' in {metadata_path} must be a mapping with 'groups'"
-            )
-        available = channels.get("groups") or {}
-        if not isinstance(available, Mapping):
-            raise TypeError(
-                f"'channels.groups' in {metadata_path} must be a mapping of group definitions"
-            )
-        for group_name, metadata in available.items():
-            if not isinstance(group_name, str):
-                raise TypeError(
-                    f"Channel group names in {metadata_path} must be strings"
-                )
-            if not isinstance(metadata, Mapping):
-                raise TypeError(
-                    f"Channel group {group_name!r} in {metadata_path} must be a mapping"
-                )
-            if group_name in groups:
-                # Some groups (e.g. shared control regions) appear in multiple
-                # metadata bundles with cosmetic differences. Retain the first
-                # encounter to provide deterministic behaviour.
-                continue
-            groups[group_name] = metadata
+        for group_name, metadata in _extract_groups_from_payload(
+            payload, str(metadata_path)
+        ).items():
+            groups.setdefault(group_name, metadata)
     return groups
 
 
@@ -195,3 +212,26 @@ def _read_yaml_mapping(path: Path) -> Mapping[str, object]:
     if not isinstance(payload, Mapping):
         raise TypeError(f"{path} must contain a YAML mapping at the top level")
     return payload
+
+
+def _extract_groups_from_payload(
+    payload: Mapping[str, object], source: str
+) -> Dict[str, Mapping[str, object]]:
+    channels = payload.get("channels") or {}
+    if not isinstance(channels, Mapping):
+        raise TypeError(f"'channels' in {source} must be a mapping with 'groups'")
+    available = channels.get("groups") or {}
+    if not isinstance(available, Mapping):
+        raise TypeError(
+            f"'channels.groups' in {source} must be a mapping of group definitions"
+        )
+    groups: Dict[str, Mapping[str, object]] = {}
+    for group_name, metadata in available.items():
+        if not isinstance(group_name, str):
+            raise TypeError(f"Channel group names in {source} must be strings")
+        if not isinstance(metadata, Mapping):
+            raise TypeError(
+                f"Channel group {group_name!r} in {source} must be a mapping"
+            )
+        groups[group_name] = metadata
+    return groups
