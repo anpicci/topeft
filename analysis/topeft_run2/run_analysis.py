@@ -63,7 +63,6 @@ from run_analysis_helpers import (
     RunConfigBuilder,
     _enforce_taskvine_logging_policy,
     _normalize_executor_name,
-    _reject_legacy_debug_flags,
     _resolve_effective_log_level,
 )
 from topeft.modules.executor_cli import (
@@ -214,24 +213,6 @@ def build_parser() -> argparse.ArgumentParser:
             "systematics, and 'full' prepends those lists to the per-combination "
             "table plus the structured dump (including a note when "
             "--split-lep-flavor is active)."
-        ),
-    )
-    parser.add_argument(
-        "--debug-logging",
-        action="store_true",
-        default=False,
-        help=(
-            "Deprecated flag; no longer supported. Using this flag will raise an error. "
-            "Use --log-level (none, info, warning, error); DEBUG is reserved for internal development."
-        ),
-    )
-    parser.add_argument(
-        "--processor-debug",
-        action="store_true",
-        default=False,
-        help=(
-            "Deprecated flag; no longer supported. Using this flag will raise an error. "
-            "Processor instrumentation is no longer controlled via the CLI."
         ),
     )
     parser.add_argument(
@@ -388,11 +369,6 @@ def main(argv: Sequence[str] | None = None) -> None:
         argv_list = list(argv)
     args = parser.parse_args(argv_list)
 
-    try:
-        _reject_legacy_debug_flags(args)
-    except ValueError as exc:
-        parser.error(str(exc))
-
     if getattr(args, "options", None) and getattr(args, "scenarios", None):
         parser.error(
             "Scenario selection must come from either --scenario or --options. "
@@ -417,11 +393,6 @@ def main(argv: Sequence[str] | None = None) -> None:
             getattr(args, "options", None),
         )
     except (ValueError, TypeError, KeyError) as exc:
-        parser.error(str(exc))
-
-    try:
-        _reject_legacy_debug_flags(config)
-    except ValueError as exc:
         parser.error(str(exc))
 
     try:
@@ -478,8 +449,6 @@ def main(argv: Sequence[str] | None = None) -> None:
         )
 
     config.log_level = effective_log_level
-    config.debug_logging = False
-    config.processor_debug = False
     logger.info(
         "Using executor: %s | chunksize=%s | maxchunks=%s",
         config.executor,

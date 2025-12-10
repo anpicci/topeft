@@ -66,6 +66,7 @@ from topeft.modules.executor import (
 from topeft.modules.runner_output import normalise_runner_output, tuple_dict_stats
 
 logger = logging.getLogger(__name__)
+_DEV_DEBUG = os.environ.get("TOPEFT_DEV_DEBUG", "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _import_topcoffea_submodule(submodule: str):
@@ -991,7 +992,7 @@ class RunWorkflow:
             available_systematics=task.available_systematics,
             metadata_path=self._metadata_path,
             executor_mode=self._config.executor,
-            debug_logging=bool(getattr(self._config, "processor_debug", self._config.debug_logging)),
+            debug_logging=_DEV_DEBUG,
         )
         if not isinstance(processor_instance, coffea_processor_module.ProcessorABC):
             raise TypeError(
@@ -1342,7 +1343,7 @@ class RunWorkflow:
             if not channel_dict:
                 continue
 
-            if self._config.debug_logging:
+            if _DEV_DEBUG:
                 logger.info("Channel %s metadata: %s", task.clean_channel, channel_dict)
                 logger.info("Task detail: %s", task)
 

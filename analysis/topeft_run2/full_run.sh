@@ -27,7 +27,7 @@ PrintUsage() {
 Usage: full_run.sh [-y YEAR [YEAR ...]] [-t TAG] [--cr | --sr] \
                    [--executor {taskvine,futures,iterative}] [--outdir PATH] [--manager NAME] \
                    [--samples PATH [PATH ...]] [--scenario NAME] [--log-level LEVEL] \
-                   [--debug-logging] [--dry-run] [extra run_analysis args]
+                   [--dry-run] [extra run_analysis args]
 
 Examples:
   # Control-region TaskVine run over Run-3 bundles using defaults defined in the
@@ -60,9 +60,8 @@ Notes:
   * The default output name is <YEARS>_(CRs|SRs)_<TAG>, saved to the specified
     output directory with the 5-tuple histogram schema used throughout this
     branch.  Use --dry-run to print the resolved command without launching
-    Python.  Pass --debug-logging to forward the instrumentation flag (always
-    DEBUG) or --log-level LEVEL to tweak the Python logging verbosity seen in
-    run_analysis.py.
+    Python.  Use --log-level LEVEL to tweak the Python logging verbosity seen in
+    run_analysis.py (allowed: none, info, warning, error).
 USAGE
 }
 
@@ -110,8 +109,6 @@ main() {
   local futures_retries=0
   local futures_retry_wait=5.0
   local dry_run=false
-  local debug_logging=false
-  local processor_debug=false
   local log_level=""
   local auto_options_spec=""
 
@@ -226,34 +223,12 @@ main() {
         dry_run=true
         shift
         ;;
-      --debug-logging)
-        debug_logging=true
-        shift
-        ;;
-      --processor-debug)
-        processor_debug=true
-        shift
-        ;;
       --log-level)
         log_level="$2"
         shift 2
         ;;
       --log-level=*)
         log_level="${1#*=}"
-        shift
-        ;;
-      --debug-logging=*)
-        local value="${1#*=}"
-        if [[ "${value,,}" != "0" && "${value,,}" != "false" && -n "$value" ]]; then
-          debug_logging=true
-        fi
-        shift
-        ;;
-      --processor-debug=*)
-        local value="${1#*=}"
-        if [[ "${value,,}" != "0" && "${value,,}" != "false" && -n "$value" ]]; then
-          processor_debug=true
-        fi
         shift
         ;;
       --options)
@@ -630,10 +605,6 @@ main() {
     esac
   fi
 
-  if [[ "$debug_logging" == true && "$processor_debug" == false ]]; then
-    processor_debug=true
-  fi
-
   local -a options=(
     --outname "$out_name"
     --outpath "$outdir"
@@ -662,12 +633,6 @@ main() {
     options+=(--skip-cr --do-systs)
   fi
 
-  if [[ "$debug_logging" == true ]]; then
-    options+=(--debug-logging)
-  fi
-  if [[ "$processor_debug" == true ]]; then
-    options+=(--processor-debug)
-  fi
   if [[ -n "$log_level" ]]; then
     options+=(--log-level "$log_level")
   fi

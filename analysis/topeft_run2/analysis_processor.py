@@ -425,7 +425,7 @@ class AnalysisProcessor(processor.ProcessorABC):
         systematic_variations=None,
         available_systematics=None,
         metadata_path: Optional[str] = None,
-        debug_logging: bool = True,
+        debug_logging: bool = False,
         executor_mode: Optional[str] = None,
         suppress_debug_prints: Optional[bool] = None,
     ):

@@ -1,4 +1,3 @@
-import argparse
 import importlib.util
 import sys
 from pathlib import Path
@@ -32,19 +31,26 @@ def test_debug_log_level_rejected():
         run_analysis_helpers.coerce_log_level("debug")
 
 
-def test_legacy_debug_flags_fail():
-    with pytest.raises(
-        ValueError,
-        match="--debug-logging flag has been removed",
-    ):
-        run_analysis_helpers._reject_legacy_debug_flags(
-            argparse.Namespace(debug_logging=True, processor_debug=False),
-        )
+def test_coerce_log_level_none_normalized():
+    result = run_analysis_helpers.coerce_log_level("none")
+    assert result == "NONE"
 
-    with pytest.raises(
-        ValueError,
-        match="--processor-debug flag has been removed",
-    ):
-        run_analysis_helpers._reject_legacy_debug_flags(
-            argparse.Namespace(debug_logging=False, processor_debug=True),
-        )
+
+class DummyConfig:
+    def __init__(self, log_level):
+        self.log_level = log_level
+
+
+def test_resolve_effective_log_level_defaults_to_info():
+    cfg = DummyConfig(log_level=None)
+    assert run_analysis_helpers._resolve_effective_log_level(cfg) == "INFO"
+
+
+def test_resolve_effective_log_level_accepts_warning():
+    cfg = DummyConfig(log_level="WARNING")
+    assert run_analysis_helpers._resolve_effective_log_level(cfg) == "WARNING"
+
+
+def test_non_taskvine_executor_allows_any_level():
+    run_analysis_helpers._enforce_taskvine_logging_policy("futures", "INFO")
+    run_analysis_helpers._enforce_taskvine_logging_policy("futures", "NONE")

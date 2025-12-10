@@ -239,21 +239,6 @@ def _resolve_effective_log_level(config: "RunConfig") -> str:
     return normalized
 
 
-def _reject_legacy_debug_flags(obj: Any) -> None:
-    """Raise when legacy debug flags are supplied via CLI or options."""
-
-    if getattr(obj, "debug_logging", False):
-        raise ValueError(
-            "The --debug-logging flag has been removed. Use --log-level (none, info, warning, error). "
-            "DEBUG-level logging is reserved for internal development."
-        )
-    if getattr(obj, "processor_debug", False):
-        raise ValueError(
-            "The --processor-debug flag has been removed. Processor instrumentation is no longer controlled via the CLI. "
-            "Use --log-level for user-facing logs."
-        )
-
-
 def _enforce_taskvine_logging_policy(executor: str, log_level: str) -> None:
     """Ensure TaskVine only runs with log-level 'none'."""
 
@@ -429,8 +414,6 @@ class RunConfig:
     taskvine_print_stdout: bool = True
     ecut: Optional[float] = None
     summary_verbosity: str = "brief"
-    debug_logging: bool = False
-    processor_debug: bool = False
     log_level: Optional[str] = None
     log_tasks: bool = False
     environment_file: Optional[str] = "cached"
@@ -506,8 +489,6 @@ class RunConfigBuilder:
             "resources_mode": ("resources_mode", _coerce_optional_string),
             "taskvine_print_stdout": ("taskvine_print_stdout", coerce_bool),
             "summary_verbosity": ("summary_verbosity", coerce_summary_verbosity),
-            "debug_logging": ("debug_logging", coerce_bool),
-            "processor_debug": ("processor_debug", coerce_bool),
             "log_tasks": ("log_tasks", coerce_bool),
             "environment_file": ("environment_file", coerce_environment_file),
             "futures_status": ("futures_status", coerce_bool),
@@ -647,7 +628,6 @@ class RunConfigBuilder:
                 "taskvine_print_stdout": "taskvine_print_stdout",
                 "environment_file": "environment_file",
                 "log_level": "log_level",
-                "debug_logging": "debug_logging",
                 "futures_status": "futures_status",
                 "futures_tail_timeout": "futures_tail_timeout",
                 "futures_memory": "futures_memory",
