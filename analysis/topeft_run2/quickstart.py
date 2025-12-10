@@ -27,6 +27,8 @@ from .run_analysis_helpers import (
     unique_preserving_order,
     weight_variations_from_metadata,
 )
+from .metadata_loader import load_metadata
+
 try:
     from .workflow import (
         DEFAULT_SCENARIO_NAME,
@@ -45,6 +47,7 @@ except ImportError:  # pragma: no cover - optional workflow helper
     RunWorkflow = None  # type: ignore[assignment]
 
 _DEFAULT_VARIABLES: Tuple[str, ...] = ("lj0pt",)
+_DEFAULT_METADATA_PATH = topeft_path("analysis/metadata/metadata.yml")
 
 
 @dataclass(frozen=True)
@@ -72,22 +75,12 @@ class PreparedSamples:
 
 
 def _load_metadata(metadata_path: Optional[str]) -> Tuple[MutableMapping[str, object], Path]:
-    try:  # pragma: no cover - optional dependency resolution
-        import yaml
-    except ImportError as exc:  # pragma: no cover
-        raise ImportError("PyYAML is required to use the quickstart helpers") from exc
-
-    if metadata_path is None:
-        metadata_path = topeft_path("analysis/metadata/metadata.yml")
-    candidate = Path(metadata_path).expanduser()
-    if not candidate.is_absolute():
-        candidate = Path.cwd() / candidate
-    metadata_file = candidate.resolve(strict=True)
-    with metadata_file.open("r", encoding="utf-8") as handle:
-        loaded = yaml.safe_load(handle) or {}
-    if not isinstance(loaded, MutableMapping):
+    resolved_path = metadata_path or _DEFAULT_METADATA_PATH
+    bundle = load_metadata(resolved_path)
+    metadata = bundle.payload
+    if not isinstance(metadata, MutableMapping):
         raise TypeError("Metadata YAML must define a mapping of configuration blocks")
-    return copy.deepcopy(loaded), metadata_file  # ensure callers can mutate safely
+    return copy.deepcopy(metadata), bundle.path  # ensure callers can mutate safely
 
 
 def _select_variables(

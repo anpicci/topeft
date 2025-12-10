@@ -73,9 +73,18 @@ def resolve_scenario_path(name: str) -> str:
     return resolve_scenario_choice(name).metadata_path
 
 
+def select_metadata_path(name: str, explicit_path: str | None) -> str:
+    """Return ``explicit_path`` when provided, otherwise fall back to the registry."""
+
+    if explicit_path:
+        return explicit_path
+    return resolve_scenario_path(name)
+
+
 __all__ = [
     "ScenarioResolution",
     "known_scenarios",
     "resolve_scenario_choice",
     "resolve_scenario_path",
+    "select_metadata_path",
 ]

@@ -5,9 +5,8 @@ import json
 import sys
 from typing import Iterable, List, Tuple
 
-import yaml
-
-from analysis.topeft_run2.scenario_registry import resolve_scenario_choice
+from analysis.topeft_run2.metadata_loader import load_metadata, MetadataBundle
+from analysis.topeft_run2.scenario_registry import select_metadata_path
 from topeft.modules import scenario_groups
 from topeft.modules.channel_metadata import ChannelMetadataHelper
 
@@ -115,8 +114,13 @@ def _analysis_mode_for_group(group, scenario_name):
     return "top22006"
 
 
-def resolve_scenario_metadata(scenario_args: Iterable[str]) -> Tuple[str, str, ChannelMetadataHelper]:
-    """Return the scenario name, metadata path, and helper for ``scenario_args``."""
+def resolve_scenario_metadata(
+    scenario_args: Iterable[str],
+    *,
+    metadata_path: str | None = None,
+    require_variables: bool = False,
+) -> Tuple[str, MetadataBundle, ChannelMetadataHelper]:
+    """Return the scenario name, metadata bundle, and helper for ``scenario_args``."""
 
     scenario_names = [name for name in (scenario_args or []) if name]
     if not scenario_names:
@@ -129,17 +133,21 @@ def resolve_scenario_metadata(scenario_args: Iterable[str]) -> Tuple[str, str, C
         )
 
     scenario_name = scenario_names[0]
-    resolution = resolve_scenario_choice(scenario_name)
-
-    with open(resolution.metadata_path, "r", encoding="utf-8") as metadata_file:
-        metadata = yaml.safe_load(metadata_file) or {}
+    metadata_file = select_metadata_path(scenario_name, metadata_path)
+    required = ["channels"]
+    if require_variables:
+        required.append("variables")
+    bundle = load_metadata(metadata_file, required_sections=tuple(required))
+    metadata = bundle.payload
 
     channels_metadata = metadata.get("channels")
     channels_data = channels_metadata
     if scenario_groups.is_run2_scenario(scenario_name):
         try:
             channels_data = scenario_groups.load_run2_channels_for_scenario(
-                scenario_name
+                scenario_name,
+                metadata=metadata,
+                metadata_path=bundle.path,
             )
         except Exception as exc:
             print(
@@ -151,11 +159,11 @@ def resolve_scenario_metadata(scenario_args: Iterable[str]) -> Tuple[str, str, C
     if not channels_data:
         raise ValueError(
             f"Channel metadata is missing for scenario '{scenario_name}'. "
-            f"Checked canonical Run 2 definitions and metadata YAML ({resolution.metadata_path})."
+            f"Checked canonical Run 2 definitions and metadata YAML ({bundle.path})."
         )
 
     helper = ChannelMetadataHelper(channels_data)
-    return scenario_name, resolution.metadata_path, helper
+    return scenario_name, bundle, helper
 
 
 def collect_datacard_channels(
@@ -213,10 +221,21 @@ def main():
             "Only one scenario per run is currently supported."
         ),
     )
+    parser.add_argument(
+        "--metadata",
+        default=None,
+        help=(
+            "Metadata YAML to use for channel definitions. When omitted the scenario registry "
+            "default for the selected scenario is used."
+        ),
+    )
     args = parser.parse_args()
 
     try:
-        scenario_name, metadata_path, channel_helper = resolve_scenario_metadata(args.scenario)
+        scenario_name, metadata_bundle, channel_helper = resolve_scenario_metadata(
+            args.scenario,
+            metadata_path=args.metadata,
+        )
     except ValueError as exc:
         print(f"ERROR: {exc}")
         sys.exit(1)

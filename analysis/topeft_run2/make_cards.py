@@ -195,6 +195,14 @@ def main():
             "tau_analysis, fwd_analysis). Only one scenario per run is supported."
         ),
     )
+    parser.add_argument(
+        "--metadata",
+        default=None,
+        help=(
+            "Metadata YAML supplying channels/variables for datacards. "
+            "Defaults to the scenario registry path for the selected scenario."
+        ),
+    )
 
     args = parser.parse_args()
     pkl_file   = args.pkl_file
@@ -225,7 +233,11 @@ def main():
         wcs = wcs.split(",")
 
     try:
-        scenario_name, metadata_path, channel_helper = resolve_scenario_metadata(args.scenario)
+        scenario_name, metadata_bundle, channel_helper = resolve_scenario_metadata(
+            args.scenario,
+            metadata_path=args.metadata,
+            require_variables=True,
+        )
     except ValueError as exc:
         print(f"ERROR: {exc}")
         sys.exit(1)
@@ -269,6 +281,7 @@ def main():
         shutil.copy("make_cards.py",out_dir)
 
     tic = time.time()
+    kwargs["metadata"] = metadata_bundle.payload
     dc = DatacardMaker(pkl_file,**kwargs)
 
     # convert wc_vals string to a dictionary

@@ -8,9 +8,8 @@ import os
 import re
 import json
 import time
-import yaml
-
 from collections import defaultdict
+from collections.abc import Mapping
 
 import topcoffea
 
@@ -18,10 +17,6 @@ from topeft.modules.paths import topeft_path
 from topeft.modules.compatibility import add_sumw2_stub
 
 regex_match = topcoffea.modules.utils.regex_match
-
-with open(topeft_path("analysis/metadata/metadata.yml"), "r") as f:
-    metadata = yaml.safe_load(f)
-axes_info = metadata["variables"]
 
 PRECISION = 6   # Decimal point precision in the text datacard output
 
@@ -192,12 +187,6 @@ class DatacardMaker():
         "ttlnu_": ["ttlnuJet_"],
     }
 
-    # Controls how we rebin the dense axis of the corresponding distribution
-    BINNING = {}
-    for name, value in axes_info.items():
-        if "variable" in value:
-            BINNING[name] = value["variable"]
-
     YEARS = ["UL16","UL16APV","UL17","UL18"]
 
     SYST_YEARS = ["2016","2016APV","2017","2018"]
@@ -317,6 +306,27 @@ class DatacardMaker():
         return r
 
     def __init__(self,pkl_path,**kwargs):
+        metadata_payload = kwargs.pop("metadata", None)
+        variable_definitions = kwargs.pop("variable_definitions", None)
+        if (
+            metadata_payload is not None
+            and variable_definitions is None
+            and isinstance(metadata_payload, Mapping)
+        ):
+            variable_definitions = metadata_payload.get("variables")
+        if variable_definitions is None:
+            raise ValueError(
+                "DatacardMaker requires histogram variable definitions via 'metadata' or 'variable_definitions'."
+            )
+        if not isinstance(variable_definitions, Mapping):
+            raise TypeError("variable_definitions must be a mapping of variable metadata")
+        self.variable_definitions = dict(variable_definitions)
+        self.variable_binning = {
+            name: value["variable"]
+            for name, value in self.variable_definitions.items()
+            if isinstance(value, dict) and "variable" in value
+        }
+
         self.year_lst        = kwargs.pop("year_lst",[])
         self.do_sm           = kwargs.pop("do_sm",False)
         self.do_nuisance     = kwargs.pop("do_nuisance",False)
@@ -502,7 +512,7 @@ class DatacardMaker():
                 h = h.remove("systematic", list(to_drop))
 
             if h.should_rebin() and km_dist != "njets":
-                edge_arr = self.BINNING[km_dist] + [list(h.axes[km_dist].edges())[-1]]
+                edge_arr = self.variable_binning[km_dist] + [list(h.axes[km_dist].edges())[-1]]
                 h = h.rebin(km_dist, hist.axis.Variable(edge_arr, km_dist, h.axes[km_dist].label))
             else:
                 # TODO: Still need to handle njets case properly
