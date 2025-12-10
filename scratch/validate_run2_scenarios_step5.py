@@ -7,8 +7,8 @@ from typing import Dict, Iterable, List, Mapping, Sequence
 
 from topeft.modules.channel_metadata import ChannelGroup, ChannelMetadataHelper
 from topeft.modules.scenario_groups import (
-    load_run2_channels_for_scenario,
-    load_run2_scenarios,
+    load_channels_for_scenario,
+    load_scenarios,
 )
 
 DEFAULT_SAMPLE_SCENARIOS = (
@@ -52,7 +52,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
 
 def main(argv: Sequence[str] | None = None) -> None:
     args = parse_args(argv)
-    scenario_map = load_run2_scenarios()
+    scenario_map = load_scenarios()
 
     if not scenario_map:
         raise SystemExit("No scenarios are defined in analysis/metadata/run2_scenarios.yaml.")
@@ -62,7 +62,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     channels_cache: Dict[str, List[str]] = {}
 
     for scenario_name in selected_names:
-        metadata = load_run2_channels_for_scenario(scenario_name)
+        metadata = load_channels_for_scenario(scenario_name)
         helper = ChannelMetadataHelper(metadata)
         sr_channels = collect_datacard_channels(helper, scenario_name)
         scenario_def = scenario_map[scenario_name]

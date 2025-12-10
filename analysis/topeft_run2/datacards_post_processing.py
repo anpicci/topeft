@@ -147,7 +147,7 @@ def resolve_scenario_metadata(
 
     channels_metadata = metadata.get("channels")
     channels_data = channels_metadata
-    if scenario_groups.is_run2_scenario(scenario_name):
+    if scenario_groups.is_scenario(scenario_name):
         try:
             channels_data = scenario_groups.load_channels_for_scenario(
                 scenario_name,
@@ -156,7 +156,7 @@ def resolve_scenario_metadata(
             )
         except Exception as exc:
             print(
-                f"WARNING: Failed to load canonical Run 2 channels for {scenario_name}: {exc}. "
+                f"WARNING: Failed to load canonical scenario channels for {scenario_name}: {exc}. "
                 "Falling back to metadata YAML contents."
             )
             channels_data = channels_metadata
@@ -164,7 +164,7 @@ def resolve_scenario_metadata(
     if not channels_data:
         raise ValueError(
             f"Channel metadata is missing for scenario '{scenario_name}'. "
-            f"Checked canonical Run 2 definitions and metadata YAML ({bundle.path})."
+            f"Checked canonical scenario definitions and metadata YAML ({bundle.path})."
         )
 
     helper = ChannelMetadataHelper(channels_data)

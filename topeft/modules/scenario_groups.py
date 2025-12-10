@@ -37,16 +37,16 @@ class ScenarioDefinition:
         return self.group_names
 
 
-def load_run2_scenarios() -> Dict[str, ScenarioDefinition]:
-    """Return the scenarios enumerated in ``run2_scenarios.yaml`` keyed by name."""
+def load_scenarios() -> Dict[str, ScenarioDefinition]:
+    """Return the scenarios enumerated in the scenario definition YAML keyed by name."""
 
-    return dict(_load_run2_scenarios())
+    return dict(_load_scenarios())
 
 
 def resolve_scenario_groups(name: str) -> ScenarioDefinition:
     """Return the :class:`ScenarioDefinition` matching ``name``."""
 
-    scenarios = load_run2_scenarios()
+    scenarios = load_scenarios()
     try:
         return scenarios[name]
     except KeyError as exc:
@@ -57,18 +57,18 @@ def resolve_scenario_groups(name: str) -> ScenarioDefinition:
         ) from exc
 
 
-def known_run2_scenarios() -> Tuple[str, ...]:
-    """Return the scenario names enumerated in ``run2_scenarios.yaml``."""
+def known_scenarios() -> Tuple[str, ...]:
+    """Return the scenario names enumerated in the scenario definition YAML."""
 
-    return tuple(_load_run2_scenarios().keys())
+    return tuple(_load_scenarios().keys())
 
 
-def is_run2_scenario(name: str) -> bool:
-    """Return ``True`` when ``name`` is defined in ``run2_scenarios.yaml``."""
+def is_scenario(name: str) -> bool:
+    """Return ``True`` when ``name`` is defined in the scenario definition YAML."""
 
     if not name:
         return False
-    return name in _load_run2_scenarios()
+    return name in _load_scenarios()
 
 
 def load_channels_for_scenario(
@@ -84,9 +84,9 @@ def load_channels_for_scenario(
     included so callers can still rely on ``ChannelMetadataHelper`` helpers that
     need the scenario → group map. Callers should pass either the already-loaded
     metadata mapping or a metadata path; when neither is provided the canonical
-    Run 2 bundle is used as a fallback. This ensures that custom runs which
+    canonical bundle is used as a fallback. This ensures that custom runs which
     inject metadata remain consistent—only users who omit both inputs pay the
-    price of the legacy fallback to the canonical bundle.
+    price of the legacy fallback to the bundled metadata.
     """
 
     scenario = resolve_scenario_groups(name)
@@ -141,7 +141,7 @@ def load_channels_for_scenario(
 
 
 @lru_cache(maxsize=1)
-def _load_run2_scenarios() -> Mapping[str, ScenarioDefinition]:
+def _load_scenarios() -> Mapping[str, ScenarioDefinition]:
     payload = _read_yaml_mapping(SCENARIO_DEFINITIONS_PATH)
     scenarios_section = payload.get("scenarios") or {}
     if not isinstance(scenarios_section, Mapping):
