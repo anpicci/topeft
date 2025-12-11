@@ -40,7 +40,8 @@ DEFAULT_WEIGHT_VARIATIONS = [
     "nSumOfWeights_renormfactDown",
 ]
 
-VALID_LOG_LEVELS = {"CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG"}
+VALID_LOG_LEVELS = {"NONE", "INFO", "WARNING", "ERROR"}
+VALID_LOG_LEVELS_DISPLAY = "none, info, warning, error"
 
 def normalize_sequence(value: Any) -> List[str]:
     """Flatten ``value`` into a list of strings."""
@@ -206,14 +207,48 @@ def coerce_log_level(value: Any) -> Optional[str]:
     if value is None:
         return None
     if isinstance(value, str):
-        normalized = value.strip().upper()
+        normalized = value.strip()
         if not normalized:
             return None
-        if normalized in VALID_LOG_LEVELS:
-            return normalized
-    raise ValueError(
-        f"log_level must be one of {', '.join(sorted(VALID_LOG_LEVELS))}"
-    )
+        lowered = normalized.lower()
+        if lowered == "debug":
+            raise ValueError(
+                "DEBUG log level is reserved for internal development and cannot be set via --log-level. "
+                f"Use one of: {VALID_LOG_LEVELS_DISPLAY}."
+            )
+        upper_normalized = lowered.upper()
+        if upper_normalized in VALID_LOG_LEVELS:
+            return upper_normalized
+    raise ValueError(f"log_level must be one of: {VALID_LOG_LEVELS_DISPLAY}")
+
+
+def _normalize_executor_name(value: str | None) -> str:
+    """Return a canonical executor identifier without applying aliases."""
+
+    return (value or "").strip().lower()
+
+
+def _resolve_effective_log_level(config: "RunConfig") -> str:
+    """Return the effective log level after applying CLI defaults."""
+
+    normalized = (config.log_level or "INFO").upper()
+    if normalized not in VALID_LOG_LEVELS:
+        raise ValueError(
+            f"log level '{normalized}' is not supported. Use one of: {VALID_LOG_LEVELS_DISPLAY}."
+        )
+    return normalized
+
+
+def _enforce_taskvine_logging_policy(executor: str, log_level: str) -> None:
+    """Ensure TaskVine only runs with log-level 'none'."""
+
+    normalized_executor = _normalize_executor_name(executor)
+    normalized_level = (log_level or "").strip().upper()
+    if normalized_executor == "taskvine" and normalized_level != "NONE":
+        raise ValueError(
+            "TaskVine runs require '--log-level none' to avoid worker log spam. "
+            "Either set --log-level none or use a non-TaskVine executor."
+        )
 
 
 class SampleLoader:
@@ -379,8 +414,6 @@ class RunConfig:
     taskvine_print_stdout: bool = True
     ecut: Optional[float] = None
     summary_verbosity: str = "brief"
-    debug_logging: bool = False
-    processor_debug: bool = False
     log_level: Optional[str] = None
     log_tasks: bool = False
     environment_file: Optional[str] = "cached"
@@ -456,8 +489,6 @@ class RunConfigBuilder:
             "resources_mode": ("resources_mode", _coerce_optional_string),
             "taskvine_print_stdout": ("taskvine_print_stdout", coerce_bool),
             "summary_verbosity": ("summary_verbosity", coerce_summary_verbosity),
-            "debug_logging": ("debug_logging", coerce_bool),
-            "processor_debug": ("processor_debug", coerce_bool),
             "log_tasks": ("log_tasks", coerce_bool),
             "environment_file": ("environment_file", coerce_environment_file),
             "futures_status": ("futures_status", coerce_bool),
@@ -597,7 +628,6 @@ class RunConfigBuilder:
                 "taskvine_print_stdout": "taskvine_print_stdout",
                 "environment_file": "environment_file",
                 "log_level": "log_level",
-                "debug_logging": "debug_logging",
                 "futures_status": "futures_status",
                 "futures_tail_timeout": "futures_tail_timeout",
                 "futures_memory": "futures_memory",
