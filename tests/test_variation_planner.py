@@ -146,3 +146,13 @@ def test_variation_planning_is_deterministic():
     names_b = [var.name for vars_in_group in grouped_b.values() for var in vars_in_group]
 
     assert names_a == names_b
+
+
+def test_data_samples_never_get_mc_systematics():
+    """MC-only systematics must never be scheduled for data samples."""
+    metadata = _metadata_with_weight_systematic()
+    helper = SystematicsHelper(metadata, sample_years=["2022"])
+    data_sample = {"isData": True, "year": "2022"}
+
+    variation_names = {var.name for var in helper.variations_for_sample(data_sample, include_systematics=True)}
+    assert variation_names == {"nominal"}
