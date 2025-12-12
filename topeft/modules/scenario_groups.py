@@ -90,19 +90,21 @@ def load_channels_for_scenario(
     """
 
     scenario = resolve_scenario_groups(name)
-    available_groups = None
-    source_label = None
+    provided_metadata = metadata is not None or metadata_path is not None
 
     if metadata is not None:
-        available_groups = _extract_groups_from_payload(metadata, "<in-memory metadata>")
-        source_label = "provided metadata payload"
+        available_groups = _extract_groups_from_payload(
+            metadata, "<in-memory metadata>"
+        )
+        source_label = metadata_path or "provided metadata payload"
     elif metadata_path is not None:
         candidate = Path(metadata_path).expanduser()
         if not candidate.is_absolute():
             candidate = Path.cwd() / candidate
-        payload = _read_yaml_mapping(candidate.resolve())
-        available_groups = _extract_groups_from_payload(payload, str(candidate))
-        source_label = str(candidate)
+        resolved = candidate.resolve()
+        payload = _read_yaml_mapping(resolved)
+        available_groups = _extract_groups_from_payload(payload, str(resolved))
+        source_label = str(resolved)
     else:
         logger.warning(
             "No metadata supplied when resolving scenario '%s'. Falling back to canonical %s; "
@@ -118,16 +120,41 @@ def load_channels_for_scenario(
             f"No channel groups available for scenario '{name}' (metadata source: {source_label})."
         )
 
+    requested_groups = list(scenario.groups)
     selected_groups: Dict[str, Mapping[str, object]] = {}
-    for group_name in scenario.groups:
-        try:
-            metadata = available_groups[group_name]
-        except KeyError as exc:
-            raise KeyError(
-                f"Scenario {scenario.name!r} references unknown group {group_name!r}."
-            ) from exc
+    missing_groups = []
+
+    for group_name in requested_groups:
+        metadata = available_groups.get(group_name)
+        if metadata is None:
+            missing_groups.append(group_name)
+            continue
         if group_name not in selected_groups:
             selected_groups[group_name] = metadata
+
+    if not selected_groups:
+        raise KeyError(
+            f"No channel groups for scenario '{scenario.name}' found in metadata ({source_label}). "
+            f"Requested groups: {', '.join(requested_groups) or '<none>'}. "
+            f"Available groups: {', '.join(sorted(available_groups)) or '<none>'}."
+        )
+
+    if missing_groups and provided_metadata:
+        logger.warning(
+            "Scenario '%s': using subset of channel groups from metadata (%s). "
+            "Requested: %s | Found: %s | Missing: %s",
+            scenario.name,
+            source_label,
+            ", ".join(requested_groups),
+            ", ".join(selected_groups),
+            ", ".join(missing_groups),
+        )
+    elif missing_groups:
+        missing = ", ".join(missing_groups)
+        raise KeyError(
+            f"Scenario {scenario.name!r} references unknown group(s): {missing} "
+            f"(metadata source: {source_label})."
+        )
 
     return {
         "groups": selected_groups,

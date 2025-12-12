@@ -95,6 +95,7 @@ from .run_analysis_helpers import (
     unique_preserving_order,
     weight_variations_from_metadata,
 )
+from . import scenario_registry
 from .metadata_loader import load_metadata
 from .nanoevents_helpers import nanoevents_factory_from_root
 from .systematics_validation import (
@@ -1680,15 +1681,32 @@ def run_workflow(config: RunConfig) -> None:
                 ", ".join(config.scenario_names[1:]),
             )
             config.scenario_names = [primary_scenario]
+        canonical_path = Path(
+            scenario_registry.resolve_scenario_path(primary_scenario)
+        ).resolve()
+        metadata_is_custom = Path(metadata_file).resolve() != canonical_path
         try:
-            channels_data = scenario_groups.load_channels_for_scenario(
-                primary_scenario
-            )
-            logger.info(
-                "Loaded %d canonical channel groups for scenario '%s'.",
-                len((channels_data or {}).get("groups", {})),
-                primary_scenario,
-            )
+            if metadata_is_custom:
+                channels_data = scenario_groups.load_channels_for_scenario(
+                    primary_scenario,
+                    metadata=metadata,
+                    metadata_path=str(metadata_file),
+                )
+                logger.info(
+                    "Loaded %d channel groups for scenario '%s' from metadata '%s'.",
+                    len((channels_data or {}).get("groups", {})),
+                    primary_scenario,
+                    metadata_file,
+                )
+            else:
+                channels_data = scenario_groups.load_channels_for_scenario(
+                    primary_scenario
+                )
+                logger.info(
+                    "Loaded %d canonical channel groups for scenario '%s'.",
+                    len((channels_data or {}).get("groups", {})),
+                    primary_scenario,
+                )
         except Exception as exc:  # pragma: no cover - defensive guard
             logger.warning(
                 "Falling back to inline channel metadata for scenario '%s': %s",
