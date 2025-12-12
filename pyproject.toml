@@ -27,7 +27,8 @@ dependencies = [
     "dill",
     "pyyaml",
     "pandas>=2.2,<2.3",
-    "numpy>=2.0,<2.1",
+    "numpy>=2.3,<2.4",
+    "dynamic_data_reduction>=2025.12.1",
 ]
 
 [project.urls]

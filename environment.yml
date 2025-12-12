@@ -13,4 +13,7 @@ dependencies:
   - xrootd
   - git
   - pyyaml
-  - numpy=2.0.*
+  - "numpy>=2.3,<2.4"
+  - pip
+  - pip:
+      - dynamic_data_reduction>=2025.12.1
