@@ -11,6 +11,7 @@ analysis scripts as well as the training utilities.
 
 from __future__ import annotations
 
+import logging
 from collections import OrderedDict
 from typing import Any, Dict, Mapping, Optional, Tuple
 
@@ -26,6 +27,8 @@ try:  # pragma: no cover - topcoffea is optional for a subset of the tests
     import topcoffea
 except ModuleNotFoundError:
     topcoffea = None  # type: ignore[assignment]
+
+_logger = logging.getLogger(__name__)
 
 
 def _load_hist_eft():  # pragma: no cover - import shim exercised in dedicated tests
@@ -100,25 +103,37 @@ def _summarise_histogram(histogram: Any) -> Dict[str, Any]:
     variances: Optional[np.ndarray] = None
 
     if HistEFT is not None and isinstance(histogram, HistEFT):
-        entries = histogram.values() #sumw2=True)
-        for payload in entries: #.values():
-            if isinstance(payload, tuple):
-                current_values = _ensure_numpy(payload[0])
-                raw_variances = payload[1]
-                current_variances = None if raw_variances is None else _ensure_numpy(raw_variances)
-            else:
-                current_values = _ensure_numpy(payload)
-                current_variances = None
-
-            values = current_values if values is None else values + current_values
-            if current_variances is None:
-                variances = None if variances is None else None
-            else:
-                variances = (
-                    current_variances
-                    if variances is None
-                    else variances + current_variances
+        dense_hists = getattr(histogram, "_dense_hists", None)
+        if isinstance(dense_hists, Mapping) and len(dense_hists) == 0:
+            _logger.info(
+                "runner_output: encountered empty sparse histogram in summary; treating as empty."
+            )
+        else:
+            try:
+                entries = histogram.values() #sumw2=True)
+            except (KeyError, IndexError):
+                _logger.info(
+                    "runner_output: sparse histogram missing base dense entry; treating as empty.",
                 )
+            else:
+                for payload in entries: #.values():
+                    if isinstance(payload, tuple):
+                        current_values = _ensure_numpy(payload[0])
+                        raw_variances = payload[1]
+                        current_variances = None if raw_variances is None else _ensure_numpy(raw_variances)
+                    else:
+                        current_values = _ensure_numpy(payload)
+                        current_variances = None
+
+                    values = current_values if values is None else values + current_values
+                    if current_variances is None:
+                        variances = None if variances is None else None
+                    else:
+                        variances = (
+                            current_variances
+                            if variances is None
+                            else variances + current_variances
+                        )
     elif Hist is not None and isinstance(histogram, Hist):
         if axis is not None:
             for axis_obj in histogram.axes:
@@ -244,4 +259,3 @@ __all__ = [
     "normalise_runner_output",
     "tuple_dict_stats",
 ]
-

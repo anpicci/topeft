@@ -242,6 +242,14 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--allow-partial-channel-groups",
+        action="store_true",
+        help=(
+            "Allow runs to proceed when a scenario is missing some channel groups"
+            " in the provided metadata. By default a missing group raises an error."
+        ),
+    )
+    parser.add_argument(
         "--skip-sr",
         action="store_true",
         help="Skip all signal region categories",

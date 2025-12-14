@@ -136,11 +136,15 @@ class ChannelPlanner:
         skip_sr: bool = False,
         skip_cr: bool = False,
         scenario_names: Optional[Sequence[str]] = None,
+        channel_groups_strict: bool = True,
+        warn_on_partial_groups: bool = True,
     ) -> None:
         self._channel_helper = channel_helper
         self._skip_sr = bool(skip_sr)
         self._skip_cr = bool(skip_cr)
         self._scenario_names = list(scenario_names or [])
+        self._channel_groups_strict = bool(channel_groups_strict)
+        self._warn_on_partial_groups = bool(warn_on_partial_groups)
 
         self._sr_groups = None
         self._cr_groups = None
@@ -316,7 +320,11 @@ class ChannelPlanner:
                 if not self._skip_sr and group not in sr_groups:
                     sr_groups.append(group)
 
-        group_names = channel_helper.selected_group_names(self._scenario_names)
+        group_names = channel_helper.selected_group_names(
+            self._scenario_names,
+            strict=self._channel_groups_strict,
+            warn_on_partial=self._warn_on_partial_groups,
+        )
         for group_name in group_names:
             _register_group(group_name)
 
@@ -1685,12 +1693,15 @@ def run_workflow(config: RunConfig) -> None:
             scenario_registry.resolve_scenario_path(primary_scenario)
         ).resolve()
         metadata_is_custom = Path(metadata_file).resolve() != canonical_path
+        strict_mode = bool(config.channel_groups_strict)
         try:
+            scenario_kwargs = {"strict": strict_mode}
             if metadata_is_custom:
                 channels_data = scenario_groups.load_channels_for_scenario(
                     primary_scenario,
                     metadata=metadata,
                     metadata_path=str(metadata_file),
+                    **scenario_kwargs,
                 )
                 logger.info(
                     "Loaded %d channel groups for scenario '%s' from metadata '%s'.",
@@ -1700,7 +1711,7 @@ def run_workflow(config: RunConfig) -> None:
                 )
             else:
                 channels_data = scenario_groups.load_channels_for_scenario(
-                    primary_scenario
+                    primary_scenario, **scenario_kwargs
                 )
                 logger.info(
                     "Loaded %d canonical channel groups for scenario '%s'.",
@@ -1728,6 +1739,8 @@ def run_workflow(config: RunConfig) -> None:
         skip_sr=config.skip_sr,
         skip_cr=config.skip_cr,
         scenario_names=config.scenario_names,
+        channel_groups_strict=strict_mode,
+        warn_on_partial_groups=not (metadata_is_custom and not strict_mode),
     )
 
     var_defs = metadata.get("variables")

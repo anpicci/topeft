@@ -423,6 +423,7 @@ class RunConfig:
     futures_prefetch: Optional[int] = 1
     futures_retries: int = 0
     futures_retry_wait: float = 5.0
+    channel_groups_strict: bool = True
 
 
 class RunConfigBuilder:
@@ -470,6 +471,11 @@ class RunConfigBuilder:
             "skip_cr": ("skip_cr", coerce_bool),
             "do_np": ("do_np", coerce_bool),
             "do_renormfact_envelope": ("do_renormfact_envelope", coerce_bool),
+            "channel_groups_strict": ("channel_groups_strict", coerce_bool),
+            "allow_partial_channel_groups": (
+                "channel_groups_strict",
+                lambda v: not coerce_bool(v),
+            ),
             "log_level": ("log_level", coerce_log_level),
             "wc_list": ("wc_list", normalize_sequence),
             "ecut": ("ecut", coerce_optional_float),

@@ -1008,6 +1008,44 @@ class AnalysisProcessor(processor.ProcessorABC):
 
         return ak.Array(collection)
 
+    def _log_region_yield(
+        self,
+        *,
+        mask: Any,
+        dataset: str,
+        base_channel: str,
+        channel: str,
+        appl_region: str,
+        lep_chan: str,
+    ) -> None:
+        """Log the number of events passing the final region mask for a chunk."""
+
+        if not getattr(self, "_debug_logging", False) and not logger.isEnabledFor(
+            logging.INFO
+        ):
+            return
+
+        if mask is None:
+            n_total = 0
+            n_selected = 0
+        else:
+            mask_array = np.asarray(mask)
+            n_total = int(mask_array.size)
+            n_selected = int(np.count_nonzero(mask_array)) if n_total else 0
+
+        frac = float(n_selected) / float(n_total) if n_total else 0.0
+        logger.info(
+            "Region yield: dataset=%s base_channel=%s channel=%s appl_region=%s lep_chan=%s selected=%d total=%d frac=%.6f",
+            dataset,
+            base_channel,
+            channel,
+            appl_region,
+            lep_chan,
+            n_selected,
+            n_total,
+            frac,
+        )
+
     def _build_histogram_key(
         self,
         variable: str,
@@ -2714,6 +2752,16 @@ class AnalysisProcessor(processor.ProcessorABC):
                 all_cuts_mask = selections.all(*cuts_lst)
                 if ecut_mask is not None:
                     all_cuts_mask = all_cuts_mask & ecut_mask
+                if wgt_fluct == "nominal":
+                    self._log_region_yield(
+                        mask=all_cuts_mask,
+                        dataset=dataset.dataset,
+                        base_channel=base_ch_name,
+                        channel=ch_name,
+                        appl_region=self.appregion,
+                        lep_chan=lep_chan,
+                    )
+
                 if isinstance(all_cuts_mask, ak.Array):
                     mask_numpy = (
                         ak.to_numpy(all_cuts_mask)

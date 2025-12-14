@@ -275,7 +275,11 @@ class ChannelMetadataHelper:
         return tuple(self._groups.keys())
 
     def selected_group_names(
-        self, scenario_names: Optional[Sequence[str]]
+        self,
+        scenario_names: Optional[Sequence[str]],
+        *,
+        strict: bool = True,
+        warn_on_partial: bool = True,
     ) -> Tuple[str, ...]:
         """Return the ordered group names for the requested scenarios.
 
@@ -302,13 +306,16 @@ class ChannelMetadataHelper:
                 requested_groups = tuple(scenario.groups)
                 present = [name for name in requested_groups if name in available_groups]
                 missing = [name for name in requested_groups if name not in available_groups]
-                # Allow partial coverage: intersect scenario groups with metadata contents.
+                if strict and missing:
+                    raise KeyError(
+                        f"Scenario {scenario_name!r} references unknown group(s): {', '.join(missing)}"
+                    )
                 if not present:
                     raise KeyError(
                         f"Scenario {scenario_name!r} references channel groups {requested_groups!r}, "
                         "none of which are present in the loaded metadata."
                     )
-                if missing:
+                if missing and warn_on_partial:
                     logger.warning(
                         "Scenario %r: using subset of channel groups from metadata. "
                         "Requested: %s | Found: %s | Missing: %s",
@@ -317,7 +324,8 @@ class ChannelMetadataHelper:
                         ", ".join(present),
                         ", ".join(missing),
                     )
-                for group_name in present:
+                active_group_names = requested_groups if strict or not missing else tuple(present)
+                for group_name in active_group_names:
                     if group_name not in seen:
                         seen.add(group_name)
                         normalized.append(group_name)
