@@ -9,8 +9,12 @@ similar set of fields while benefiting from the richer metadata schema.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from typing import Dict, Iterable, Iterator, List, Mapping, Optional, Sequence, Tuple
+
+
+logger = logging.getLogger(__name__)
 
 
 def _normalize_histogram_list(
@@ -288,17 +292,32 @@ class ChannelMetadataHelper:
                 )
             normalized: List[str] = []
             seen = set()
+            available_groups = set(self._groups.keys())
             for scenario_name in scenario_names:
                 scenario = self._scenarios.get(scenario_name)
                 if scenario is None:
                     raise KeyError(
                         f"Scenario {scenario_name!r} not found in metadata"
                     )
-                for group_name in scenario.groups:
-                    if group_name not in self._groups:
-                        raise KeyError(
-                            f"Scenario {scenario_name!r} references unknown group {group_name!r}"
-                        )
+                requested_groups = tuple(scenario.groups)
+                present = [name for name in requested_groups if name in available_groups]
+                missing = [name for name in requested_groups if name not in available_groups]
+                # Allow partial coverage: intersect scenario groups with metadata contents.
+                if not present:
+                    raise KeyError(
+                        f"Scenario {scenario_name!r} references channel groups {requested_groups!r}, "
+                        "none of which are present in the loaded metadata."
+                    )
+                if missing:
+                    logger.warning(
+                        "Scenario %r: using subset of channel groups from metadata. "
+                        "Requested: %s | Found: %s | Missing: %s",
+                        scenario_name,
+                        ", ".join(requested_groups),
+                        ", ".join(present),
+                        ", ".join(missing),
+                    )
+                for group_name in present:
                     if group_name not in seen:
                         seen.add(group_name)
                         normalized.append(group_name)
