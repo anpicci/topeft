@@ -220,7 +220,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help=(
             "Set the Python logging level to control topeft/topcoffea output. "
-            "Allowed values: none, info, warning, error. Defaults to info when unset."
+            "Allowed values: none, info, warning, error, debug. Defaults to info when unset."
         ),
     )
     parser.add_argument(
@@ -239,6 +239,14 @@ def build_parser() -> argparse.ArgumentParser:
             "Scenario name defined in metadata to select channel groups."
             " Defaults to 'TOP_22_006' when not provided. Can be supplied"
             " multiple times to combine scenarios."
+        ),
+    )
+    parser.add_argument(
+        "--allow-partial-channel-groups",
+        action="store_true",
+        help=(
+            "Allow runs to proceed when a scenario is missing some channel groups"
+            " in the provided metadata. By default a missing group raises an error."
         ),
     )
     parser.add_argument(

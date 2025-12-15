@@ -15,11 +15,21 @@ from .run_analysis_helpers import VALID_LOG_LEVELS, VALID_LOG_LEVELS_DISPLAY
 
 logger = logging.getLogger(__name__)
 _configured = False
+_project_handler: Optional[logging.Handler] = None
+
+LOG_LEVEL_MAP = {
+    "NONE": logging.CRITICAL + 10,
+    "CRITICAL": logging.CRITICAL,
+    "ERROR": logging.ERROR,
+    "WARNING": logging.WARNING,
+    "INFO": logging.INFO,
+    "DEBUG": logging.DEBUG,
+}
 
 
 def _level_name_to_numeric(level_name: str) -> int:
-    resolved = getattr(logging, level_name.upper(), None)
-    if not isinstance(resolved, int):
+    resolved = LOG_LEVEL_MAP.get(level_name.strip().upper())
+    if resolved is None:
         raise ValueError(f"Unknown logging level '{level_name}'.")
     return resolved
 
@@ -61,16 +71,19 @@ def configure_logging(
     dev_debug_enabled = allow_dev_debug and _is_truthy_env(
         os.environ.get("TOPEFT_DEV_DEBUG"),
     )
-    mute_project_loggers = normalized_level == "NONE" and not dev_debug_enabled
-
-    effective_level_name = "DEBUG" if dev_debug_enabled else normalized_level
+    effective_level_name = (
+        "DEBUG" if (normalized_level == "DEBUG" or dev_debug_enabled) else normalized_level
+    )
+    mute_project_loggers = normalized_level == "NONE"
     project_level = (
-        logging.CRITICAL + 10 if mute_project_loggers else _level_name_to_numeric(effective_level_name)
+        _level_name_to_numeric(effective_level_name)
+        if not mute_project_loggers
+        else _level_name_to_numeric("NONE")
     )
     root_level = (
-        _level_name_to_numeric("WARNING")
+        _level_name_to_numeric("NONE")
         if mute_project_loggers
-        else _level_name_to_numeric(effective_level_name)
+        else _level_name_to_numeric("INFO")
     )
 
     root = logging.getLogger()
@@ -78,6 +91,7 @@ def configure_logging(
     # Avoid stacking multiple handlers when run_analysis.py is imported or invoked
     # repeatedly; reuse existing root handlers whenever they are present.
     attach_handler = not root.handlers
+    format_string = formatter or "%(asctime)s %(levelname)s %(name)s: %(message)s"
     if attach_handler:
         # Prefer tqdm-aware logging so progress bars and INFO lines do not stomp
         # on each other; fall back to a plain stream handler if tqdm is missing.
@@ -85,11 +99,7 @@ def configure_logging(
             handler: logging.Handler = TqdmLoggingHandler()
         else:
             handler = logging.StreamHandler()
-        handler.setFormatter(
-            logging.Formatter(
-                formatter or "%(asctime)s %(levelname)s %(name)s: %(message)s"
-            )
-        )
+        handler.setFormatter(logging.Formatter(format_string))
         root.addHandler(handler)
         logger.debug(
             "configure_logging applied (effective_level=%s)", effective_level_name
@@ -100,6 +110,16 @@ def configure_logging(
     # their levels to follow the latest CLI request.
     for handler in root.handlers:
         handler.setLevel(root_level)
+        handler.setFormatter(logging.Formatter(format_string))
+
+    global _project_handler
+    if _project_handler is None:
+        if TqdmLoggingHandler is not None:
+            _project_handler = TqdmLoggingHandler()
+        else:
+            _project_handler = logging.StreamHandler()
+    _project_handler.setFormatter(logging.Formatter(format_string))
+    _project_handler.setLevel(project_level)
 
     project_logger_names = (
         "topeft",
@@ -111,7 +131,13 @@ def configure_logging(
         project_logger = logging.getLogger(name)
         project_logger.setLevel(project_level)
         project_logger.disabled = mute_project_loggers and not dev_debug_enabled
-        project_logger.propagate = True
+        project_logger.propagate = False
+        if _project_handler not in project_logger.handlers:
+            project_logger.addHandler(_project_handler)
 
     root.setLevel(root_level)
+    if dev_debug_enabled and not mute_project_loggers:
+        logger.info(
+            "TOPEFT_DEV_DEBUG detected: forcing project loggers to DEBUG (root remains INFO)."
+        )
     _configured = True

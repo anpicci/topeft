@@ -40,8 +40,8 @@ DEFAULT_WEIGHT_VARIATIONS = [
     "nSumOfWeights_renormfactDown",
 ]
 
-VALID_LOG_LEVELS = {"NONE", "INFO", "WARNING", "ERROR"}
-VALID_LOG_LEVELS_DISPLAY = "none, info, warning, error"
+VALID_LOG_LEVELS = {"NONE", "INFO", "WARNING", "ERROR", "DEBUG"}
+VALID_LOG_LEVELS_DISPLAY = "none, info, warning, error, debug"
 
 def normalize_sequence(value: Any) -> List[str]:
     """Flatten ``value`` into a list of strings."""
@@ -210,13 +210,7 @@ def coerce_log_level(value: Any) -> Optional[str]:
         normalized = value.strip()
         if not normalized:
             return None
-        lowered = normalized.lower()
-        if lowered == "debug":
-            raise ValueError(
-                "DEBUG log level is reserved for internal development and cannot be set via --log-level. "
-                f"Use one of: {VALID_LOG_LEVELS_DISPLAY}."
-            )
-        upper_normalized = lowered.upper()
+        upper_normalized = normalized.upper()
         if upper_normalized in VALID_LOG_LEVELS:
             return upper_normalized
     raise ValueError(f"log_level must be one of: {VALID_LOG_LEVELS_DISPLAY}")
@@ -423,6 +417,9 @@ class RunConfig:
     futures_prefetch: Optional[int] = 1
     futures_retries: int = 0
     futures_retry_wait: float = 5.0
+    channel_groups_strict: bool = True
+    options_profile: Optional[str] = None
+    options_path: Optional[str] = None
 
 
 class RunConfigBuilder:
@@ -470,6 +467,11 @@ class RunConfigBuilder:
             "skip_cr": ("skip_cr", coerce_bool),
             "do_np": ("do_np", coerce_bool),
             "do_renormfact_envelope": ("do_renormfact_envelope", coerce_bool),
+            "channel_groups_strict": ("channel_groups_strict", coerce_bool),
+            "allow_partial_channel_groups": (
+                "channel_groups_strict",
+                lambda v: not coerce_bool(v),
+            ),
             "log_level": ("log_level", coerce_log_level),
             "wc_list": ("wc_list", normalize_sequence),
             "ecut": ("ecut", coerce_optional_float),
@@ -593,6 +595,9 @@ class RunConfigBuilder:
 
             for section in yaml_sections:
                 _apply_source(section)
+
+        config.options_profile = selected_profile
+        config.options_path = options_path
 
         if options_path is None:
             cli_attr_map = {

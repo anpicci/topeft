@@ -69,6 +69,56 @@ get_te_param = GetParam(topeft_path("params/params.json"))
 np.seterr(divide="ignore", invalid="ignore", over="ignore")
 
 
+def _log_region_yields(
+    dataset: str,
+    clean_channel: str,
+    application: str,
+    region_key: str,
+    region_mask: ak.Array,
+    weight_tot: ak.Array,
+) -> None:
+    """
+    Log unweighted and weighted yields for a given region.
+
+    Parameters
+    ----------
+    dataset : str
+        Name of the sample (e.g. NanoAOD dataset name).
+    clean_channel : str
+        Name of the analysis channel, without application/region.
+    application : str
+        Application/region label (e.g. isSR_2lSS).
+    region_key : str
+        Region identifier; typically matches ``application``.
+    region_mask : awkward.Array
+        Boolean mask selecting events in this region.
+    weight_tot : awkward.Array
+        Total event weights aligned with events.
+    """
+
+    n_events = int(ak.sum(region_mask))
+    if n_events == 0:
+        logger.info(
+            "Region empty: dataset=%s clean_channel=%s application=%s region=%s n_events=0",
+            dataset,
+            clean_channel,
+            application,
+            region_key,
+        )
+        return
+
+    sumw = float(ak.sum(weight_tot[region_mask]))
+    logger.info(
+        "Region yields: dataset=%s clean_channel=%s application=%s region=%s n_events=%d sumw=%.6f",
+        dataset,
+        clean_channel,
+        application,
+        region_key,
+        n_events,
+        sumw,
+    )
+
+
 # Takes strings as inputs, constructs a string for the full channel name
 # Try to construct a channel name like this: [n leptons]_[lepton flavors]_[p or m charge]_[on or off Z]_[n b jets]_[n jets]
 # chan_str should look something like "3l_p_offZ_1b", NOTE: This function assumes nlep comes first
@@ -615,6 +665,7 @@ class AnalysisProcessor(processor.ProcessorABC):
         self._histogram_key_map = histogram_key_map
 
         histogram[self.VARIATION_SUMMARY_KEY] = []
+        histogram["region_yields"] = processor.dict_accumulator()
         self._accumulator = histogram
 
         # Set the energy threshold to cut on
@@ -648,12 +699,11 @@ class AnalysisProcessor(processor.ProcessorABC):
         )
         # ``allowed_jerc_variations`` gates only shifted JES/JER/UES branches.
         # Central jet/MET corrections always run regardless of this payload.
-        if self._debug_logging:
-            self._debug(
-                "Resolved allowed JERC variations for %s: %s",
-                self._sample.get("histAxisName"),
-                self._allowed_jerc_variations,
-            )
+        logger.info(
+            "Resolved allowed JERC variations for %s: %s",
+            self._sample.get("histAxisName"),
+            self._allowed_jerc_variations,
+        )
 
     @staticmethod
     def _ensure_ak_array(values, dtype=None):
@@ -894,19 +944,15 @@ class AnalysisProcessor(processor.ProcessorABC):
 
         if arr is None:
             sanitized = ak.Array([[] for _ in range(n_events)])
-            if self._debug_logging:
-                self._debug(
-                    "%s layout sanitized: None -> %s",
-                    name,
-                    ak.type(sanitized),
-                )
+            logger.debug(
+                "%s layout sanitized: None -> %s",
+                name,
+                ak.type(sanitized),
+            )
             return sanitized
 
         original_type = ak.type(arr)
         arr = ak.Array(arr)
-
-        if name == "goodJets" and self._debug_logging:
-            self._debug("goodJets input layout: %s", original_type)
 
         def _is_list_like(value: Any) -> bool:
             return ak.to_layout(value, allow_record=True).is_list
@@ -948,12 +994,11 @@ class AnalysisProcessor(processor.ProcessorABC):
                 collection = list_like_candidates[0][1]
             elif zipped_collection is not None:
                 collection = ak.Array(zipped_collection)
-                if self._debug_logging:
-                    self._debug(
-                        "%s canonical jets record zipped to %s",
-                        name,
-                        ak.type(collection),
-                    )
+                logger.debug(
+                    "%s canonical jets record zipped to %s",
+                    name,
+                    ak.type(collection),
+                )
             else:
                 raise ValueError(
                     f"{name}: ambiguous record layout with fields {fields}; "
@@ -996,14 +1041,6 @@ class AnalysisProcessor(processor.ProcessorABC):
             raise ValueError(
                 f"{name}: expected at least a [events][objects] jagged layout for axis=1 concatenation, "
                 f"but got {ak.type(collection)}"
-            )
-
-        if self._debug_logging:
-            self._debug(
-                "%s layout sanitized: %s -> %s",
-                name,
-                original_type,
-                ak.type(collection),
             )
 
         return ak.Array(collection)
@@ -1369,7 +1406,7 @@ class AnalysisProcessor(processor.ProcessorABC):
             group_info = group_mapping.get(group_key, {})
 
             if group_mapping:
-                self._debug(
+                logger.info(
                     "Variation group mapping for '%s': mapping=%s key=%s info=%s",
                     variation_name,
                     group_mapping,
@@ -1527,7 +1564,6 @@ class AnalysisProcessor(processor.ProcessorABC):
         cleaned_jets = jets[~ak.any(jet_indices == veto_indices, axis=-1)]
 
         jetptname = "pt"
-        logger.info("jetptname: %s", jetptname)
 
         cleaned_jets["pt_raw"] = (1 - cleaned_jets.rawFactor) * cleaned_jets.pt
         cleaned_jets["mass_raw"] = (1 - cleaned_jets.rawFactor) * cleaned_jets.mass
@@ -1560,13 +1596,15 @@ class AnalysisProcessor(processor.ProcessorABC):
             ),
             cleaned_jets,
         )
-        logger.info("Corrected jets pt: %s", ak.to_list(corrected_jets.pt))
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug("Corrected jets pt: %s", ak.to_list(corrected_jets.pt))
 
         cleaned_jets = ApplyJetSystematics(
             dataset.year, corrected_jets, variation_state.object_variation
         )
 
-        logger.info("Cleaned jets pt: %s", ak.to_list(cleaned_jets.pt))
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug("Cleaned jets pt: %s", ak.to_list(cleaned_jets.pt))
 
         central_jet_counts = ak.num(corrected_jets.pt, axis=-1)
         variation_jet_counts = ak.num(cleaned_jets.pt, axis=-1)
@@ -1575,16 +1613,15 @@ class AnalysisProcessor(processor.ProcessorABC):
                 "Jet systematic variations must preserve the central jet multiplicities"
             )
 
-        if self._debug_logging:
-            self._debug(
-                "Building MET for variation '%s': object_variation=%s request_variation=%r dataset_year=%s is_data=%s corrected_jets_fields=%s",
-                variation_state.name,
-                variation_state.object_variation,
-                variation_state.request.variation,
-                dataset.year,
-                dataset.is_data,
-                tuple(ak.fields(corrected_jets)),
-            )
+        logger.debug(
+            "Building MET for variation '%s': object_variation=%s request_variation=%r dataset_year=%s is_data=%s corrected_jets_fields=%s",
+            variation_state.name,
+            variation_state.object_variation,
+            variation_state.request.variation,
+            dataset.year,
+            dataset.is_data,
+            tuple(ak.fields(corrected_jets)),
+        )
 
         # Same semantics apply to MET: central recomputation always runs, and
         # ``allowed_variations`` just restricts auxiliary systematic branches.
@@ -1731,30 +1768,29 @@ class AnalysisProcessor(processor.ProcessorABC):
             )
         variation_state = self._derive_lepton_features(variation_state, events, dataset)
 
-        if self._debug_logging:
-            try:
-                total_good_jets = (
-                    int(ak.sum(variation_state.njets))
-                    if variation_state.njets is not None
-                    else 0
-                )
-            except Exception:
-                total_good_jets = 0
-            try:
-                total_fwd_jets = (
-                    int(ak.sum(variation_state.nfwdj))
-                    if variation_state.nfwdj is not None
-                    else 0
-                )
-            except Exception:
-                total_fwd_jets = 0
-            self._debug(
-                "Prepared objects for variation '%s': object_variation=%s total_good_jets=%d total_fwd_jets=%d",
-                variation_state.name,
-                variation_state.object_variation,
-                total_good_jets,
-                total_fwd_jets,
+        try:
+            total_good_jets = (
+                int(ak.sum(variation_state.njets))
+                if variation_state.njets is not None
+                else 0
             )
+        except Exception:
+            total_good_jets = 0
+        try:
+            total_fwd_jets = (
+                int(ak.sum(variation_state.nfwdj))
+                if variation_state.nfwdj is not None
+                else 0
+            )
+        except Exception:
+            total_fwd_jets = 0
+        logger.info(
+            "Prepared objects for variation '%s': object_variation=%s total_good_jets=%d total_fwd_jets=%d",
+            variation_state.name,
+            variation_state.object_variation,
+            total_good_jets,
+            total_fwd_jets,
+        )
 
         return variation_state
 
@@ -2193,19 +2229,18 @@ class AnalysisProcessor(processor.ProcessorABC):
                 variation_name,
             )
 
-        if self._debug_logging:
-            weight_summary = (
-                variation_state.weight_variations
-                if variation_state.weight_variations
-                else ["nominal"]
-            )
-            self._debug(
-                "Registered weight configuration for '%s': weights=%s data_weight=%s sow_labels=%s",
-                variation_state.name,
-                weight_summary,
-                variation_state.requested_data_weight_label,
-                sorted(variation_state.sow_variations.keys()),
-            )
+        weight_summary = (
+            variation_state.weight_variations
+            if variation_state.weight_variations
+            else ["nominal"]
+        )
+        logger.info(
+            "Registered weight configuration for '%s': weights=%s data_weight=%s sow_labels=%s",
+            variation_state.name,
+            weight_summary,
+            variation_state.requested_data_weight_label,
+            sorted(variation_state.sow_variations.keys()),
+        )
 
         return weights_object
 
@@ -2640,8 +2675,9 @@ class AnalysisProcessor(processor.ProcessorABC):
         dense_axis_vals = self._check_dense_axis_invariants(
             dense_axis_name, dense_axis_vals, n_events
         )
-        logger.info("Variable values: %s", ak.to_list(dense_axis_vals))
-        
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug("Variable values: %s", ak.to_list(dense_axis_vals))
+
         weight_variations_to_run = list(variation_state.weight_variations)
         if weight_variations_to_run:
             wgt_var_lst = []
@@ -2652,6 +2688,12 @@ class AnalysisProcessor(processor.ProcessorABC):
                 wgt_var_lst.append(name)
 
         executed_weight_variations: List[str] = []
+        is_nominal_variation = (
+            variation_state.request.variation is None
+            or variation_state.variation_type == "nominal"
+            or variation_state.name == "nominal"
+        )
+        nominal_weight = weights_object.weight(None)
 
         lep_chan = self._channel_dict["chan_def_lst"][0]
         jet_req = self._channel_dict["jet_selection"]
@@ -2661,67 +2703,105 @@ class AnalysisProcessor(processor.ProcessorABC):
             else [None]
         )
 
-        for wgt_fluct in wgt_var_lst:
-            if wgt_fluct == "nominal":
-                weight = weights_object.weight(None)
-            elif wgt_fluct in weights_object.variations:
-                weight = weights_object.weight(wgt_fluct)
-            else:
-                continue
+        channel_entries: List[Tuple[str, str, ak.Array, np.ndarray]] = []
+        for lep_flav in lep_flav_iter:
+            logger.info("Selection keys: %s", selections.names)
+            logger.info("Channel def list: %r", self._channel_dict["chan_def_lst"])
+            logger.info("Channel bit '%s' present? %s", lep_chan, lep_chan in selections.names)
+            cuts_lst = [self.appregion, lep_chan]
+            flav_ch = None
+            njet_ch = None
+            if isData:
+                cuts_lst.append("is_good_lumi")
+            if self._split_by_lepton_flavor:
+                flav_ch = lep_flav
+                cuts_lst.append(lep_flav)
+            if dense_axis_name != "njets":
+                njet_ch = jet_req
+                cuts_lst.append(jet_req)
 
-            if (
-                self.appregion.startswith("isSR")
-                and wgt_fluct in data_weight_systematics_set
-            ):
-                continue
-            executed_weight_variations.append(wgt_fluct)
-
-            if wgt_fluct == "nominal":
-                hist_variation_label = hist_label
-            else:
-                hist_variation_label = self._histogram_label_lookup.get(
-                    wgt_fluct, wgt_fluct
-                )
-
-            for lep_flav in lep_flav_iter:
-                cuts_lst = [self.appregion, lep_chan]
-                flav_ch = None
-                njet_ch = None
-                if isData:
-                    cuts_lst.append("is_good_lumi")
-                if self._split_by_lepton_flavor:
-                    flav_ch = lep_flav
-                    cuts_lst.append(lep_flav)
-                if dense_axis_name != "njets":
-                    njet_ch = jet_req
-                    cuts_lst.append(jet_req)
-
-                ch_name, base_ch_name = self._build_channel_names(
-                    lep_chan, njet_ch, flav_ch
-                )
-                if base_ch_name != self.channel:
+            ch_name, base_ch_name = self._build_channel_names(
+                lep_chan, njet_ch, flav_ch
+            )
+            if base_ch_name != self.channel:
+                if not str(self.channel).startswith(str(base_ch_name)):
                     continue
 
-                if self._debug_logging:
-                    cut_pass_info = {cut: selections.all(cut) for cut in cuts_lst}
-                    self._debug(
-                        "Filling histograms for channel '%s' (base '%s') with cuts %s",
-                        ch_name,
+            cut_pass_info = {cut: selections.all(cut) for cut in cuts_lst}
+            logger.debug(
+                "Filling histograms for channel '%s' (base '%s') with cuts %s",
+                ch_name,
+                base_ch_name,
+                cut_pass_info,
+            )
+
+            all_cuts_mask = selections.all(*cuts_lst)
+            if ecut_mask is not None:
+                all_cuts_mask = all_cuts_mask & ecut_mask
+            if isinstance(all_cuts_mask, ak.Array):
+                mask_numpy = (
+                    ak.to_numpy(all_cuts_mask)
+                    if hasattr(ak, "to_numpy")
+                    else np.asarray(all_cuts_mask)
+                )
+            else:
+                mask_numpy = np.asarray(all_cuts_mask)
+
+            channel_entries.append((ch_name, base_ch_name, all_cuts_mask, mask_numpy))
+
+        if is_nominal_variation and channel_entries:
+            region_store = self._accumulator.get("region_yields")
+            for ch_name, base_ch_name, all_cuts_mask, mask_numpy in channel_entries:
+                _log_region_yields(
+                    dataset=dataset.dataset,
+                    clean_channel=base_ch_name,
+                    application=self.appregion,
+                    region_key=self.appregion,
+                    region_mask=all_cuts_mask,
+                    weight_tot=nominal_weight,
+                )
+                if region_store is not None:
+                    region_key = (
+                        dataset.dataset,
                         base_ch_name,
-                        cut_pass_info,
+                        self.appregion,
+                        "nominal",
+                    )
+                    current = region_store.get(region_key, np.zeros(2, dtype=float))
+                    n_events = int(np.count_nonzero(mask_numpy))
+                    sumw_nominal = (
+                        float(np.sum(np.asarray(nominal_weight)[mask_numpy]))
+                        if n_events
+                        else 0.0
+                    )
+                    region_store[region_key] = current + np.array(
+                        [float(n_events), sumw_nominal], dtype=float
                     )
 
-                all_cuts_mask = selections.all(*cuts_lst)
-                if ecut_mask is not None:
-                    all_cuts_mask = all_cuts_mask & ecut_mask
-                if isinstance(all_cuts_mask, ak.Array):
-                    mask_numpy = (
-                        ak.to_numpy(all_cuts_mask)
-                        if hasattr(ak, "to_numpy")
-                        else np.asarray(all_cuts_mask)
-                    )
+        for ch_name, base_ch_name, all_cuts_mask, mask_numpy in channel_entries:
+            for wgt_fluct in wgt_var_lst:
+                if wgt_fluct == "nominal":
+                    weight = weights_object.weight(None)
+                elif wgt_fluct in weights_object.variations:
+                    weight = weights_object.weight(wgt_fluct)
                 else:
-                    mask_numpy = np.asarray(all_cuts_mask)
+                    continue
+
+                if (
+                    self.appregion.startswith("isSR")
+                    and wgt_fluct in data_weight_systematics_set
+                ):
+                    continue
+                if wgt_fluct not in executed_weight_variations:
+                    executed_weight_variations.append(wgt_fluct)
+
+                if wgt_fluct == "nominal":
+                    hist_variation_label = hist_label
+                else:
+                    hist_variation_label = self._histogram_label_lookup.get(
+                        wgt_fluct, wgt_fluct
+                    )
+
                 weights_flat = np.asarray(weight)[mask_numpy]
                 eft_coeffs = dataset.eft_coeffs
                 eft_coeffs_cut = (
@@ -2756,13 +2836,12 @@ class AnalysisProcessor(processor.ProcessorABC):
 
                 hout[histkey].fill(**axes_fill_info_dict)
 
-                if self._debug_logging:
-                    filled_count = int(np.count_nonzero(np.asarray(all_cuts_mask)))
-                    self._debug(
-                        "Filled histkey %s with %d selected events",
-                        histkey,
-                        filled_count,
-                    )
+                filled_count = int(np.count_nonzero(np.asarray(all_cuts_mask)))
+                logger.info(
+                    "Filled histkey %s with %d selected events",
+                    histkey,
+                    filled_count,
+                )
 
                 axes_fill_info_dict = {
                     dense_axis_name + "_sumw2": dense_axis_vals[all_cuts_mask],
@@ -2828,21 +2907,6 @@ class AnalysisProcessor(processor.ProcessorABC):
                 break
 
         return dataset_for_histograms, dataset_for_triggers
-
-    def _debug(self, message: str, *args) -> None:
-        if not self._debug_logging:
-            return
-
-        logger.debug(message, *args)
-
-        if self._suppress_debug_prints:
-            return
-
-        try:
-            formatted = message % args if args else message
-        except Exception:
-            formatted = " ".join([message, *(str(arg) for arg in args)])
-        print(formatted, flush=True)
 
     # Main function: run on a given dataset
 

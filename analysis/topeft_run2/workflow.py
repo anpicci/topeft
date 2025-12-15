@@ -29,6 +29,7 @@ import gzip
 import json
 import logging
 import os
+import numpy as np
 import tempfile
 import time
 import warnings
@@ -84,6 +85,23 @@ def _import_topcoffea_submodule(submodule: str):
         ) from exc
 
 
+def _merge_region_yields(
+    target: Dict[Tuple[str, str, str, str], np.ndarray],
+    incoming: Mapping[Tuple[str, str, str, str], Any],
+) -> None:
+    """Accumulate region yield arrays into ``target`` in place."""
+
+    if not incoming:
+        return
+    for key, value in incoming.items():
+        arr = np.asarray(value, dtype=float)
+        current = target.get(key)
+        if current is None:
+            target[key] = arr
+        else:
+            target[key] = np.asarray(current, dtype=float) + arr
+
+
 _topcoffea_paths = _import_topcoffea_submodule("paths")
 topcoffea_path = _topcoffea_paths.topcoffea_path
 topcoffea_utils = _import_topcoffea_submodule("utils")
@@ -95,6 +113,7 @@ from .run_analysis_helpers import (
     unique_preserving_order,
     weight_variations_from_metadata,
 )
+from . import scenario_registry
 from .metadata_loader import load_metadata
 from .nanoevents_helpers import nanoevents_factory_from_root
 from .systematics_validation import (
@@ -135,11 +154,15 @@ class ChannelPlanner:
         skip_sr: bool = False,
         skip_cr: bool = False,
         scenario_names: Optional[Sequence[str]] = None,
+        channel_groups_strict: bool = True,
+        warn_on_partial_groups: bool = True,
     ) -> None:
         self._channel_helper = channel_helper
         self._skip_sr = bool(skip_sr)
         self._skip_cr = bool(skip_cr)
         self._scenario_names = list(scenario_names or [])
+        self._channel_groups_strict = bool(channel_groups_strict)
+        self._warn_on_partial_groups = bool(warn_on_partial_groups)
 
         self._sr_groups = None
         self._cr_groups = None
@@ -315,7 +338,11 @@ class ChannelPlanner:
                 if not self._skip_sr and group not in sr_groups:
                     sr_groups.append(group)
 
-        group_names = channel_helper.selected_group_names(self._scenario_names)
+        group_names = channel_helper.selected_group_names(
+            self._scenario_names,
+            strict=self._channel_groups_strict,
+            warn_on_partial=self._warn_on_partial_groups,
+        )
         for group_name in group_names:
             _register_group(group_name)
 
@@ -1315,6 +1342,7 @@ class RunWorkflow:
         runner = self._executor_factory.create_runner()
 
         output: Dict[str, Any] = {}
+        merged_region_yields: Dict[Tuple[str, str, str, str], np.ndarray] = {}
 
         total_tasks = len(histogram_plan.tasks)
         for idt, task in enumerate(histogram_plan.tasks):
@@ -1400,6 +1428,9 @@ class RunWorkflow:
             summary_payload = out.pop(
                 analysis_processor.AnalysisProcessor.VARIATION_SUMMARY_KEY, ()
             )
+            region_yields_payload = out.pop("region_yields", None)
+            if region_yields_payload:
+                _merge_region_yields(merged_region_yields, region_yields_payload)
             self._log_variation_recap(
                 task_index=idt + 1,
                 total_tasks=total_tasks,
@@ -1408,6 +1439,8 @@ class RunWorkflow:
             )
             output.update(out)
 
+        if merged_region_yields:
+            output["region_yields"] = merged_region_yields
         dt = time.time() - tstart
 
         if self._config.executor == "futures":
@@ -1680,15 +1713,35 @@ def run_workflow(config: RunConfig) -> None:
                 ", ".join(config.scenario_names[1:]),
             )
             config.scenario_names = [primary_scenario]
+        canonical_path = Path(
+            scenario_registry.resolve_scenario_path(primary_scenario)
+        ).resolve()
+        metadata_is_custom = Path(metadata_file).resolve() != canonical_path
+        strict_mode = bool(config.channel_groups_strict)
         try:
-            channels_data = scenario_groups.load_channels_for_scenario(
-                primary_scenario
-            )
-            logger.info(
-                "Loaded %d canonical channel groups for scenario '%s'.",
-                len((channels_data or {}).get("groups", {})),
-                primary_scenario,
-            )
+            scenario_kwargs = {"strict": strict_mode}
+            if metadata_is_custom:
+                channels_data = scenario_groups.load_channels_for_scenario(
+                    primary_scenario,
+                    metadata=metadata,
+                    metadata_path=str(metadata_file),
+                    **scenario_kwargs,
+                )
+                logger.info(
+                    "Loaded %d channel groups for scenario '%s' from metadata '%s'.",
+                    len((channels_data or {}).get("groups", {})),
+                    primary_scenario,
+                    metadata_file,
+                )
+            else:
+                channels_data = scenario_groups.load_channels_for_scenario(
+                    primary_scenario, **scenario_kwargs
+                )
+                logger.info(
+                    "Loaded %d canonical channel groups for scenario '%s'.",
+                    len((channels_data or {}).get("groups", {})),
+                    primary_scenario,
+                )
         except Exception as exc:  # pragma: no cover - defensive guard
             logger.warning(
                 "Falling back to inline channel metadata for scenario '%s': %s",
@@ -1710,6 +1763,8 @@ def run_workflow(config: RunConfig) -> None:
         skip_sr=config.skip_sr,
         skip_cr=config.skip_cr,
         scenario_names=config.scenario_names,
+        channel_groups_strict=strict_mode,
+        warn_on_partial_groups=not (metadata_is_custom and not strict_mode),
     )
 
     var_defs = metadata.get("variables")
