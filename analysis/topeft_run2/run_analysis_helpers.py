@@ -424,6 +424,8 @@ class RunConfig:
     futures_retries: int = 0
     futures_retry_wait: float = 5.0
     channel_groups_strict: bool = True
+    options_profile: Optional[str] = None
+    options_path: Optional[str] = None
 
 
 class RunConfigBuilder:
@@ -599,6 +601,9 @@ class RunConfigBuilder:
 
             for section in yaml_sections:
                 _apply_source(section)
+
+        config.options_profile = selected_profile
+        config.options_path = options_path
 
         if options_path is None:
             cli_attr_map = {

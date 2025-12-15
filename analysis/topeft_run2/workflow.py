@@ -29,11 +29,14 @@ import gzip
 import json
 import logging
 import os
+import subprocess
+import numpy as np
 import tempfile
 import time
 import warnings
 from functools import partial
 from pathlib import Path
+from datetime import datetime
 from dataclasses import asdict, dataclass, field
 from typing import (
     Any,
@@ -82,6 +85,107 @@ def _import_topcoffea_submodule(submodule: str):
             )
             % module_name
         ) from exc
+
+
+def _merge_region_yields(
+    target: Dict[Tuple[str, str, str, str], np.ndarray],
+    incoming: Mapping[Tuple[str, str, str, str], Any],
+) -> None:
+    """Accumulate region yield arrays into ``target`` in place."""
+
+    if not incoming:
+        return
+    for key, value in incoming.items():
+        arr = np.asarray(value, dtype=float)
+        current = target.get(key)
+        if current is None:
+            target[key] = arr
+        else:
+            target[key] = np.asarray(current, dtype=float) + arr
+
+
+def _write_region_yields_report(
+    region_yields: Mapping[Tuple[str, str, str, str], Any],
+    *,
+    config: "RunConfig",
+    metadata_path: str,
+    scenario_names: Sequence[str],
+) -> None:
+    """Persist a per-region yields report under reports/ following AGENTS.md conventions."""
+
+    if not region_yields:
+        return
+
+    repo_root = Path(__file__).resolve().parents[2]
+    reports_dir = repo_root / "reports"
+    reports_dir.mkdir(parents=True, exist_ok=True)
+
+    try:
+        branch = (
+            subprocess.check_output(
+                ["git", "rev-parse", "--abbrev-ref", "HEAD"], text=True
+            ).strip()
+        )
+    except Exception:
+        branch = "unknown-branch"
+
+    timestamp = datetime.now().strftime("%Y%m%d-%H%M")
+    report_path = reports_dir / f"topeft-{branch}-{timestamp}-region-yields.md"
+
+    entries: List[Tuple[str, str, str, str, float, float]] = []
+    per_dataset_totals: Dict[str, np.ndarray] = {}
+    overall = np.zeros(2, dtype=float)
+
+    for key, value in sorted(region_yields.items()):
+        dataset, channel, application, variation = key
+        arr = np.asarray(value, dtype=float)
+        n_events = float(arr[0]) if arr.size > 0 else 0.0
+        sumw = float(arr[1]) if arr.size > 1 else 0.0
+        entries.append(
+            (str(dataset), str(channel), str(application), str(variation), n_events, sumw)
+        )
+        per_dataset_totals.setdefault(dataset, np.zeros(2, dtype=float))[:] += arr[:2]
+        overall += arr[:2]
+
+    lines: List[str] = []
+    lines.append("# Per-region yields report (Run-2 TopEFT)")
+    lines.append("")
+    lines.append("## Summary")
+    lines.append(
+        f"- Options profile: {getattr(config, 'options_profile', None) or 'unspecified'}"
+    )
+    scenario_label = ", ".join(str(s) for s in scenario_names) if scenario_names else "unspecified"
+    lines.append(f"- Scenarios: {scenario_label}")
+    lines.append(f"- Metadata: {metadata_path}")
+    lines.append(f"- Output tag: {getattr(config, 'outname', '<unknown>')}")
+    lines.append(f"- Branch: {branch}")
+    lines.append(f"- Timestamp: {timestamp}")
+    lines.append("")
+    lines.append("## Per-region yields (nominal)")
+    lines.append("")
+    lines.append("| dataset | channel | application | variation | n_events | sumw_nominal |")
+    lines.append("|---|---|---|---|---|---|")
+    for dataset, channel, application, variation, n_events, sumw in entries:
+        lines.append(
+            f"| {dataset} | {channel} | {application} | {variation} | {n_events:.0f} | {sumw:.6f} |"
+        )
+    if not entries:
+        lines.append("| _none_ | _none_ | _none_ | _none_ | 0 | 0.000000 |")
+
+    lines.append("")
+    lines.append("## Totals")
+    lines.append("")
+    lines.append("| dataset | n_events | sumw_nominal |")
+    lines.append("|---|---|---|")
+    for dataset, arr in sorted(per_dataset_totals.items()):
+        lines.append(f"| {dataset} | {arr[0]:.0f} | {arr[1]:.6f} |")
+    lines.append(f"| **overall** | {overall[0]:.0f} | {overall[1]:.6f} |")
+    lines.append("")
+    lines.append("## Testing")
+    lines.append("")
+    lines.append("- Not run as part of this write-out; run a small profile such as `python analysis/topeft_run2/run_analysis.py --options ./configs/fullR2_run_local.yml:sr_it_test` to regenerate histograms and this report.")
+
+    report_path.write_text("\n".join(lines))
 
 
 _topcoffea_paths = _import_topcoffea_submodule("paths")
@@ -1324,6 +1428,7 @@ class RunWorkflow:
         runner = self._executor_factory.create_runner()
 
         output: Dict[str, Any] = {}
+        merged_region_yields: Dict[Tuple[str, str, str, str], np.ndarray] = {}
 
         total_tasks = len(histogram_plan.tasks)
         for idt, task in enumerate(histogram_plan.tasks):
@@ -1409,6 +1514,9 @@ class RunWorkflow:
             summary_payload = out.pop(
                 analysis_processor.AnalysisProcessor.VARIATION_SUMMARY_KEY, ()
             )
+            region_yields_payload = out.pop("region_yields", None)
+            if region_yields_payload:
+                _merge_region_yields(merged_region_yields, region_yields_payload)
             self._log_variation_recap(
                 task_index=idt + 1,
                 total_tasks=total_tasks,
@@ -1417,6 +1525,8 @@ class RunWorkflow:
             )
             output.update(out)
 
+        if merged_region_yields:
+            output["region_yields"] = merged_region_yields
         dt = time.time() - tstart
 
         if self._config.executor == "futures":
@@ -1584,6 +1694,8 @@ class RunWorkflow:
             os.system("mkdir -p %s" % self._config.outpath)
         out_pkl_file = os.path.join(self._config.outpath, self._config.outname + ".pkl.gz")
 
+        region_yields = output.get("region_yields", {})
+
         serialised_output = normalise_runner_output(output)
         if isinstance(serialised_output, Mapping):
             total_bins, filled_bins = tuple_dict_stats(serialised_output)
@@ -1597,6 +1709,16 @@ class RunWorkflow:
 
             cloudpickle.dump(serialised_output, fout)
         logger.info("Finished writing %s", out_pkl_file)
+
+        try:
+            _write_region_yields_report(
+                region_yields,
+                config=self._config,
+                metadata_path=self._config.metadata_path or "",
+                scenario_names=self._config.scenario_names or [],
+            )
+        except Exception:
+            logger.warning("Failed to write region yields report", exc_info=True)
 
         if self._config.do_np:
             logger.info("Starting nonprompt estimation")

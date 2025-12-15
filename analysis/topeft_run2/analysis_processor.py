@@ -2720,6 +2720,9 @@ class AnalysisProcessor(processor.ProcessorABC):
 
         channel_entries: List[Tuple[str, str, ak.Array, np.ndarray]] = []
         for lep_flav in lep_flav_iter:
+            logger.info("Selection keys: %s", selections.names)
+            logger.info("Channel def list: %r", self._channel_dict["chan_def_lst"])
+            logger.info("Channel bit '%s' present? %s", lep_chan, lep_chan in selections.names)
             cuts_lst = [self.appregion, lep_chan]
             flav_ch = None
             njet_ch = None
@@ -2926,7 +2929,7 @@ class AnalysisProcessor(processor.ProcessorABC):
         if not self._debug_logging:
             return
 
-        logger.debug(message, *args)
+        logger.info(message, *args)
 
         if self._suppress_debug_prints:
             return
