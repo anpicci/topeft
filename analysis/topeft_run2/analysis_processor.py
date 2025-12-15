@@ -700,7 +700,7 @@ class AnalysisProcessor(processor.ProcessorABC):
         # ``allowed_jerc_variations`` gates only shifted JES/JER/UES branches.
         # Central jet/MET corrections always run regardless of this payload.
         if self._debug_logging:
-            self._debug(
+            logger.info(
                 "Resolved allowed JERC variations for %s: %s",
                 self._sample.get("histAxisName"),
                 self._allowed_jerc_variations,
@@ -946,7 +946,7 @@ class AnalysisProcessor(processor.ProcessorABC):
         if arr is None:
             sanitized = ak.Array([[] for _ in range(n_events)])
             if self._debug_logging:
-                self._debug(
+                logger.info(
                     "%s layout sanitized: None -> %s",
                     name,
                     ak.type(sanitized),
@@ -957,7 +957,7 @@ class AnalysisProcessor(processor.ProcessorABC):
         arr = ak.Array(arr)
 
         if name == "goodJets" and self._debug_logging:
-            self._debug("goodJets input layout: %s", original_type)
+            logger.info("goodJets input layout: %s", original_type)
 
         def _is_list_like(value: Any) -> bool:
             return ak.to_layout(value, allow_record=True).is_list
@@ -1000,7 +1000,7 @@ class AnalysisProcessor(processor.ProcessorABC):
             elif zipped_collection is not None:
                 collection = ak.Array(zipped_collection)
                 if self._debug_logging:
-                    self._debug(
+                    logger.info(
                         "%s canonical jets record zipped to %s",
                         name,
                         ak.type(collection),
@@ -1050,7 +1050,7 @@ class AnalysisProcessor(processor.ProcessorABC):
             )
 
         if self._debug_logging:
-            self._debug(
+            logger.info(
                 "%s layout sanitized: %s -> %s",
                 name,
                 original_type,
@@ -1420,7 +1420,7 @@ class AnalysisProcessor(processor.ProcessorABC):
             group_info = group_mapping.get(group_key, {})
 
             if group_mapping:
-                self._debug(
+                logger.info(
                     "Variation group mapping for '%s': mapping=%s key=%s info=%s",
                     variation_name,
                     group_mapping,
@@ -1578,7 +1578,8 @@ class AnalysisProcessor(processor.ProcessorABC):
         cleaned_jets = jets[~ak.any(jet_indices == veto_indices, axis=-1)]
 
         jetptname = "pt"
-        logger.info("jetptname: %s", jetptname)
+        if self._debug_logging:
+            logger.info("jetptname: %s", jetptname)
 
         cleaned_jets["pt_raw"] = (1 - cleaned_jets.rawFactor) * cleaned_jets.pt
         cleaned_jets["mass_raw"] = (1 - cleaned_jets.rawFactor) * cleaned_jets.mass
@@ -1611,13 +1612,15 @@ class AnalysisProcessor(processor.ProcessorABC):
             ),
             cleaned_jets,
         )
-        logger.info("Corrected jets pt: %s", ak.to_list(corrected_jets.pt))
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug("Corrected jets pt: %s", ak.to_list(corrected_jets.pt))
 
         cleaned_jets = ApplyJetSystematics(
             dataset.year, corrected_jets, variation_state.object_variation
         )
 
-        logger.info("Cleaned jets pt: %s", ak.to_list(cleaned_jets.pt))
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug("Cleaned jets pt: %s", ak.to_list(cleaned_jets.pt))
 
         central_jet_counts = ak.num(corrected_jets.pt, axis=-1)
         variation_jet_counts = ak.num(cleaned_jets.pt, axis=-1)
@@ -1627,7 +1630,7 @@ class AnalysisProcessor(processor.ProcessorABC):
             )
 
         if self._debug_logging:
-            self._debug(
+            logger.info(
                 "Building MET for variation '%s': object_variation=%s request_variation=%r dataset_year=%s is_data=%s corrected_jets_fields=%s",
                 variation_state.name,
                 variation_state.object_variation,
@@ -1799,7 +1802,7 @@ class AnalysisProcessor(processor.ProcessorABC):
                 )
             except Exception:
                 total_fwd_jets = 0
-            self._debug(
+            logger.info(
                 "Prepared objects for variation '%s': object_variation=%s total_good_jets=%d total_fwd_jets=%d",
                 variation_state.name,
                 variation_state.object_variation,
@@ -2250,7 +2253,7 @@ class AnalysisProcessor(processor.ProcessorABC):
                 if variation_state.weight_variations
                 else ["nominal"]
             )
-            self._debug(
+            logger.info(
                 "Registered weight configuration for '%s': weights=%s data_weight=%s sow_labels=%s",
                 variation_state.name,
                 weight_summary,
@@ -2691,7 +2694,8 @@ class AnalysisProcessor(processor.ProcessorABC):
         dense_axis_vals = self._check_dense_axis_invariants(
             dense_axis_name, dense_axis_vals, n_events
         )
-        logger.info("Variable values: %s", ak.to_list(dense_axis_vals))
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug("Variable values: %s", ak.to_list(dense_axis_vals))
 
         weight_variations_to_run = list(variation_state.weight_variations)
         if weight_variations_to_run:
@@ -2720,9 +2724,10 @@ class AnalysisProcessor(processor.ProcessorABC):
 
         channel_entries: List[Tuple[str, str, ak.Array, np.ndarray]] = []
         for lep_flav in lep_flav_iter:
-            logger.info("Selection keys: %s", selections.names)
-            logger.info("Channel def list: %r", self._channel_dict["chan_def_lst"])
-            logger.info("Channel bit '%s' present? %s", lep_chan, lep_chan in selections.names)
+            if self._debug_logging:
+                logger.info("Selection keys: %s", selections.names)
+                logger.info("Channel def list: %r", self._channel_dict["chan_def_lst"])
+                logger.info("Channel bit '%s' present? %s", lep_chan, lep_chan in selections.names)
             cuts_lst = [self.appregion, lep_chan]
             flav_ch = None
             njet_ch = None
@@ -2744,7 +2749,7 @@ class AnalysisProcessor(processor.ProcessorABC):
 
             if self._debug_logging:
                 cut_pass_info = {cut: selections.all(cut) for cut in cuts_lst}
-                self._debug(
+                logger.info(
                     "Filling histograms for channel '%s' (base '%s') with cuts %s",
                     ch_name,
                     base_ch_name,
@@ -2854,7 +2859,7 @@ class AnalysisProcessor(processor.ProcessorABC):
 
                 if self._debug_logging:
                     filled_count = int(np.count_nonzero(np.asarray(all_cuts_mask)))
-                    self._debug(
+                    logger.info(
                         "Filled histkey %s with %d selected events",
                         histkey,
                         filled_count,
@@ -2924,21 +2929,6 @@ class AnalysisProcessor(processor.ProcessorABC):
                 break
 
         return dataset_for_histograms, dataset_for_triggers
-
-    def _debug(self, message: str, *args) -> None:
-        if not self._debug_logging:
-            return
-
-        logger.info(message, *args)
-
-        if self._suppress_debug_prints:
-            return
-
-        try:
-            formatted = message % args if args else message
-        except Exception:
-            formatted = " ".join([message, *(str(arg) for arg in args)])
-        print(formatted, flush=True)
 
     # Main function: run on a given dataset
 
