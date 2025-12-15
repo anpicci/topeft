@@ -665,6 +665,7 @@ class AnalysisProcessor(processor.ProcessorABC):
         self._histogram_key_map = histogram_key_map
 
         histogram[self.VARIATION_SUMMARY_KEY] = []
+        histogram["region_yields"] = processor.dict_accumulator()
         self._accumulator = histogram
 
         # Set the energy threshold to cut on
@@ -2691,7 +2692,7 @@ class AnalysisProcessor(processor.ProcessorABC):
             dense_axis_name, dense_axis_vals, n_events
         )
         logger.info("Variable values: %s", ak.to_list(dense_axis_vals))
-        
+
         weight_variations_to_run = list(variation_state.weight_variations)
         if weight_variations_to_run:
             wgt_var_lst = []
@@ -2702,6 +2703,12 @@ class AnalysisProcessor(processor.ProcessorABC):
                 wgt_var_lst.append(name)
 
         executed_weight_variations: List[str] = []
+        is_nominal_variation = (
+            variation_state.request.variation is None
+            or variation_state.variation_type == "nominal"
+            or variation_state.name == "nominal"
+        )
+        nominal_weight = weights_object.weight(None)
 
         lep_chan = self._channel_dict["chan_def_lst"][0]
         jet_req = self._channel_dict["jet_selection"]
@@ -2711,77 +2718,103 @@ class AnalysisProcessor(processor.ProcessorABC):
             else [None]
         )
 
-        for wgt_fluct in wgt_var_lst:
-            if wgt_fluct == "nominal":
-                weight = weights_object.weight(None)
-            elif wgt_fluct in weights_object.variations:
-                weight = weights_object.weight(wgt_fluct)
-            else:
-                continue
+        channel_entries: List[Tuple[str, str, ak.Array, np.ndarray]] = []
+        for lep_flav in lep_flav_iter:
+            cuts_lst = [self.appregion, lep_chan]
+            flav_ch = None
+            njet_ch = None
+            if isData:
+                cuts_lst.append("is_good_lumi")
+            if self._split_by_lepton_flavor:
+                flav_ch = lep_flav
+                cuts_lst.append(lep_flav)
+            if dense_axis_name != "njets":
+                njet_ch = jet_req
+                cuts_lst.append(jet_req)
 
-            if (
-                self.appregion.startswith("isSR")
-                and wgt_fluct in data_weight_systematics_set
-            ):
-                continue
-            executed_weight_variations.append(wgt_fluct)
-
-            if wgt_fluct == "nominal":
-                hist_variation_label = hist_label
-            else:
-                hist_variation_label = self._histogram_label_lookup.get(
-                    wgt_fluct, wgt_fluct
-                )
-
-            for lep_flav in lep_flav_iter:
-                cuts_lst = [self.appregion, lep_chan]
-                flav_ch = None
-                njet_ch = None
-                if isData:
-                    cuts_lst.append("is_good_lumi")
-                if self._split_by_lepton_flavor:
-                    flav_ch = lep_flav
-                    cuts_lst.append(lep_flav)
-                if dense_axis_name != "njets":
-                    njet_ch = jet_req
-                    cuts_lst.append(jet_req)
-
-                ch_name, base_ch_name = self._build_channel_names(
-                    lep_chan, njet_ch, flav_ch
-                )
-                if base_ch_name != self.channel:
+            ch_name, base_ch_name = self._build_channel_names(
+                lep_chan, njet_ch, flav_ch
+            )
+            if base_ch_name != self.channel:
+                if not str(self.channel).startswith(str(base_ch_name)):
                     continue
 
-                if self._debug_logging:
-                    cut_pass_info = {cut: selections.all(cut) for cut in cuts_lst}
-                    self._debug(
-                        "Filling histograms for channel '%s' (base '%s') with cuts %s",
-                        ch_name,
+            if self._debug_logging:
+                cut_pass_info = {cut: selections.all(cut) for cut in cuts_lst}
+                self._debug(
+                    "Filling histograms for channel '%s' (base '%s') with cuts %s",
+                    ch_name,
+                    base_ch_name,
+                    cut_pass_info,
+                )
+
+            all_cuts_mask = selections.all(*cuts_lst)
+            if ecut_mask is not None:
+                all_cuts_mask = all_cuts_mask & ecut_mask
+            if isinstance(all_cuts_mask, ak.Array):
+                mask_numpy = (
+                    ak.to_numpy(all_cuts_mask)
+                    if hasattr(ak, "to_numpy")
+                    else np.asarray(all_cuts_mask)
+                )
+            else:
+                mask_numpy = np.asarray(all_cuts_mask)
+
+            channel_entries.append((ch_name, base_ch_name, all_cuts_mask, mask_numpy))
+
+        if is_nominal_variation and channel_entries:
+            region_store = self._accumulator.get("region_yields")
+            for ch_name, base_ch_name, all_cuts_mask, mask_numpy in channel_entries:
+                _log_region_yields(
+                    dataset=dataset.dataset,
+                    clean_channel=base_ch_name,
+                    application=self.appregion,
+                    region_key=self.appregion,
+                    region_mask=all_cuts_mask,
+                    weight_tot=nominal_weight,
+                )
+                if region_store is not None:
+                    region_key = (
+                        dataset.dataset,
                         base_ch_name,
-                        cut_pass_info,
+                        self.appregion,
+                        "nominal",
+                    )
+                    current = region_store.get(region_key, np.zeros(2, dtype=float))
+                    n_events = int(np.count_nonzero(mask_numpy))
+                    sumw_nominal = (
+                        float(np.sum(np.asarray(nominal_weight)[mask_numpy]))
+                        if n_events
+                        else 0.0
+                    )
+                    region_store[region_key] = current + np.array(
+                        [float(n_events), sumw_nominal], dtype=float
                     )
 
-                all_cuts_mask = selections.all(*cuts_lst)
-                if ecut_mask is not None:
-                    all_cuts_mask = all_cuts_mask & ecut_mask
-                if isinstance(all_cuts_mask, ak.Array):
-                    mask_numpy = (
-                        ak.to_numpy(all_cuts_mask)
-                        if hasattr(ak, "to_numpy")
-                        else np.asarray(all_cuts_mask)
-                    )
+        for ch_name, base_ch_name, all_cuts_mask, mask_numpy in channel_entries:
+            for wgt_fluct in wgt_var_lst:
+                if wgt_fluct == "nominal":
+                    weight = weights_object.weight(None)
+                elif wgt_fluct in weights_object.variations:
+                    weight = weights_object.weight(wgt_fluct)
                 else:
-                    mask_numpy = np.asarray(all_cuts_mask)
+                    continue
+
+                if (
+                    self.appregion.startswith("isSR")
+                    and wgt_fluct in data_weight_systematics_set
+                ):
+                    continue
+                if wgt_fluct not in executed_weight_variations:
+                    executed_weight_variations.append(wgt_fluct)
 
                 if wgt_fluct == "nominal":
-                    _log_region_yields(
-                        dataset=dataset.dataset,
-                        clean_channel=base_ch_name,
-                        application=self.appregion,
-                        region_key=self.appregion,
-                        region_mask=all_cuts_mask,
-                        weight_tot=weight,
+                    hist_variation_label = hist_label
+                else:
+                    hist_variation_label = self._histogram_label_lookup.get(
+                        wgt_fluct, wgt_fluct
                     )
+
                 weights_flat = np.asarray(weight)[mask_numpy]
                 eft_coeffs = dataset.eft_coeffs
                 eft_coeffs_cut = (
