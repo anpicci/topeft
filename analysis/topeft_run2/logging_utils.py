@@ -71,9 +71,10 @@ def configure_logging(
     dev_debug_enabled = allow_dev_debug and _is_truthy_env(
         os.environ.get("TOPEFT_DEV_DEBUG"),
     )
-    mute_project_loggers = normalized_level == "NONE" and not dev_debug_enabled
-
-    effective_level_name = "DEBUG" if dev_debug_enabled else normalized_level
+    effective_level_name = (
+        "DEBUG" if (normalized_level == "DEBUG" or dev_debug_enabled) else normalized_level
+    )
+    mute_project_loggers = normalized_level == "NONE"
     project_level = (
         _level_name_to_numeric(effective_level_name)
         if not mute_project_loggers
@@ -135,4 +136,8 @@ def configure_logging(
             project_logger.addHandler(_project_handler)
 
     root.setLevel(root_level)
+    if dev_debug_enabled and not mute_project_loggers:
+        logger.info(
+            "TOPEFT_DEV_DEBUG detected: forcing project loggers to DEBUG (root remains INFO)."
+        )
     _configured = True

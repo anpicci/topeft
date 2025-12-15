@@ -40,8 +40,8 @@ DEFAULT_WEIGHT_VARIATIONS = [
     "nSumOfWeights_renormfactDown",
 ]
 
-VALID_LOG_LEVELS = {"NONE", "INFO", "WARNING", "ERROR"}
-VALID_LOG_LEVELS_DISPLAY = "none, info, warning, error"
+VALID_LOG_LEVELS = {"NONE", "INFO", "WARNING", "ERROR", "DEBUG"}
+VALID_LOG_LEVELS_DISPLAY = "none, info, warning, error, debug"
 
 def normalize_sequence(value: Any) -> List[str]:
     """Flatten ``value`` into a list of strings."""
@@ -210,13 +210,7 @@ def coerce_log_level(value: Any) -> Optional[str]:
         normalized = value.strip()
         if not normalized:
             return None
-        lowered = normalized.lower()
-        if lowered == "debug":
-            raise ValueError(
-                "DEBUG log level is reserved for internal development and cannot be set via --log-level. "
-                f"Use one of: {VALID_LOG_LEVELS_DISPLAY}."
-            )
-        upper_normalized = lowered.upper()
+        upper_normalized = normalized.upper()
         if upper_normalized in VALID_LOG_LEVELS:
             return upper_normalized
     raise ValueError(f"log_level must be one of: {VALID_LOG_LEVELS_DISPLAY}")

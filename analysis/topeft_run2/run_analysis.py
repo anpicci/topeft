@@ -220,7 +220,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help=(
             "Set the Python logging level to control topeft/topcoffea output. "
-            "Allowed values: none, info, warning, error. Defaults to info when unset."
+            "Allowed values: none, info, warning, error, debug. Defaults to info when unset."
         ),
     )
     parser.add_argument(
