@@ -69,6 +69,56 @@ get_te_param = GetParam(topeft_path("params/params.json"))
 np.seterr(divide="ignore", invalid="ignore", over="ignore")
 
 
+def _log_region_yields(
+    dataset: str,
+    clean_channel: str,
+    application: str,
+    region_key: str,
+    region_mask: ak.Array,
+    weight_tot: ak.Array,
+) -> None:
+    """
+    Log unweighted and weighted yields for a given region.
+
+    Parameters
+    ----------
+    dataset : str
+        Name of the sample (e.g. NanoAOD dataset name).
+    clean_channel : str
+        Name of the analysis channel, without application/region.
+    application : str
+        Application/region label (e.g. isSR_2lSS).
+    region_key : str
+        Region identifier; typically matches ``application``.
+    region_mask : awkward.Array
+        Boolean mask selecting events in this region.
+    weight_tot : awkward.Array
+        Total event weights aligned with events.
+    """
+
+    n_events = int(ak.sum(region_mask))
+    if n_events == 0:
+        logger.info(
+            "Region empty: dataset=%s clean_channel=%s application=%s region=%s n_events=0",
+            dataset,
+            clean_channel,
+            application,
+            region_key,
+        )
+        return
+
+    sumw = float(ak.sum(weight_tot[region_mask]))
+    logger.info(
+        "Region yields: dataset=%s clean_channel=%s application=%s region=%s n_events=%d sumw=%.6f",
+        dataset,
+        clean_channel,
+        application,
+        region_key,
+        n_events,
+        sumw,
+    )
+
+
 # Takes strings as inputs, constructs a string for the full channel name
 # Try to construct a channel name like this: [n leptons]_[lepton flavors]_[p or m charge]_[on or off Z]_[n b jets]_[n jets]
 # chan_str should look something like "3l_p_offZ_1b", NOTE: This function assumes nlep comes first
@@ -1007,44 +1057,6 @@ class AnalysisProcessor(processor.ProcessorABC):
             )
 
         return ak.Array(collection)
-
-    def _log_region_yield(
-        self,
-        *,
-        mask: Any,
-        dataset: str,
-        base_channel: str,
-        channel: str,
-        appl_region: str,
-        lep_chan: str,
-    ) -> None:
-        """Log the number of events passing the final region mask for a chunk."""
-
-        if not getattr(self, "_debug_logging", False) and not logger.isEnabledFor(
-            logging.INFO
-        ):
-            return
-
-        if mask is None:
-            n_total = 0
-            n_selected = 0
-        else:
-            mask_array = np.asarray(mask)
-            n_total = int(mask_array.size)
-            n_selected = int(np.count_nonzero(mask_array)) if n_total else 0
-
-        frac = float(n_selected) / float(n_total) if n_total else 0.0
-        logger.info(
-            "Region yield: dataset=%s base_channel=%s channel=%s appl_region=%s lep_chan=%s selected=%d total=%d frac=%.6f",
-            dataset,
-            base_channel,
-            channel,
-            appl_region,
-            lep_chan,
-            n_selected,
-            n_total,
-            frac,
-        )
 
     def _build_histogram_key(
         self,
@@ -2752,16 +2764,6 @@ class AnalysisProcessor(processor.ProcessorABC):
                 all_cuts_mask = selections.all(*cuts_lst)
                 if ecut_mask is not None:
                     all_cuts_mask = all_cuts_mask & ecut_mask
-                if wgt_fluct == "nominal":
-                    self._log_region_yield(
-                        mask=all_cuts_mask,
-                        dataset=dataset.dataset,
-                        base_channel=base_ch_name,
-                        channel=ch_name,
-                        appl_region=self.appregion,
-                        lep_chan=lep_chan,
-                    )
-
                 if isinstance(all_cuts_mask, ak.Array):
                     mask_numpy = (
                         ak.to_numpy(all_cuts_mask)
@@ -2770,6 +2772,16 @@ class AnalysisProcessor(processor.ProcessorABC):
                     )
                 else:
                     mask_numpy = np.asarray(all_cuts_mask)
+
+                if wgt_fluct == "nominal":
+                    _log_region_yields(
+                        dataset=dataset.dataset,
+                        clean_channel=base_ch_name,
+                        application=self.appregion,
+                        region_key=self.appregion,
+                        region_mask=all_cuts_mask,
+                        weight_tot=weight,
+                    )
                 weights_flat = np.asarray(weight)[mask_numpy]
                 eft_coeffs = dataset.eft_coeffs
                 eft_coeffs_cut = (
