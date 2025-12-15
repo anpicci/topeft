@@ -944,7 +944,7 @@ class AnalysisProcessor(processor.ProcessorABC):
 
         if arr is None:
             sanitized = ak.Array([[] for _ in range(n_events)])
-            logger.info(
+            logger.debug(
                 "%s layout sanitized: None -> %s",
                 name,
                 ak.type(sanitized),
@@ -953,9 +953,6 @@ class AnalysisProcessor(processor.ProcessorABC):
 
         original_type = ak.type(arr)
         arr = ak.Array(arr)
-
-        if name == "goodJets":
-            logger.info("goodJets input layout: %s", original_type)
 
         def _is_list_like(value: Any) -> bool:
             return ak.to_layout(value, allow_record=True).is_list
@@ -997,7 +994,7 @@ class AnalysisProcessor(processor.ProcessorABC):
                 collection = list_like_candidates[0][1]
             elif zipped_collection is not None:
                 collection = ak.Array(zipped_collection)
-                logger.info(
+                logger.debug(
                     "%s canonical jets record zipped to %s",
                     name,
                     ak.type(collection),
@@ -1045,13 +1042,6 @@ class AnalysisProcessor(processor.ProcessorABC):
                 f"{name}: expected at least a [events][objects] jagged layout for axis=1 concatenation, "
                 f"but got {ak.type(collection)}"
             )
-
-        logger.info(
-            "%s layout sanitized: %s -> %s",
-            name,
-            original_type,
-            ak.type(collection),
-        )
 
         return ak.Array(collection)
 
@@ -1574,7 +1564,6 @@ class AnalysisProcessor(processor.ProcessorABC):
         cleaned_jets = jets[~ak.any(jet_indices == veto_indices, axis=-1)]
 
         jetptname = "pt"
-        logger.info("jetptname: %s", jetptname)
 
         cleaned_jets["pt_raw"] = (1 - cleaned_jets.rawFactor) * cleaned_jets.pt
         cleaned_jets["mass_raw"] = (1 - cleaned_jets.rawFactor) * cleaned_jets.mass
@@ -1624,7 +1613,7 @@ class AnalysisProcessor(processor.ProcessorABC):
                 "Jet systematic variations must preserve the central jet multiplicities"
             )
 
-        logger.info(
+        logger.debug(
             "Building MET for variation '%s': object_variation=%s request_variation=%r dataset_year=%s is_data=%s corrected_jets_fields=%s",
             variation_state.name,
             variation_state.object_variation,
@@ -2739,7 +2728,7 @@ class AnalysisProcessor(processor.ProcessorABC):
                     continue
 
             cut_pass_info = {cut: selections.all(cut) for cut in cuts_lst}
-            logger.info(
+            logger.debug(
                 "Filling histograms for channel '%s' (base '%s') with cuts %s",
                 ch_name,
                 base_ch_name,
