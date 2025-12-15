@@ -699,12 +699,11 @@ class AnalysisProcessor(processor.ProcessorABC):
         )
         # ``allowed_jerc_variations`` gates only shifted JES/JER/UES branches.
         # Central jet/MET corrections always run regardless of this payload.
-        if self._debug_logging:
-            logger.info(
-                "Resolved allowed JERC variations for %s: %s",
-                self._sample.get("histAxisName"),
-                self._allowed_jerc_variations,
-            )
+        logger.info(
+            "Resolved allowed JERC variations for %s: %s",
+            self._sample.get("histAxisName"),
+            self._allowed_jerc_variations,
+        )
 
     @staticmethod
     def _ensure_ak_array(values, dtype=None):
@@ -945,18 +944,17 @@ class AnalysisProcessor(processor.ProcessorABC):
 
         if arr is None:
             sanitized = ak.Array([[] for _ in range(n_events)])
-            if self._debug_logging:
-                logger.info(
-                    "%s layout sanitized: None -> %s",
-                    name,
-                    ak.type(sanitized),
-                )
+            logger.info(
+                "%s layout sanitized: None -> %s",
+                name,
+                ak.type(sanitized),
+            )
             return sanitized
 
         original_type = ak.type(arr)
         arr = ak.Array(arr)
 
-        if name == "goodJets" and self._debug_logging:
+        if name == "goodJets":
             logger.info("goodJets input layout: %s", original_type)
 
         def _is_list_like(value: Any) -> bool:
@@ -999,12 +997,11 @@ class AnalysisProcessor(processor.ProcessorABC):
                 collection = list_like_candidates[0][1]
             elif zipped_collection is not None:
                 collection = ak.Array(zipped_collection)
-                if self._debug_logging:
-                    logger.info(
-                        "%s canonical jets record zipped to %s",
-                        name,
-                        ak.type(collection),
-                    )
+                logger.info(
+                    "%s canonical jets record zipped to %s",
+                    name,
+                    ak.type(collection),
+                )
             else:
                 raise ValueError(
                     f"{name}: ambiguous record layout with fields {fields}; "
@@ -1049,13 +1046,12 @@ class AnalysisProcessor(processor.ProcessorABC):
                 f"but got {ak.type(collection)}"
             )
 
-        if self._debug_logging:
-            logger.info(
-                "%s layout sanitized: %s -> %s",
-                name,
-                original_type,
-                ak.type(collection),
-            )
+        logger.info(
+            "%s layout sanitized: %s -> %s",
+            name,
+            original_type,
+            ak.type(collection),
+        )
 
         return ak.Array(collection)
 
@@ -1578,8 +1574,7 @@ class AnalysisProcessor(processor.ProcessorABC):
         cleaned_jets = jets[~ak.any(jet_indices == veto_indices, axis=-1)]
 
         jetptname = "pt"
-        if self._debug_logging:
-            logger.info("jetptname: %s", jetptname)
+        logger.info("jetptname: %s", jetptname)
 
         cleaned_jets["pt_raw"] = (1 - cleaned_jets.rawFactor) * cleaned_jets.pt
         cleaned_jets["mass_raw"] = (1 - cleaned_jets.rawFactor) * cleaned_jets.mass
@@ -1629,16 +1624,15 @@ class AnalysisProcessor(processor.ProcessorABC):
                 "Jet systematic variations must preserve the central jet multiplicities"
             )
 
-        if self._debug_logging:
-            logger.info(
-                "Building MET for variation '%s': object_variation=%s request_variation=%r dataset_year=%s is_data=%s corrected_jets_fields=%s",
-                variation_state.name,
-                variation_state.object_variation,
-                variation_state.request.variation,
-                dataset.year,
-                dataset.is_data,
-                tuple(ak.fields(corrected_jets)),
-            )
+        logger.info(
+            "Building MET for variation '%s': object_variation=%s request_variation=%r dataset_year=%s is_data=%s corrected_jets_fields=%s",
+            variation_state.name,
+            variation_state.object_variation,
+            variation_state.request.variation,
+            dataset.year,
+            dataset.is_data,
+            tuple(ak.fields(corrected_jets)),
+        )
 
         # Same semantics apply to MET: central recomputation always runs, and
         # ``allowed_variations`` just restricts auxiliary systematic branches.
@@ -1785,30 +1779,29 @@ class AnalysisProcessor(processor.ProcessorABC):
             )
         variation_state = self._derive_lepton_features(variation_state, events, dataset)
 
-        if self._debug_logging:
-            try:
-                total_good_jets = (
-                    int(ak.sum(variation_state.njets))
-                    if variation_state.njets is not None
-                    else 0
-                )
-            except Exception:
-                total_good_jets = 0
-            try:
-                total_fwd_jets = (
-                    int(ak.sum(variation_state.nfwdj))
-                    if variation_state.nfwdj is not None
-                    else 0
-                )
-            except Exception:
-                total_fwd_jets = 0
-            logger.info(
-                "Prepared objects for variation '%s': object_variation=%s total_good_jets=%d total_fwd_jets=%d",
-                variation_state.name,
-                variation_state.object_variation,
-                total_good_jets,
-                total_fwd_jets,
+        try:
+            total_good_jets = (
+                int(ak.sum(variation_state.njets))
+                if variation_state.njets is not None
+                else 0
             )
+        except Exception:
+            total_good_jets = 0
+        try:
+            total_fwd_jets = (
+                int(ak.sum(variation_state.nfwdj))
+                if variation_state.nfwdj is not None
+                else 0
+            )
+        except Exception:
+            total_fwd_jets = 0
+        logger.info(
+            "Prepared objects for variation '%s': object_variation=%s total_good_jets=%d total_fwd_jets=%d",
+            variation_state.name,
+            variation_state.object_variation,
+            total_good_jets,
+            total_fwd_jets,
+        )
 
         return variation_state
 
@@ -2247,19 +2240,18 @@ class AnalysisProcessor(processor.ProcessorABC):
                 variation_name,
             )
 
-        if self._debug_logging:
-            weight_summary = (
-                variation_state.weight_variations
-                if variation_state.weight_variations
-                else ["nominal"]
-            )
-            logger.info(
-                "Registered weight configuration for '%s': weights=%s data_weight=%s sow_labels=%s",
-                variation_state.name,
-                weight_summary,
-                variation_state.requested_data_weight_label,
-                sorted(variation_state.sow_variations.keys()),
-            )
+        weight_summary = (
+            variation_state.weight_variations
+            if variation_state.weight_variations
+            else ["nominal"]
+        )
+        logger.info(
+            "Registered weight configuration for '%s': weights=%s data_weight=%s sow_labels=%s",
+            variation_state.name,
+            weight_summary,
+            variation_state.requested_data_weight_label,
+            sorted(variation_state.sow_variations.keys()),
+        )
 
         return weights_object
 
@@ -2724,10 +2716,9 @@ class AnalysisProcessor(processor.ProcessorABC):
 
         channel_entries: List[Tuple[str, str, ak.Array, np.ndarray]] = []
         for lep_flav in lep_flav_iter:
-            if self._debug_logging:
-                logger.info("Selection keys: %s", selections.names)
-                logger.info("Channel def list: %r", self._channel_dict["chan_def_lst"])
-                logger.info("Channel bit '%s' present? %s", lep_chan, lep_chan in selections.names)
+            logger.info("Selection keys: %s", selections.names)
+            logger.info("Channel def list: %r", self._channel_dict["chan_def_lst"])
+            logger.info("Channel bit '%s' present? %s", lep_chan, lep_chan in selections.names)
             cuts_lst = [self.appregion, lep_chan]
             flav_ch = None
             njet_ch = None
@@ -2747,14 +2738,13 @@ class AnalysisProcessor(processor.ProcessorABC):
                 if not str(self.channel).startswith(str(base_ch_name)):
                     continue
 
-            if self._debug_logging:
-                cut_pass_info = {cut: selections.all(cut) for cut in cuts_lst}
-                logger.info(
-                    "Filling histograms for channel '%s' (base '%s') with cuts %s",
-                    ch_name,
-                    base_ch_name,
-                    cut_pass_info,
-                )
+            cut_pass_info = {cut: selections.all(cut) for cut in cuts_lst}
+            logger.info(
+                "Filling histograms for channel '%s' (base '%s') with cuts %s",
+                ch_name,
+                base_ch_name,
+                cut_pass_info,
+            )
 
             all_cuts_mask = selections.all(*cuts_lst)
             if ecut_mask is not None:
@@ -2857,13 +2847,12 @@ class AnalysisProcessor(processor.ProcessorABC):
 
                 hout[histkey].fill(**axes_fill_info_dict)
 
-                if self._debug_logging:
-                    filled_count = int(np.count_nonzero(np.asarray(all_cuts_mask)))
-                    logger.info(
-                        "Filled histkey %s with %d selected events",
-                        histkey,
-                        filled_count,
-                    )
+                filled_count = int(np.count_nonzero(np.asarray(all_cuts_mask)))
+                logger.info(
+                    "Filled histkey %s with %d selected events",
+                    histkey,
+                    filled_count,
+                )
 
                 axes_fill_info_dict = {
                     dense_axis_name + "_sumw2": dense_axis_vals[all_cuts_mask],
