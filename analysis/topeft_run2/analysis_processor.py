@@ -2777,9 +2777,10 @@ class AnalysisProcessor(processor.ProcessorABC):
         if is_nominal_variation and channel_entries:
             region_store = self._accumulator.get("region_yields")
             for ch_name, base_ch_name, all_cuts_mask, mask_numpy in channel_entries:
+                region_channel_label = ch_name
                 _log_region_yields(
                     dataset=dataset.dataset,
-                    clean_channel=base_ch_name,
+                    clean_channel=region_channel_label,
                     application=self.appregion,
                     region_key=self.appregion,
                     region_mask=all_cuts_mask,
@@ -2788,7 +2789,7 @@ class AnalysisProcessor(processor.ProcessorABC):
                 if region_store is not None:
                     region_key = (
                         dataset.dataset,
-                        base_ch_name,
+                        region_channel_label,
                         self.appregion,
                         "nominal",
                     )

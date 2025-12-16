@@ -300,10 +300,10 @@ class ChannelPlanner:
                         for jet_cat in jet_bins:
                             if jet_cat is None:
                                 continue
-                            jet_suffix = normalize_jet_category(jet_cat)
+                            jet_selection = normalize_jet_category(jet_cat)
                             ch_name = build_channel_label(
                                 [base_ch],
-                                jet_selection=jet_suffix,
+                                jet_selection=jet_selection,
                             )
                             current = result.setdefault(ch_name, [])
                             for appl in appl_list:
