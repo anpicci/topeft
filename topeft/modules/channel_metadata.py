@@ -17,6 +17,50 @@ from typing import Dict, Iterable, Iterator, List, Mapping, Optional, Sequence, 
 logger = logging.getLogger(__name__)
 
 
+def build_channel_label(
+    chan_def_lst: Sequence[str],
+    jet_selection: Optional[str] = None,
+    lep_flav: Optional[str] = None,
+) -> str:
+    """
+    Return the canonical channel label including the jet bin and optional flavor.
+
+    The jet-selection tag is expected to follow the existing normalized scheme
+    (e.g. ``exactly_0j``, ``atleast_2j``); the trailing component is appended as
+    the jet-bin suffix to the base channel.  This helper codifies the existing
+    naming convention without altering which jet-selection tags are available.
+    """
+
+    if not chan_def_lst:
+        raise ValueError("chan_def_lst must contain at least one entry")
+
+    base_channel_raw = str(chan_def_lst[0]).strip()
+    if not base_channel_raw:
+        raise ValueError("chan_def_lst[0] must be a non-empty string")
+
+    base_parts = base_channel_raw.split("_")
+    nlep_prefix = base_parts[0]
+    remainder = "_".join(part for part in base_parts[1:] if part)
+
+    components: List[str] = [nlep_prefix]
+
+    if lep_flav:
+        flav = str(lep_flav).strip()
+        if flav:
+            components.append(flav)
+
+    if remainder:
+        components.append(remainder)
+
+    jet_tag = str(jet_selection).strip() if jet_selection is not None else ""
+    if jet_tag:
+        jet_suffix = jet_tag.split("_")[-1]
+        if jet_suffix:
+            components.append(jet_suffix)
+
+    return "_".join(components)
+
+
 def _normalize_histogram_list(
     values: Optional[object], *, context: str, field_name: str
 ) -> Tuple[str, ...]:

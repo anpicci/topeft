@@ -53,6 +53,7 @@ from typing import (
 
 import topcoffea
 
+from topeft.modules.channel_metadata import build_channel_label
 from topeft.modules.executor import (
     build_futures_executor,
     build_taskvine_args,
@@ -246,6 +247,10 @@ class ChannelPlanner:
                             chan_def_lst = self._normalize_channel_definition(
                                 region.to_legacy_list(), active_features
                             )
+                            channel_label = build_channel_label(
+                                chan_def_lst,
+                                jet_selection=jet_key,
+                            )
                             return {
                                 "jet_selection": jet_key,
                                 "chan_def_lst": chan_def_lst,
@@ -256,6 +261,7 @@ class ChannelPlanner:
                                 if include_set
                                 else (),
                                 "channel_var_blacklist": tuple(sorted(exclude_set)),
+                                "channel_label": channel_label,
                             }
             return None
 
@@ -294,9 +300,11 @@ class ChannelPlanner:
                         for jet_cat in jet_bins:
                             if jet_cat is None:
                                 continue
-                            jet_suffix = normalize_jet_category(jet_cat)
-                            clean_suffix = jet_suffix.split("_")[-1]
-                            ch_name = f"{base_ch}_{clean_suffix}"
+                            jet_selection = normalize_jet_category(jet_cat)
+                            ch_name = build_channel_label(
+                                [base_ch],
+                                jet_selection=jet_selection,
+                            )
                             current = result.setdefault(ch_name, [])
                             for appl in appl_list:
                                 if appl not in current:
@@ -472,7 +480,8 @@ class HistogramPlanner:
         self._config = config
         self._var_defs = variable_definitions
         self._channel_planner = channel_planner
-        self._analysis_processor_module = None
+        self._channel_metadata_log_count = 0
+        self._channel_metadata_log_limit = 8
 
     def plan(
         self,
@@ -575,9 +584,21 @@ class HistogramPlanner:
                     continue
 
                 flavored_channels = self._resolve_flavored_channels(channel_metadata)
+                channel_label = channel_metadata.get("channel_label") or clean_ch
+
+                if self._channel_metadata_log_count < self._channel_metadata_log_limit:
+                    logger.info(
+                        "Channel metadata: channel_label=%s, chan_def_lst=%s, jet_selection=%s, appregion=%s, features=%s",
+                        channel_label,
+                        channel_metadata.get("chan_def_lst"),
+                        channel_metadata.get("jet_selection"),
+                        channel_metadata.get("appl_region"),
+                        channel_metadata.get("features"),
+                    )
+                    self._channel_metadata_log_count += 1
 
                 yield ChannelApplicationSelection(
-                    clean_channel=clean_ch,
+                    clean_channel=channel_label,
                     application=appl,
                     metadata=channel_metadata,
                     flavored_channels=flavored_channels,
@@ -590,7 +611,6 @@ class HistogramPlanner:
         if not self._config.split_lep_flavor:
             return ()
 
-        analysis_processor_module = self._get_analysis_processor_module()
         flavored_candidates: List[str] = []
         lep_flavors = channel_metadata.get("lep_flav_lst") or []
         lep_chan_defs = channel_metadata.get("chan_def_lst") or []
@@ -600,20 +620,13 @@ class HistogramPlanner:
             for lep_flavor in lep_flavors:
                 if not lep_flavor:
                     continue
-                flavored_name = analysis_processor_module.construct_cat_name(
-                    lep_base,
-                    njet_str=jet_selection,
-                    flav_str=lep_flavor,
+                flavored_name = build_channel_label(
+                    [lep_base],
+                    jet_selection=jet_selection,
+                    lep_flav=lep_flavor,
                 )
                 flavored_candidates.append(flavored_name)
         return tuple(flavored_candidates)
-
-    def _get_analysis_processor_module(self):
-        if self._analysis_processor_module is None:
-            from . import analysis_processor as analysis_processor_module
-
-            self._analysis_processor_module = analysis_processor_module
-        return self._analysis_processor_module
 
     def _expand_systematics(
         self,

@@ -26,6 +26,7 @@ from coffea.lumi_tools import LumiMask
 from typing import Any, Dict, List, Optional, Sequence, Set, Tuple, Union
 
 from topeft.modules.paths import topeft_path
+from topeft.modules.channel_metadata import build_channel_label
 from topeft.modules.corrections import (
     ApplyJetCorrections,
     build_corrected_jets,
@@ -492,6 +493,20 @@ class AnalysisProcessor(processor.ProcessorABC):
         # nested structure with several loops in ``process``.  The new logic
         # operates directly on the flat dictionary, so simply store it.
         self._channel_dict = channel_dict
+        chan_def_lst = channel_dict.get("chan_def_lst") or ()
+        jet_selection = channel_dict.get("jet_selection")
+        channel_label = channel_dict.get("channel_label")
+        if channel_label:
+            self._channel_label = str(channel_label)
+        else:
+            try:
+                self._channel_label = build_channel_label(
+                    chan_def_lst,
+                    jet_selection=jet_selection,
+                )
+            except Exception:
+                self._channel_label = None
+        self._jet_selection = jet_selection
         channel_features = channel_dict.get("features", ())
         if channel_features is None:
             channel_features = ()
@@ -579,6 +594,8 @@ class AnalysisProcessor(processor.ProcessorABC):
         self._var = var
         self._channel = ch
         self._appregion = appl
+        if not self._channel_label:
+            self._channel_label = self._channel
         self._syst = first_label
         self._var_def = info.get("definition")
         if self._var_def is None:
@@ -799,11 +816,6 @@ class AnalysisProcessor(processor.ProcessorABC):
     @property
     def var_def(self):
         return self._var_def
-
-    def _build_channel_names(self, lep_chan, njet_ch, flav_ch):
-        ch_name = construct_cat_name(lep_chan, njet_str=njet_ch, flav_str=flav_ch)
-        base_ch_name = construct_cat_name(lep_chan, njet_str=njet_ch, flav_str=None)
-        return ch_name, base_ch_name
 
     def _compute_ptbl(
         self,
@@ -2695,8 +2707,13 @@ class AnalysisProcessor(processor.ProcessorABC):
         )
         nominal_weight = weights_object.weight(None)
 
-        lep_chan = self._channel_dict["chan_def_lst"][0]
-        jet_req = self._channel_dict["jet_selection"]
+        chan_def_lst = self._channel_dict["chan_def_lst"]
+        lep_chan = chan_def_lst[0]
+        jet_req = self._jet_selection
+        base_channel_label = self._channel_label or build_channel_label(
+            chan_def_lst,
+            jet_selection=jet_req,
+        )
         lep_flav_iter = (
             self._channel_dict["lep_flav_lst"]
             if self._split_by_lepton_flavor
@@ -2706,33 +2723,41 @@ class AnalysisProcessor(processor.ProcessorABC):
         channel_entries: List[Tuple[str, str, ak.Array, np.ndarray]] = []
         for lep_flav in lep_flav_iter:
             logger.info("Selection keys: %s", selections.names)
-            logger.info("Channel def list: %r", self._channel_dict["chan_def_lst"])
+            logger.info("Channel def list: %r", chan_def_lst)
             logger.info("Channel bit '%s' present? %s", lep_chan, lep_chan in selections.names)
             cuts_lst = [self.appregion, lep_chan]
-            flav_ch = None
-            njet_ch = None
             if isData:
                 cuts_lst.append("is_good_lumi")
             if self._split_by_lepton_flavor:
-                flav_ch = lep_flav
                 cuts_lst.append(lep_flav)
-            if dense_axis_name != "njets":
-                njet_ch = jet_req
+            if jet_req:
                 cuts_lst.append(jet_req)
 
-            ch_name, base_ch_name = self._build_channel_names(
-                lep_chan, njet_ch, flav_ch
-            )
-            if base_ch_name != self.channel:
-                if not str(self.channel).startswith(str(base_ch_name)):
+            ch_name = base_channel_label
+            if self._split_by_lepton_flavor and lep_flav:
+                ch_name = build_channel_label(
+                    chan_def_lst,
+                    jet_selection=jet_req,
+                    lep_flav=lep_flav,
+                )
+
+            if base_channel_label != self.channel:
+                if not str(self.channel).startswith(str(base_channel_label)):
                     continue
 
             cut_pass_info = {cut: selections.all(cut) for cut in cuts_lst}
             logger.debug(
                 "Filling histograms for channel '%s' (base '%s') with cuts %s",
                 ch_name,
-                base_ch_name,
+                base_channel_label,
                 cut_pass_info,
+            )
+            logger.info(
+                "Filling histograms for canonical channel '%s' (base '%s', jet_selection=%r, app=%s)",
+                ch_name,
+                base_channel_label,
+                jet_req,
+                self.appregion,
             )
 
             all_cuts_mask = selections.all(*cuts_lst)
@@ -2747,14 +2772,15 @@ class AnalysisProcessor(processor.ProcessorABC):
             else:
                 mask_numpy = np.asarray(all_cuts_mask)
 
-            channel_entries.append((ch_name, base_ch_name, all_cuts_mask, mask_numpy))
+            channel_entries.append((ch_name, base_channel_label, all_cuts_mask, mask_numpy))
 
         if is_nominal_variation and channel_entries:
             region_store = self._accumulator.get("region_yields")
             for ch_name, base_ch_name, all_cuts_mask, mask_numpy in channel_entries:
+                region_channel_label = ch_name
                 _log_region_yields(
                     dataset=dataset.dataset,
-                    clean_channel=base_ch_name,
+                    clean_channel=region_channel_label,
                     application=self.appregion,
                     region_key=self.appregion,
                     region_mask=all_cuts_mask,
@@ -2763,7 +2789,7 @@ class AnalysisProcessor(processor.ProcessorABC):
                 if region_store is not None:
                     region_key = (
                         dataset.dataset,
-                        base_ch_name,
+                        region_channel_label,
                         self.appregion,
                         "nominal",
                     )
