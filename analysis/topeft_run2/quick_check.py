@@ -130,6 +130,22 @@ def _parse_region_value(value: Any) -> Tuple[Optional[float], Optional[float]]:
     """Return (n_events, sumw) parsed from a region_yields entry."""
 
     try:
+        try:
+            import numpy as np  # type: ignore
+        except Exception:
+            np = None  # type: ignore
+
+        if np is not None and isinstance(value, np.ndarray):
+            flat = value.ravel()
+            if flat.size >= 2:
+                return float(flat[0]), float(flat[1])
+            if flat.size == 1:
+                return float(flat[0]), None
+            return None, None
+
+        if np is not None and isinstance(value, np.generic):
+            return None, float(value)
+
         if isinstance(value, (int, float)):
             return None, float(value)
         if isinstance(value, (list, tuple)):
@@ -309,8 +325,15 @@ def classify_histogram_empty(hist_obj: Any) -> Tuple[str, str]:
                 try:
                     return ("non-empty" if len(vals) > 0 else "empty", "values_len_checked")  # type: ignore[arg-type]
                 except Exception as exc:
+                    msg = str(exc)
+                    # Some HistEFT values() calls may raise with empty-tuple-like messages
+                    if msg.strip() in {"()", "( )"}:
+                        return "empty", "values_raised_empty_tuple"
                     return "unknown", f"values_uninterpretable:{exc}"
         except Exception as exc:
+            msg = str(exc)
+            if msg.strip() in {"()", "( )"}:
+                return "empty", "values_raised_empty_tuple"
             return "unknown", f"values_failed:{exc}"
 
     return "unknown", "no_dense_or_values"
@@ -433,12 +456,8 @@ def _check_region_yields(payload: Mapping[Any, Any], tuple_keys: List[TupleKey])
     print(f"[region_yields] detected schema: {schema}")
 
     for key, value in _region_yields_entries(region_obj):
-        try:
-            n_events = float(value[0]) if isinstance(value, (list, tuple)) else float(value)
-        except Exception:
-            n_events = 0.0
-
-        if n_events <= 0:
+        n_events, _ = _parse_region_value(value)
+        if n_events is None or n_events <= 0:
             continue
 
         if isinstance(key, tuple) and len(key) >= 4:
