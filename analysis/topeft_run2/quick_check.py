@@ -25,7 +25,8 @@ import argparse
 import gzip
 import sys
 from collections import Counter, defaultdict
-from typing import Any, Dict, Iterable, List, Mapping, MutableMapping, Optional, Sequence, Tuple
+from collections.abc import Mapping as ABCMapping, MutableMapping as ABCMutableMapping
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 import cloudpickle
 
@@ -33,6 +34,9 @@ DEFAULT_MAX_EMPTY_PRINT = 10
 DEFAULT_SMALL_LIMIT = 50
 DEFAULT_MAX_KEYS_PRINT = 200
 DEFAULT_TOTALS_GROUP = "none"
+
+WARN_NUMPY_IMPORT = False
+_WARNED_NUMPY_IMPORT = False
 
 
 # -----------------------------
@@ -76,7 +80,8 @@ def _infer_expected_sidecars() -> List[str]:
 
 
 def _is_mapping(obj: Any) -> bool:
-    return isinstance(obj, MutableMapping) or isinstance(obj, Mapping)
+    # Use runtime ABCs (collections.abc), not typing.Mapping, for isinstance checks.
+    return isinstance(obj, (ABCMutableMapping, ABCMapping))
 
 
 # -----------------------------
@@ -133,8 +138,16 @@ def _parse_region_value(value: Any) -> Tuple[Optional[float], Optional[float]]:
         try:
             import numpy as np  # type: ignore
         except Exception:
+            global _WARNED_NUMPY_IMPORT
             np = None  # type: ignore
+            if WARN_NUMPY_IMPORT and not _WARNED_NUMPY_IMPORT:
+                print(
+                    "WARNING: numpy import failed; using duck-typed region_yields parsing (totals may be incomplete).",
+                    file=sys.stderr,
+                )
+                _WARNED_NUMPY_IMPORT = True
 
+        # Numpy-native handling
         if np is not None and isinstance(value, np.ndarray):
             flat = value.ravel()
             if flat.size >= 2:
@@ -146,25 +159,74 @@ def _parse_region_value(value: Any) -> Tuple[Optional[float], Optional[float]]:
         if np is not None and isinstance(value, np.generic):
             return None, float(value)
 
+        # Plain python numeric
         if isinstance(value, (int, float)):
             return None, float(value)
+
+        # Plain python sequences
         if isinstance(value, (list, tuple)):
             if len(value) >= 2:
                 return float(value[0]), float(value[1])
             if len(value) == 1:
                 return float(value[0]), None
+
+        # Duck-typed fallbacks when numpy is unavailable or types differ
+        for attr in ("ravel", "flatten"):
+            try:
+                if hasattr(value, attr):
+                    flat = getattr(value, attr)()
+                    # Prefer .size if present
+                    if hasattr(flat, "size"):
+                        size = flat.size  # type: ignore[attr-defined]
+                        if size >= 2:
+                            return float(flat[0]), float(flat[1])
+                        if size == 1:
+                            return float(flat[0]), None
+                    else:
+                        try:
+                            size = len(flat)  # type: ignore[arg-type]
+                        except Exception:
+                            size = None
+                        if size is not None:
+                            if size >= 2:
+                                return float(flat[0]), float(flat[1])
+                            if size == 1:
+                                return float(flat[0]), None
+            except Exception:
+                continue
+
+        # Scalar-like with .item()
+        try:
+            if hasattr(value, "item"):
+                scalar = value.item()
+                return None, float(scalar)
+        except Exception:
+            pass
+
+        # Generic indexable sequence (exclude mappings)
+        try:
+            if not _is_mapping(value) and hasattr(value, "__len__") and hasattr(value, "__getitem__"):
+                size = len(value)  # type: ignore[arg-type]
+                if size >= 2:
+                    return float(value[0]), float(value[1])
+                if size == 1:
+                    return float(value[0]), None
+        except Exception:
+            pass
+
     except Exception:
         return None, None
+
     return None, None
 
 
 def _compute_region_totals(region_obj: Any, by: str) -> Dict[str, Any]:
-    totals = {
+    totals: Dict[str, Any] = {
         "entries": 0,
         "skipped": 0,
-        "total_n_events": None,  # type: Optional[float]
-        "total_sumw": None,      # type: Optional[float]
-        "grouped": {},           # type: Dict[Any, Dict[str, Optional[float]]]
+        "total_n_events": None,  # Optional[float]
+        "total_sumw": None,      # Optional[float]
+        "grouped": {},           # Dict[Any, Dict[str, Optional[float]]]
     }
     if not _is_mapping(region_obj):
         return totals
@@ -298,7 +360,7 @@ def classify_histogram_empty(hist_obj: Any) -> Tuple[str, str]:
     if callable(values_fn):
         try:
             vals = values_fn()
-            if isinstance(vals, Mapping):
+            if isinstance(vals, ABCMapping):
                 if not vals:
                     return "empty", "values_mapping_empty"
 
@@ -318,18 +380,19 @@ def classify_histogram_empty(hist_obj: Any) -> Tuple[str, str]:
                         continue
 
                 return "empty", "values_mapping_checked_all_empty"
-            else:
-                size = getattr(vals, "size", None)
-                if size is not None:
-                    return ("non-empty" if size > 0 else "empty", "values_size_checked")
-                try:
-                    return ("non-empty" if len(vals) > 0 else "empty", "values_len_checked")  # type: ignore[arg-type]
-                except Exception as exc:
-                    msg = str(exc)
-                    # Some HistEFT values() calls may raise with empty-tuple-like messages
-                    if msg.strip() in {"()", "( )"}:
-                        return "empty", "values_raised_empty_tuple"
-                    return "unknown", f"values_uninterpretable:{exc}"
+
+            size = getattr(vals, "size", None)
+            if size is not None:
+                return ("non-empty" if size > 0 else "empty", "values_size_checked")
+
+            try:
+                return ("non-empty" if len(vals) > 0 else "empty", "values_len_checked")  # type: ignore[arg-type]
+            except Exception as exc:
+                msg = str(exc)
+                if msg.strip() in {"()", "( )"}:
+                    return "empty", "values_raised_empty_tuple"
+                return "unknown", f"values_uninterpretable:{exc}"
+
         except Exception as exc:
             msg = str(exc)
             if msg.strip() in {"()", "( )"}:
@@ -390,8 +453,8 @@ def _type_name(obj: Any) -> str:
 
 
 def _summarize_value_types(payload: Mapping[Any, Any], tuple_keys: List[TupleKey]) -> None:
-    overall = Counter()
-    by_var: Dict[str, Counter] = defaultdict(Counter)
+    overall: Counter[str] = Counter()
+    by_var: Dict[str, Counter[str]] = defaultdict(Counter)
 
     for k in tuple_keys:
         v = payload.get(k)
@@ -440,7 +503,7 @@ def _has_hist_for(
     dataset: Any,
     syst: Any,
 ) -> bool:
-    for var, ch, ap, ds, sy in tuple_keys:
+    for _, ch, ap, ds, sy in tuple_keys:
         if ch == channel and ap == app and ds == dataset and sy == syst:
             return True
     return False
@@ -575,6 +638,11 @@ def main() -> None:
         default=DEFAULT_TOTALS_GROUP,
         help="Group totals by this key when printing region_yields summaries.",
     )
+    parser.add_argument(
+        "--warn-numpy-import",
+        action="store_true",
+        help="Emit a warning if numpy import fails; parsing will fall back to duck-typing.",
+    )
 
     # Partner checks
     parser.add_argument(
@@ -590,6 +658,9 @@ def main() -> None:
     )
 
     args = parser.parse_args()
+
+    global WARN_NUMPY_IMPORT
+    WARN_NUMPY_IMPORT = bool(args.warn_numpy_import)
 
     out = smart_load_output(args.path)
 
