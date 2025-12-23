@@ -64,6 +64,8 @@ from run_analysis_helpers import (
     _enforce_taskvine_logging_policy,
     _normalize_executor_name,
     _resolve_effective_log_level,
+    enforce_options_single_source,
+    options_allowlist,
 )
 from topeft.modules.executor_cli import (
     ExecutorCLIHelper,
@@ -192,7 +194,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help=(
             "Path to the metadata YAML bundle. When supplied it overrides the "
-            "metadata from the options YAML or the scenario registry."
+            "metadata from the scenario registry. Cannot be used with --options."
         ),
     )
     parser.add_argument(
@@ -311,7 +313,7 @@ def build_parser() -> argparse.ArgumentParser:
             "YAML file that specifies command-line options. Accepts either"
             " 'path.yml' for the default profile or 'path.yml:profile' to select"
             " a specific profile. When provided, CLI flags are ignored in favour"
-            " of the YAML configuration (except --metadata, which always wins)."
+            " of the YAML configuration. Passing other config flags is an error."
         ),
     )
     parser.set_defaults(negotiate_manager_port=True)
@@ -350,9 +352,6 @@ def _apply_scenario_metadata_defaults(
         )
 
     scenario_name = scenario_names[0]
-    if metadata_cli is None and config.options_path is None and config.metadata_path:
-        metadata_cli = config.metadata_path
-
     metadata_options = config.metadata_path if config.options_path else None
     metadata_path, provenance = resolve_effective_metadata_path(
         scenario_name=scenario_name,
@@ -390,13 +389,9 @@ def main(argv: Sequence[str] | None = None) -> None:
         argv_list = list(sys.argv[1:])
     else:
         argv_list = list(argv)
-    args = parser.parse_args(argv_list)
+    enforce_options_single_source(parser, argv_list, options_allowlist(parser))
 
-    if getattr(args, "options", None) and getattr(args, "scenarios", None):
-        parser.error(
-            "Scenario selection must come from either --scenario or --options. "
-            "Set the scenario inside the options profile or drop the CLI flag."
-        )
+    args = parser.parse_args(argv_list)
 
     executor_from_cli = _argument_supplied(argv_list, "--executor", "-x")
     chunksize_from_cli = _argument_supplied(argv_list, "--chunksize", "-s")

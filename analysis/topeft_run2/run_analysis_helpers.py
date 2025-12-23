@@ -69,6 +69,89 @@ def unique_preserving_order(values: Iterable[str]) -> List[str]:
     return result
 
 
+def _canonical_option_string(action: "argparse.Action") -> str:
+    for option in action.option_strings:
+        if option.startswith("--"):
+            return option
+    return action.option_strings[0]
+
+
+def find_explicit_cli_options(
+    argv: Sequence[str],
+    parser: "argparse.ArgumentParser",
+) -> List[str]:
+    """Return explicit CLI options in ``argv`` as canonical option strings."""
+
+    explicit: List[str] = []
+    seen: set[str] = set()
+    option_actions = parser._option_string_actions
+    for token in argv:
+        if token == "--":
+            break
+        if token.startswith("--"):
+            option = token.split("=", 1)[0]
+        elif token.startswith("-") and token != "-":
+            option = token.split("=", 1)[0]
+            if option not in option_actions and len(option) > 2:
+                option = option[:2]
+        else:
+            continue
+        action = option_actions.get(option)
+        if action is None:
+            continue
+        canonical = _canonical_option_string(action)
+        if canonical in seen:
+            continue
+        seen.add(canonical)
+        explicit.append(canonical)
+    return explicit
+
+
+def options_allowlist(
+    parser: "argparse.ArgumentParser",
+) -> set[str]:
+    """Return the minimal set of options allowed alongside ``--options``."""
+
+    allowlist: set[str] = set()
+    for option in ("--help", "--version"):
+        action = parser._option_string_actions.get(option)
+        if action is None:
+            continue
+        allowlist.add(_canonical_option_string(action))
+    return allowlist
+
+
+def find_options_conflicts(
+    argv: Sequence[str],
+    parser: "argparse.ArgumentParser",
+    allowlist: set[str],
+) -> List[str]:
+    """Return conflicting options when ``--options`` is present."""
+
+    explicit = find_explicit_cli_options(argv, parser)
+    if "--options" not in explicit:
+        return []
+    allowed = set(allowlist)
+    allowed.add("--options")
+    return [option for option in explicit if option not in allowed]
+
+
+def enforce_options_single_source(
+    parser: "argparse.ArgumentParser",
+    argv: Sequence[str],
+    allowlist: set[str],
+) -> None:
+    """Raise an argparse error if ``--options`` conflicts with CLI flags."""
+
+    conflicts = find_options_conflicts(argv, parser, allowlist)
+    if conflicts:
+        parser.error(
+            "--options was provided, so options YAML is the single source of truth. "
+            "Remove these conflicting CLI flags (or move them into the options YAML): "
+            + ", ".join(conflicts)
+        )
+
+
 def coerce_bool(value: Any) -> Optional[bool]:
     """Convert ``value`` into a boolean if possible."""
 
@@ -679,7 +762,11 @@ __all__ = [
     "coerce_json_files",
     "coerce_optional_float",
     "coerce_port",
+    "enforce_options_single_source",
+    "find_explicit_cli_options",
+    "find_options_conflicts",
     "normalize_sequence",
+    "options_allowlist",
     "unique_preserving_order",
     "weight_variations_from_metadata",
 ]
