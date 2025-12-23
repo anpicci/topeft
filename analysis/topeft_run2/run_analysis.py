@@ -19,7 +19,7 @@ from typing import Sequence
 
 import topcoffea
 
-from analysis.topeft_run2.scenario_registry import resolve_scenario_choice
+from analysis.topeft_run2.metadata_authority import resolve_effective_metadata_path
 
 
 def _verify_numpy_pandas_abi() -> None:
@@ -188,6 +188,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="Name of the tree inside the files",
     )
     parser.add_argument(
+        "--metadata",
+        default=None,
+        help=(
+            "Path to the metadata YAML bundle. When supplied it overrides the "
+            "metadata from the options YAML or the scenario registry."
+        ),
+    )
+    parser.add_argument(
         "--do-errors",
         action="store_true",
         help="Save the w**2 coefficients",
@@ -303,7 +311,7 @@ def build_parser() -> argparse.ArgumentParser:
             "YAML file that specifies command-line options. Accepts either"
             " 'path.yml' for the default profile or 'path.yml:profile' to select"
             " a specific profile. When provided, CLI flags are ignored in favour"
-            " of the YAML configuration."
+            " of the YAML configuration (except --metadata, which always wins)."
         ),
     )
     parser.set_defaults(negotiate_manager_port=True)
@@ -320,13 +328,15 @@ def _ensure_supported_executor(value: str) -> None:
         )
 
 
-def _apply_scenario_metadata_defaults(config: RunConfig) -> tuple[str, str, bool]:
+def _apply_scenario_metadata_defaults(
+    config: RunConfig,
+    metadata_cli: str | None,
+) -> tuple[str, str, str]:
     """Resolve the effective scenario and metadata selection.
 
     Returns:
-        Tuple containing the scenario name, metadata path, and a boolean flag
-        indicating whether the metadata came from an options profile (True)
-        versus the scenario registry (False).
+        Tuple containing the scenario name, metadata path, and a provenance
+        label describing the metadata source.
     """
 
     scenario_names = config.scenario_names or ["TOP_22_006"]
@@ -340,12 +350,17 @@ def _apply_scenario_metadata_defaults(config: RunConfig) -> tuple[str, str, bool
         )
 
     scenario_name = scenario_names[0]
-    if config.metadata_path:
-        return scenario_name, config.metadata_path, True
+    if metadata_cli is None and config.options_path is None and config.metadata_path:
+        metadata_cli = config.metadata_path
 
-    resolution = resolve_scenario_choice(scenario_name)
-    config.metadata_path = resolution.metadata_path
-    return scenario_name, config.metadata_path, False
+    metadata_options = config.metadata_path if config.options_path else None
+    metadata_path, provenance = resolve_effective_metadata_path(
+        scenario_name=scenario_name,
+        metadata_cli=metadata_cli,
+        metadata_options=metadata_options,
+    )
+    config.metadata_path = metadata_path
+    return scenario_name, metadata_path, provenance
 
 
 def _argument_supplied(
@@ -386,6 +401,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     executor_from_cli = _argument_supplied(argv_list, "--executor", "-x")
     chunksize_from_cli = _argument_supplied(argv_list, "--chunksize", "-s")
     nchunks_from_cli = _argument_supplied(argv_list, "--nchunks", "-c")
+    metadata_from_cli = _argument_supplied(argv_list, "--metadata")
     executor_default = _normalize_executor_name(getattr(parser_defaults, "executor", ""))
     if not executor_default:
         executor_default = "taskvine"
@@ -403,9 +419,13 @@ def main(argv: Sequence[str] | None = None) -> None:
     except (ValueError, TypeError, KeyError) as exc:
         parser.error(str(exc))
 
+    metadata_cli_value = getattr(args, "metadata", None) if metadata_from_cli else None
     try:
-        scenario_name, metadata_path, metadata_from_options = _apply_scenario_metadata_defaults(config)
-    except ValueError as exc:
+        scenario_name, metadata_path, metadata_provenance = _apply_scenario_metadata_defaults(
+            config,
+            metadata_cli_value,
+        )
+    except (ValueError, FileNotFoundError) as exc:
         message = str(exc)
         if message:
             logger.error("%s", message)
@@ -443,18 +463,12 @@ def main(argv: Sequence[str] | None = None) -> None:
         allow_dev_debug=(config.executor != "taskvine"),
     )
 
-    if metadata_from_options:
-        logger.info(
-            "Using scenario '%s' with metadata '%s' (from options profile)",
-            scenario_name,
-            metadata_path,
-        )
-    else:
-        logger.info(
-            "Using scenario '%s' with metadata '%s'",
-            scenario_name,
-            metadata_path,
-        )
+    logger.info(
+        "Using scenario '%s' with metadata '%s' (source: %s)",
+        scenario_name,
+        metadata_path,
+        metadata_provenance,
+    )
 
     config.log_level = effective_log_level
     logger.info(
