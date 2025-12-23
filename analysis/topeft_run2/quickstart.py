@@ -37,14 +37,14 @@ try:
         HistogramPlanner,
         RunWorkflow,
     )
+    _WORKFLOW_AVAILABLE = True
 except ImportError:  # pragma: no cover - optional workflow helper
-    from .workflow import (  # type: ignore[misc]
-        DEFAULT_SCENARIO_NAME,
-        ChannelPlanner,
-        ExecutorFactory,
-        HistogramPlanner,
-    )
+    DEFAULT_SCENARIO_NAME = "TOP_22_006"
+    ChannelPlanner = None  # type: ignore[assignment]
+    ExecutorFactory = None  # type: ignore[assignment]
+    HistogramPlanner = None  # type: ignore[assignment]
     RunWorkflow = None  # type: ignore[assignment]
+    _WORKFLOW_AVAILABLE = False
 
 _DEFAULT_VARIABLES: Tuple[str, ...] = ("lj0pt",)
 _DEFAULT_METADATA_PATH = topeft_path("analysis/metadata/metadata.yml")
