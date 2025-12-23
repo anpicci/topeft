@@ -26,10 +26,9 @@ def resolve_effective_metadata_path(
 ) -> MetadataResolution:
     """Return the metadata path and its provenance for ``scenario_name``.
 
-    Precedence:
-      1) Explicit CLI metadata path.
-      2) Metadata path from options YAML.
-      3) Scenario registry fallback.
+    ``metadata_cli`` and ``metadata_options`` are mutually exclusive; providing
+    both raises ``ValueError``. When only one is set, it wins over the scenario
+    registry fallback.
     """
 
     if not scenario_name:
@@ -37,6 +36,12 @@ def resolve_effective_metadata_path(
 
     metadata_cli = _normalize_metadata_value(metadata_cli)
     metadata_options = _normalize_metadata_value(metadata_options)
+
+    if metadata_cli and metadata_options:
+        raise ValueError(
+            "metadata_cli and metadata_options are mutually exclusive. "
+            "When using --options, options YAML is the single source of truth."
+        )
 
     if metadata_cli:
         metadata_path = metadata_cli
