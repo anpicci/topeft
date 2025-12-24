@@ -50,6 +50,9 @@ def _call_conda_module(argv):
 
 
 def main() -> int:
+    from topeft.modules.logging_config import configure_topeft_logging
+    configure_topeft_logging("INFO")
+
     target = _resolve_target()
     if target:
         if not _is_self(target):

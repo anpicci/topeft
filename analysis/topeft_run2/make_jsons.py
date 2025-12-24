@@ -1695,6 +1695,9 @@ def make_jsons_for_dict_of_samples(samples_dict,prefix,year,out_dir,on_das=False
 
 # Uncomment the make_jsons_for_dict_of_samples() lines for the jsons you want to make/remake
 def main():
+    from topeft.modules.logging_config import configure_topeft_logging
+    configure_topeft_logging("INFO")
+
 
     # Specify some output dirs
     jsons_path = "../../input_samples/sample_jsons/"

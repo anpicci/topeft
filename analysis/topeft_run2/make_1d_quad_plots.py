@@ -18,6 +18,9 @@ make_html = require_script("make_html").make_html
 #   - Example usage: python make_1d_quad_plots.py -o ~/www/some/dir/in/your/web/area
 
 def main():
+    from topeft.modules.logging_config import configure_topeft_logging
+    configure_topeft_logging("INFO")
+
 
     # Set up the command line parser
     parser = argparse.ArgumentParser()

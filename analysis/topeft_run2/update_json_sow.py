@@ -92,6 +92,9 @@ def _extract_sow_histograms(accumulator: dict) -> dict:
 
 
 def main():
+    from topeft.modules.logging_config import configure_topeft_logging
+    configure_topeft_logging("INFO")
+
     parser = argparse.ArgumentParser(description='You want options? We got options!')
     parser.add_argument('hist_paths', nargs='+', help = 'Paths to the histogram pkl.gz files that we want to load')
     parser.add_argument('--json-dir', nargs='?', default=topcoffea_path("json"), help = 'Path to the directory with JSON files you want to update. Will recurse down into all sub-directories looking for any .json files along the way')

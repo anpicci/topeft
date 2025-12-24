@@ -14,6 +14,9 @@ utils = topcoffea.modules.utils
 #   - Example usage: python get_yield_json.py -f histos/plotsTopEFT.pkl.gz
 
 def main():
+    from topeft.modules.logging_config import configure_topeft_logging
+    configure_topeft_logging("INFO")
+
 
     yt = YieldTools()
 

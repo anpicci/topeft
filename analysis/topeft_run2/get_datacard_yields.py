@@ -280,6 +280,9 @@ def get_sm_rates(dc_fullpath):
 ########################################
 
 def main():
+    from topeft.modules.logging_config import configure_topeft_logging
+    configure_topeft_logging("INFO")
+
 
     timestamp_tag = datetime.datetime.now().strftime('%Y%m%d_%H%M')
 

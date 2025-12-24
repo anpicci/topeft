@@ -161,6 +161,9 @@ def run_condor(dc,pkl_fpath,out_dir,var_lst,ch_lst,chunk_size):
             idx += 1
 
 def main():
+    from topeft.modules.logging_config import configure_topeft_logging
+    configure_topeft_logging("INFO")
+
     parser = argparse.ArgumentParser(description="You can select which file to run over")
     parser.add_argument("pkl_file",nargs="?",help="Pickle file with histograms to run over")
     parser.add_argument("--rate-syst-json","-s",default="params/rate_systs.json",help="Rate related systematics json file, path relative to topeft_path()")

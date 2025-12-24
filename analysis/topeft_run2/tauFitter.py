@@ -229,6 +229,9 @@ def getPoints(dict_of_hists):
     return np.array(mc_x), np.array(mc_y), np.array(mc_e), np.array(data_x), np.array(data_y), np.array(data_e)
 
 def main():
+    from topeft.modules.logging_config import configure_topeft_logging
+    configure_topeft_logging("INFO")
+
 
     # Set up the command line parser
     parser = argparse.ArgumentParser()

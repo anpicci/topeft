@@ -355,6 +355,9 @@ class DataDrivenProducer:
 
 if __name__ == "__main__":
 
+    from topeft.modules.logging_config import configure_topeft_logging
+
+    configure_topeft_logging("INFO")
     parser = argparse.ArgumentParser()
     parser.add_argument("-f", "--pkl-file-path", default="histos/plotsTopEFT.pkl.gz", help = "The path to the pkl file")
     args = parser.parse_args()

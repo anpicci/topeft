@@ -20,6 +20,9 @@ def find_json_match(hadoop_skim_dir,json_fpaths):
     return None
 
 def main():
+    from topeft.modules.logging_config import configure_topeft_logging
+    configure_topeft_logging("INFO")
+
     parser = argparse.ArgumentParser(description='Utility script for creating/updating JSON files for skimmed data')
     parser.add_argument('src_dirs',       nargs='*', default=[], metavar='SRC_DIR', help='Path(s) to toplevel directory that contains the lobster skims we want to match to, can also be specified with the "--file" option instead')
     parser.add_argument('--file','-f',    nargs='?', metavar='FILE', help='Text file with paths to the src directories that contain the lobster skims')

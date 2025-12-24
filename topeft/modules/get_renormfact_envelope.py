@@ -136,6 +136,9 @@ def get_renormfact_envelope(dict_of_hists):
 # Example standalone usage of get_renormfact_envelope()
 # Generally this function will be called from the run script
 def main():
+    from topeft.modules.logging_config import configure_topeft_logging
+    configure_topeft_logging("INFO")
+
 
     # Set up the command line parser
     parser = argparse.ArgumentParser()
