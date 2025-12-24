@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from analysis.topeft_run2.metadata_authority import resolve_effective_metadata_path
+from analysis.topeft_run2 import metadata_authority
 
 
 def _write_metadata(tmp_path: Path, name: str) -> Path:
@@ -11,9 +11,15 @@ def _write_metadata(tmp_path: Path, name: str) -> Path:
     return path
 
 
-def test_options_metadata_wins_over_registry(tmp_path: Path) -> None:
+def test_options_metadata_bypasses_registry(tmp_path: Path, monkeypatch) -> None:
     metadata_path = _write_metadata(tmp_path, "options.yml")
-    resolved_path, provenance = resolve_effective_metadata_path(
+
+    def fail_registry(*args, **kwargs):
+        raise AssertionError("Scenario registry should not be consulted for options metadata")
+
+    monkeypatch.setattr(metadata_authority, "resolve_scenario_choice", fail_registry)
+
+    resolved_path, provenance = metadata_authority.resolve_effective_metadata_path(
         scenario_name="TOP_22_006",
         metadata_cli=None,
         metadata_options=str(metadata_path),
@@ -23,9 +29,15 @@ def test_options_metadata_wins_over_registry(tmp_path: Path) -> None:
     assert provenance == "options"
 
 
-def test_cli_metadata_wins_over_registry(tmp_path: Path) -> None:
+def test_cli_metadata_bypasses_registry(tmp_path: Path, monkeypatch) -> None:
     cli_path = _write_metadata(tmp_path, "cli.yml")
-    resolved_path, provenance = resolve_effective_metadata_path(
+
+    def fail_registry(*args, **kwargs):
+        raise AssertionError("Scenario registry should not be consulted for CLI metadata")
+
+    monkeypatch.setattr(metadata_authority, "resolve_scenario_choice", fail_registry)
+
+    resolved_path, provenance = metadata_authority.resolve_effective_metadata_path(
         scenario_name="TOP_22_006",
         metadata_cli=str(cli_path),
         metadata_options=None,
@@ -39,8 +51,19 @@ def test_cli_and_options_metadata_are_mutually_exclusive(tmp_path: Path) -> None
     cli_path = _write_metadata(tmp_path, "cli.yml")
     options_path = _write_metadata(tmp_path, "options.yml")
     with pytest.raises(ValueError, match="mutually exclusive"):
-        resolve_effective_metadata_path(
+        metadata_authority.resolve_effective_metadata_path(
             scenario_name="TOP_22_006",
             metadata_cli=str(cli_path),
             metadata_options=str(options_path),
         )
+
+
+def test_registry_fallback_when_no_metadata() -> None:
+    resolved_path, provenance = metadata_authority.resolve_effective_metadata_path(
+        scenario_name="TOP_22_006",
+        metadata_cli=None,
+        metadata_options=None,
+    )
+
+    assert Path(resolved_path).exists()
+    assert provenance == "scenario_registry"
