@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import os
 from typing import Optional
 
 try:  # pragma: no cover - tqdm is bundled with coffea
@@ -34,17 +33,12 @@ def _level_name_to_numeric(level_name: str) -> int:
     return resolved
 
 
-def _is_truthy_env(value: Optional[str]) -> bool:
-    if value is None:
-        return False
-    return value.strip().lower() in {"1", "true", "yes", "on"}
-
-
 def configure_logging(
     level_name: str,
     *,
     formatter: Optional[str] = None,
     allow_dev_debug: bool = True,
+    dev_debug_enabled: Optional[bool] = None,
 ) -> None:
     """Configure root logging handlers with a consistent format.
 
@@ -56,8 +50,10 @@ def configure_logging(
     Args:
         level_name: Normalized log level string (NONE/INFO/WARNING/ERROR).
         formatter: Optional format string for the handler.
-        allow_dev_debug: When True, TOPEFT_DEV_DEBUG=1 forces DEBUG on project
-            loggers even if the requested level is higher. Ignored when False.
+        allow_dev_debug: When True, ``dev_debug_enabled`` may force DEBUG on
+            project loggers even if the requested level is higher.
+        dev_debug_enabled: Explicitly enable developer debug overrides. This is
+            provided by the centralized logging policy entrypoint.
     """
 
     global _configured
@@ -68,9 +64,7 @@ def configure_logging(
             f"log level '{level_name}' is not in {VALID_LOG_LEVELS_DISPLAY}"
         )
 
-    dev_debug_enabled = allow_dev_debug and _is_truthy_env(
-        os.environ.get("TOPEFT_DEV_DEBUG"),
-    )
+    dev_debug_enabled = bool(dev_debug_enabled) and allow_dev_debug
     effective_level_name = (
         "DEBUG" if (normalized_level == "DEBUG" or dev_debug_enabled) else normalized_level
     )

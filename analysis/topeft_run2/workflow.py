@@ -54,6 +54,7 @@ from typing import (
 import topcoffea
 
 from topeft.modules.channel_metadata import build_channel_label
+from topeft.modules.logging_config import dev_debug_enabled
 from topeft.modules.executor import (
     build_futures_executor,
     build_taskvine_args,
@@ -68,7 +69,7 @@ from topeft.modules.executor import (
 from topeft.modules.runner_output import normalise_runner_output, tuple_dict_stats
 
 logger = logging.getLogger(__name__)
-_DEV_DEBUG = os.environ.get("TOPEFT_DEV_DEBUG", "").strip().lower() in {"1", "true", "yes", "on"}
+_DEV_DEBUG = dev_debug_enabled()
 
 
 def _import_topcoffea_submodule(submodule: str):
