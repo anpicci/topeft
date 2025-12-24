@@ -1,0 +1,5 @@
+channels:
+  groups:
+    TOP22_006_CH_LST_SR:
+      description: "minimal"
+      regions: []
