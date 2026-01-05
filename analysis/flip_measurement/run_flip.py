@@ -269,6 +269,9 @@ def _run_executor(
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    from topeft.modules.logging_config import configure_topeft_logging
+    configure_topeft_logging("INFO")
+
     args = parser.parse_args(argv)
     executor_config = EXECUTOR_CLI.parse_args(args)
 

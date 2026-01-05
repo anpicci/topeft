@@ -32,4 +32,7 @@ def compare_ch_lst_cr():
               [r["lepton_category"] for r in new_cr["regions"]])
 
 if __name__ == "__main__":
+    from topeft.modules.logging_config import configure_topeft_logging
+    configure_topeft_logging("INFO")
+
     compare_ch_lst_cr()

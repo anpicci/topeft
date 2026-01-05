@@ -339,6 +339,9 @@ def comp(fin1, fin2, hists1, hists2, newHist1, newHist2, tolerance):
     fout.close()
 
 if __name__ == '__main__':
+    from topeft.modules.logging_config import configure_topeft_logging
+    configure_topeft_logging("INFO")
+
     #Load hists1 from pickle file created by TopCoffea
     hists1={}
     hists2={}

@@ -281,6 +281,8 @@ def make_mc_validation_plots(dict_of_hists,year,skip_syst_errs,save_dir_path):
 
 
 def main():
+    from topeft.modules.logging_config import configure_topeft_logging
+    configure_topeft_logging("INFO")
 
     # Set up the command line parser
     parser = argparse.ArgumentParser()

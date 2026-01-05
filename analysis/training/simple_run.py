@@ -106,6 +106,8 @@ def _tuple_dict_stats(tuple_dict: Mapping[TupleKey, Mapping[str, Any]]) -> Tuple
     return total_bins, filled_bins
 
 if __name__ == '__main__':
+    from topeft.modules.logging_config import configure_topeft_logging
+    configure_topeft_logging("INFO")
 
     import argparse
     parser = argparse.ArgumentParser(

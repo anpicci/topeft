@@ -161,8 +161,10 @@ class AnalysisProcessor(processor.ProcessorABC):
         accumulator[key].fill(**fill_args)
 
 if __name__ == '__main__':
+    from topeft.modules.logging_config import configure_topeft_logging
+    configure_topeft_logging("INFO")
+
     # Load the .coffea files
     outpath= './coffeaFiles/'
     samples     = load(outpath+'samples.coffea')
     topprocessor = AnalysisProcessor(samples)
-

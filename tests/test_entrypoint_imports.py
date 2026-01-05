@@ -4,6 +4,15 @@ from types import ModuleType
 
 
 ENTRYPOINTS = [
+    "analysis.btagMCeff.btagMCeff",
+    "analysis.btagMCeff.run",
+    "analysis.flip_measurement.flip_ar_plotter",
+    "analysis.flip_measurement.flip_mr_plotter",
+    "analysis.flip_measurement.run_flip",
+    "analysis.mc_validation.mc_validation_gen_plotter",
+    "analysis.mc_validation.mc_validation_plotter",
+    "analysis.topeft_run2.comp",
+    "analysis.topeft_run2.missing_parton",
     "analysis.topeft_run2.parse_datacard_templates",
     "analysis.topeft_run2.make_1d_quad_plots",
     "analysis.topeft_run2.make_1d_quad_plots_from_template_histos",
@@ -18,6 +27,10 @@ ENTRYPOINTS = [
     "analysis.topeft_run2.make_skim_jsons",
     "analysis.topeft_run2.make_jsons",
     "analysis.topeft_run2.tauFitter",
+    "analysis.training.simple_run",
+    "check_uproot_file",
+    "compare",
+    "kill_htc",
     "topeft.quickstart",
     "topeft.conda_shim",
     "topeft.modules.dataDrivenEstimation",
@@ -45,6 +58,7 @@ def _install_numpy_stub() -> None:
     numpy_stub.asarray = lambda *args, **kwargs: []
     numpy_stub.zeros = lambda *args, **kwargs: []
     numpy_stub.ones = lambda *args, **kwargs: []
+    numpy_stub.ndarray = list
     numpy_stub.dtype = type("DummyDType", (), {})
     numpy_stub.AxisError = type("AxisError", (Exception,), {})
     numpy_stub.exceptions = type(
@@ -56,6 +70,41 @@ def _install_numpy_stub() -> None:
 
     linalg_stub = _install_stub("numpy.linalg")
     linalg_stub.eig = lambda *args, **kwargs: ([], [])
+
+
+def _install_awkward_stub() -> None:
+    if "awkward" in sys.modules:
+        return
+    ak_stub = _install_stub("awkward")
+    ak_stub.Array = list
+    ak_stub.num = lambda *args, **kwargs: []
+    ak_stub.fill_none = lambda *args, **kwargs: []
+    ak_stub.argmax = lambda *args, **kwargs: 0
+
+
+def _install_cloudpickle_stub() -> None:
+    if "cloudpickle" in sys.modules:
+        return
+    cloudpickle_stub = _install_stub("cloudpickle")
+    cloudpickle_stub.dump = lambda *args, **kwargs: None
+    cloudpickle_stub.dumps = lambda *args, **kwargs: b""
+    cloudpickle_stub.load = lambda *args, **kwargs: {}
+
+
+def _install_yaml_stub() -> None:
+    if "yaml" in sys.modules:
+        return
+    yaml_stub = _install_stub("yaml")
+    yaml_stub.safe_load = lambda *args, **kwargs: {}
+
+
+def _install_uproot_stub() -> None:
+    if "uproot" in sys.modules:
+        return
+    uproot_stub = _install_stub("uproot")
+    uproot_stub.open = lambda *args, **kwargs: None
+    uproot_stub.create = lambda *args, **kwargs: None
+    uproot_stub.update = lambda *args, **kwargs: None
 
 
 def _install_scipy_stub() -> None:
@@ -105,12 +154,17 @@ def _install_matplotlib_stub() -> None:
     if "mplhep" not in sys.modules:
         mplhep_stub = _install_stub("mplhep")
         mplhep_stub.histplot = lambda *args, **kwargs: None
+        mplhep_stub.style = type("Style", (), {"use": staticmethod(lambda *a, **k: None)})()
     if "hist" not in sys.modules:
         hist_stub = _install_stub("hist")
         axis_stub = _install_stub("hist.axis")
         axis_stub.Variable = lambda *args, **kwargs: None
         axis_stub.Regular = lambda *args, **kwargs: None
         hist_stub.axis = axis_stub
+        storage_stub = _install_stub("hist.storage")
+        storage_stub.Weight = type("Weight", (), {})
+        storage_stub.Double = type("Double", (), {})
+        hist_stub.storage = storage_stub
     if "cycler" not in sys.modules:
         cycler_stub = _install_stub("cycler")
         cycler_stub.cycler = lambda *args, **kwargs: None
@@ -128,10 +182,36 @@ def _install_coffea_stub() -> None:
             return None
 
     nanoevents_mod.NanoEventsFactory = _Factory
+    nanoevents_mod.NanoAODSchema = type("NanoAODSchema", (), {})
     coffea_pkg.nanoevents = nanoevents_mod
 
     hist_mod = _install_stub("coffea.hist")
+    hist_mod.Bin = lambda *args, **kwargs: None
     coffea_pkg.hist = hist_mod
+
+    processor_mod = _install_stub("coffea.processor")
+
+    class _Runner:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def __call__(self, *args, **kwargs):
+            return {}
+
+    processor_mod.ProcessorABC = object
+    processor_mod.futures_executor = lambda *args, **kwargs: None
+    processor_mod.iterative_executor = lambda *args, **kwargs: None
+    processor_mod.IterativeExecutor = type("IterativeExecutor", (), {})
+    processor_mod.Runner = _Runner
+    coffea_pkg.processor = processor_mod
+
+    util_mod = _install_stub("coffea.util")
+    util_mod.load = lambda *args, **kwargs: {}
+    coffea_pkg.util = util_mod
+
+    analysis_tools_mod = _install_stub("coffea.analysis_tools")
+    analysis_tools_mod.Weights = type("Weights", (), {})
+    coffea_pkg.analysis_tools = analysis_tools_mod
 
 
 def _install_topcoffea_stub() -> None:
@@ -150,6 +230,8 @@ def _install_topcoffea_stub() -> None:
     utils_mod.dict_comp = lambda *args, **kwargs: None
     utils_mod.get_list_of_wc_names = lambda *args, **kwargs: []
     utils_mod.load_sample_json_file = lambda *args, **kwargs: {}
+    utils_mod.read_cfg_file = lambda *args, **kwargs: {}
+    utils_mod.update_cfg = lambda *args, **kwargs: {}
     utils_mod.get_files = lambda *args, **kwargs: []
     utils_mod.get_hist_from_pkl = lambda *args, **kwargs: {}
 
@@ -164,6 +246,9 @@ def _install_topcoffea_stub() -> None:
     qft_mod.make_1d_quad_plot = lambda *args, **kwargs: None
 
     sample_lst_mod = _install_stub("topcoffea.modules.sample_lst_jsons_tools")
+
+    object_selection_mod = _install_stub("topcoffea.modules.object_selection")
+    object_selection_mod.is_tight_jet = lambda *args, **kwargs: []
 
     hist_mod = _install_stub("topcoffea.modules.HistEFT")
     hist_mod.HistEFT = type("HistEFT", (), {})
@@ -186,13 +271,23 @@ def _install_topcoffea_stub() -> None:
     make_html_mod = _install_stub("topcoffea.scripts.make_html")
     make_html_mod.make_html = lambda *args, **kwargs: None
 
+    yield_tools_mod = _install_stub("topcoffea.modules.YieldTools")
+
+    class _YieldTools:
+        def get_hist_from_pkl(self, *args, **kwargs):
+            return {}
+
+    yield_tools_mod.YieldTools = _YieldTools
+
     modules_pkg.paths = paths_mod
     modules_pkg.utils = utils_mod
     modules_pkg.quad_fit_tools = qft_mod
     modules_pkg.sample_lst_jsons_tools = sample_lst_mod
+    modules_pkg.object_selection = object_selection_mod
     modules_pkg.HistEFT = hist_mod
     modules_pkg.get_param_from_jsons = get_param_mod
     modules_pkg.MakeLatexTable = mlt_mod
+    modules_pkg.YieldTools = yield_tools_mod
     modules_pkg.update_json = update_json_mod
     modules_pkg.remote_environment = remote_env_mod
     modules_pkg.dynamic_data_reduction = ddr_mod
@@ -208,6 +303,8 @@ def _install_topeft_module_stubs() -> None:
     yield_mod.YieldTools = type("YieldTools", (), {})
 
     _install_stub("topeft.modules.datacard_tools")
+    comp_datacard = _install_stub("topeft.modules.comp_datacard")
+    comp_datacard.strip = lambda *args, **kwargs: ({}, {})
     _install_stub("topeft.modules.get_rate_systs")
     combine_batch = _install_stub("topeft.modules.combine_json_batch")
     combine_batch.combine_json_batch = lambda *args, **kwargs: None
@@ -216,10 +313,28 @@ def _install_topeft_module_stubs() -> None:
 
 
 def _install_misc_stubs() -> None:
+    btag_stub = _install_stub("btagMCeff")
+    btag_stub.AnalysisProcessor = type("AnalysisProcessor", (), {})
+
     _install_stub("get_datacard_yields")
+    _install_stub("make_cr_and_sr_plots")
+    make_plots = sys.modules["make_cr_and_sr_plots"]
+    make_plots.group_bins = lambda *args, **kwargs: {}
+    make_plots.make_single_fig = lambda *args, **kwargs: None
+    make_plots.make_single_fig_with_ratio = lambda *args, **kwargs: type(
+        "Fig", (), {"savefig": lambda *a, **k: None}
+    )()
+
     _install_stub("path_to_your_file", package=True)
     path_mod = _install_stub("path_to_your_file.file_name")
     path_mod.template_vals_dict = {}
+
+    _install_stub("simple_processor")
+
+    flip_mr = _install_stub("analysis.flip_measurement.flip_mr_processor")
+    flip_mr.AnalysisProcessor = type("AnalysisProcessor", (), {})
+    flip_ar = _install_stub("analysis.flip_measurement.flip_ar_processor")
+    flip_ar.AnalysisProcessor = type("AnalysisProcessor", (), {})
 
     nanohelpers = _install_stub("analysis.topeft_run2.nanoevents_helpers")
     nanohelpers.ensure_factory_mode = lambda factory: factory
@@ -234,10 +349,14 @@ def _install_misc_stubs() -> None:
 
 def _install_stubs() -> None:
     _install_numpy_stub()
+    _install_awkward_stub()
     _install_scipy_stub()
     _install_root_stub()
     _install_matplotlib_stub()
     _install_coffea_stub()
+    _install_cloudpickle_stub()
+    _install_yaml_stub()
+    _install_uproot_stub()
     _install_topcoffea_stub()
     _install_topeft_module_stubs()
     _install_misc_stubs()

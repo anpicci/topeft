@@ -111,6 +111,9 @@ def fetch_process_histograms(fname_with_var, process, get_hists_fn=get_hists, re
     return total_private, nom_private, err, bins, label, total_central, nom_central
 
 if __name__ == '__main__':
+    from topeft.modules.logging_config import configure_topeft_logging
+    configure_topeft_logging("INFO")
+
     import argparse
     import datetime
     import os
