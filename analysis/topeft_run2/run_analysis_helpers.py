@@ -316,18 +316,6 @@ def _resolve_effective_log_level(config: "RunConfig") -> str:
     return normalized
 
 
-def _enforce_taskvine_logging_policy(executor: str, log_level: str) -> None:
-    """Ensure TaskVine only runs with log-level 'none'."""
-
-    normalized_executor = _normalize_executor_name(executor)
-    normalized_level = (log_level or "").strip().upper()
-    if normalized_executor == "taskvine" and normalized_level != "NONE":
-        raise ValueError(
-            "TaskVine runs require '--log-level none' to avoid worker log spam. "
-            "Either set --log-level none or use a non-TaskVine executor."
-        )
-
-
 class SampleLoader:
     """Helper responsible for expanding input specifications and loading samples."""
 

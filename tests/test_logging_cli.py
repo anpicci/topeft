@@ -4,6 +4,8 @@ from pathlib import Path
 
 import pytest
 
+from topeft.modules.logging_config import configure_topeft_logging
+
 _HELPERS_PATH = Path(__file__).resolve().parents[1] / "analysis" / "topeft_run2" / "run_analysis_helpers.py"
 _HELPERS_SPEC = importlib.util.spec_from_file_location(
     "analysis.topeft_run2.run_analysis_helpers",
@@ -20,15 +22,11 @@ def test_taskvine_requires_silent_log_level():
         ValueError,
         match="TaskVine runs require '--log-level none'",
     ):
-        run_analysis_helpers._enforce_taskvine_logging_policy("taskvine", "INFO")
+        configure_topeft_logging("INFO", executor="taskvine")
 
 
-def test_debug_log_level_rejected():
-    with pytest.raises(
-        ValueError,
-        match="DEBUG log level is reserved for internal development",
-    ):
-        run_analysis_helpers.coerce_log_level("debug")
+def test_debug_log_level_allowed():
+    assert run_analysis_helpers.coerce_log_level("debug") == "DEBUG"
 
 
 def test_coerce_log_level_none_normalized():
@@ -52,5 +50,5 @@ def test_resolve_effective_log_level_accepts_warning():
 
 
 def test_non_taskvine_executor_allows_any_level():
-    run_analysis_helpers._enforce_taskvine_logging_policy("futures", "INFO")
-    run_analysis_helpers._enforce_taskvine_logging_policy("futures", "NONE")
+    configure_topeft_logging("INFO", executor="futures")
+    configure_topeft_logging("NONE", executor="futures")

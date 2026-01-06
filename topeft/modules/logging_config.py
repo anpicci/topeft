@@ -10,8 +10,6 @@ from analysis.topeft_run2 import logging_utils
 from analysis.topeft_run2.run_analysis_helpers import (
     VALID_LOG_LEVELS,
     VALID_LOG_LEVELS_DISPLAY,
-    _enforce_taskvine_logging_policy,
-    _normalize_executor_name,
 )
 
 logger = logging.getLogger(__name__)
@@ -30,6 +28,21 @@ def _normalize_log_level(log_level: Optional[str]) -> str:
             f"log level '{normalized}' is not supported. Use one of: {VALID_LOG_LEVELS_DISPLAY}."
         )
     return normalized
+
+
+def _normalize_executor_name(value: Optional[str]) -> str:
+    return (value or "").strip().lower()
+
+
+def _enforce_taskvine_logging_policy(executor: str, log_level: str) -> None:
+    if executor != "taskvine":
+        return
+    normalized_level = (log_level or "").strip().upper()
+    if normalized_level != "NONE":
+        raise ValueError(
+            "TaskVine runs require '--log-level none' to avoid worker log spam. "
+            "Either set --log-level none or use a non-TaskVine executor."
+        )
 
 
 def dev_debug_enabled(*, allow_dev_debug: bool = True) -> bool:
