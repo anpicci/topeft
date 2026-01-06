@@ -13,6 +13,9 @@ import btagMCeff
 from topeft.modules.runner_output import normalise_runner_output, tuple_dict_stats
 
 if __name__ == '__main__':
+    from topeft.modules.logging_config import configure_topeft_logging
+    configure_topeft_logging("INFO")
+
     import argparse
     parser = argparse.ArgumentParser(description='You can customize your run')
     parser.add_argument('jsonFiles'        , nargs='?', default='', help = 'Json file(s) containing files and metadata')
@@ -146,7 +149,6 @@ if __name__ == '__main__':
     with gzip.open(outpath + outname + ".pkl.gz", "wb") as fout:
         cloudpickle.dump(serialised_output, fout)
     print('Done!')
-
 
 
 

@@ -588,6 +588,9 @@ def _check_sumw2_partners(
 # Main
 # -----------------------------
 def main() -> None:
+    from topeft.modules.logging_config import configure_topeft_logging
+    configure_topeft_logging("INFO")
+
     parser = argparse.ArgumentParser(description="Validate a topeft Run-2 output pickle.")
     parser.add_argument(
         "path",

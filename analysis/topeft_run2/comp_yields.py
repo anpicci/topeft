@@ -15,6 +15,9 @@ utils = topcoffea.modules.utils
 #   - Example usage: python comp_yields.py your_yields_file.json TOP-19-001
 
 def main():
+    from topeft.modules.logging_config import configure_topeft_logging
+    configure_topeft_logging("INFO")
+
 
     yt = YieldTools()
 

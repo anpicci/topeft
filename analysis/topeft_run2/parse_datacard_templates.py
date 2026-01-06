@@ -99,6 +99,9 @@ def draw_nom_up_do_overlay(h_n,h_u,h_d,save_path):
 
 # Main function
 def main():
+    from topeft.modules.logging_config import configure_topeft_logging
+    configure_topeft_logging("INFO")
+
 
     # Set up the command line parser
     parser = argparse.ArgumentParser()

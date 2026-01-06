@@ -73,6 +73,9 @@ def build_channel_label(sample: str, channel: str) -> str:
 
 
 def main() -> None:
+    from topeft.modules.logging_config import configure_topeft_logging
+    configure_topeft_logging("INFO")
+
     parser = argparse.ArgumentParser(description="Plot flip application histograms")
     parser.add_argument(
         "filepath",

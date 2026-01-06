@@ -91,6 +91,9 @@ def make_2d_fig(histo: hist.Hist, xaxis_var: str, save_name: str, title: str | N
 
 
 def main() -> None:
+    from topeft.modules.logging_config import configure_topeft_logging
+    configure_topeft_logging("INFO")
+
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "filepath",

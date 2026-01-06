@@ -61,9 +61,7 @@ def _verify_numpy_pandas_abi() -> None:
 from run_analysis_helpers import (
     RunConfig,
     RunConfigBuilder,
-    _enforce_taskvine_logging_policy,
     _normalize_executor_name,
-    _resolve_effective_log_level,
     enforce_options_single_source,
     options_allowlist,
 )
@@ -75,7 +73,7 @@ from topeft.modules.executor_cli import (
 from topeft.modules.executor import resolve_environment_file
 
 from analysis.topeft_run2.workflow import run_workflow
-from analysis.topeft_run2.logging_utils import configure_logging
+from topeft.modules.logging_config import configure_topeft_logging
 
 logger = logging.getLogger(__name__)
 
@@ -428,11 +426,6 @@ def main(argv: Sequence[str] | None = None) -> None:
             logger.error("Failed to resolve metadata scenario")
         sys.exit(1)
 
-    try:
-        effective_log_level = _resolve_effective_log_level(config)
-    except ValueError as exc:
-        parser.error(str(exc))
-
     if chunksize_from_cli:
         config.chunksize = getattr(args, "chunksize", config.chunksize)
     if nchunks_from_cli:
@@ -446,17 +439,16 @@ def main(argv: Sequence[str] | None = None) -> None:
     _ensure_supported_executor(current_executor)
     config.executor = current_executor
 
-    try:
-        _enforce_taskvine_logging_policy(config.executor, effective_log_level)
-    except ValueError as exc:
-        parser.error(str(exc))
-
     # Currently configures logging for the driver process; futures workers keep
     # their default handlers until we plumb a per-worker hook.
-    configure_logging(
-        effective_log_level,
-        allow_dev_debug=(config.executor != "taskvine"),
-    )
+    try:
+        effective_log_level = configure_topeft_logging(
+            config.log_level,
+            executor=config.executor,
+            allow_dev_debug=True,
+        )
+    except ValueError as exc:
+        parser.error(str(exc))
 
     logger.info(
         "Using scenario '%s' with metadata '%s' (source: %s)",

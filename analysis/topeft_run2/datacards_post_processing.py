@@ -208,6 +208,9 @@ def collect_datacard_channels(
 
 # Check the output of the datacard maker
 def main():
+    from topeft.modules.logging_config import configure_topeft_logging
+    configure_topeft_logging("INFO")
+
 
     parser = argparse.ArgumentParser()
     parser.add_argument("datacards_path", help="The path to the directory with the datacards in it.")

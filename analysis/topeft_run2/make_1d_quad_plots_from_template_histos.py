@@ -237,6 +237,9 @@ def quad_wrapper(proc,njets,save_path="quad_fits"):
 ######### Main function, get values for the quad fits #########
 
 def main():
+    from topeft.modules.logging_config import configure_topeft_logging
+    configure_topeft_logging("INFO")
+
 
     # Example for a single set of plots
     #os.mkdir("tmp_quad_fits")
