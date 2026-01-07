@@ -837,7 +837,7 @@ def _summarize_zero_yield_processes(
 ):
     """Return a structured summary of zero-yield processes per channel."""
 
-    if region_ctx is not None and region_name.upper() != "CR":
+    if region_ctx is not None:
         return _summarize_zero_yield_processes_by_variable(
             dict_of_hists,
             region_ctx=region_ctx,
@@ -966,7 +966,7 @@ def _summarize_zero_yield_processes_by_variable(
     for var_name in variables_to_scan:
         if "sumw2" in var_name:
             continue
-        if region_ctx.apply_category_skips and var_name in region_ctx.skip_variables:
+        if var_name in region_ctx.skip_variables:
             continue
 
         variable_metadata = _prepare_variable_payload(
@@ -4311,9 +4311,7 @@ def build_region_context(
         region_upper, region_plot_cfg.get("stacked_ratio_style")
     )
 
-    skip_variables = (
-        set(region_plot_cfg.get("skip_variables", [])) if enable_category_skips else set()
-    )
+    skip_variables = set(region_plot_cfg.get("skip_variables", []))
     analysis_bins = {}
     for var_name, spec in region_plot_cfg.get("analysis_bins", {}).items():
         if isinstance(spec, str):
