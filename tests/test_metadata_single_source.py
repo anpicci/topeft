@@ -157,11 +157,11 @@ def _install_coffea_stub() -> None:
 
 _install_coffea_stub()
 
+from analysis.topeft_run2 import metadata_authority
 from analysis.topeft_run2 import metadata_loader
 from analysis.topeft_run2 import datacards_post_processing as dpp
 from analysis.topeft_run2 import make_cr_and_sr_plots as plots
 from analysis.topeft_run2 import comp as comp_module
-from topeft.modules import scenario_groups
 
 
 def test_load_metadata_prefers_custom_file(tmp_path):
@@ -182,26 +182,33 @@ def test_load_metadata_prefers_custom_file(tmp_path):
     assert "foo" in (bundle.variables or {})
 
 
-def test_scenario_channels_use_provided_metadata(monkeypatch):
-    metadata = {
-        "channels": {
-            "groups": {
-                "TOP22_006_CH_LST_SR": {"categories": []},
-                "CH_LST_CR": {"categories": []},
+def test_scenario_channels_use_provided_metadata(tmp_path):
+    metadata_file = tmp_path / "channels.yml"
+    metadata_file.write_text(
+        yaml.safe_dump(
+            {
+                "channels": {
+                    "groups": {
+                        "TOP22_006_CH_LST_SR": {"categories": []},
+                        "CH_LST_CR": {"categories": []},
+                    }
+                },
+                "variables": {"ptz": {"variable": [0, 1]}},
             }
-        }
-    }
-
-    def fail_fallback():
-        raise AssertionError("Fallback loader should not be used when metadata is provided")
-
-    monkeypatch.setattr(scenario_groups, "_load_group_metadata", fail_fallback)
-    result = scenario_groups.load_channels_for_scenario(
-        "TOP_22_006", metadata=metadata
+        ),
+        encoding="utf-8",
     )
 
-    assert "TOP22_006_CH_LST_SR" in result["groups"]
-    assert "CH_LST_CR" in result["groups"]
+    bundle = metadata_authority.load_metadata_bundle(
+        str(metadata_file),
+        "TOP_22_006",
+        strict=True,
+        required_sections=("channels",),
+        metadata_source="explicit",
+    )
+
+    assert "TOP22_006_CH_LST_SR" in bundle.channels["groups"]
+    assert "CH_LST_CR" in bundle.channels["groups"]
 
 
 def test_resolve_scenario_metadata_respects_override(tmp_path, monkeypatch):
@@ -231,7 +238,7 @@ def test_resolve_scenario_metadata_respects_override(tmp_path, monkeypatch):
     )
 
     assert scenario_name == "TOP_22_006"
-    assert bundle.path == metadata_file.resolve()
+    assert bundle.metadata_path == metadata_file.resolve()
     assert captured["data"]["groups"]
 
 
@@ -250,7 +257,17 @@ def test_plot_helpers_accept_axes_metadata(monkeypatch):
 def test_comp_helper_uses_metadata_binning(tmp_path, monkeypatch):
     metadata_file = tmp_path / "comp_meta.yml"
     metadata_file.write_text(
-        yaml.safe_dump({"channels": {}, "variables": {"test": {"variable": [0, 2, 4]}}}),
+        yaml.safe_dump(
+            {
+                "channels": {
+                    "groups": {
+                        "TOP22_006_CH_LST_SR": {"categories": []},
+                        "CH_LST_CR": {"categories": []},
+                    }
+                },
+                "variables": {"test": {"variable": [0, 2, 4]}},
+            }
+        ),
         encoding="utf-8",
     )
     monkeypatch.setattr(comp_module, "BINNING", {}, raising=False)

@@ -13,7 +13,7 @@ defaults:
     - ctG
 
   # Select the metadata bundle that drives region and variable planning.
-  metadata: ../metadata/metadata.yml
+  metadata: analysis/metadata/metadata.yml
 
   # Default scenario grouping used for reinterpretation studies.
   scenarios:

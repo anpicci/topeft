@@ -21,20 +21,25 @@ import time
 import json
 import os
 import topcoffea
-from topeft.modules.paths import topeft_path
-from analysis.topeft_run2.metadata_loader import load_metadata
+from analysis.topeft_run2 import metadata_authority
 
 GetParam = topcoffea.modules.get_param_from_jsons.GetParam
 topcoffea_path = topcoffea.modules.paths.topcoffea_path
 get_tc_param = GetParam(topcoffea_path("params/params.json"))
 
-_CANONICAL_METADATA_PATH = topeft_path("analysis/metadata/metadata.yml")
 BINNING = {}
+DEFAULT_SCENARIO_NAME = "TOP_22_006"
 
 
-def _set_binning(metadata_path: str):
-    bundle = load_metadata(metadata_path, required_sections=("variables",))
-    variables = bundle.variables or {}
+def _set_binning(metadata_path: str | None):
+    bundle = metadata_authority.load_metadata_bundle(
+        metadata_path,
+        DEFAULT_SCENARIO_NAME,
+        strict=True,
+        required_sections=("channels", "variables"),
+        metadata_source="explicit" if metadata_path else "default",
+    )
+    variables = bundle.metadata.get("variables") or {}
     global BINNING
     BINNING = {
         name: value["variable"]
@@ -368,11 +373,10 @@ if __name__ == '__main__':
     newHist1 = args.newHist1
     newHist2 = args.newHist2
     tolerance = float(args.tolerance)
-    metadata_file = args.metadata or _CANONICAL_METADATA_PATH
-    _set_binning(metadata_file)
+    _set_binning(args.metadata)
     if args.metadata is None:
         print(
-            "No metadata override provided; using canonical analysis/metadata/metadata.yml for histogram binning."
+            "No metadata override provided; using default metadata for histogram binning."
         )
 
     if ('_np' in fin1 and '_np' not in fin2) or ('_np' in fin2 and '_np' not in fin1):

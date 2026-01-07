@@ -16,9 +16,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Mapping, MutableMapping, Optional, Sequence, Tuple
 
-from topeft.modules.paths import topeft_path
 from topeft.modules.channel_metadata import ChannelMetadataHelper
 
+from . import metadata_authority
 from .run_analysis_helpers import (
     RunConfig,
     SampleLoader,
@@ -27,7 +27,6 @@ from .run_analysis_helpers import (
     unique_preserving_order,
     weight_variations_from_metadata,
 )
-from .metadata_loader import load_metadata
 
 try:
     from .workflow import (
@@ -47,7 +46,6 @@ except ImportError:  # pragma: no cover - optional workflow helper
     _WORKFLOW_AVAILABLE = False
 
 _DEFAULT_VARIABLES: Tuple[str, ...] = ("lj0pt",)
-_DEFAULT_METADATA_PATH = topeft_path("analysis/metadata/metadata.yml")
 
 
 @dataclass(frozen=True)
@@ -74,13 +72,25 @@ class PreparedSamples:
         )
 
 
-def _load_metadata(metadata_path: Optional[str]) -> Tuple[MutableMapping[str, object], Path]:
-    resolved_path = metadata_path or _DEFAULT_METADATA_PATH
-    bundle = load_metadata(resolved_path)
-    metadata = bundle.payload
+def _load_metadata(
+    metadata_path: Optional[str],
+    scenario_name: str,
+    *,
+    strict: bool,
+) -> Tuple[MutableMapping[str, object], Path]:
+    bundle = metadata_authority.load_metadata_bundle(
+        metadata_path,
+        scenario_name,
+        strict=strict,
+        required_sections=("channels", "variables"),
+        metadata_source="explicit" if metadata_path else "default",
+    )
+    metadata = bundle.metadata
     if not isinstance(metadata, MutableMapping):
         raise TypeError("Metadata YAML must define a mapping of configuration blocks")
-    return copy.deepcopy(metadata), bundle.path  # ensure callers can mutate safely
+    payload = copy.deepcopy(metadata)
+    payload["channels"] = bundle.channels
+    return payload, bundle.metadata_path  # ensure callers can mutate safely
 
 
 def _select_variables(
@@ -143,7 +153,7 @@ def prepare_samples(
         default the TOP-22-006 reinterpretation selections are used.
     metadata_path:
         Optional override for the metadata YAML file.  When omitted the project
-        default under :mod:`topeft.modules.paths` is used.
+        default metadata bundle is used.
     prefix:
         Redirector prefix prepended to each file path.  This can be used to point
         to XRootD endpoints such as ``root://cmsxrootd.fnal.gov/``.
@@ -152,7 +162,20 @@ def prepare_samples(
         variables advertised in the metadata are retained.
     """
 
-    metadata, resolved_metadata_path = _load_metadata(metadata_path)
+    scenario_names = unique_preserving_order(normalize_sequence(scenario))
+    if not scenario_names:
+        scenario_names = [DEFAULT_SCENARIO_NAME]
+    if len(scenario_names) != 1:
+        raise ValueError(
+            "Quickstart only supports one scenario per run. "
+            f"Requested scenarios: {', '.join(scenario_names)}"
+        )
+
+    metadata, resolved_metadata_path = _load_metadata(
+        metadata_path,
+        scenario_names[0],
+        strict=True,
+    )
     variable_names = _select_variables(metadata, variables)
 
     weight_variations = tuple(
@@ -185,10 +208,6 @@ def prepare_samples(
         raise ValueError(
             f"Channel metadata is missing from the metadata YAML ({resolved_metadata_path})."
         )
-
-    scenario_names = unique_preserving_order(normalize_sequence(scenario))
-    if not scenario_names:
-        scenario_names = [DEFAULT_SCENARIO_NAME]
 
     channel_helper = ChannelMetadataHelper(channels_metadata)
     channel_planner = ChannelPlanner(

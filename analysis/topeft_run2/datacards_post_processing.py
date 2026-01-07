@@ -5,9 +5,7 @@ import json
 import sys
 from typing import Iterable, List, Tuple
 
-from analysis.topeft_run2.metadata_loader import load_metadata, MetadataBundle
-from analysis.topeft_run2.scenario_registry import select_metadata_path
-from topeft.modules import scenario_groups
+from analysis.topeft_run2 import metadata_authority
 from topeft.modules.channel_metadata import ChannelMetadataHelper
 
 # This script does some basic checks of the cards and templates produced by the `make_cards.py` script.
@@ -119,7 +117,7 @@ def resolve_scenario_metadata(
     *,
     metadata_path: str | None = None,
     require_variables: bool = False,
-) -> Tuple[str, MetadataBundle, ChannelMetadataHelper]:
+) -> Tuple[str, metadata_authority.MetadataBundle, ChannelMetadataHelper]:
     """Return the scenario name, metadata bundle, and helper for ``scenario_args``.
 
     The returned :class:`MetadataBundle` mirrors the metadata already loaded by
@@ -138,33 +136,22 @@ def resolve_scenario_metadata(
         )
 
     scenario_name = scenario_names[0]
-    metadata_file = select_metadata_path(scenario_name, metadata_path)
     required = ["channels"]
     if require_variables:
         required.append("variables")
-    bundle = load_metadata(metadata_file, required_sections=tuple(required))
-    metadata = bundle.payload
+    bundle = metadata_authority.load_metadata_bundle(
+        metadata_path,
+        scenario_name,
+        strict=True,
+        required_sections=tuple(required),
+        metadata_source="explicit" if metadata_path else "default",
+    )
 
-    channels_metadata = metadata.get("channels")
-    channels_data = channels_metadata
-    if scenario_groups.is_scenario(scenario_name):
-        try:
-            channels_data = scenario_groups.load_channels_for_scenario(
-                scenario_name,
-                metadata=metadata,
-                metadata_path=bundle.path,
-            )
-        except Exception as exc:
-            print(
-                f"WARNING: Failed to load canonical scenario channels for {scenario_name}: {exc}. "
-                "Falling back to metadata YAML contents."
-            )
-            channels_data = channels_metadata
-
+    channels_data = bundle.channels
     if not channels_data:
         raise ValueError(
             f"Channel metadata is missing for scenario '{scenario_name}'. "
-            f"Checked canonical scenario definitions and metadata YAML ({bundle.path})."
+            f"Checked metadata YAML ({bundle.metadata_path})."
         )
 
     helper = ChannelMetadataHelper(channels_data)
