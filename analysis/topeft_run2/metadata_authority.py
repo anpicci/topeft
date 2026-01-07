@@ -264,6 +264,9 @@ def _select_channels_for_scenario(
     strict: bool,
     source_label: str,
 ) -> Mapping[str, object]:
+    channels_payload = metadata.get("channels") or {}
+    if not isinstance(channels_payload, Mapping):
+        raise TypeError(f"'channels' in {source_label} must be a mapping with 'groups'")
     available_groups = _extract_groups_from_payload(metadata, source_label)
     if not available_groups:
         raise ValueError(
@@ -312,15 +315,15 @@ def _select_channels_for_scenario(
     scenario_groups = (
         tuple(selected_groups.keys()) if missing_groups and not strict else scenario.groups
     )
-    return {
-        "groups": selected_groups,
-        "scenarios": [
-            {
-                "name": scenario.name,
-                "groups": scenario_groups,
-            }
-        ],
-    }
+    channels_out = dict(channels_payload)
+    channels_out["groups"] = selected_groups
+    channels_out["scenarios"] = [
+        {
+            "name": scenario.name,
+            "groups": scenario_groups,
+        }
+    ]
+    return channels_out
 
 
 __all__ = [
