@@ -423,6 +423,45 @@ def _resolve_process_axis_labels(histogram):
         return tuple(axis)
 
 
+def _resolve_grouped_processes(group_map):
+    """Return the ordered tuple of process names covered by *group_map*."""
+
+    grouped = []
+    seen = set()
+    for members in (group_map or {}).values():
+        for name in members or ():
+            if name in seen:
+                continue
+            seen.add(name)
+            grouped.append(name)
+    return tuple(grouped)
+
+
+def _filter_process_axis(histogram, allowed_processes):
+    """Return *histogram* with any process not in *allowed_processes* removed."""
+
+    if histogram is None or not _has_axis(histogram, "process"):
+        return histogram
+
+    allowed_set = set(allowed_processes or ())
+    axis_labels = _resolve_process_axis_labels(histogram)
+    if not axis_labels:
+        return histogram
+
+    if allowed_set:
+        to_remove = [proc for proc in axis_labels if proc not in allowed_set]
+    else:
+        to_remove = list(axis_labels)
+
+    if not to_remove:
+        return histogram
+
+    try:
+        return histogram.remove("process", to_remove)
+    except Exception:
+        return histogram
+
+
 def _has_axis(histogram, axis_name):
     """Return ``True`` when *histogram* exposes *axis_name* as an axis."""
 
@@ -993,6 +1032,14 @@ def _summarize_zero_yield_processes_by_variable(
             )
             continue
 
+        allowed_processes = _resolve_grouped_processes(region_ctx.group_map)
+        if allowed_processes:
+            available_processes = tuple(
+                proc for proc in available_processes if proc in allowed_processes
+            )
+        else:
+            available_processes = ()
+
         if not available_channels:
             summary["errors"].append(
                 f"No channel axis labels available for zero-yield scan in variable '{var_name}'."
@@ -1001,7 +1048,7 @@ def _summarize_zero_yield_processes_by_variable(
 
         if not available_processes:
             summary["errors"].append(
-                f"No process labels available for zero-yield scan in variable '{var_name}'."
+                f"No grouped process labels available for zero-yield scan in variable '{var_name}'."
             )
             continue
 
@@ -1899,6 +1946,14 @@ def _prepare_variable_payload(
                 "process", region_ctx.signal_samples
             )
 
+    allowed_processes = _resolve_grouped_processes(region_ctx.group_map)
+    hist_mc = _filter_process_axis(hist_mc, allowed_processes)
+    hist_data = _filter_process_axis(hist_data, allowed_processes)
+    if hist_mc_sumw2_orig is not None:
+        hist_mc_sumw2_orig = _filter_process_axis(
+            hist_mc_sumw2_orig, allowed_processes
+        )
+
     if region_ctx.debug_channel_lists and verbose:
         try:
             channels_lst = yt.get_cat_lables(histo, "channel")
@@ -2514,7 +2569,7 @@ def validate_channel_group(histos, expected_labels, transformations, region, sub
 
 def populate_group_map(samples, pattern_map):
     out = OrderedDict((k, []) for k in pattern_map)
-    fallback_groups = OrderedDict()
+    unmatched = []
 
     for proc_name in samples:
         canonical_name = tc_utils.canonicalize_process_name(proc_name)
@@ -2528,17 +2583,14 @@ def populate_group_map(samples, pattern_map):
             if matched:
                 break
         if not matched:
-            if proc_name not in fallback_groups:
-                logger.warning(
-                    "Process name '%s' does not match any configured group pattern; "
-                    "assigning it to fallback group '%s'.",
-                    proc_name,
-                    proc_name,
-                )
-                fallback_groups[proc_name] = []
-            fallback_groups[proc_name].append(proc_name)
+            unmatched.append(proc_name)
 
-    out.update(fallback_groups)
+    if unmatched:
+        logger.warning(
+            "Process names did not match any configured group pattern; skipping: %s",
+            ", ".join(sorted(unmatched)),
+        )
+
     return out
 
 

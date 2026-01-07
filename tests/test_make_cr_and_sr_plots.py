@@ -63,7 +63,7 @@ def test_unit_normalization_skips_empty_histograms(monkeypatch):
     assert any("Skipping data unit normalization" in msg for msg in logged_messages)
 
 
-def test_unmatched_sample_gets_fallback_group(monkeypatch):
+def test_unmatched_sample_is_skipped_from_group_map(monkeypatch):
     process_axis = hist.axis.StrCategory([], name="process", growth=True)
     value_axis = hist.axis.Regular(2, 0.0, 2.0, name="lj0pt")
     h_mc = hist.Hist(process_axis, value_axis, storage=hist.storage.Double())
@@ -97,9 +97,10 @@ def test_unmatched_sample_gets_fallback_group(monkeypatch):
         group_map = make_cr_and_sr_plots.populate_group_map(samples, pattern_map)
 
     assert "Top" in group_map
-    assert "mysteryProcess" in group_map
-    assert group_map["mysteryProcess"] == ["mysteryProcess"]
-    assert any("mysteryProcess" in msg for msg in captured)
+    assert "mysteryProcess" not in group_map
+    assert any(
+        "mysteryProcess" in msg and "skipping" in msg.lower() for msg in captured
+    )
 
     plotted_calls = []
 
@@ -129,7 +130,9 @@ def test_unmatched_sample_gets_fallback_group(monkeypatch):
         mc_call = plotted_calls[0]
         mc_stack_inputs = mc_call["args"][0]
         stacked_total = np.sum(np.stack(mc_stack_inputs), axis=0)
-        mc_totals = h_mc[{"process": sum}].as_hist({}).values(flow=True)[1:]
+        mc_totals = (
+            h_mc[{"process": "ttbarSL"}].as_hist({}).values(flow=True)[1:]
+        )
         np.testing.assert_allclose(stacked_total, mc_totals)
 
         colors = mc_call["kwargs"].get("color", [])
@@ -489,6 +492,120 @@ def test_cr_zero_yield_summary_reports_variable_and_missing_bins():
 
     zero_processes = {proc for proc, _ in entry["zero_processes"]}
     assert "data2022" in zero_processes
+
+
+def test_sr_zero_yield_skips_unmatched_processes(monkeypatch):
+    process_axis = hist.axis.StrCategory(
+        ["ttH_central2022", "ZG_MLL-50_PTG-600_central2022"], name="process"
+    )
+    channel_axis = hist.axis.StrCategory(["2lss_4t_m_4j"], name="channel")
+    syst_axis = hist.axis.StrCategory(["nominal"], name="systematic")
+    lj0pt_axis = hist.axis.Regular(1, 0.0, 1.0, name="lj0pt")
+
+    hist_obj = make_cr_and_sr_plots.tc_sparseHist.SparseHist(
+        process_axis, channel_axis, syst_axis, lj0pt_axis
+    )
+
+    hist_obj.fill(
+        process="ttH_central2022",
+        channel="2lss_4t_m_4j",
+        systematic="nominal",
+        lj0pt=0.5,
+        weight=1.0,
+    )
+    hist_obj.fill(
+        process="ZG_MLL-50_PTG-600_central2022",
+        channel="2lss_4t_m_4j",
+        systematic="nominal",
+        lj0pt=0.5,
+        weight=1.0,
+    )
+
+    hist_inputs = {"lj0pt": hist_obj}
+
+    with monkeypatch.context() as m:
+        warnings = []
+
+        def _capture_warning(msg, *args, **kwargs):
+            if args:
+                msg = msg % args
+            warnings.append(msg)
+
+        m.setattr(make_cr_and_sr_plots.logger, "warning", _capture_warning)
+        region_ctx = make_cr_and_sr_plots.build_region_context(
+            "SR", hist_inputs, years=["2022"], unblind=True
+        )
+        summary = make_cr_and_sr_plots._summarize_zero_yield_processes(
+            hist_inputs,
+            region_name="SR",
+            region_ctx=region_ctx,
+            variables=["lj0pt"],
+        )
+
+    assert any("ZG_MLL-50_PTG-600_central2022" in msg for msg in warnings)
+    unmatched_present = any(
+        proc == "ZG_MLL-50_PTG-600_central2022"
+        for entry in summary["channel_entries"]
+        for proc, _ in entry["zero_processes"]
+    )
+    assert not unmatched_present
+
+
+def test_cr_zero_yield_skips_unmatched_processes(monkeypatch):
+    process_axis = hist.axis.StrCategory(
+        ["TTTo2L2Nu_central2022", "mysteryProc2022"], name="process"
+    )
+    channel_axis = hist.axis.StrCategory(["2lss_ee_CR_1j"], name="channel")
+    syst_axis = hist.axis.StrCategory(["nominal"], name="systematic")
+    met_axis = hist.axis.Regular(1, 0.0, 1.0, name="met")
+
+    hist_obj = make_cr_and_sr_plots.tc_sparseHist.SparseHist(
+        process_axis, channel_axis, syst_axis, met_axis
+    )
+
+    hist_obj.fill(
+        process="TTTo2L2Nu_central2022",
+        channel="2lss_ee_CR_1j",
+        systematic="nominal",
+        met=0.5,
+        weight=1.0,
+    )
+    hist_obj.fill(
+        process="mysteryProc2022",
+        channel="2lss_ee_CR_1j",
+        systematic="nominal",
+        met=0.5,
+        weight=1.0,
+    )
+
+    hist_inputs = {"met": hist_obj}
+
+    with monkeypatch.context() as m:
+        warnings = []
+
+        def _capture_warning(msg, *args, **kwargs):
+            if args:
+                msg = msg % args
+            warnings.append(msg)
+
+        m.setattr(make_cr_and_sr_plots.logger, "warning", _capture_warning)
+        region_ctx = make_cr_and_sr_plots.build_region_context(
+            "CR", hist_inputs, years=["2022"], unblind=True
+        )
+        summary = make_cr_and_sr_plots._summarize_zero_yield_processes(
+            hist_inputs,
+            region_name="CR",
+            region_ctx=region_ctx,
+            variables=["met"],
+        )
+
+    assert any("mysteryProc2022" in msg for msg in warnings)
+    unmatched_present = any(
+        proc == "mysteryProc2022"
+        for entry in summary["channel_entries"]
+        for proc, _ in entry["zero_processes"]
+    )
+    assert not unmatched_present
 
 
 def test_sr_aggregate_blinded_uses_mc_when_data_empty(tmp_path):
