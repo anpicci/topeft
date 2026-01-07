@@ -23,6 +23,55 @@ REGION_SPECS = {
     },
 }
 
+# Semantic SR groups derived from fully flavour-split channels.
+SR_TAG_GROUP_RULES = {
+    "2lss_SR": {
+        "base": "2lss",
+        "require": [],
+        "forbid": ["fwd"],
+    },
+    "2lss_1tau_onZ": {
+        "base": "2lss_1tau",
+        "require": ["onZ"],
+        "forbid": [],
+    },
+    "2lss_1tau_offZ": {
+        "base": "2lss_1tau",
+        "require": ["offZ"],
+        "forbid": [],
+    },
+    "2los_onZ_1tau": {
+        "base": "2los_1tau",
+        "require": ["onZ", "1tau"],
+        "forbid": [],
+    },
+    "3l_onZ_SR": {
+        "base": "3l",
+        "require": ["onZ"],
+        "forbid": ["1tau", "fwd"],
+    },
+    "3l_offZ_SR": {
+        "base": "3l",
+        "require": ["offZ"],
+        "forbid": ["1tau", "fwd"],
+    },
+    "3l_1tau_1b": {
+        "base": "3l",
+        "require": ["1tau", "_1b_"],
+        "forbid": ["fwd"],
+    },
+    "3l_1tau_2b": {
+        "base": "3l",
+        "require": ["1tau", "_2b_"],
+        "forbid": ["fwd"],
+    },
+    "4l_SR": {
+        "base": "4l",
+        "require": [],
+        "forbid": [],
+    },
+}
+
 
 def _construct_cat_name(chan_str, njet_str=None, flav_str=None):
     """Match analysis_processor.construct_cat_name for channel labels."""
@@ -92,6 +141,11 @@ def _resolve_ch_lst_keys(region_name, ch_cfg):
     )
 
 
+def _matches_tags(ch, require=(), forbid=()):
+    """Return True when all require tags are present and no forbid tags match."""
+    return all(tag in ch for tag in require) and not any(tag in ch for tag in forbid)
+
+
 def build_channel_labels_from_ch_cfg(ch_cfg: dict, ch_lst_keys) -> OrderedDict:
     """
     Reverse-engineered from topeft/analysis_processor.py, but implemented here.
@@ -127,6 +181,24 @@ def build_channel_labels_from_ch_cfg(ch_cfg: dict, ch_lst_keys) -> OrderedDict:
                         labels.append(label)
 
     return out
+
+
+def _build_semantic_sr_groups(sr_proc_bases):
+    groups = {}
+    for group_name, rule in SR_TAG_GROUP_RULES.items():
+        base = rule["base"]
+        if base not in sr_proc_bases:
+            continue
+        base_channels = sr_proc_bases[base]
+        require = tuple(rule.get("require", ()))
+        forbid = tuple(rule.get("forbid", ()))
+        matches = [
+            ch
+            for ch in base_channels
+            if _matches_tags(ch, require=require, forbid=forbid)
+        ]
+        groups[group_name] = sorted(matches)
+    return groups
 
 
 def _collect_region_data(region_name, ch_cfg, meta_cfg):
@@ -300,6 +372,12 @@ def main():
         updated, labels_added, bases_created = _augment_channel_dict(
             data["proc_map"], out_meta.get(yaml_key, {})
         )
+        if data["region"] == "SR":
+            semantic_groups = _build_semantic_sr_groups(data["proc_map"])
+            for name, chans in semantic_groups.items():
+                updated[name] = chans
+            for obsolete in ("4l_2j", "4l_3j", "4l_4j"):
+                updated.pop(obsolete, None)
         out_meta[yaml_key] = updated
 
         proc_count = sum(len(labels) for labels in data["proc_map"].values())
