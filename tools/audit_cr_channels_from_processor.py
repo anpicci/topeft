@@ -1,11 +1,27 @@
 #!/usr/bin/env python3
+import argparse
+import copy
 import json
+import sys
+from collections import OrderedDict
 from pathlib import Path
 
 import yaml
 
 CH_LST_PATH = Path("topeft/channels/ch_lst.json")
 META_YAML_PATH = Path("topeft/params/cr_sr_plots_metadata.yml")
+
+REGION_SPECS = {
+    "CR": {
+        "ch_lst_keys": ("CH_LST_CR", "TAU_CH_LST_CR"),
+        "yaml_key": "CR_CHAN_DICT",
+    },
+    "SR": {
+        "ch_lst_keys": (),
+        "ch_lst_match": "CH_LST_SR",
+        "yaml_key": "SR_CHAN_DICT",
+    },
+}
 
 
 def _construct_cat_name(chan_str, njet_str=None, flav_str=None):
@@ -54,33 +70,49 @@ def _iter_channel_defs(cat_def):
             yield entry
 
 
-def build_channel_labels_from_ch_cfg(ch_cfg: dict) -> dict:
+def _resolve_ch_lst_keys(region_name, ch_cfg):
+    spec = REGION_SPECS[region_name]
+    explicit_keys = list(spec.get("ch_lst_keys", ()))
+    if explicit_keys:
+        missing = [key for key in explicit_keys if key not in ch_cfg]
+        if missing:
+            raise KeyError(
+                f"Missing expected {region_name} ch_lst keys: {', '.join(missing)}"
+            )
+        return explicit_keys
+
+    match_token = spec.get("ch_lst_match")
+    if match_token:
+        matched = sorted(key for key in ch_cfg if match_token in key)
+        if matched:
+            return matched
+
+    raise KeyError(
+        f"Unable to resolve {region_name} ch_lst keys from {', '.join(ch_cfg.keys())}"
+    )
+
+
+def build_channel_labels_from_ch_cfg(ch_cfg: dict, ch_lst_keys) -> OrderedDict:
     """
     Reverse-engineered from topeft/analysis_processor.py, but implemented here.
 
     Returns a mapping:
-        base_name -> set of full channel labels
-
-    Only for CR definitions coming from:
-      - CH_LST_CR
-      - TAU_CH_LST_CR
-    in ch_lst.json.
+        base_name -> ordered list of full channel labels
 
     The returned labels must match the histogram channel labels
-    that CR_CHAN_DICT refers to, e.g.:
-      - 3l_eee_CR_0j
-      - 2los_ee_1tau_Ftau_2j
-      - 1l_m_dy_tautau_CR_4j
+    that CR_CHAN_DICT or SR_CHAN_DICT refer to.
     """
 
-    out = {}
+    out = OrderedDict()
+    seen_by_base = {}
 
-    for key in ("CH_LST_CR", "TAU_CH_LST_CR"):
+    for key in ch_lst_keys:
         cat_block = ch_cfg.get(key) or {}
         for base_name, cat_def in cat_block.items():
             lep_flavs = list(cat_def.get("lep_flav_lst", []) or [None])
             jet_lst = cat_def.get("jet_lst", [])
-            labels = out.setdefault(base_name, set())
+            labels = out.setdefault(base_name, [])
+            seen = seen_by_base.setdefault(base_name, set(labels))
 
             for jet_cat in jet_lst:
                 jet_key = _jet_cat_to_key(jet_cat)
@@ -89,48 +121,200 @@ def build_channel_labels_from_ch_cfg(ch_cfg: dict) -> dict:
                         label = _construct_cat_name(
                             lep_chan, njet_str=jet_key, flav_str=lep_flav
                         )
-                        labels.add(label)
+                        if label in seen:
+                            continue
+                        seen.add(label)
+                        labels.append(label)
 
     return out
 
 
-def main():
-    with CH_LST_PATH.open() as f:
-        ch_cfg = json.load(f)
-    with META_YAML_PATH.open() as f:
-        meta_cfg = yaml.safe_load(f)
+def _collect_region_data(region_name, ch_cfg, meta_cfg):
+    spec = REGION_SPECS[region_name]
+    ch_lst_keys = _resolve_ch_lst_keys(region_name, ch_cfg)
+    proc_map = build_channel_labels_from_ch_cfg(ch_cfg, ch_lst_keys)
 
-    proc_map = build_channel_labels_from_ch_cfg(ch_cfg)
+    yaml_key = spec["yaml_key"]
+    if yaml_key not in meta_cfg:
+        raise KeyError(f"Missing expected YAML key '{yaml_key}'")
+
+    yaml_block = meta_cfg.get(yaml_key) or {}
+    yaml_labels_by_base = {
+        base: list(labels or []) for base, labels in yaml_block.items()
+    }
 
     proc_labels = sorted({lab for labs in proc_map.values() for lab in labs})
     yaml_labels = sorted(
-        {lab for labels in meta_cfg["CR_CHAN_DICT"].values() for lab in labels}
+        {lab for labels in yaml_labels_by_base.values() for lab in labels}
     )
 
     proc_set = set(proc_labels)
     yaml_set = set(yaml_labels)
 
-    only_in_processor = sorted(proc_set - yaml_set)
-    only_in_yaml = sorted(yaml_set - proc_set)
+    return {
+        "region": region_name,
+        "yaml_key": yaml_key,
+        "ch_lst_keys": ch_lst_keys,
+        "proc_map": proc_map,
+        "yaml_map": yaml_labels_by_base,
+        "proc_labels": proc_labels,
+        "yaml_labels": yaml_labels,
+        "only_in_processor": sorted(proc_set - yaml_set),
+        "only_in_yaml": sorted(yaml_set - proc_set),
+    }
+
+
+def _print_region_report(region_data):
+    region = region_data["region"]
+    yaml_key = region_data["yaml_key"]
 
     print(
-        "=== CR channel labels that the PROCESSOR can build, but are MISSING in YAML CR_CHAN_DICT ==="
+        f"=== {region} channel labels that the PROCESSOR can build, but are MISSING in YAML {yaml_key} ==="
     )
-    for lab in only_in_processor:
+    for lab in region_data["only_in_processor"]:
         print(f"  - {lab}")
 
     print(
-        "\n=== YAML CR_CHAN_DICT labels that the PROCESSOR would NEVER produce ==="
+        f"\n=== YAML {yaml_key} labels that the PROCESSOR would NEVER produce ==="
     )
-    for lab in only_in_yaml:
+    for lab in region_data["only_in_yaml"]:
         print(f"  - {lab}")
 
-    print("\n=== Debug: processor CR bases and their first few channels ===")
-    for base, labs in sorted(proc_map.items()):
+    print(f"\n=== Debug: processor {region} bases and their first few channels ===")
+    for base, labs in sorted(region_data["proc_map"].items()):
         labs_sorted = sorted(labs)
         preview = ", ".join(labs_sorted[:5])
         more = "" if len(labs_sorted) <= 5 else f" ... (+{len(labs_sorted)-5} more)"
         print(f"  {base}: {preview}{more}")
+
+
+def _augment_channel_dict(proc_map, yaml_block):
+    updated = copy.deepcopy(yaml_block)
+    labels_added = 0
+    bases_created = 0
+
+    for base, proc_labels in proc_map.items():
+        if base not in updated:
+            updated[base] = list(proc_labels)
+            bases_created += 1
+            labels_added += len(proc_labels)
+            continue
+
+        existing = list(updated.get(base) or [])
+        existing_set = set(existing)
+        additions = [label for label in proc_labels if label not in existing_set]
+        if additions:
+            existing.extend(additions)
+            updated[base] = existing
+            labels_added += len(additions)
+
+    return updated, labels_added, bases_created
+
+
+def _exit_with_error(message):
+    print(f"ERROR: {message}", file=sys.stderr)
+    raise SystemExit(2)
+
+
+def _read_json(path: Path):
+    try:
+        with path.open() as f:
+            return json.load(f)
+    except OSError as exc:
+        _exit_with_error(f"unable to read JSON from {path}: {exc}")
+    except json.JSONDecodeError as exc:
+        _exit_with_error(f"invalid JSON in {path}: {exc}")
+
+
+def _read_yaml(path: Path):
+    try:
+        with path.open() as f:
+            return yaml.safe_load(f)
+    except OSError as exc:
+        _exit_with_error(f"unable to read YAML from {path}: {exc}")
+    except yaml.YAMLError as exc:
+        _exit_with_error(f"invalid YAML in {path}: {exc}")
+
+
+def _parse_args():
+    parser = argparse.ArgumentParser(
+        description=(
+            "Audit CR/SR channel labels from ch_lst.json against the YAML metadata."
+        )
+    )
+    parser.add_argument(
+        "--ch-lst",
+        default=str(CH_LST_PATH),
+        help="Path to ch_lst.json (default: topeft/channels/ch_lst.json)",
+    )
+    parser.add_argument(
+        "--meta-yaml",
+        default=str(META_YAML_PATH),
+        help="Path to cr_sr_plots_metadata.yml (default: topeft/params/cr_sr_plots_metadata.yml)",
+    )
+    parser.add_argument(
+        "--out-meta-yaml",
+        default=None,
+        help="Output path for the augmented YAML (required with --write-augmented-yaml)",
+    )
+    parser.add_argument(
+        "--regions",
+        choices=("CR", "SR", "both"),
+        default="both",
+        help="Which region(s) to audit (default: both)",
+    )
+    parser.add_argument(
+        "--write-augmented-yaml",
+        action="store_true",
+        help="Write an augmented YAML with missing labels filled in",
+    )
+    return parser.parse_args()
+
+
+def main():
+    args = _parse_args()
+
+    if args.write_augmented_yaml and not args.out_meta_yaml:
+        raise ValueError("--out-meta-yaml is required with --write-augmented-yaml")
+
+    ch_lst_path = Path(args.ch_lst)
+    meta_yaml_path = Path(args.meta_yaml)
+
+    ch_cfg = _read_json(ch_lst_path)
+    meta_cfg = _read_yaml(meta_yaml_path)
+
+    regions = ["CR", "SR"] if args.regions == "both" else [args.regions]
+
+    region_data = []
+    for region in regions:
+        data = _collect_region_data(region, ch_cfg, meta_cfg)
+        region_data.append(data)
+        _print_region_report(data)
+
+    if not args.write_augmented_yaml:
+        return
+
+    out_meta = copy.deepcopy(meta_cfg)
+    for data in region_data:
+        yaml_key = data["yaml_key"]
+        updated, labels_added, bases_created = _augment_channel_dict(
+            data["proc_map"], out_meta.get(yaml_key, {})
+        )
+        out_meta[yaml_key] = updated
+
+        proc_count = sum(len(labels) for labels in data["proc_map"].values())
+        yaml_count = sum(len(labels) for labels in data["yaml_map"].values())
+        print(f"\n=== Augmented YAML summary ({data['region']}) ===")
+        print(f"  processor labels: {proc_count}")
+        print(f"  yaml labels: {yaml_count}")
+        print(f"  labels added: {labels_added}")
+        print(f"  bases created: {bases_created}")
+
+    out_path = Path(args.out_meta_yaml)
+    with out_path.open("w") as f:
+        yaml.safe_dump(out_meta, f, sort_keys=False)
+
+    print(f"\nWrote augmented YAML to {out_path}")
 
 
 if __name__ == "__main__":
