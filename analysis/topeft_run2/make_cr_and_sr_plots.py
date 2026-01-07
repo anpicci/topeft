@@ -832,8 +832,17 @@ def _summarize_zero_yield_processes(
     *,
     region_name,
     preserve_njets_bins=False,
+    region_ctx=None,
+    variables=None,
 ):
     """Return a structured summary of zero-yield processes per channel."""
+
+    if region_ctx is not None and region_name.upper() != "CR":
+        return _summarize_zero_yield_processes_by_variable(
+            dict_of_hists,
+            region_ctx=region_ctx,
+            variables=variables,
+        )
 
     summary = {
         "region": region_name,
@@ -927,6 +936,146 @@ def _summarize_zero_yield_processes(
     return summary
 
 
+def _summarize_zero_yield_processes_by_variable(
+    dict_of_hists,
+    *,
+    region_ctx,
+    variables=None,
+):
+    """Return a structured summary of zero-yield processes per channel and variable."""
+
+    summary = {
+        "region": region_ctx.name,
+        "channels_scanned": 0,
+        "channel_entries": [],
+        "zero_process_total": 0,
+        "data_driven_zero_total": 0,
+        "missing_data_driven_prefixes": set(),
+        "errors": [],
+    }
+
+    variables_to_scan = _resolve_requested_variables(
+        dict_of_hists, variables, context="zero-yield scan"
+    )
+
+    prepared_cache = {}
+    missing_data_driven = {}
+    for matcher in DATA_DRIVEN_MATCHERS:
+        missing_data_driven[_describe_data_driven_matcher(matcher)] = False
+
+    for var_name in variables_to_scan:
+        if "sumw2" in var_name:
+            continue
+        if region_ctx.apply_category_skips and var_name in region_ctx.skip_variables:
+            continue
+
+        variable_metadata = _prepare_variable_payload(
+            var_name,
+            region_ctx,
+            metadata_only=True,
+            prepared_cache=prepared_cache,
+        )
+        if not variable_metadata:
+            prepared_cache.setdefault(var_name, None)
+            continue
+
+        histo = dict_of_hists.get(var_name)
+        if histo is None:
+            continue
+
+        channel_transformations = variable_metadata["channel_transformations"]
+        available_channels = set(variable_metadata.get("available_channels") or ())
+        available_processes = tuple(_resolve_process_axis_labels(histo))
+
+        if not _has_axis(histo, "process"):
+            summary["errors"].append(
+                f"No process axis available for zero-yield scan in variable '{var_name}'."
+            )
+            continue
+
+        if not available_channels:
+            summary["errors"].append(
+                f"No channel axis labels available for zero-yield scan in variable '{var_name}'."
+            )
+            continue
+
+        if not available_processes:
+            summary["errors"].append(
+                f"No process labels available for zero-yield scan in variable '{var_name}'."
+            )
+            continue
+
+        for matcher in DATA_DRIVEN_MATCHERS:
+            label = _describe_data_driven_matcher(matcher)
+            if not missing_data_driven.get(label):
+                missing_data_driven[label] = any(
+                    matcher.search(proc) for proc in available_processes
+                )
+
+        for chan_label, chan_bins in region_ctx.channel_map.items():
+            summary["channels_scanned"] += 1
+            unique_bins = tuple(dict.fromkeys(chan_bins))
+            selected_bins = []
+            missing_bins = []
+            for bin_name in unique_bins:
+                transformed = _apply_channel_transforms(
+                    bin_name, channel_transformations
+                )
+                if transformed in available_channels:
+                    selected_bins.append(transformed)
+                else:
+                    missing_bins.append(bin_name)
+
+            if not selected_bins:
+                summary["channel_entries"].append(
+                    {
+                        "label": chan_label,
+                        "variable": var_name,
+                        "missing_bins": tuple(missing_bins),
+                        "zero_processes": [],
+                    }
+                )
+                continue
+
+            selected_bins = list(dict.fromkeys(selected_bins))
+
+            zero_processes = []
+            for proc in available_processes:
+                try:
+                    proc_hist = histo.integrate("process", [proc])
+                    proc_hist = proc_hist.integrate("channel", selected_bins)
+                except Exception:
+                    continue
+
+                proc_hist = _integrate_nominal_axis(proc_hist)
+
+                if not _hist_has_content(proc_hist):
+                    is_data_driven = any(
+                        matcher.search(proc) for matcher in DATA_DRIVEN_MATCHERS
+                    )
+                    zero_processes.append((proc, is_data_driven))
+
+            if zero_processes or missing_bins:
+                summary["channel_entries"].append(
+                    {
+                        "label": chan_label,
+                        "variable": var_name,
+                        "missing_bins": tuple(missing_bins),
+                        "zero_processes": zero_processes,
+                    }
+                )
+                summary["zero_process_total"] += len(zero_processes)
+                summary["data_driven_zero_total"] += sum(
+                    1 for _, is_data_driven in zero_processes if is_data_driven
+                )
+
+    for pattern_label, seen in missing_data_driven.items():
+        if not seen:
+            summary["missing_data_driven_prefixes"].add(pattern_label)
+
+    return summary
+
+
 def _emit_zero_yield_summary(summary, *, detailed=False):
     """Print a short or detailed zero-yield report for the supplied *summary*."""
 
@@ -941,6 +1090,10 @@ def _emit_zero_yield_summary(summary, *, detailed=False):
     if detailed:
         print("\nZero-yield content summary:")
         for entry in flagged_channels:
+            entry_label = entry.get("label", "<unknown>")
+            variable = entry.get("variable")
+            if variable:
+                entry_label = f"{entry_label} [{variable}]"
             issues = []
             if entry.get("missing_bins"):
                 issues.append(
@@ -955,7 +1108,7 @@ def _emit_zero_yield_summary(summary, *, detailed=False):
                     zero_labels.append(label)
                 issues.append("zero-content processes: " + ", ".join(zero_labels))
             if issues:
-                print(f"  - {region_label}::{entry['label']}: " + "; ".join(issues))
+                print(f"  - {region_label}::{entry_label}: " + "; ".join(issues))
 
         if missing_data_driven:
             print(
@@ -6039,6 +6192,7 @@ def run_plots_for_region(
         dict_of_hists, reference_channel_map=CHANNEL_REFERENCE_MAP
     )
     restored_channel_labels = False
+    summary_region_ctx = None
 
     if not split_channels_available and "per-channel" in requested_channel_modes:
         restored_channel_labels = yt.restore_split_channel_labels(
@@ -6064,6 +6218,8 @@ def run_plots_for_region(
             preserve_njets_bins=preserve_njets_bins,
             enable_category_skips=enable_category_skips,
         )
+        if summary_region_ctx is None:
+            summary_region_ctx = region_ctx
 
         if region_ctx.channel_mode == "per-channel" and not split_channels_available:
             mode_label = CHANNEL_MODE_LABELS.get(channel_mode, channel_mode)
@@ -6096,6 +6252,8 @@ def run_plots_for_region(
         dict_of_hists,
         region_name=region_name,
         preserve_njets_bins=preserve_njets_bins,
+        region_ctx=summary_region_ctx,
+        variables=variables,
     )
     _emit_zero_yield_summary(
         zero_yield_summary,
