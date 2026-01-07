@@ -559,7 +559,9 @@ REGION_PLOTTING:
       # rename, strip, or otherwise rewrite channel labels before matching them
       # to SR_CHAN_DICT.
       default: []
-      variables: {}
+      variables:
+        njets:
+          - njets
       conditional: []
     sample_removals: []
     category_skips: []

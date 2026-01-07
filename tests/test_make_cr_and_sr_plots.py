@@ -200,6 +200,49 @@ def test_both_njets_preserves_variables_for_merged_output(tmp_path):
     }.issubset(set(plot_names)), plot_names
 
 
+def test_sr_njets_channel_transform_matches_cr_behavior():
+    process_axis = hist.axis.StrCategory([], name="process", growth=True)
+    channel_axis = hist.axis.StrCategory([], name="channel", growth=True)
+    syst_axis = hist.axis.StrCategory([], name="systematic", growth=True)
+    njets_axis = hist.axis.Regular(1, 0.0, 1.0, name="njets")
+
+    hist_obj = make_cr_and_sr_plots.tc_sparseHist.SparseHist(
+        process_axis, channel_axis, syst_axis, njets_axis
+    )
+
+    for channel in ("3l_m_offZ_1b", "3l_p_offZ_2b"):
+        hist_obj.fill(
+            process="ttH_central2022",
+            channel=channel,
+            systematic="nominal",
+            njets=0.5,
+            weight=1.0,
+        )
+
+    hist_inputs = {"njets": hist_obj}
+
+    region_ctx = make_cr_and_sr_plots.build_region_context(
+        "SR", hist_inputs, years=["2022"], unblind=True
+    )
+    payload = make_cr_and_sr_plots._prepare_variable_payload(
+        "njets", region_ctx, metadata_only=True
+    )
+
+    assert "njets" in payload["channel_transformations"]
+
+    channel_bins = payload["channel_dict"].get("3l_offZ_SR")
+    assert channel_bins, "Expected SR channel bins for 3l_offZ_SR"
+
+    make_cr_and_sr_plots.validate_channel_group(
+        [hist_obj],
+        channel_bins,
+        payload["channel_transformations"],
+        region=region_ctx.name,
+        subgroup="3l_offZ_SR",
+        variable="njets",
+    )
+
+
 def test_data_driven_samples_preserved_for_1tau_cr():
     process_axis = hist.axis.StrCategory([], name="process", growth=True)
     channel_axis = hist.axis.StrCategory([], name="channel", growth=True)
