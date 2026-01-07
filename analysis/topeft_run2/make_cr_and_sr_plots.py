@@ -2009,23 +2009,23 @@ def _render_variable_category(
             hist_data_nominal = hist_data_integrated[{"process": sum}].integrate(
                 "systematic", "nominal"
             )
-            if not _hist_has_content(hist_mc_nominal):
+            hist_data_like = (
+                hist_data_nominal
+                if (unblind_flag or not region_ctx.use_mc_as_data_when_blinded)
+                else hist_mc_nominal
+            )
+            has_mc = _hist_has_content(hist_mc_nominal)
+            has_data_like = _hist_has_content(hist_data_like)
+            if not has_mc and not has_data_like:
                 logger.warning(
-                    "Empty histogram for hist_cat=%s var_name=%s, skipping 2D plot.",
-                    hist_cat,
-                    var_name,
-                )
-                return 0, 0, html_dirs
-            if not _hist_has_content(hist_data_nominal):
-                logger.warning(
-                    "Empty data histogram for hist_cat=%s var_name=%s, skipping 2D plot.",
+                    "Empty data-like and MC histogram for hist_cat=%s var_name=%s, skipping 2D plot.",
                     hist_cat,
                     var_name,
                 )
                 return 0, 0, html_dirs
             fig = make_sparse2d_fig(
                 hist_mc_nominal,
-                hist_data_nominal,
+                hist_data_like,
                 var_name,
                 channel_name=hist_cat,
                 lumitag=region_ctx.lumi_pair[0],
@@ -2043,16 +2043,16 @@ def _render_variable_category(
             hist_data_integrated = hist_data_integrated.integrate(
                 "systematic", "nominal"
             )
-            if not _hist_has_content(hist_mc_integrated):
+            hist_data_like = (
+                hist_data_integrated
+                if (unblind_flag or not region_ctx.use_mc_as_data_when_blinded)
+                else hist_mc_integrated
+            )
+            has_mc = _hist_has_content(hist_mc_integrated)
+            has_data_like = _hist_has_content(hist_data_like)
+            if not has_mc and not has_data_like:
                 logger.warning(
-                    "Empty histogram for hist_cat=%s var_name=%s, skipping plot.",
-                    hist_cat,
-                    var_name,
-                )
-                return 0, 0, html_dirs
-            if not _hist_has_content(hist_data_integrated):
-                logger.warning(
-                    "Empty data histogram for hist_cat=%s var_name=%s, skipping plot.",
+                    "Empty data-like and MC histogram for hist_cat=%s var_name=%s, skipping plot.",
                     hist_cat,
                     var_name,
                 )
@@ -2076,7 +2076,7 @@ def _render_variable_category(
                 stacked_kwargs["bins"] = bins_override
             fig = make_region_stacked_ratio_fig(
                 hist_mc_integrated,
-                hist_data_integrated,
+                hist_data_like,
                 unit_norm_bool,
                 var=var_name,
                 group=group,

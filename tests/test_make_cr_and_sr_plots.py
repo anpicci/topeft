@@ -243,6 +243,49 @@ def test_sr_njets_channel_transform_matches_cr_behavior():
     )
 
 
+def test_sr_aggregate_blinded_uses_mc_when_data_empty(tmp_path):
+    process_axis = hist.axis.StrCategory([], name="process", growth=True)
+    channel_axis = hist.axis.StrCategory([], name="channel", growth=True)
+    syst_axis = hist.axis.StrCategory([], name="systematic", growth=True)
+    njets_axis = hist.axis.Regular(1, 0.0, 1.0, name="njets")
+
+    hist_obj = make_cr_and_sr_plots.tc_sparseHist.SparseHist(
+        process_axis, channel_axis, syst_axis, njets_axis
+    )
+
+    hist_obj.fill(
+        process="ttH_central2022",
+        channel="2lss_p",
+        systematic="nominal",
+        njets=0.5,
+        weight=5.0,
+    )
+    hist_obj.fill(
+        process="data2022",
+        channel="2lss_p",
+        systematic="nominal",
+        njets=0.5,
+        weight=0.0,
+    )
+
+    make_cr_and_sr_plots.run_plots_for_region(
+        "SR",
+        {"njets": hist_obj},
+        years=["2022"],
+        save_dir_path=str(tmp_path),
+        channel_output="merged",
+        skip_syst_errs=True,
+        workers=1,
+        verbose=False,
+        unblind=False,
+    )
+
+    plot_dir = tmp_path / "2lss_SR"
+    assert plot_dir.exists()
+    plot_paths = list(plot_dir.glob("*_njets.png"))
+    assert plot_paths, "Expected SR aggregate plot when MC is non-zero and data is empty"
+
+
 def test_data_driven_samples_preserved_for_1tau_cr():
     process_axis = hist.axis.StrCategory([], name="process", growth=True)
     channel_axis = hist.axis.StrCategory([], name="channel", growth=True)
