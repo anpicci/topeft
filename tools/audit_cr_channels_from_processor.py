@@ -470,4 +470,8 @@ def main():
     with out_path.open("w") as f:
         yaml.safe_dump(out_meta, f, sort_keys=False)
 
-    print(f"\
+    print(f"\nWrote augmented YAML to {out_path}")
+
+
+if __name__ == "__main__":
+    main()
