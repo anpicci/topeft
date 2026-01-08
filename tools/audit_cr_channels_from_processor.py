@@ -30,6 +30,11 @@ SR_TAG_GROUP_RULES = {
         "require": [],
         "forbid": ["fwd"],
     },
+    "2lss_fwd": {
+        "base": "2l",
+        "require": ["fwd"],
+        "forbid": [],
+    },
     "2lss_1tau_onZ": {
         "base": "2lss_1tau",
         "require": ["onZ"],
@@ -71,6 +76,60 @@ SR_TAG_GROUP_RULES = {
         "forbid": [],
     },
 }
+
+
+def _split_group_by_btags(sr_dict, key, btags=("1b", "2b")):
+    """
+    Replace sr_dict[key] with key_1b / key_2b variants, based on substrings
+    in the channel labels.
+    """
+    labels = sr_dict.pop(key, None)
+    if not labels:
+        return
+
+    for btag in btags:
+        tag = f"_{btag}_"
+        sublabels = [lab for lab in labels if tag in lab]
+        if not sublabels:
+            continue
+        new_key = f"{key}_{btag}"
+        if new_key in sr_dict:
+            raise ValueError(f"Key {new_key} already exists in SR_CHAN_DICT")
+        sr_dict[new_key] = sublabels
+
+
+def _postprocess_sr_groups(sr_dict):
+    """
+    Apply higher-level physics/plotting conventions to SR_CHAN_DICT:
+      * rename 3l_fwd -> 3l_onZ_fwd (it only contains onZ channels);
+      * drop global base groups that are fully covered by more semantic ones;
+      * split selected 3l groups into explicit 1b / 2b categories.
+
+    This function must NOT drop any unique channel labels: only rename or
+    redistribute them into more specific groups.
+    """
+    sr_dict = copy.deepcopy(sr_dict)
+
+    # 1) Rename 3l_fwd -> 3l_onZ_fwd (it only contains onZ channels)
+    if "3l_fwd" in sr_dict:
+        if "3l_onZ_fwd" in sr_dict:
+            raise ValueError(
+                "3l_onZ_fwd already exists when trying to rename 3l_fwd"
+            )
+        sr_dict["3l_onZ_fwd"] = sr_dict.pop("3l_fwd")
+
+    # 2) Drop global / redundant SR bases which are now covered by semantic groups.
+    #    We now also drop '2l' after introducing the 2lss_fwd semantic group,
+    #    so that every 2l(SS) channel lives in exactly one high-level category.
+    for key in ("3l", "4l", "2los_1tau", "2l"):
+        sr_dict.pop(key, None)
+
+    # 3) Split key 3l groups into 1b / 2b variants.
+    #    These groups are known to contain only _1b_ / _2b_ channels.
+    for key in ("3l_onZ_SR", "3l_offZ_SR", "3l_onZ_fwd", "3l_offZ_fwd"):
+        _split_group_by_btags(sr_dict, key)
+
+    return sr_dict
 
 
 def _construct_cat_name(chan_str, njet_str=None, flav_str=None):
@@ -378,6 +437,9 @@ def main():
                 updated[name] = chans
             for obsolete in ("4l_2j", "4l_3j", "4l_4j"):
                 updated.pop(obsolete, None)
+            # Apply higher-level SR post-processing: rename, split, and clean up groups
+            # according to plotting/physics conventions (onZ/offZ, 1b/2b, fwd, etc.).
+            updated = _postprocess_sr_groups(updated)
         out_meta[yaml_key] = updated
 
         proc_count = sum(len(labels) for labels in data["proc_map"].values())
