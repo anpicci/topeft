@@ -15,17 +15,20 @@ REGION_SPECS = {
     "CR": {
         "ch_lst_keys": ("CH_LST_CR", "TAU_CH_LST_CR"),
         "yaml_key": "CR_CHAN_DICT",
+        # For CRs we assume the processor was run with --split-lep-flavor
+        "split_lep_flavor": True,
     },
     "SR": {
         "ch_lst_keys": (),
         "ch_lst_match": "CH_LST_SR",
         "yaml_key": "SR_CHAN_DICT",
+        # For SRs we assume the processor was run without --split-lep-flavor
+        "split_lep_flavor": False,
     },
 }
 
-# Semantic SR groups derived from fully flavour-split channels.
-# 1b/2b categorization has been removed: we now group all 3l+1tau
-# channels together regardless of b-tag multiplicity.
+# Semantic SR groups derived from channels.
+# No 1b/2b categorization at group level: 3l_1tau collects all 3l+1tau channels.
 SR_TAG_GROUP_RULES = {
     "2lss_SR": {
         "base": "2lss",
@@ -62,7 +65,7 @@ SR_TAG_GROUP_RULES = {
         "require": ["offZ"],
         "forbid": ["1tau", "fwd"],
     },
-    # New combined group replacing separate 3l_1tau_1b / 3l_1tau_2b:
+    # Combined 3l+1tau group (no 1b/2b split at group level)
     "3l_1tau": {
         "base": "3l",
         "require": ["1tau"],
@@ -104,11 +107,13 @@ def _postprocess_sr_groups(sr_dict):
     return sr_dict
 
 
-def _construct_cat_name(chan_str, njet_str=None):
+def _construct_cat_name(chan_str, njet_str=None, flav_str=None):
     """Match analysis_processor.construct_cat_name for channel labels.
 
-    We assume the pkl file was produced WITHOUT --split-lep-flavor,
-    so we do not include lepton flavor in the label.
+    For CRs (split_lep_flavor=True) we expect flav_str to be non-None and
+    produce labels like:  3l_eee_CR_0j
+    For SRs (split_lep_flavor=False) we pass flav_str=None and produce:
+      3l_CR_0j, 3l_m_offZ_1b_2j, etc.
     """
     nlep_str = chan_str.split("_")[0]
     chan_str = "_".join(chan_str.split("_")[1:])
@@ -123,7 +128,7 @@ def _construct_cat_name(chan_str, njet_str=None):
             )
 
     ret_str = nlep_str
-    for component in [chan_str, njet_str]:
+    for component in [flav_str, chan_str, njet_str]:
         if component is None:
             continue
         ret_str = "_".join([ret_str, component])
@@ -181,13 +186,17 @@ def _matches_tags(ch, require=(), forbid=()):
     return all(tag in ch for tag in require) and not any(tag in ch for tag in forbid)
 
 
-def build_channel_labels_from_ch_cfg(ch_cfg: dict, ch_lst_keys) -> OrderedDict:
+def build_channel_labels_from_ch_cfg(
+    ch_cfg: dict, ch_lst_keys, split_lep_flavor: bool
+) -> OrderedDict:
     """
     Reverse-engineered from topeft/analysis_processor.py, but implemented here.
 
-    We assume the pkl file has been produced WITHOUT using --split-lep-flavor,
-    so we do NOT expand over lep_flav_lst and we do NOT include lepton flavor
-    in the channel label.
+    If split_lep_flavor is True (CR), we expand over lep_flav_lst and include
+    the flavor in the label (e.g. 3l_eee_CR_0j).
+
+    If split_lep_flavor is False (SR), we ignore lep_flav_lst and build labels
+    without explicit flavor (e.g. 3l_CR_0j, 3l_m_offZ_1b_2j).
 
     Returns a mapping:
         base_name -> ordered list of full channel labels
@@ -202,21 +211,31 @@ def build_channel_labels_from_ch_cfg(ch_cfg: dict, ch_lst_keys) -> OrderedDict:
     for key in ch_lst_keys:
         cat_block = ch_cfg.get(key) or {}
         for base_name, cat_def in cat_block.items():
+            lep_flavs = list(cat_def.get("lep_flav_lst", []) or [None])
             jet_lst = cat_def.get("jet_lst", [])
             labels = out.setdefault(base_name, [])
             seen = seen_by_base.setdefault(base_name, set(labels))
 
             for jet_cat in jet_lst:
                 jet_key = _jet_cat_to_key(jet_cat)
+
+                # Decide whether to expand over lep_flav_lst
+                if split_lep_flavor:
+                    flav_loop = lep_flavs
+                else:
+                    flav_loop = [None]
+
                 for lep_chan in _iter_channel_defs(cat_def):
-                    label = _construct_cat_name(
-                        lep_chan,
-                        njet_str=jet_key,
-                    )
-                    if label in seen:
-                        continue
-                    seen.add(label)
-                    labels.append(label)
+                    for lep_flav in flav_loop:
+                        label = _construct_cat_name(
+                            lep_chan,
+                            njet_str=jet_key,
+                            flav_str=lep_flav,
+                        )
+                        if label in seen:
+                            continue
+                        seen.add(label)
+                        labels.append(label)
 
     return out
 
@@ -242,7 +261,11 @@ def _build_semantic_sr_groups(sr_proc_bases):
 def _collect_region_data(region_name, ch_cfg, meta_cfg):
     spec = REGION_SPECS[region_name]
     ch_lst_keys = _resolve_ch_lst_keys(region_name, ch_cfg)
-    proc_map = build_channel_labels_from_ch_cfg(ch_cfg, ch_lst_keys)
+    split_lep_flavor = bool(spec.get("split_lep_flavor", False))
+
+    proc_map = build_channel_labels_from_ch_cfg(
+        ch_cfg, ch_lst_keys, split_lep_flavor=split_lep_flavor
+    )
 
     yaml_key = spec["yaml_key"]
     if yaml_key not in meta_cfg:
@@ -426,11 +449,11 @@ def main():
         for name, chans in semantic_groups.items():
             updated[name] = chans
 
+        # Drop obsolete fixed-jet 4l groups if present
         for obsolete in ("4l_2j", "4l_3j", "4l_4j"):
             updated.pop(obsolete, None)
 
         # Apply higher-level SR post-processing: rename and clean up groups
-        # according to plotting/physics conventions (onZ/offZ, fwd, etc.).
         updated = _postprocess_sr_groups(updated)
 
         out_meta[yaml_key] = updated
@@ -447,8 +470,4 @@ def main():
     with out_path.open("w") as f:
         yaml.safe_dump(out_meta, f, sort_keys=False)
 
-    print(f"\nWrote augmented YAML to {out_path}")
-
-
-if __name__ == "__main__":
-    main()
+    print(f"\
