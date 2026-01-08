@@ -24,6 +24,8 @@ REGION_SPECS = {
 }
 
 # Semantic SR groups derived from fully flavour-split channels.
+# 1b/2b categorization has been removed: we now group all 3l+1tau
+# channels together regardless of b-tag multiplicity.
 SR_TAG_GROUP_RULES = {
     "2lss_SR": {
         "base": "2lss",
@@ -60,14 +62,10 @@ SR_TAG_GROUP_RULES = {
         "require": ["offZ"],
         "forbid": ["1tau", "fwd"],
     },
-    "3l_1tau_1b": {
+    # New combined group replacing separate 3l_1tau_1b / 3l_1tau_2b:
+    "3l_1tau": {
         "base": "3l",
-        "require": ["1tau", "_1b_"],
-        "forbid": ["fwd"],
-    },
-    "3l_1tau_2b": {
-        "base": "3l",
-        "require": ["1tau", "_2b_"],
+        "require": ["1tau"],
         "forbid": ["fwd"],
     },
     "4l_SR": {
@@ -78,32 +76,11 @@ SR_TAG_GROUP_RULES = {
 }
 
 
-def _split_group_by_btags(sr_dict, key, btags=("1b", "2b")):
-    """
-    Replace sr_dict[key] with key_1b / key_2b variants, based on substrings
-    in the channel labels.
-    """
-    labels = sr_dict.pop(key, None)
-    if not labels:
-        return
-
-    for btag in btags:
-        tag = f"_{btag}_"
-        sublabels = [lab for lab in labels if tag in lab]
-        if not sublabels:
-            continue
-        new_key = f"{key}_{btag}"
-        if new_key in sr_dict:
-            raise ValueError(f"Key {new_key} already exists in SR_CHAN_DICT")
-        sr_dict[new_key] = sublabels
-
-
 def _postprocess_sr_groups(sr_dict):
     """
     Apply higher-level physics/plotting conventions to SR_CHAN_DICT:
       * rename 3l_fwd -> 3l_onZ_fwd (it only contains onZ channels);
-      * drop global base groups that are fully covered by more semantic ones;
-      * split selected 3l groups into explicit 1b / 2b categories.
+      * drop global base groups that are fully covered by more semantic ones.
 
     This function must NOT drop any unique channel labels: only rename or
     redistribute them into more specific groups.
@@ -124,21 +101,20 @@ def _postprocess_sr_groups(sr_dict):
     for key in ("3l", "4l", "2los_1tau", "2l"):
         sr_dict.pop(key, None)
 
-    # 3) Split key 3l groups into 1b / 2b variants.
-    #    These groups are known to contain only _1b_ / _2b_ channels.
-    for key in ("3l_onZ_SR", "3l_offZ_SR", "3l_onZ_fwd", "3l_offZ_fwd"):
-        _split_group_by_btags(sr_dict, key)
-
     return sr_dict
 
 
-def _construct_cat_name(chan_str, njet_str=None, flav_str=None):
-    """Match analysis_processor.construct_cat_name for channel labels."""
+def _construct_cat_name(chan_str, njet_str=None):
+    """Match analysis_processor.construct_cat_name for channel labels.
 
+    We assume the pkl file was produced WITHOUT --split-lep-flavor,
+    so we do not include lepton flavor in the label.
+    """
     nlep_str = chan_str.split("_")[0]
     chan_str = "_".join(chan_str.split("_")[1:])
     if chan_str == "":
         chan_str = None
+
     if njet_str is not None:
         njet_str = njet_str[-2:]
         if "j" not in njet_str:
@@ -147,7 +123,7 @@ def _construct_cat_name(chan_str, njet_str=None, flav_str=None):
             )
 
     ret_str = nlep_str
-    for component in [flav_str, chan_str, njet_str]:
+    for component in [chan_str, njet_str]:
         if component is None:
             continue
         ret_str = "_".join([ret_str, component])
@@ -209,6 +185,10 @@ def build_channel_labels_from_ch_cfg(ch_cfg: dict, ch_lst_keys) -> OrderedDict:
     """
     Reverse-engineered from topeft/analysis_processor.py, but implemented here.
 
+    We assume the pkl file has been produced WITHOUT using --split-lep-flavor,
+    so we do NOT expand over lep_flav_lst and we do NOT include lepton flavor
+    in the channel label.
+
     Returns a mapping:
         base_name -> ordered list of full channel labels
 
@@ -222,7 +202,6 @@ def build_channel_labels_from_ch_cfg(ch_cfg: dict, ch_lst_keys) -> OrderedDict:
     for key in ch_lst_keys:
         cat_block = ch_cfg.get(key) or {}
         for base_name, cat_def in cat_block.items():
-            lep_flavs = list(cat_def.get("lep_flav_lst", []) or [None])
             jet_lst = cat_def.get("jet_lst", [])
             labels = out.setdefault(base_name, [])
             seen = seen_by_base.setdefault(base_name, set(labels))
@@ -230,14 +209,14 @@ def build_channel_labels_from_ch_cfg(ch_cfg: dict, ch_lst_keys) -> OrderedDict:
             for jet_cat in jet_lst:
                 jet_key = _jet_cat_to_key(jet_cat)
                 for lep_chan in _iter_channel_defs(cat_def):
-                    for lep_flav in lep_flavs:
-                        label = _construct_cat_name(
-                            lep_chan, njet_str=jet_key, flav_str=lep_flav
-                        )
-                        if label in seen:
-                            continue
-                        seen.add(label)
-                        labels.append(label)
+                    label = _construct_cat_name(
+                        lep_chan,
+                        njet_str=jet_key,
+                    )
+                    if label in seen:
+                        continue
+                    seen.add(label)
+                    labels.append(label)
 
     return out
 
@@ -428,18 +407,32 @@ def main():
     out_meta = copy.deepcopy(meta_cfg)
     for data in region_data:
         yaml_key = data["yaml_key"]
+
+        # Do NOT modify CR_CHAN_DICT: keep it identical to the input YAML.
+        if data["region"] != "SR":
+            out_meta[yaml_key] = meta_cfg.get(yaml_key, {})
+            print(
+                f"\n=== Skipping augmentation for {data['region']} "
+                f"(leaving {yaml_key} unchanged) ==="
+            )
+            continue
+
+        # For SR, augment + apply semantic/post-processing rules.
         updated, labels_added, bases_created = _augment_channel_dict(
             data["proc_map"], out_meta.get(yaml_key, {})
         )
-        if data["region"] == "SR":
-            semantic_groups = _build_semantic_sr_groups(data["proc_map"])
-            for name, chans in semantic_groups.items():
-                updated[name] = chans
-            for obsolete in ("4l_2j", "4l_3j", "4l_4j"):
-                updated.pop(obsolete, None)
-            # Apply higher-level SR post-processing: rename, split, and clean up groups
-            # according to plotting/physics conventions (onZ/offZ, 1b/2b, fwd, etc.).
-            updated = _postprocess_sr_groups(updated)
+
+        semantic_groups = _build_semantic_sr_groups(data["proc_map"])
+        for name, chans in semantic_groups.items():
+            updated[name] = chans
+
+        for obsolete in ("4l_2j", "4l_3j", "4l_4j"):
+            updated.pop(obsolete, None)
+
+        # Apply higher-level SR post-processing: rename and clean up groups
+        # according to plotting/physics conventions (onZ/offZ, fwd, etc.).
+        updated = _postprocess_sr_groups(updated)
+
         out_meta[yaml_key] = updated
 
         proc_count = sum(len(labels) for labels in data["proc_map"].values())
