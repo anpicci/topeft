@@ -113,7 +113,7 @@ def options_allowlist(
     """Return the minimal set of options allowed alongside ``--options``."""
 
     allowlist: set[str] = set()
-    for option in ("--help", "--version"):
+    for option in ("--help", "--version", "--metadata"):
         action = parser._option_string_actions.get(option)
         if action is None:
             continue

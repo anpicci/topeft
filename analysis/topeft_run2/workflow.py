@@ -115,8 +115,7 @@ from .run_analysis_helpers import (
     unique_preserving_order,
     weight_variations_from_metadata,
 )
-from . import scenario_registry
-from .metadata_loader import load_metadata
+from . import metadata_authority
 from .nanoevents_helpers import nanoevents_factory_from_root
 from .systematics_validation import (
     metadata_non_nominal_bases,
@@ -1664,20 +1663,49 @@ class RunWorkflow:
                 )
 
 
-def run_workflow(config: RunConfig) -> None:
+def run_workflow(
+    config: RunConfig,
+    *,
+    metadata_bundle: metadata_authority.MetadataBundle | None = None,
+) -> None:
     """Convenience wrapper mirroring the behaviour of ``run_analysis.py``."""
 
     from topeft.modules.channel_metadata import ChannelMetadataHelper
 
-    metadata_source = config.metadata_path
-    if not metadata_source:
+    scenario_names = unique_preserving_order(config.scenario_names)
+    if not scenario_names:
+        scenario_names = [DEFAULT_SCENARIO_NAME]
+    if len(scenario_names) != 1:
         raise ValueError(
-            "RunConfig.metadata_path is not set. The scenario registry or options profile "
-            "must select a metadata bundle before launching run_workflow."
+            "Multiple scenarios in one run are not supported yet. "
+            "Requested scenarios: %s." % ", ".join(scenario_names)
         )
-    bundle = load_metadata(metadata_source)
-    metadata_file = bundle.path
-    metadata = bundle.payload
+    primary_scenario = scenario_names[0]
+    config.scenario_names = [primary_scenario]
+
+    if metadata_bundle is None:
+        metadata_source = config.metadata_path
+        if not metadata_source:
+            raise ValueError(
+                "RunConfig.metadata_path is not set. Provide a metadata bundle before launching run_workflow."
+            )
+        metadata_bundle = metadata_authority.load_metadata_bundle(
+            metadata_source,
+            primary_scenario,
+            strict=config.channel_groups_strict,
+            required_sections=("channels", "variables"),
+            metadata_source="explicit",
+        )
+
+    if metadata_bundle.scenario.name != primary_scenario:
+        raise ValueError(
+            "Scenario mismatch between RunConfig and metadata bundle: "
+            f"{primary_scenario!r} vs {metadata_bundle.scenario.name!r}."
+        )
+
+    metadata_file = metadata_bundle.metadata_path
+    metadata = metadata_bundle.metadata
+    channels_data = metadata_bundle.channels
     config.metadata_path = str(metadata_file)
 
     metadata_variations = metadata_non_nominal_bases(metadata)
@@ -1706,84 +1734,29 @@ def run_workflow(config: RunConfig) -> None:
         default_prefix=config.prefix, weight_variables=weight_variations
     )
 
-    scenario_names = unique_preserving_order(config.scenario_names)
-    if not scenario_names:
-        scenario_names = [DEFAULT_SCENARIO_NAME]
-    config.scenario_names = list(scenario_names)
-    primary_scenario = config.scenario_names[0]
-
-    from topeft.modules import scenario_groups
-
-    channels_metadata = metadata.get("channels")
-    channels_data = channels_metadata
-    use_canonical_scenario_channels = scenario_groups.is_scenario(primary_scenario)
-    if use_canonical_scenario_channels:
-        if len(config.scenario_names) > 1:
-            logger.warning(
-                "Scenario '%s' from the canonical scenario definitions was requested "
-                "alongside additional scenarios (%s). Only the primary scenario can be "
-                "used for channel selection; ignoring the rest.",
-                primary_scenario,
-                ", ".join(config.scenario_names[1:]),
-            )
-            config.scenario_names = [primary_scenario]
-        canonical_path = Path(
-            scenario_registry.resolve_scenario_path(primary_scenario)
-        ).resolve()
-        metadata_is_custom = Path(metadata_file).resolve() != canonical_path
-        strict_mode = bool(config.channel_groups_strict)
-        try:
-            scenario_kwargs = {"strict": strict_mode}
-            if metadata_is_custom:
-                channels_data = scenario_groups.load_channels_for_scenario(
-                    primary_scenario,
-                    metadata=metadata,
-                    metadata_path=str(metadata_file),
-                    **scenario_kwargs,
-                )
-                logger.info(
-                    "Loaded %d channel groups for scenario '%s' from metadata '%s'.",
-                    len((channels_data or {}).get("groups", {})),
-                    primary_scenario,
-                    metadata_file,
-                )
-            else:
-                channels_data = scenario_groups.load_channels_for_scenario(
-                    primary_scenario, **scenario_kwargs
-                )
-                logger.info(
-                    "Loaded %d canonical channel groups for scenario '%s'.",
-                    len((channels_data or {}).get("groups", {})),
-                    primary_scenario,
-                )
-        except Exception as exc:  # pragma: no cover - defensive guard
-            logger.warning(
-                "Falling back to inline channel metadata for scenario '%s': %s",
-                primary_scenario,
-                exc,
-            )
-            channels_data = channels_metadata
-
     if not channels_data:
         raise ValueError(
-            f"Channel metadata is missing for scenario '{primary_scenario}'. "
-            f"Checked canonical scenario definitions and metadata YAML ({metadata_file})."
+            f"Channel metadata is missing for scenario '{primary_scenario}' "
+            f"(source: {metadata_file})."
         )
 
     channel_helper = ChannelMetadataHelper(channels_data)
 
+    strict_mode = bool(config.channel_groups_strict)
     channel_planner = ChannelPlanner(
         channel_helper,
         skip_sr=config.skip_sr,
         skip_cr=config.skip_cr,
         scenario_names=config.scenario_names,
         channel_groups_strict=strict_mode,
-        warn_on_partial_groups=not (metadata_is_custom and not strict_mode),
+        warn_on_partial_groups=not strict_mode,
     )
 
     var_defs = metadata.get("variables")
     if not isinstance(var_defs, Mapping):
-        raise TypeError("metadata['variables'] must be a mapping of histogram definitions")
+        raise TypeError(
+            "metadata['variables'] must be a mapping of histogram definitions"
+        )
 
     histogram_planner = HistogramPlanner(
         config=config, variable_definitions=var_defs, channel_planner=channel_planner

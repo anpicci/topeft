@@ -2,7 +2,7 @@
 # for mapping high-level scenario names to channel groups. Each group
 # is defined in the canonical analysis/metadata/metadata.yml bundle.
 # Legacy metadata_*.yaml copies are retained only for historical reference.
-# Consumed by topeft.modules.scenario_groups and the Run-2
+# Consumed by analysis.topeft_run2.metadata_authority and the Run-2
 # workflow/datacard tools.
 scenarios:
   TOP_22_006:

@@ -1,26 +1,12 @@
-"""Helpers for loading scenario definitions and channel groups from metadata."""
+"""Helpers for selecting scenario channel groups from in-memory metadata."""
 
 from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from functools import lru_cache
-from pathlib import Path
-from typing import Dict, Mapping, MutableMapping, Sequence, Tuple, Union
-
-import yaml
-
-from topeft.modules.paths import topeft_path
+from typing import Dict, Mapping, MutableMapping, Sequence, Tuple
 
 logger = logging.getLogger(__name__)
-
-SCENARIO_DEFINITIONS_PATH = Path(
-    topeft_path("../analysis/metadata/run2_scenarios.yaml")
-)
-GROUP_METADATA_PATHS = (
-    # Canonical metadata bundle with the full systematics catalog and channel groups.
-    Path(topeft_path("../analysis/metadata/metadata.yml")),
-)
 
 
 @dataclass(frozen=True)
@@ -37,150 +23,117 @@ class ScenarioDefinition:
         return self.group_names
 
 
-def load_scenarios() -> Dict[str, ScenarioDefinition]:
-    """Return the scenarios enumerated in the scenario definition YAML keyed by name."""
+def load_scenarios(payload: Mapping[str, object]) -> Dict[str, ScenarioDefinition]:
+    """Return the scenarios enumerated in the provided payload keyed by name."""
 
-    return dict(_load_scenarios())
+    return dict(_load_scenarios(payload))
 
 
-def resolve_scenario_groups(name: str) -> ScenarioDefinition:
+def resolve_scenario_groups(
+    name: str, scenarios: Mapping[str, ScenarioDefinition]
+) -> ScenarioDefinition:
     """Return the :class:`ScenarioDefinition` matching ``name``."""
 
-    scenarios = load_scenarios()
     try:
         return scenarios[name]
     except KeyError as exc:
         known = ", ".join(sorted(scenarios))
         raise KeyError(
-            f"Scenario {name!r} not found in analysis/metadata/run2_scenarios.yaml. "
+            f"Scenario {name!r} not found in scenario definitions. "
             f"Available scenarios: {known or '<none>'}."
         ) from exc
 
 
-def known_scenarios() -> Tuple[str, ...]:
-    """Return the scenario names enumerated in the scenario definition YAML."""
+def known_scenarios(scenarios: Mapping[str, ScenarioDefinition]) -> Tuple[str, ...]:
+    """Return the scenario names enumerated in the provided definitions."""
 
-    return tuple(_load_scenarios().keys())
+    return tuple(scenarios.keys())
 
 
-def is_scenario(name: str) -> bool:
-    """Return ``True`` when ``name`` is defined in the scenario definition YAML."""
+def is_scenario(
+    name: str, scenarios: Mapping[str, ScenarioDefinition]
+) -> bool:
+    """Return ``True`` when ``name`` is defined in the scenario definitions."""
 
     if not name:
         return False
-    return name in _load_scenarios()
+    return name in scenarios
 
 
 def load_channels_for_scenario(
     name: str,
     *,
-    metadata: Mapping[str, object] | None = None,
-    metadata_path: Union[str, Path, None] = None,
+    metadata: Mapping[str, object],
+    scenarios: Mapping[str, ScenarioDefinition],
     strict: bool = True,
+    metadata_label: str = "<in-memory metadata>",
 ) -> Mapping[str, object]:
-    """Return metadata suitable for :class:`ChannelMetadataHelper`.
+    """Return scenario-scoped channel metadata for ``name`` from *metadata*."""
 
-    The returned mapping follows the ``metadata['channels']`` structure and
-    contains only the groups requested by ``name``.  Scenario information is
-    included so callers can still rely on ``ChannelMetadataHelper`` helpers that
-    need the scenario → group map. Callers should pass either the already-loaded
-    metadata mapping or a metadata path; when neither is provided the canonical
-    canonical bundle is used as a fallback. This ensures that custom runs which
-    inject metadata remain consistent—only users who omit both inputs pay the
-    price of the legacy fallback to the bundled metadata.
-    """
-
-    scenario = resolve_scenario_groups(name)
-    metadata_supplied = metadata is not None or metadata_path is not None
-
-    if metadata is not None:
-        available_groups = _extract_groups_from_payload(
-            metadata, "<in-memory metadata>"
-        )
-        source_label = metadata_path or "provided metadata payload"
-    elif metadata_path is not None:
-        candidate = Path(metadata_path).expanduser()
-        if not candidate.is_absolute():
-            candidate = Path.cwd() / candidate
-        resolved = candidate.resolve()
-        payload = _read_yaml_mapping(resolved)
-        available_groups = _extract_groups_from_payload(payload, str(resolved))
-        source_label = str(resolved)
-    else:
-        logger.warning(
-            "No metadata supplied when resolving scenario '%s'. Falling back to canonical %s; "
-            "custom runs may diverge if metadata differs.",
-            name,
-            ", ".join(str(path) for path in GROUP_METADATA_PATHS),
-        )
-        available_groups = _load_group_metadata()
-        source_label = "canonical metadata"
+    scenario = resolve_scenario_groups(name, scenarios)
+    available_groups = _extract_groups_from_payload(metadata, metadata_label)
 
     if not available_groups:
         raise ValueError(
-            f"No channel groups available for scenario '{name}' (metadata source: {source_label})."
+            f"No channel groups available for scenario '{name}' (metadata source: {metadata_label})."
         )
 
     requested_groups = list(scenario.groups)
+    missing_groups = [
+        group_name for group_name in requested_groups if group_name not in available_groups
+    ]
 
-    if strict:
-        missing_groups = [name for name in requested_groups if name not in available_groups]
-        if missing_groups:
-            raise KeyError(
-                f"Scenario {scenario.name!r} references unknown group(s): {', '.join(missing_groups)} "
-                f"(metadata source: {source_label})."
-            )
-        selected_groups: Dict[str, Mapping[str, object]] = {
-            group_name: available_groups[group_name]
-            for group_name in requested_groups
-        }
-    else:
-        selected_groups = {}
-        missing_groups = []
-        for group_name in requested_groups:
-            metadata_entry = available_groups.get(group_name)
-            if metadata_entry is None:
-                missing_groups.append(group_name)
-                continue
-            if group_name not in selected_groups:
-                selected_groups[group_name] = metadata_entry
+    if strict and missing_groups:
+        raise KeyError(
+            f"Scenario {scenario.name!r} references unknown group(s): {', '.join(missing_groups)} "
+            f"(metadata source: {metadata_label})."
+        )
+
+    selected_groups = {
+        group_name: available_groups[group_name]
+        for group_name in requested_groups
+        if group_name in available_groups
+    }
 
     if not selected_groups:
         raise KeyError(
-            f"No channel groups for scenario '{scenario.name}' found in metadata ({source_label}). "
+            f"No channel groups for scenario '{scenario.name}' found in metadata ({metadata_label}). "
             f"Requested groups: {', '.join(requested_groups) or '<none>'}. "
             f"Available groups: {', '.join(sorted(available_groups)) or '<none>'}."
         )
 
-    if not strict and missing_groups and metadata_supplied:
+    if missing_groups and not strict:
         logger.warning(
             "Scenario '%s': using subset of channel groups from metadata (%s). "
             "Requested: %s | Found: %s | Missing: %s",
             scenario.name,
-            source_label,
+            metadata_label,
             ", ".join(requested_groups),
             ", ".join(selected_groups),
             ", ".join(missing_groups),
         )
 
+    scenario_groups = (
+        tuple(selected_groups.keys()) if missing_groups and not strict else scenario.groups
+    )
     return {
         "groups": selected_groups,
         "scenarios": [
             {
                 "name": scenario.name,
-                "groups": scenario.groups,
+                "groups": scenario_groups,
             }
         ],
     }
 
 
-@lru_cache(maxsize=1)
-def _load_scenarios() -> Mapping[str, ScenarioDefinition]:
-    payload = _read_yaml_mapping(SCENARIO_DEFINITIONS_PATH)
+def _load_scenarios(
+    payload: Mapping[str, object],
+) -> Mapping[str, ScenarioDefinition]:
     scenarios_section = payload.get("scenarios") or {}
     if not isinstance(scenarios_section, Mapping):
         raise TypeError(
-            f"'scenarios' in {SCENARIO_DEFINITIONS_PATH} must be a mapping of scenario definitions"
+            "'scenarios' must be a mapping of scenario definitions"
         )
 
     scenarios: MutableMapping[str, ScenarioDefinition] = {}
@@ -224,30 +177,6 @@ def _normalize_group_names(group_names: Sequence[object]) -> Tuple[str, ...]:
     return tuple(ordered)
 
 
-@lru_cache(maxsize=1)
-def _load_group_metadata() -> Dict[str, Mapping[str, object]]:
-    """Return the canonical channel-group metadata keyed by group name."""
-
-    groups: Dict[str, Mapping[str, object]] = {}
-    for metadata_path in GROUP_METADATA_PATHS:
-        payload = _read_yaml_mapping(metadata_path)
-        for group_name, metadata in _extract_groups_from_payload(
-            payload, str(metadata_path)
-        ).items():
-            groups.setdefault(group_name, metadata)
-    return groups
-
-
-def _read_yaml_mapping(path: Path) -> Mapping[str, object]:
-    """Return ``yaml.safe_load`` output ensuring it is a mapping."""
-
-    with path.open("r", encoding="utf-8") as handle:
-        payload = yaml.safe_load(handle) or {}
-    if not isinstance(payload, Mapping):
-        raise TypeError(f"{path} must contain a YAML mapping at the top level")
-    return payload
-
-
 def _extract_groups_from_payload(
     payload: Mapping[str, object], source: str
 ) -> Dict[str, Mapping[str, object]]:
@@ -269,3 +198,13 @@ def _extract_groups_from_payload(
             )
         groups[group_name] = metadata
     return groups
+
+
+__all__ = [
+    "ScenarioDefinition",
+    "load_scenarios",
+    "resolve_scenario_groups",
+    "known_scenarios",
+    "is_scenario",
+    "load_channels_for_scenario",
+]

@@ -19,7 +19,7 @@ from typing import Sequence
 
 import topcoffea
 
-from analysis.topeft_run2.metadata_authority import resolve_effective_metadata_path
+from analysis.topeft_run2 import metadata_authority
 
 
 def _verify_numpy_pandas_abi() -> None:
@@ -192,7 +192,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help=(
             "Path to the metadata YAML bundle. When supplied it overrides the "
-            "metadata from the scenario registry. Cannot be used with --options."
+            "metadata from the options YAML (if provided)."
         ),
     )
     parser.add_argument(
@@ -311,7 +311,8 @@ def build_parser() -> argparse.ArgumentParser:
             "YAML file that specifies command-line options. Accepts either"
             " 'path.yml' for the default profile or 'path.yml:profile' to select"
             " a specific profile. When provided, CLI flags are ignored in favour"
-            " of the YAML configuration. Passing other config flags is an error."
+            " of the YAML configuration (except --metadata, which overrides). "
+            "Passing other config flags is an error."
         ),
     )
     parser.set_defaults(negotiate_manager_port=True)
@@ -331,13 +332,8 @@ def _ensure_supported_executor(value: str) -> None:
 def _apply_scenario_metadata_defaults(
     config: RunConfig,
     metadata_cli: str | None,
-) -> tuple[str, str, str]:
-    """Resolve the effective scenario and metadata selection.
-
-    Returns:
-        Tuple containing the scenario name, metadata path, and a provenance
-        label describing the metadata source.
-    """
+) -> tuple[str, metadata_authority.MetadataBundle, str]:
+    """Resolve the effective scenario and metadata selection."""
 
     scenario_names = config.scenario_names or ["TOP_22_006"]
     config.scenario_names = scenario_names
@@ -351,13 +347,19 @@ def _apply_scenario_metadata_defaults(
 
     scenario_name = scenario_names[0]
     metadata_options = config.metadata_path if config.options_path else None
-    metadata_path, provenance = resolve_effective_metadata_path(
-        scenario_name=scenario_name,
-        metadata_cli=metadata_cli,
-        metadata_options=metadata_options,
+    metadata_path, provenance = metadata_authority.select_metadata_source(
+        metadata_cli,
+        metadata_options,
     )
-    config.metadata_path = metadata_path
-    return scenario_name, metadata_path, provenance
+    bundle = metadata_authority.load_metadata_bundle(
+        metadata_path,
+        scenario_name,
+        strict=config.channel_groups_strict,
+        required_sections=("channels", "variables"),
+        metadata_source=provenance,
+    )
+    config.metadata_path = str(bundle.metadata_path)
+    return scenario_name, bundle, provenance
 
 
 def _argument_supplied(
@@ -414,11 +416,11 @@ def main(argv: Sequence[str] | None = None) -> None:
 
     metadata_cli_value = getattr(args, "metadata", None) if metadata_from_cli else None
     try:
-        scenario_name, metadata_path, metadata_provenance = _apply_scenario_metadata_defaults(
+        scenario_name, metadata_bundle, metadata_provenance = _apply_scenario_metadata_defaults(
             config,
             metadata_cli_value,
         )
-    except (ValueError, FileNotFoundError) as exc:
+    except (ValueError, FileNotFoundError, KeyError, TypeError) as exc:
         message = str(exc)
         if message:
             logger.error("%s", message)
@@ -453,7 +455,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     logger.info(
         "Using scenario '%s' with metadata '%s' (source: %s)",
         scenario_name,
-        metadata_path,
+        metadata_bundle.metadata_path,
         metadata_provenance,
     )
 
@@ -473,7 +475,7 @@ def main(argv: Sequence[str] | None = None) -> None:
             extra_conda=["pyyaml"],
         )
 
-    run_workflow(config)
+    run_workflow(config, metadata_bundle=metadata_bundle)
 
 
 if __name__ == "__main__":
