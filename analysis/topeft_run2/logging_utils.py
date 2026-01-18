@@ -68,6 +68,7 @@ def configure_logging(
     effective_level_name = (
         "DEBUG" if (normalized_level == "DEBUG" or dev_debug_enabled) else normalized_level
     )
+
     mute_project_loggers = normalized_level == "NONE"
     project_level = (
         _level_name_to_numeric(effective_level_name)

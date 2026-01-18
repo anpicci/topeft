@@ -2723,39 +2723,38 @@ class AnalysisProcessor(processor.ProcessorABC):
         channel_entries: List[Tuple[str, str, ak.Array, np.ndarray]] = []
         for lep_flav in lep_flav_iter:
             logger.info("Selection keys: %s", selections.names)
-            logger.info("Channel def list: %r", chan_def_lst)
+            logger.info("Channel def list: %r", self._channel_dict["chan_def_lst"])
             logger.info("Channel bit '%s' present? %s", lep_chan, lep_chan in selections.names)
             cuts_lst = [self.appregion, lep_chan]
+            flav_ch = None
+            njet_ch = None
             if isData:
                 cuts_lst.append("is_good_lumi")
             if self._split_by_lepton_flavor:
+                flav_ch = lep_flav
                 cuts_lst.append(lep_flav)
-            if jet_req:
+            if dense_axis_name != "njets":
+                njet_ch = jet_req
                 cuts_lst.append(jet_req)
 
-            ch_name = base_channel_label
-            if self._split_by_lepton_flavor and lep_flav:
-                ch_name = build_channel_label(
-                    chan_def_lst,
-                    jet_selection=jet_req,
-                    lep_flav=lep_flav,
-                )
-
-            if base_channel_label != self.channel:
-                if not str(self.channel).startswith(str(base_channel_label)):
+            ch_name, base_ch_name = self._build_channel_names(
+                lep_chan, njet_ch, flav_ch
+            )
+            if base_ch_name != self.channel:
+                if not str(self.channel).startswith(str(base_ch_name)):
                     continue
 
             cut_pass_info = {cut: selections.all(cut) for cut in cuts_lst}
             logger.debug(
                 "Filling histograms for channel '%s' (base '%s') with cuts %s",
                 ch_name,
-                base_channel_label,
+                base_ch_name,
                 cut_pass_info,
             )
             logger.info(
                 "Filling histograms for canonical channel '%s' (base '%s', jet_selection=%r, app=%s)",
                 ch_name,
-                base_channel_label,
+                base_ch_name,
                 jet_req,
                 self.appregion,
             )
@@ -2772,15 +2771,14 @@ class AnalysisProcessor(processor.ProcessorABC):
             else:
                 mask_numpy = np.asarray(all_cuts_mask)
 
-            channel_entries.append((ch_name, base_channel_label, all_cuts_mask, mask_numpy))
+            channel_entries.append((ch_name, base_ch_name, all_cuts_mask, mask_numpy))
 
         if is_nominal_variation and channel_entries:
             region_store = self._accumulator.get("region_yields")
             for ch_name, base_ch_name, all_cuts_mask, mask_numpy in channel_entries:
-                region_channel_label = ch_name
                 _log_region_yields(
                     dataset=dataset.dataset,
-                    clean_channel=region_channel_label,
+                    clean_channel=base_ch_name,
                     application=self.appregion,
                     region_key=self.appregion,
                     region_mask=all_cuts_mask,
@@ -2789,7 +2787,7 @@ class AnalysisProcessor(processor.ProcessorABC):
                 if region_store is not None:
                     region_key = (
                         dataset.dataset,
-                        region_channel_label,
+                        base_ch_name,
                         self.appregion,
                         "nominal",
                     )
