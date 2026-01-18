@@ -721,9 +721,9 @@ def test_ptbl_pairing_handles_missing_btags(monkeypatch):
         def fill(self, **kwargs):
             self.fills.append(kwargs)
 
-    lep_chan = processor._channel_dict["chan_def_lst"][0]
-    hist_channel, _ = processor._build_channel_names(
-        lep_chan, processor._channel_dict["jet_selection"], None
+    chan_def_lst = processor._channel_dict["chan_def_lst"]
+    hist_channel = ap.build_channel_label(
+        chan_def_lst, jet_selection=processor._channel_dict["jet_selection"]
     )
     histkey = processor._build_histogram_key(
         processor._var, hist_channel, dataset.dataset, "nominal", application=processor._appregion
@@ -852,10 +852,9 @@ def _capture_dense_axis_values(monkeypatch, var_name):
     ) = _build_histogram_variation_state(monkeypatch)
     processor._var = var_name
     processor._var_def = var_name
-    ch_name, _ = processor._build_channel_names(
-        processor._channel_dict["chan_def_lst"][0],
-        processor._channel_dict["jet_selection"] if var_name != "njets" else None,
-        None,
+    ch_name = ap.build_channel_label(
+        processor._channel_dict["chan_def_lst"],
+        jet_selection=processor._channel_dict["jet_selection"],
     )
     histkey = processor._build_histogram_key(
         var_name,
