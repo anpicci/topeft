@@ -6,7 +6,13 @@ example:
 --newHist2 would tell it the second pkl file is using the new histEFT based on scikithep hist
 '''
 import pickle
-from coffea.hist import Bin
+# coffea.hist is optional; defer failure until rebinning is requested.
+try:
+    from coffea.hist import Bin
+    _COFFEA_HIST_IMPORT_ERROR = None
+except ModuleNotFoundError as exc:
+    Bin = None
+    _COFFEA_HIST_IMPORT_ERROR = exc
 import gzip
 import numpy as np
 np.seterr(divide='ignore', invalid='ignore')
@@ -29,6 +35,15 @@ get_tc_param = GetParam(topcoffea_path("params/params.json"))
 
 BINNING = {}
 DEFAULT_SCENARIO_NAME = "TOP_22_006"
+
+
+def _require_coffea_hist_bin():
+    if Bin is None:
+        raise ModuleNotFoundError(
+            "coffea.hist is required for comp.py histogram rebinning. "
+            "Install coffea with hist support to use this functionality."
+        ) from _COFFEA_HIST_IMPORT_ERROR
+    return Bin
 
 
 def _set_binning(metadata_path: str | None):
@@ -159,12 +174,14 @@ def comp(fin1, fin2, hists1, hists2, newHist1, newHist2, tolerance):
                             if 'njets' not in hname and not newHist1:
                                 v1norebin = h1_syst.values(overflow='all')[()]
                                 bins = binning[hname]
-                                v1rebin = h1_syst.rebin(hname, Bin(hname, h1_syst.axis(hname).label, bins))
+                                bin_cls = _require_coffea_hist_bin()
+                                v1rebin = h1_syst.rebin(hname, bin_cls(hname, h1_syst.axis(hname).label, bins))
                                 v1 = v1rebin.values(overflow='all')[()]
                                 #v1norebin = h1_syst.rebin(hname, Bin(hname, h1_syst.axis(hname).label, bins)).values(overflow='all')[()]
                             if 'njets' not in hname and not newHist2:
                                 bins = binning[hname]
-                                v2 = h2_syst.rebin(hname, Bin(hname, h2_syst.axis(hname).label, bins)).values(overflow='all')[()]
+                                bin_cls = _require_coffea_hist_bin()
+                                v2 = h2_syst.rebin(hname, bin_cls(hname, h2_syst.axis(hname).label, bins)).values(overflow='all')[()]
                             if old_hist and 'data' not in proc:
                                 v2 = v2*lumi
                                 #print(f'Scaled by {lumi}')
@@ -317,10 +334,12 @@ def comp(fin1, fin2, hists1, hists2, newHist1, newHist2, tolerance):
                             # Rebin old histogram to match new variable binning
                             if 'njets' not in hname and not newHist1:
                                 bins = binning[hname]
-                                v1 = h1_syst.rebin(hname, Bin(hname, h1_syst.axis(hname).label, bins)).values(overflow='all')[()]
+                                bin_cls = _require_coffea_hist_bin()
+                                v1 = h1_syst.rebin(hname, bin_cls(hname, h1_syst.axis(hname).label, bins)).values(overflow='all')[()]
                             if 'njets' not in hname and not newHist2:
                                 bins = binning[hname]
-                                v2 = h2_syst.rebin(hname, Bin(hname, h2_syst.axis(hname).label, bins)).values(overflow='all')[()]
+                                bin_cls = _require_coffea_hist_bin()
+                                v2 = h2_syst.rebin(hname, bin_cls(hname, h2_syst.axis(hname).label, bins)).values(overflow='all')[()]
                             if old_hist and 'data' not in proc:
                                 v2 = v2*lumi
                                 #print(f'Scaled {proc} {chan} {appl} {syst} by {lumi}')
