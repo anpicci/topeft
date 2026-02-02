@@ -1631,6 +1631,15 @@ def run_workflow(
             f"{primary_scenario!r} vs {metadata_bundle.scenario.name!r}."
         )
 
+    if len(config.scenario_names) > 1:
+        logger.warning(
+            "Multiple scenarios were requested (%s); using primary scenario '%s' for channel selection.",
+            ", ".join(config.scenario_names),
+            primary_scenario,
+        )
+        config.scenario_names = [primary_scenario]
+
+    primary_scenario = metadata_bundle.scenario.name
     metadata_file = metadata_bundle.metadata_path
     metadata = metadata_bundle.metadata
     channels_data = metadata_bundle.channels
@@ -1660,55 +1669,6 @@ def run_workflow(
     weight_variations = weight_variations_from_metadata(metadata, DEFAULT_WEIGHT_VARIATIONS)
     sample_loader = SampleLoader(default_prefix=config.prefix, weight_variables=weight_variations)
 
-    # Optional: support canonical scenario channel definitions (and custom metadata overlays)
-    # when the scenario name matches one of the built-in scenario definitions.
-    metadata_is_custom = False
-    try:
-        from topeft.modules import scenario_groups
-        from . import scenario_registry  # local module in analysis.topeft_run2
-
-        use_canonical_scenario_channels = scenario_groups.is_scenario(primary_scenario)
-        if use_canonical_scenario_channels:
-            canonical_path = Path(scenario_registry.resolve_scenario_path(primary_scenario)).resolve()
-            metadata_is_custom = Path(metadata_file).resolve() != canonical_path
-            strict_mode = bool(config.channel_groups_strict)
-
-            scenario_kwargs = {"strict": strict_mode}
-            if metadata_is_custom:
-                # Custom metadata file: use its channels section as an overlay/authority
-                # for scenario selection, but interpret group selection via scenario rules.
-                channels_data = scenario_groups.load_channels_for_scenario(
-                    primary_scenario,
-                    metadata=metadata,
-                    metadata_path=str(metadata_file),
-                    **scenario_kwargs,
-                )
-                logger.info(
-                    "Loaded %d channel groups for scenario '%s' from metadata '%s'.",
-                    len((channels_data or {}).get("groups", {})),
-                    primary_scenario,
-                    metadata_file,
-                )
-            else:
-                channels_data = scenario_groups.load_channels_for_scenario(primary_scenario, **scenario_kwargs)
-                logger.info(
-                    "Loaded %d canonical channel groups for scenario '%s'.",
-                    len((channels_data or {}).get("groups", {})),
-                    primary_scenario,
-                )
-
-            if len(config.scenario_names) > 1:
-                logger.warning(
-                    "Scenario '%s' is canonical; only the primary scenario can be used for channel selection. "
-                    "Ignoring additional scenarios: %s",
-                    primary_scenario,
-                    ", ".join(config.scenario_names[1:]),
-                )
-                config.scenario_names = [primary_scenario]
-    except Exception:
-        # Best-effort: if scenario modules are unavailable or raise, keep channels_data from metadata_bundle.
-        metadata_is_custom = False
-
     if not channels_data:
         raise ValueError(
             f"Channel metadata is missing for scenario '{primary_scenario}' (source: {metadata_file})."
@@ -1723,7 +1683,7 @@ def run_workflow(
         skip_cr=config.skip_cr,
         scenario_names=config.scenario_names,
         channel_groups_strict=strict_mode,
-        warn_on_partial_groups=not (metadata_is_custom and not strict_mode),
+        warn_on_partial_groups=True,
     )
 
     var_defs = metadata.get("variables")
