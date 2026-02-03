@@ -5,11 +5,8 @@ from __future__ import annotations
 import argparse
 from typing import Dict, Iterable, List, Mapping, Sequence
 
+from analysis.topeft_run2 import metadata_authority
 from topeft.modules.channel_metadata import ChannelGroup, ChannelMetadataHelper
-from topeft.modules.scenario_groups import (
-    load_channels_for_scenario,
-    load_scenarios,
-)
 
 DEFAULT_SAMPLE_SCENARIOS = (
     "TOP_22_006",
@@ -52,7 +49,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
 
 def main(argv: Sequence[str] | None = None) -> None:
     args = parse_args(argv)
-    scenario_map = load_scenarios()
+    scenario_map = metadata_authority.load_scenarios()
 
     if not scenario_map:
         raise SystemExit("No scenarios are defined in analysis/metadata/run2_scenarios.yaml.")
@@ -62,8 +59,14 @@ def main(argv: Sequence[str] | None = None) -> None:
     channels_cache: Dict[str, List[str]] = {}
 
     for scenario_name in selected_names:
-        metadata = load_channels_for_scenario(scenario_name)
-        helper = ChannelMetadataHelper(metadata)
+        bundle = metadata_authority.load_metadata_bundle(
+            None,
+            scenario_name,
+            strict=True,
+            required_sections=("channels",),
+            metadata_source="default",
+        )
+        helper = ChannelMetadataHelper(bundle.channels)
         sr_channels = collect_datacard_channels(helper, scenario_name)
         scenario_def = scenario_map[scenario_name]
         summaries.append(

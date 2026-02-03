@@ -2,7 +2,6 @@ from pathlib import Path
 
 from analysis.topeft_run2 import metadata_authority
 from analysis.topeft_run2 import scenario_registry
-from topeft.modules import scenario_groups
 
 
 def _write_minimal_metadata(tmp_path: Path) -> Path:
@@ -27,11 +26,7 @@ def test_no_fallback_when_metadata_is_explicit(tmp_path, monkeypatch) -> None:
     def fail_registry(*args, **kwargs):
         raise AssertionError("Scenario registry should not be consulted")
 
-    def fail_scenario_groups(*args, **kwargs):
-        raise AssertionError("Scenario groups should not be consulted")
-
     monkeypatch.setattr(scenario_registry, "resolve_scenario_choice", fail_registry)
-    monkeypatch.setattr(scenario_groups, "load_channels_for_scenario", fail_scenario_groups)
 
     bundle = metadata_authority.load_metadata_bundle(
         str(metadata_path),
