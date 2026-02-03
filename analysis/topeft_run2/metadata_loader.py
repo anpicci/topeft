@@ -1,20 +1,17 @@
-"""Shared helpers for loading metadata bundles once per execution.
+"""Deprecated helpers for loading metadata bundles.
 
-This module is the canonical entry point for reading metadata YAML files.
-Callers elsewhere in the codebase should inject metadata loaded here instead
-of reopening YAML files directly.
+Callers should migrate to ``analysis.topeft_run2.metadata_authority``. This
+module remains as a thin, deprecated delegator for backwards compatibility.
 """
 
 from __future__ import annotations
 
-import logging
+import warnings
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping, MutableMapping, Optional, Sequence
 
-import yaml
-
-logger = logging.getLogger(__name__)
+from analysis.topeft_run2 import metadata_authority
 
 
 @dataclass(frozen=True)
@@ -31,17 +28,15 @@ class MetadataBundle:
 def resolve_metadata_path(metadata_path: str | Path) -> Path:
     """Return the absolute path to ``metadata_path`` ensuring it exists."""
 
+    warnings.warn(
+        "analysis.topeft_run2.metadata_loader.resolve_metadata_path is deprecated; "
+        "use analysis.topeft_run2.metadata_authority.resolve_metadata_path instead.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
     if not metadata_path:
         raise ValueError("metadata_path must be provided")
-    candidate = Path(metadata_path).expanduser()
-    if not candidate.is_absolute():
-        candidate = Path.cwd() / candidate
-    try:
-        return candidate.resolve(strict=True)
-    except FileNotFoundError as exc:  # pragma: no cover - filesystem error details
-        raise FileNotFoundError(
-            f"Metadata file '{candidate}' could not be found."
-        ) from exc
+    return metadata_authority.resolve_metadata_path(metadata_path)
 
 
 def _ensure_mapping(payload: object, description: str) -> MutableMapping[str, Any]:
@@ -81,27 +76,19 @@ def load_metadata(
         KeyError: when a required section is missing.
     """
 
-    resolved_path = resolve_metadata_path(metadata_path)
-    try:
-        with resolved_path.open("r", encoding="utf-8") as handle:
-            payload = yaml.safe_load(handle) or {}
-    except yaml.YAMLError as exc:  # pragma: no cover - depends on parser internals
-        raise RuntimeError(
-            f"Failed to parse metadata YAML '{resolved_path}': {exc}"
-        ) from exc
-
-    mapping_payload = _ensure_mapping(payload, str(resolved_path))
-
-    sections = tuple(required_sections or ())
-    for section in sections:
-        if not isinstance(mapping_payload.get(section), Mapping):
-            raise KeyError(
-                f"metadata[{section!r}] is required but missing or not a mapping in '{resolved_path}'."
-            )
-
+    warnings.warn(
+        "analysis.topeft_run2.metadata_loader.load_metadata is deprecated; "
+        "use analysis.topeft_run2.metadata_authority.load_metadata_payload instead.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    resolved_path, mapping_payload = metadata_authority.load_metadata_payload(
+        metadata_path,
+        required_sections=required_sections,
+    )
     return MetadataBundle(
         path=resolved_path,
-        payload=mapping_payload,
+        payload=_ensure_mapping(mapping_payload, str(resolved_path)),
         channels=_extract_section(mapping_payload, "channels"),
         systematics=_extract_section(mapping_payload, "systematics"),
         variables=_extract_section(mapping_payload, "variables"),

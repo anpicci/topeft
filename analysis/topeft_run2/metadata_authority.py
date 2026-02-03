@@ -9,8 +9,6 @@ from typing import Any, Mapping, MutableMapping, Optional, Sequence, Tuple
 
 import yaml
 
-from analysis.topeft_run2 import metadata_loader
-
 
 DEFAULT_METADATA_RELATIVE = Path("analysis/metadata/metadata.yml")
 SCENARIOS_RELATIVE = Path("analysis/metadata/run2_scenarios.yaml")
@@ -35,6 +33,14 @@ class MetadataBundle:
     scenario: ScenarioDefinition
     scenarios: Mapping[str, ScenarioDefinition]
     provenance: Tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class ScenarioResolution:
+    """Describes the default metadata path lookup for a scenario."""
+
+    metadata_path: Path
+    known_scenarios: Tuple[str, ...]
 
 
 def get_repo_root() -> Path:
@@ -63,6 +69,13 @@ def resolve_metadata_path(path: str | Path | None) -> Path:
         ) from exc
 
 
+def _prepare_metadata_path(path: str | Path) -> Path:
+    candidate = Path(path).expanduser()
+    if not candidate.is_absolute():
+        candidate = get_repo_root() / candidate
+    return candidate
+
+
 def _normalize_optional_string(value: Optional[str]) -> Optional[str]:
     if value is None:
         return None
@@ -73,17 +86,19 @@ def _normalize_optional_string(value: Optional[str]) -> Optional[str]:
 def select_metadata_source(
     metadata_cli: Optional[str],
     metadata_options: Optional[str],
-) -> Tuple[Optional[str], str]:
+    default_path: str | Path | None = None,
+) -> Tuple[Path, str]:
     """Return the preferred metadata path and its source label."""
 
     metadata_cli = _normalize_optional_string(metadata_cli)
     metadata_options = _normalize_optional_string(metadata_options)
 
     if metadata_cli:
-        return metadata_cli, "cli"
+        return _prepare_metadata_path(metadata_cli), "cli"
     if metadata_options:
-        return metadata_options, "options"
-    return None, "default"
+        return _prepare_metadata_path(metadata_options), "options"
+    fallback = default_path if default_path is not None else DEFAULT_METADATA_RELATIVE
+    return _prepare_metadata_path(fallback), "default"
 
 
 def golden_json_for_year(metadata: Mapping[str, object], year: str) -> str:
@@ -110,6 +125,19 @@ def golden_json_for_year(metadata: Mapping[str, object], year: str) -> str:
     return topcoffea_path(str(candidate))
 
 
+def load_metadata_payload(
+    metadata_path: str | Path | None,
+    *,
+    required_sections: Sequence[str] | None = None,
+) -> Tuple[Path, MutableMapping[str, Any]]:
+    """Return the resolved metadata path and parsed payload."""
+
+    resolved_path = resolve_metadata_path(metadata_path)
+    payload = _read_yaml_mapping(resolved_path)
+    _ensure_required_sections(payload, required_sections, resolved_path)
+    return resolved_path, payload
+
+
 def load_metadata_bundle(
     metadata_path: str | Path | None,
     scenario: str | None,
@@ -125,24 +153,16 @@ def load_metadata_bundle(
         raise ValueError("scenario must be provided to load metadata")
 
     scenarios = load_scenarios()
-    try:
-        scenario_def = scenarios[scenario_name]
-    except KeyError as exc:
-        known = ", ".join(sorted(scenarios)) or "<none>"
-        raise ValueError(
-            f"Unknown scenario '{scenario_name}'. Known scenarios: {known}"
-        ) from exc
 
-    resolved_metadata_path = resolve_metadata_path(metadata_path)
-    bundle = metadata_loader.load_metadata(
-        resolved_metadata_path,
+    resolved_metadata_path, metadata = load_metadata_payload(
+        metadata_path,
         required_sections=required_sections,
     )
-    metadata = bundle.payload
 
-    channels = _select_channels_for_scenario(
+    channels = resolve_channels_for_scenario(
+        scenario_name,
         metadata,
-        scenario_def,
+        scenarios=scenarios,
         strict=strict,
         source_label=str(resolved_metadata_path),
     )
@@ -167,6 +187,50 @@ def load_scenarios() -> Mapping[str, ScenarioDefinition]:
     """Return the scenario definitions from run2_scenarios.yaml."""
 
     return dict(_load_scenarios())
+
+
+def known_scenarios() -> Tuple[str, ...]:
+    """Return scenario names enumerated in run2_scenarios.yaml."""
+
+    return tuple(load_scenarios().keys())
+
+
+def resolve_scenario_choice(name: str) -> ScenarioResolution:
+    """Return the default metadata path and known names for ``name``."""
+
+    scenario_name = _normalize_optional_string(name)
+    if not scenario_name:
+        raise ValueError("scenario name must be provided")
+
+    scenarios = load_scenarios()
+    _resolve_scenario_definition(scenario_name, scenarios)
+    return ScenarioResolution(
+        metadata_path=resolve_metadata_path(None),
+        known_scenarios=tuple(scenarios.keys()),
+    )
+
+
+def resolve_channels_for_scenario(
+    scenario_name: str,
+    metadata: Mapping[str, object],
+    *,
+    scenarios: Mapping[str, ScenarioDefinition] | None = None,
+    strict: bool = True,
+    source_label: str | None = None,
+    overlays: Mapping[str, object] | None = None,
+) -> Mapping[str, object]:
+    """Return scenario-scoped channel metadata for ``scenario_name``."""
+
+    scenarios = scenarios or load_scenarios()
+    scenario_def = _resolve_scenario_definition(scenario_name, scenarios)
+    merged_metadata = _apply_overlays(metadata, overlays)
+    label = source_label or "metadata"
+    return _select_channels_for_scenario(
+        merged_metadata,
+        scenario_def,
+        strict=strict,
+        source_label=label,
+    )
 
 
 @lru_cache(maxsize=1)
@@ -213,8 +277,11 @@ def _load_scenarios() -> Mapping[str, ScenarioDefinition]:
 
 
 def _read_yaml_mapping(path: Path) -> MutableMapping[str, Any]:
-    with path.open("r", encoding="utf-8") as handle:
-        payload = yaml.safe_load(handle) or {}
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            payload = yaml.safe_load(handle) or {}
+    except yaml.YAMLError as exc:  # pragma: no cover - depends on parser internals
+        raise RuntimeError(f"Failed to parse YAML '{path}': {exc}") from exc
     if not isinstance(payload, MutableMapping):
         raise TypeError(f"{path} must contain a YAML mapping at the top level")
     return payload
@@ -232,6 +299,49 @@ def _normalize_group_names(group_names: Sequence[object]) -> Tuple[str, ...]:
         seen.add(stripped)
         ordered.append(stripped)
     return tuple(ordered)
+
+
+def _resolve_scenario_definition(
+    scenario_name: str,
+    scenarios: Mapping[str, ScenarioDefinition],
+) -> ScenarioDefinition:
+    try:
+        return scenarios[scenario_name]
+    except KeyError as exc:
+        known = ", ".join(sorted(scenarios)) or "<none>"
+        raise ValueError(
+            f"Unknown scenario '{scenario_name}'. Known scenarios: {known}"
+        ) from exc
+
+
+def _ensure_required_sections(
+    payload: MutableMapping[str, Any],
+    required_sections: Sequence[str] | None,
+    source: Path,
+) -> None:
+    for section in tuple(required_sections or ()):
+        if not isinstance(payload.get(section), Mapping):
+            raise KeyError(
+                f"metadata[{section!r}] is required but missing or not a mapping in '{source}'."
+            )
+
+
+def _apply_overlays(
+    payload: Mapping[str, object],
+    overlays: Mapping[str, object] | None,
+) -> Mapping[str, object]:
+    if not overlays:
+        return payload
+    merged: MutableMapping[str, object] = dict(payload)
+    for key, value in overlays.items():
+        base = merged.get(key)
+        if isinstance(base, Mapping) and isinstance(value, Mapping):
+            merged_section = dict(base)
+            merged_section.update(value)
+            merged[key] = merged_section
+        else:
+            merged[key] = value
+    return merged
 
 
 def _extract_groups_from_payload(
@@ -329,12 +439,17 @@ def _select_channels_for_scenario(
 __all__ = [
     "DEFAULT_METADATA_RELATIVE",
     "SCENARIOS_RELATIVE",
+    "ScenarioResolution",
     "MetadataBundle",
     "ScenarioDefinition",
     "get_repo_root",
     "resolve_metadata_path",
     "select_metadata_source",
     "golden_json_for_year",
+    "load_metadata_payload",
     "load_metadata_bundle",
     "load_scenarios",
+    "known_scenarios",
+    "resolve_scenario_choice",
+    "resolve_channels_for_scenario",
 ]

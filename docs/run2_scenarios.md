@@ -9,17 +9,16 @@ Two layers work together:
   evaluate. The `ChannelMetadataHelper` from `topeft.modules.channel_metadata`
   reads this file and exposes the groups by name.
 * **Scenarios** – Named combinations of one or more groups. The mapping lives in
-`analysis/metadata/run2_scenarios.yaml` and is loaded by
-`topeft/modules/scenario_groups.py`. The CLI and quickstart helpers look
-  up scenarios through `analysis/topeft_run2/scenario_registry.py`, which
-  returns the canonical metadata bundle (`analysis/metadata/metadata.yml`)
-  and tracks the names exposed to `--scenario` and YAML profiles.
+  `analysis/metadata/run2_scenarios.yaml` and is loaded by
+  `analysis/topeft_run2/metadata_authority.py`. The CLI and quickstart helpers
+  resolve scenarios and metadata paths through `metadata_authority`, which is
+  the single authority for `--scenario` and YAML profiles.
 
 When `run_analysis.py` or `full_run.sh` receives a `--scenario` value, the
 workflow:
 
-1. Resolves the scenario through `scenario_registry.py` to find the metadata
-   document.
+1. Resolves the scenario through `metadata_authority.py` to find the metadata
+   document and scenario definition.
 2. Loads the groups referenced in `run2_scenarios.yaml`.
 3. Passes the fully expanded channel list to `ChannelMetadataHelper`, which
    feeds `ChannelPlanner` and `HistogramPlanner`.
@@ -84,9 +83,9 @@ for convenience.
    `analysis/metadata/run2_scenarios.yaml` to add or modify the scenario name
    and its group list. Keep names descriptive and avoid overlapping the
    canonical identifiers above unless you intend to redefine them.
-3. **Expose the scenario to the CLI** – If the metadata bundle changed, update
-   `analysis/topeft_run2/scenario_registry.py` so the new metadata path is
-   discoverable via `--scenario`.
+3. **Expose the scenario to the CLI** – No registry updates are required.
+   `metadata_authority` reads `run2_scenarios.yaml` directly and the metadata
+   bundle is selected via `--metadata` or YAML options.
 4. **Validate** – Run the Step‑5 validators from `scratch/` to confirm the new
    scenario is internally consistent:
 

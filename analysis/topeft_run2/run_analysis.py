@@ -350,6 +350,7 @@ def _apply_scenario_metadata_defaults(
     metadata_path, provenance = metadata_authority.select_metadata_source(
         metadata_cli,
         metadata_options,
+        metadata_authority.DEFAULT_METADATA_RELATIVE,
     )
     bundle = metadata_authority.load_metadata_bundle(
         metadata_path,

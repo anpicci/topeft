@@ -158,7 +158,6 @@ def _install_coffea_stub() -> None:
 _install_coffea_stub()
 
 from analysis.topeft_run2 import metadata_authority
-from analysis.topeft_run2 import metadata_loader
 from analysis.topeft_run2 import datacards_post_processing as dpp
 from analysis.topeft_run2 import make_cr_and_sr_plots as plots
 from analysis.topeft_run2 import comp as comp_module
@@ -176,10 +175,13 @@ def test_load_metadata_prefers_custom_file(tmp_path):
         encoding="utf-8",
     )
 
-    bundle = metadata_loader.load_metadata(metadata_file)
+    resolved_path, payload = metadata_authority.load_metadata_payload(
+        metadata_file,
+        required_sections=("channels", "variables"),
+    )
 
-    assert bundle.path == metadata_file.resolve()
-    assert "foo" in (bundle.variables or {})
+    assert resolved_path == metadata_file.resolve()
+    assert "foo" in (payload.get("variables") or {})
 
 
 def test_scenario_channels_use_provided_metadata(tmp_path):

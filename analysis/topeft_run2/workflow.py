@@ -104,8 +104,6 @@ def _merge_region_yields(
             target[key] = np.asarray(current, dtype=float) + arr
 
 
-_topcoffea_paths = _import_topcoffea_submodule("paths")
-topcoffea_path = _topcoffea_paths.topcoffea_path
 topcoffea_utils = _import_topcoffea_submodule("utils")
 
 from .run_analysis_helpers import (  # noqa: E402
@@ -1024,12 +1022,14 @@ class RunWorkflow:
         if year_key in cache:
             return cache[year_key]
         try:
-            golden_json_relpath = golden_jsons[year_key]
+            golden_json_path = metadata_authority.golden_json_for_year(
+                {"golden_jsons": golden_jsons},
+                year_key,
+            )
         except KeyError as exc:
             raise ValueError(
                 f"No golden JSON configured for data year '{year_key}' in {self._metadata_path}."
             ) from exc
-        golden_json_path = topcoffea_path(golden_json_relpath)
         if not os.path.exists(golden_json_path):
             raise FileNotFoundError(
                 f"Golden JSON file '{golden_json_path}' for year '{year_key}' was not found."

@@ -1,7 +1,6 @@
 from pathlib import Path
 
 from analysis.topeft_run2 import metadata_authority
-from analysis.topeft_run2 import scenario_registry
 
 
 def _write_minimal_metadata(tmp_path: Path) -> Path:
@@ -22,11 +21,14 @@ def _write_minimal_metadata(tmp_path: Path) -> Path:
 
 def test_no_fallback_when_metadata_is_explicit(tmp_path, monkeypatch) -> None:
     metadata_path = _write_minimal_metadata(tmp_path)
+    original_resolver = metadata_authority.resolve_metadata_path
+    captured = {}
 
-    def fail_registry(*args, **kwargs):
-        raise AssertionError("Scenario registry should not be consulted")
+    def spy_resolver(path):
+        captured["path"] = path
+        return original_resolver(path)
 
-    monkeypatch.setattr(scenario_registry, "resolve_scenario_choice", fail_registry)
+    monkeypatch.setattr(metadata_authority, "resolve_metadata_path", spy_resolver)
 
     bundle = metadata_authority.load_metadata_bundle(
         str(metadata_path),
@@ -36,6 +38,7 @@ def test_no_fallback_when_metadata_is_explicit(tmp_path, monkeypatch) -> None:
         metadata_source="explicit",
     )
 
+    assert captured["path"] == str(metadata_path)
     assert bundle.metadata_path == metadata_path.resolve()
 
 
