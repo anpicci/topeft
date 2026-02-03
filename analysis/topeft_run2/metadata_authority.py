@@ -153,6 +153,7 @@ def load_metadata_bundle(
         raise ValueError("scenario must be provided to load metadata")
 
     scenarios = load_scenarios()
+    scenario_def = _resolve_scenario_definition(scenario_name, scenarios)
 
     resolved_metadata_path, metadata = load_metadata_payload(
         metadata_path,
