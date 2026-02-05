@@ -1,10 +1,10 @@
 from analysis.topeft_run2 import metadata_authority
 
 
-def test_cli_metadata_wins_over_options() -> None:
+def test_cli_metadata_selected_when_no_options() -> None:
     selected, source = metadata_authority.select_metadata_source(
         "cli.yml",
-        "options.yml",
+        None,
         metadata_authority.DEFAULT_METADATA_RELATIVE,
     )
 

@@ -74,7 +74,7 @@ Options files allow you to keep executor choices, region toggles, and metadata o
 - `profiles` – named overlays that activate with a `:profile` suffix (for example `configs/fullR2_run.yml:cr`). If only one profile exists, it is applied automatically. Profiles commonly toggle `scenarios`, `regions`, or `executor` values.
 - Top-level keys – any values placed alongside `defaults` or `profiles` are merged last. Use them sparingly for ad-hoc tweaks you do not want to codify in a profile.
 
-When `--options` is provided, the YAML becomes the single source of truth: CLI flags such as `--executor` or `--summary-verbosity` are ignored unless you explicitly pass them to override the merged result. The [`run_analysis.py` CLI and YAML reference](run_analysis_cli_reference.md) lists every supported key, while the [Run analysis configuration flow](run_analysis_configuration.md) explains how the builder resolves types and validates inputs.
+When `--options` is provided, the YAML becomes the single source of truth: CLI flags (including `--metadata`) are rejected to keep the run reproducible. Remove `--options` if you need ad-hoc CLI overrides. The [`run_analysis.py` CLI and YAML reference](run_analysis_cli_reference.md) lists every supported key, while the [Run analysis configuration flow](run_analysis_configuration.md) explains how the builder resolves types and validates inputs.
 
 ### Common sections to edit
 
@@ -88,6 +88,6 @@ When `--options` is provided, the YAML becomes the single source of truth: CLI f
 1. Copy the nearest preset (for example `cp analysis/topeft_run2/configs/fullR2_run.yml analysis/topeft_run2/configs/fullR2_run_taskvine.yml`).
 2. Update `defaults.executor` to `taskvine` and add TaskVine resource hints if you want a dedicated distributed profile; keep a separate profile for local futures runs if needed.
 3. Clone `analysis/metadata/metadata.yml` to a tracked location and reference it via the `metadata` key when testing new variables or systematics.
-4. Check the merged configuration with `python run_analysis.py ... --options <file>:<profile> --summary-verbosity full --dry-run` to confirm the chosen samples, channels, and executor before launching a long run.
+4. Check the merged configuration with `python run_analysis.py ... --options <file>:<profile> --dry-run` to confirm the chosen samples and channels before launching a long run. If you need a verbose summary, set `summary_verbosity: full` inside the YAML profile or run without `--options`.
 
 Keeping these edits in YAML ensures collaborators can reproduce the exact configuration without hunting through older notebooks or shell history.
