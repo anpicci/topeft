@@ -17,3 +17,6 @@ dependencies:
   - pip
   - pip:
       - dynamic_data_reduction>=2025.12.1
+variables:
+  PYTHONPATH: ""
+  PYTHONNOUSERSITE: "1"
