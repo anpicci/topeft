@@ -191,8 +191,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--metadata",
         default=None,
         help=(
-            "Path to the metadata YAML bundle. When supplied it overrides the "
-            "metadata from the options YAML (if provided)."
+            "Path to the metadata YAML bundle. Cannot be combined with --options."
         ),
     )
     parser.add_argument(
@@ -311,8 +310,8 @@ def build_parser() -> argparse.ArgumentParser:
             "YAML file that specifies command-line options. Accepts either"
             " 'path.yml' for the default profile or 'path.yml:profile' to select"
             " a specific profile. When provided, CLI flags are ignored in favour"
-            " of the YAML configuration (except --metadata, which overrides). "
-            "Passing other config flags is an error."
+            " of the YAML configuration. --options and --metadata are mutually "
+            "exclusive, and passing other config flags is an error."
         ),
     )
     parser.set_defaults(negotiate_manager_port=True)
@@ -416,6 +415,8 @@ def main(argv: Sequence[str] | None = None) -> None:
         parser.error(str(exc))
 
     metadata_cli_value = getattr(args, "metadata", None) if metadata_from_cli else None
+    if config.options_path:
+        metadata_cli_value = None
     try:
         scenario_name, metadata_bundle, metadata_provenance = _apply_scenario_metadata_defaults(
             config,

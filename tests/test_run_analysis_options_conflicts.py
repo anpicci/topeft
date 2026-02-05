@@ -18,7 +18,7 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def test_options_with_metadata_errors() -> None:
+def test_options_with_metadata_errors(capsys: pytest.CaptureFixture[str]) -> None:
     parser = _build_parser()
     allowlist = options_allowlist(parser)
     argv = ["--options", "opts.yml", "--metadata", "meta.yml"]
@@ -27,6 +27,10 @@ def test_options_with_metadata_errors() -> None:
     with pytest.raises(SystemExit) as excinfo:
         enforce_options_single_source(parser, argv, allowlist)
     assert excinfo.value.code == 2
+    captured = capsys.readouterr()
+    assert "--metadata" in captured.err
+    assert "--options" in captured.err
+    assert "cannot be used" in captured.err
 
 
 def test_options_with_executor_errors() -> None:

@@ -113,7 +113,8 @@ def options_allowlist(
     """Return the minimal set of options allowed alongside ``--options``."""
 
     allowlist: set[str] = set()
-    for option in ("--help", "--version", "--metadata"):
+    # --metadata is intentionally excluded; options YAML is authoritative.
+    for option in ("--help", "--version"):
         action = parser._option_string_actions.get(option)
         if action is None:
             continue
@@ -144,6 +145,11 @@ def enforce_options_single_source(
     """Raise an argparse error if ``--options`` conflicts with CLI flags."""
 
     conflicts = find_options_conflicts(argv, parser, allowlist)
+    if "--metadata" in conflicts:
+        parser.error(
+            "--metadata cannot be used with --options. "
+            "Remove --metadata or drop --options to use CLI metadata."
+        )
     if conflicts:
         parser.error(
             "--options was provided, so options YAML is the single source of truth. "

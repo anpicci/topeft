@@ -12,9 +12,10 @@ helpers consume these values.
 
 * **Precedence** – When `--options` is supplied, the selected YAML profile is the
   single source of truth.  Every CLI flag listed below is ignored so the run
-  stays reproducible.  Drop `--options` when you want to experiment with
-  temporary command-line overrides.  `RunConfigBuilder` performs this check
-  before reading CLI attributes.【F:analysis/topeft_run2/run_analysis_helpers.py†L347-L415】
+  stays reproducible, and `--options` cannot be combined with `--metadata`.
+  Drop `--options` when you want to experiment with temporary command-line
+  overrides.  `RunConfigBuilder` performs this check before reading CLI
+  attributes.【F:analysis/topeft_run2/run_analysis_helpers.py†L347-L415】
 * **YAML profiles** – Options files support three top-level sections:
   * `defaults`: a mapping applied unconditionally.
   * `profiles`: a mapping of profile names to overrides.  Select one with
@@ -31,9 +32,9 @@ helpers consume these values.
   needed.【F:analysis/topeft_run2/run_analysis_helpers.py†L103-L306】
 * **Metadata defaults** – CLI runs resolve the selected `--scenario` through
   `analysis/topeft_run2/metadata_authority.py`, which owns scenario lookup and
-  metadata path selection. Options profiles can still override the metadata
-  path via the `metadata`/`metadata_path` keys when backward compatibility is
-  needed.【F:analysis/topeft_run2/run_analysis.py†L320-L412】【F:analysis/topeft_run2/metadata_authority.py†L1-L200】
+  metadata path selection. Options profiles can override the metadata path via
+  the `metadata`/`metadata_path` keys when backward compatibility is needed,
+  but CLI `--metadata` is rejected when `--options` is in use.【F:analysis/topeft_run2/run_analysis.py†L320-L412】【F:analysis/topeft_run2/metadata_authority.py†L1-L200】
 
 ## Command-line flags and YAML keys
 
@@ -74,7 +75,7 @@ backwards compatibility when writing YAML.
 | `--resource-monitor` | `resource_monitor` | optional string | `None` | TaskVine resource monitor setting (for example `measure`).  Use `none`/`null` to defer to the executor default.【F:analysis/topeft_run2/run_analysis.py†L236-L261】【F:analysis/topeft_run2/run_analysis_helpers.py†L103-L210】【F:analysis/topeft_run2/run_analysis_helpers.py†L240-L338】【F:analysis/topeft_run2/workflow.py†L604-L682】 |
 | `--resources-mode` | `resources_mode` | optional string | `None` | TaskVine resources-mode override passed directly to the executor when set.【F:analysis/topeft_run2/run_analysis.py†L236-L261】【F:analysis/topeft_run2/run_analysis_helpers.py†L240-L338】【F:analysis/topeft_run2/workflow.py†L604-L682】 |
 | `--environment-file` | `environment_file` | optional string | `"cached"` | Environment tarball shipped with distributed executors.  The default resolves the newest cached archive without rebuilding.  Use `auto` to trigger `remote_environment` packaging, provide a path explicitly, or disable shipping with keywords such as `none`/`false`.【F:analysis/topeft_run2/run_analysis.py†L188-L223】【F:analysis/topeft_run2/run_analysis_helpers.py†L124-L175】【F:analysis/topeft_run2/run_analysis_helpers.py†L240-L338】【F:analysis/topeft_run2/workflow.py†L586-L682】 |
-| `--options` | *(YAML only)* | string | `None` | Selects the YAML options file and optional profile.  When set, CLI flags (including `--scenario`) are ignored; combining `--options` with `--scenario` now raises an error to keep runs reproducible.【F:analysis/topeft_run2/run_analysis.py†L198-L420】【F:analysis/topeft_run2/run_analysis_helpers.py†L319-L415】 |
+| `--options` | *(YAML only)* | string | `None` | Selects the YAML options file and optional profile.  When set, CLI flags are ignored; combining `--options` with config flags such as `--scenario` or `--metadata` raises an error to keep runs reproducible.【F:analysis/topeft_run2/run_analysis.py†L198-L420】【F:analysis/topeft_run2/run_analysis_helpers.py†L319-L415】 |
 
 ### YAML-only helper keys
 
