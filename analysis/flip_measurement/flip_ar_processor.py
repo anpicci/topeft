@@ -18,8 +18,7 @@ import topcoffea
 
 from topeft.modules.runner_output import SUMMARY_KEY, materialise_tuple_dict
 from topeft.modules.topcoffea_imports import require_module
-
-from analysis.topeft_run2 import metadata_authority
+from topeft.modules import metadata_access
 
 def _inject_module_exports(module):
     names = getattr(module, "__all__", None)
@@ -137,12 +136,11 @@ class AnalysisProcessor(processor.ProcessorABC):
     def _metadata_payload(self):
         if self._metadata is not None:
             return self._metadata
-        bundle = metadata_authority.load_metadata_bundle(
-            self._metadata_path,
-            self._scenario_name,
+        bundle = metadata_access.load_metadata_bundle_for_processor(
+            metadata_path=self._metadata_path,
+            scenario_name=self._scenario_name,
             strict=True,
             required_sections=("channels",),
-            metadata_source="explicit" if self._metadata_path else "default",
         )
         self._metadata = bundle.metadata
         self._metadata_path = str(bundle.metadata_path)
@@ -250,9 +248,7 @@ class AnalysisProcessor(processor.ProcessorABC):
 
         # Get the lumi mask for data
         metadata = self._metadata_payload()
-        golden_json_path = metadata_authority.golden_json_for_year(
-            metadata, str(year)
-        )
+        golden_json_path = metadata_access.golden_json_for_year(metadata, str(year))
         lumi_mask = LumiMask(golden_json_path)(events.run,events.luminosityBlock)
 
 
