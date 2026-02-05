@@ -12,12 +12,14 @@ resolve `topcoffea.modules` without manual `PYTHONPATH` tweaks.  Once the import
 works, walk through the standard refresh steps:
 
 To avoid accidental NumPy ABI breakage from CVMFS/system site-packages, the
-environment now clears `PYTHONPATH` and sets `PYTHONNOUSERSITE=1` (plus
-`PYTHONSAFEPATH=1` on Python versions that honor it). A quick diagnosis is:
+environment now clears `PYTHONPATH` and sets `PYTHONNOUSERSITE=1`. A quick
+diagnosis is:
 
        python -c "import numpy; print(numpy.__file__)"
 
 This should point inside the active conda env, not `/usr/lib*` or `/cvmfs`.
+The regression guardrail lives in `tests/test_numpy_abi_import.py` and enforces
+this path-based check with extra diagnostics if it fails.
 
 1. Recreate the local Conda environment so the lock file matches the new pins::
 

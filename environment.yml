@@ -20,4 +20,3 @@ dependencies:
 variables:
   PYTHONPATH: ""
   PYTHONNOUSERSITE: "1"
-  PYTHONSAFEPATH: "1"
