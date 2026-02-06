@@ -12,11 +12,8 @@ import mplhep as hep
 import hist
 import topcoffea
 
-from topeft.modules.paths import topeft_path
 from topeft.modules.topcoffea_imports import require_script
-from analysis.topeft_run2.metadata_loader import load_metadata
-
-_CANONICAL_METADATA_PATH = topeft_path("analysis/metadata/metadata.yml")
+from analysis.topeft_run2 import metadata_authority
 _AXES_INFO = None
 
 from topeft.modules.yield_tools import YieldTools
@@ -1365,12 +1362,17 @@ def main():
     )
     args = parser.parse_args()
 
-    metadata_file = args.metadata or _CANONICAL_METADATA_PATH
-    bundle = load_metadata(metadata_file, required_sections=("variables",))
-    _set_axes_info(bundle.variables or {})
+    bundle = metadata_authority.load_metadata_bundle(
+        args.metadata,
+        "TOP_22_006",
+        strict=True,
+        required_sections=("channels", "variables"),
+        metadata_source="explicit" if args.metadata else "default",
+    )
+    _set_axes_info(bundle.metadata.get("variables") or {})
     if args.metadata is None:
         print(
-            "No metadata override provided; using canonical analysis/metadata/metadata.yml for binning."
+            "No metadata override provided; using default metadata for binning."
         )
 
     # Whether or not to unit norm the plots

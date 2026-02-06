@@ -75,14 +75,15 @@ root::
    When an options file is supplied, the YAML becomes the single source of truth.
    Drop ``--options`` if you need to experiment with ad-hoc CLI flags; otherwise
    bake the desired configuration into the file before launching the workflow.
+   ``--metadata`` is mutually exclusive with ``--options`` and must be provided
+   inside the YAML when needed.
 
    !!! note "CLI vs YAML precedence"
        ``--options`` tells ``RunConfigBuilder`` to merge ``defaults``, the selected
-       profile, and any top-level keys before evaluating CLI flags. Workload knobs
-       such as ``--executor``, ``--chunksize``, and ``--nchunks`` are still honoured
-       so you can downscale a run without cloning the YAML, but most configuration
-       values (metadata, scenarios, region toggles, etc.) must be provided directly
-       in the options file. ``full_run.sh`` applies the same rules when it selects
+       profile, and any top-level keys before reading CLI values. When ``--options``
+       is present, other CLI flags are rejected to keep the run reproducible, so
+       *all* configuration (including executor choice and workload knobs) must be
+       encoded in the YAML. ``full_run.sh`` applies the same guard when it selects
        the Run‑2 presets on your behalf.
 
 3. **Configuration normalization** – the builder converts all inputs into a
@@ -122,6 +123,9 @@ While the dedicated [`run_analysis.py` CLI reference](run_analysis_cli_reference
 lists every flag in detail (path and default values, grouped by category), the
 most important Run‑2 knobs are summarised below:
 
+When `--options` is supplied, these CLI flags must be encoded in the YAML file;
+the parser rejects them to preserve reproducibility.
+
 * **Scenario selection** – Use `--scenario NAME` to enable a metadata scenario
   (for example `TOP_22_006`). Repeat the flag to combine scenarios. When a YAML
   profile is supplied via `--options path.yml[:profile]`, the profile becomes
@@ -129,12 +133,12 @@ most important Run‑2 knobs are summarised below:
   enforces the mutual exclusion rule so that misconfigured runs fail fast.
 * **YAML profiles (`--options`)** – Apply reusable presets such as
   `analysis/topeft_run2/configs/fullR2_run.yml:sr`. `RunConfigBuilder` merges
-  `defaults`, the selected profile, then any top‑level overrides. Explicit CLI
-  flags still win for key workload controls like `--executor`, `--chunksize`,
-  and `--nchunks`, so you can tweak those without cloning the YAML file.
-  `full_run.sh` automatically selects the Run‑2 SR/CR profiles when you request
-  Run‑2 eras without `--scenario/--options`; for Run‑3 runs you typically pass a
-  dedicated Run‑3 YAML.
+  `defaults`, the selected profile, then any top‑level overrides. When
+  `--options` is provided, other CLI flags are rejected, so set workload controls
+  like `executor`, `chunksize`, and `nchunks` directly in the YAML. `full_run.sh`
+  automatically selects the Run‑2 SR/CR profiles when you request Run‑2 eras
+  without `--scenario/--options`; for Run‑3 runs you typically pass a dedicated
+  Run‑3 YAML.
 * **Executor choice** – `--executor taskvine|futures|iterative` selects the
   backend. TaskVine is recommended for distributed campaigns, `futures` for
   local multi‑core runs, and `iterative` for tiny smoke tests. The wrapper
@@ -145,9 +149,8 @@ most important Run‑2 knobs are summarised below:
   `--futures-prefetch`, `--futures-retries`, and `--futures-retry-wait` to
   control task pipelining and retry behaviour.
 * **Region toggles** – `--skip-sr`, `--skip-cr`, and `--do-systs` mirror the
-  settings embedded in the Run‑2 YAML profiles. They can be set from the CLI or
-  encoded in the profile depending on how reproducible you need the launch to
-  be.
+  settings embedded in the Run‑2 YAML profiles. Set them from the CLI for
+  ad-hoc runs, or encode them in the profile when using `--options`.
 
 For a comprehensive, flag-by-flag breakdown (including defaults and YAML keys),
 refer to [`run_analysis_cli_reference.md`](run_analysis_cli_reference.md).
@@ -175,13 +178,12 @@ python analysis/topeft_run2/run_analysis.py \
     input_samples/cfgs/mc_signal_samples_NDSkim.cfg,\
     input_samples/cfgs/mc_background_samples_NDSkim.cfg,\
     input_samples/cfgs/data_samples_NDSkim.cfg \
-    --options analysis/topeft_run2/configs/fullR2_run.yml:sr \
-    --executor futures --nworkers 8 --chunksize 50000
+    --options analysis/topeft_run2/configs/fullR2_run.yml:sr
 ```
 
 The first example relies purely on CLI flags; the second mirrors a typical
 `full_run.sh` command, showing how the YAML preset controls scenarios, metadata,
-and SR/CR toggles while still allowing executor overrides.
+and SR/CR toggles without relying on additional CLI overrides.
 
 ### Common pitfalls
 
@@ -189,11 +191,9 @@ and SR/CR toggles while still allowing executor overrides.
   wrapper (`full_run.sh`) detects `--options` in the passthrough arguments it
   aborts early so that the guard remains enforced.
 * If a YAML profile sets `executor: taskvine` but you want to run locally,
-  override it with `--executor futures`. The CLI now normalizes the value before
-  `RunConfigBuilder` runs so that explicit CLI choices always win.
-* `--chunksize` and `--nchunks` follow the same precedence rules: YAML provides
-  defaults, but CLI overrides are reapplied after merging so that experimental
-  runs can shrink their workload without editing the options file.
+  edit the YAML (or run without `--options`) and set `executor: futures`.
+* `--chunksize` and `--nchunks` must be specified in the YAML when `--options`
+  is active; CLI overrides are rejected to keep configuration reproducible.
 
 ## Systematic handling
 

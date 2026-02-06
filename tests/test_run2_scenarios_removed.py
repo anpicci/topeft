@@ -9,4 +9,5 @@ def test_run2_scenarios_import_raises_runtime_error():
 
     message = str(excinfo.value)
     assert "run2_scenarios" in message
-    assert "scenario_groups" in message
+    assert "metadata_authority" in message
+    assert "metadata_access" in message

@@ -444,7 +444,7 @@ main() {
 
   if [[ "$scenario_specified" == false ]]; then
     # Default scenarios mirror the canonical Run-2/Run-3 bundles wired through
-    # analysis/topeft_run2/scenario_registry.py.
+    # analysis/topeft_run2/metadata_authority.py.
     if [[ "$has_run2" == true ]]; then
       scenario_args=("TOP_22_006")
     elif [[ "$has_run3" == true ]]; then

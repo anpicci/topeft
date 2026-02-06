@@ -23,20 +23,20 @@ task.
 
 from __future__ import annotations
 
-import importlib
 import getpass
 import gzip
+import importlib
 import json
 import logging
 import os
-import numpy as np
 import tempfile
 import time
 import warnings
+from dataclasses import asdict, dataclass, field
 from functools import partial
 from pathlib import Path
-from dataclasses import asdict, dataclass, field
 from typing import (
+    TYPE_CHECKING,
     Any,
     Dict,
     Iterable,
@@ -48,14 +48,15 @@ from typing import (
     Sequence,
     Set,
     Tuple,
-    TYPE_CHECKING,
 )
 
+import numpy as np
 import topcoffea
 
 from topeft.modules.channel_metadata import build_channel_label
-from topeft.modules.logging_config import dev_debug_enabled
 from topeft.modules.executor import (
+    _is_port_allocation_error,
+    _select_manager_port,
     build_futures_executor,
     build_taskvine_args,
     futures_runner_overrides,
@@ -63,9 +64,8 @@ from topeft.modules.executor import (
     parse_port_range,
     resolve_environment_file,
     taskvine_log_configurator,
-    _select_manager_port,
-    _is_port_allocation_error,
 )
+from topeft.modules.logging_config import dev_debug_enabled
 from topeft.modules.runner_output import normalise_runner_output, tuple_dict_stats
 
 logger = logging.getLogger(__name__)
@@ -104,21 +104,18 @@ def _merge_region_yields(
             target[key] = np.asarray(current, dtype=float) + arr
 
 
-_topcoffea_paths = _import_topcoffea_submodule("paths")
-topcoffea_path = _topcoffea_paths.topcoffea_path
 topcoffea_utils = _import_topcoffea_submodule("utils")
 
-from .run_analysis_helpers import (
+from .run_analysis_helpers import (  # noqa: E402
     DEFAULT_WEIGHT_VARIATIONS,
     RunConfig,
     SampleLoader,
     unique_preserving_order,
     weight_variations_from_metadata,
 )
-from . import scenario_registry
-from .metadata_loader import load_metadata
-from .nanoevents_helpers import nanoevents_factory_from_root
-from .systematics_validation import (
+from . import metadata_authority  # noqa: E402
+from .nanoevents_helpers import nanoevents_factory_from_root  # noqa: E402
+from .systematics_validation import (  # noqa: E402
     metadata_non_nominal_bases,
     validate_histogram_plan_systematics,
 )
@@ -371,10 +368,7 @@ class ChannelPlanner:
 
         normalized = list(chan_def_lst)
         if "offz_split" in set(active_features) and "3l_offZ" in normalized:
-            normalized = [
-                "3l_offZ_split" if entry == "3l_offZ" else entry
-                for entry in normalized
-            ]
+            normalized = ["3l_offZ_split" if entry == "3l_offZ" else entry for entry in normalized]
         return normalized
 
 
@@ -495,9 +489,7 @@ class HistogramPlanner:
 
         available_systematics_by_sample_type = {
             "mc": systematics_helper.names_by_type("mc", include_systematics=self._config.do_systs),
-            "data": systematics_helper.names_by_type(
-                "data", include_systematics=self._config.do_systs
-            ),
+            "data": systematics_helper.names_by_type("data", include_systematics=self._config.do_systs),
         }
 
         tasks: List[HistogramTask] = []
@@ -649,21 +641,13 @@ class HistogramPlanner:
             variations_tuple = tuple(variations)
             for variation in variations_tuple:
                 syst_label = (
-                    (group_descriptor.name, variation.name)
-                    if len(variations_tuple) > 1
-                    else variation.name
+                    (group_descriptor.name, variation.name) if len(variations_tuple) > 1 else variation.name
                 )
                 base_entry = (variable, clean_channel, application, sample, syst_label)
                 key_entries: List[Tuple[Any, ...]] = [base_entry]
                 if flavored_channel_names:
                     key_entries.extend(
-                        (
-                            variable,
-                            flavored_name,
-                            application,
-                            sample,
-                            syst_label,
-                        )
+                        (variable, flavored_name, application, sample, syst_label)
                         for flavored_name in flavored_channel_names
                     )
                 hist_keys[variation.name] = tuple(key_entries)
@@ -722,9 +706,7 @@ class ExecutorFactory:
         runner_fields = set(getattr(processor.Runner, "__dataclass_fields__", {}))
         runner_kwargs: Dict[str, Any] = {}
         if "nanoevents_factory" in runner_fields:
-            runner_kwargs["nanoevents_factory"] = partial(
-                nanoevents_factory_from_root, mode="numpy"
-            )
+            runner_kwargs["nanoevents_factory"] = partial(nanoevents_factory_from_root, mode="numpy")
 
         if executor == "futures":
             workers = self._config.nworkers or 1
@@ -810,7 +792,6 @@ class ExecutorFactory:
             extra_input_files=extra_input_files,
         )
 
-    
     def _distributed_staging_dir(self, executor: str) -> Path:
         configured = getattr(self._config, "scratch_dir", None)
         if configured:
@@ -820,11 +801,7 @@ class ExecutorFactory:
             if base_dir:
                 staging = Path(base_dir).expanduser()
             else:
-                staging = (
-                    Path(tempfile.gettempdir())
-                    / "topeft"
-                    / self._manager_name_base(executor)
-                )
+                staging = Path(tempfile.gettempdir()) / "topeft" / self._manager_name_base(executor)
         staging.mkdir(parents=True, exist_ok=True)
         return staging
 
@@ -874,6 +851,7 @@ class ExecutorFactory:
             candidates.add("analysis_processor.py")
 
         return sorted(candidates)
+
 
 class RunWorkflow:
     def __init__(
@@ -926,10 +904,7 @@ class RunWorkflow:
             return
 
         unique_labels = unique_preserving_order(combination_labels)
-        logger.info(
-            "[futures] submitting histogram task for %s",
-            ", ".join(unique_labels),
-        )
+        logger.info("[futures] submitting histogram task for %s", ", ".join(unique_labels))
 
     def _log_variation_recap(
         self,
@@ -950,11 +925,7 @@ class RunWorkflow:
             return unique_preserving_order(normalized)
 
         def _flatten(entry_key: str) -> List[str]:
-            return _unique_strings(
-                value
-                for entry in summary_entries
-                for value in entry.get(entry_key, ())
-            )
+            return _unique_strings(value for entry in summary_entries for value in entry.get(entry_key, ()))
 
         def _format(values: Sequence[str]) -> str:
             return "[" + ", ".join(values) + "]" if values else "[]"
@@ -971,21 +942,13 @@ class RunWorkflow:
             )
             return
 
-        requested_variations = _unique_strings(
-            entry.get("requested_name") for entry in summary_entries
-        )
-        object_variations = _unique_strings(
-            entry.get("object_variation") for entry in summary_entries
-        )
-        histogram_labels = _unique_strings(
-            entry.get("histogram_label") for entry in summary_entries
-        )
+        requested_variations = _unique_strings(entry.get("requested_name") for entry in summary_entries)
+        object_variations = _unique_strings(entry.get("object_variation") for entry in summary_entries)
+        histogram_labels = _unique_strings(entry.get("histogram_label") for entry in summary_entries)
         executed_weight_variations = _flatten("executed_weight_variations")
         requested_weight_variations = _flatten("requested_weight_variations")
         skipped_weights = [
-            weight
-            for weight in requested_weight_variations
-            if weight not in set(executed_weight_variations)
+            weight for weight in requested_weight_variations if weight not in set(executed_weight_variations)
         ]
 
         logger.info(
@@ -1059,12 +1022,14 @@ class RunWorkflow:
         if year_key in cache:
             return cache[year_key]
         try:
-            golden_json_relpath = golden_jsons[year_key]
+            golden_json_path = metadata_authority.golden_json_for_year(
+                {"golden_jsons": golden_jsons},
+                year_key,
+            )
         except KeyError as exc:
             raise ValueError(
                 f"No golden JSON configured for data year '{year_key}' in {self._metadata_path}."
             ) from exc
-        golden_json_path = topcoffea_path(golden_json_relpath)
         if not os.path.exists(golden_json_path):
             raise FileNotFoundError(
                 f"Golden JSON file '{golden_json_path}' for year '{year_key}' was not found."
@@ -1107,7 +1072,9 @@ class RunWorkflow:
             ecut_threshold=ecut_threshold,
         )
         if not processors:
-            logger.warning("TaskVine executor selected but no histogram tasks were constructed; returning empty output.")
+            logger.warning(
+                "TaskVine executor selected but no histogram tasks were constructed; returning empty output."
+            )
             return {}
 
         logger.info("[taskvine] Launching CoffeaDynamicDataReduction with %d processors", len(processors))
@@ -1254,6 +1221,7 @@ class RunWorkflow:
         if last_error is not None:
             raise RuntimeError(message) from last_error
         raise RuntimeError(message)
+
     def run(self) -> None:
         from topeft.modules.systematics import SystematicsHelper
         from . import analysis_processor
@@ -1271,9 +1239,7 @@ class RunWorkflow:
 
         golden_jsons = self._metadata.get("golden_jsons", {}) if self._metadata else {}
         if not golden_jsons:
-            raise ValueError(
-                f"golden_jsons mapping missing from metadata ({self._metadata_path})."
-            )
+            raise ValueError(f"golden_jsons mapping missing from metadata ({self._metadata_path}).")
 
         var_defs = self._metadata.get("variables")
         if not isinstance(var_defs, Mapping):
@@ -1312,9 +1278,7 @@ class RunWorkflow:
         self._emit_histogram_summary(histogram_plan)
 
         if self._config.pretend:
-            logger.info(
-                "Pretend mode active; validated configuration and histogram plan without executing."
-            )
+            logger.info("Pretend mode active; validated configuration and histogram plan without executing.")
             return
 
         self._ensure_wilson_coefficients(samplesdict)
@@ -1403,16 +1367,10 @@ class RunWorkflow:
 
             attempt = 0
             max_retries = 0
-            if (
-                self._config.executor == "futures"
-                and self._config.futures_retries
-            ):
+            if self._config.executor == "futures" and self._config.futures_retries:
                 max_retries = max(int(self._config.futures_retries), 0)
             retry_wait = 0.0
-            if (
-                self._config.executor == "futures"
-                and self._config.futures_retry_wait is not None
-            ):
+            if self._config.executor == "futures" and self._config.futures_retry_wait is not None:
                 retry_wait = max(float(self._config.futures_retry_wait), 0.0)
 
             while True:
@@ -1439,9 +1397,8 @@ class RunWorkflow:
                     continue
                 else:
                     break
-            summary_payload = out.pop(
-                analysis_processor.AnalysisProcessor.VARIATION_SUMMARY_KEY, ()
-            )
+
+            summary_payload = out.pop(analysis_processor.AnalysisProcessor.VARIATION_SUMMARY_KEY, ())
             region_yields_payload = out.pop("region_yields", None)
             if region_yields_payload:
                 _merge_region_yields(merged_region_yields, region_yields_payload)
@@ -1479,9 +1436,7 @@ class RunWorkflow:
             return
 
         samples = unique_preserving_order(str(entry.sample) for entry in plan.summary)
-        channel_pairs = unique_preserving_order(
-            (str(entry.channel), str(entry.application)) for entry in plan.summary
-        )
+        channel_pairs = unique_preserving_order((str(entry.channel), str(entry.application)) for entry in plan.summary)
         variables = unique_preserving_order(str(entry.variable) for entry in plan.summary)
         systematics = unique_preserving_order(str(entry.systematic) for entry in plan.summary)
 
@@ -1502,13 +1457,7 @@ class RunWorkflow:
 
         headers = ("Sample", "Channel", "Variable", "Application", "Systematic")
         rows = [
-            (
-                str(entry.sample),
-                str(entry.channel),
-                str(entry.variable),
-                str(entry.application),
-                str(entry.systematic),
-            )
+            (str(entry.sample), str(entry.channel), str(entry.variable), str(entry.application), str(entry.systematic))
             for entry in plan.summary
         ]
 
@@ -1548,9 +1497,7 @@ class RunWorkflow:
             )
         if self._config.do_renormfact_envelope:
             if not self._config.do_systs:
-                raise Exception(
-                    "Error: Cannot specify do_renormfact_envelope if we are not including systematics."
-                )
+                raise Exception("Error: Cannot specify do_renormfact_envelope if we are not including systematics.")
             if not self._config.do_np:
                 raise Exception(
                     "Error: Cannot specify do_renormfact_envelope if we have not already done the integration across the appl axis that occurs in the data driven estimator step."
@@ -1580,15 +1527,10 @@ class RunWorkflow:
                 )
 
     def _ensure_weight_variations(self, samplesdict: Mapping[str, Mapping[str, Any]]) -> None:
-        missing_default_variations = [
-            variation
-            for variation in DEFAULT_WEIGHT_VARIATIONS
-            if variation not in self._weight_variations
-        ]
+        missing_default_variations = [variation for variation in DEFAULT_WEIGHT_VARIATIONS if variation not in self._weight_variations]
         if missing_default_variations:
             warnings.warn(
-                "Default sum-of-weights variations will not be processed: "
-                + ", ".join(missing_default_variations),
+                "Default sum-of-weights variations will not be processed: " + ", ".join(missing_default_variations),
                 RuntimeWarning,
             )
 
@@ -1626,7 +1568,7 @@ class RunWorkflow:
         if isinstance(serialised_output, Mapping):
             total_bins, filled_bins = tuple_dict_stats(serialised_output)
             if total_bins:
-                fill_fraction = (100 * filled_bins / total_bins)
+                fill_fraction = 100 * filled_bins / total_bins
                 logger.info("Filled %.0f bins, nonzero bins: %1.1f %%", total_bins, fill_fraction)
 
         logger.info("Saving output in %s", out_pkl_file)
@@ -1638,9 +1580,7 @@ class RunWorkflow:
 
         if self._config.do_np:
             logger.info("Starting nonprompt estimation")
-            out_pkl_file_name_np = os.path.join(
-                self._config.outpath, self._config.outname + "_np.pkl.gz"
-            )
+            out_pkl_file_name_np = os.path.join(self._config.outpath, self._config.outname + "_np.pkl.gz")
             from topeft.modules.dataDrivenEstimation import DataDrivenProducer
 
             ddp = DataDrivenProducer(out_pkl_file, out_pkl_file_name_np)
@@ -1649,35 +1589,60 @@ class RunWorkflow:
             logger.info("Finished writing nonprompt output")
             if self._config.do_renormfact_envelope:
                 logger.info("Applying renorm/fact envelope to nonprompt output")
-                from topeft.modules.get_renormfact_envelope import (
-                    get_renormfact_envelope,
-                )
+                from topeft.modules.get_renormfact_envelope import get_renormfact_envelope
 
-                dict_of_histos = topcoffea_utils.get_hist_from_pkl(
-                    out_pkl_file_name_np, allow_empty=False
-                )
-                dict_of_histos_after_applying_envelope = get_renormfact_envelope(
-                    dict_of_histos
-                )
-                topcoffea_utils.dump_to_pkl(
-                    out_pkl_file_name_np, dict_of_histos_after_applying_envelope
-                )
+                dict_of_histos = topcoffea_utils.get_hist_from_pkl(out_pkl_file_name_np, allow_empty=False)
+                dict_of_histos_after_applying_envelope = get_renormfact_envelope(dict_of_histos)
+                topcoffea_utils.dump_to_pkl(out_pkl_file_name_np, dict_of_histos_after_applying_envelope)
 
 
-def run_workflow(config: RunConfig) -> None:
+def run_workflow(
+    config: RunConfig,
+    *,
+    metadata_bundle: metadata_authority.MetadataBundle | None = None,
+) -> None:
     """Convenience wrapper mirroring the behaviour of ``run_analysis.py``."""
 
     from topeft.modules.channel_metadata import ChannelMetadataHelper
 
-    metadata_source = config.metadata_path
-    if not metadata_source:
-        raise ValueError(
-            "RunConfig.metadata_path is not set. The scenario registry or options profile "
-            "must select a metadata bundle before launching run_workflow."
+    scenario_names = unique_preserving_order(config.scenario_names)
+    if not scenario_names:
+        scenario_names = [DEFAULT_SCENARIO_NAME]
+    config.scenario_names = list(scenario_names)
+    primary_scenario = config.scenario_names[0]
+
+    if metadata_bundle is None:
+        metadata_source = config.metadata_path
+        if not metadata_source:
+            raise ValueError(
+                "RunConfig.metadata_path is not set. Provide a metadata bundle before launching run_workflow."
+            )
+        metadata_bundle = metadata_authority.load_metadata_bundle(
+            metadata_source,
+            primary_scenario,
+            strict=config.channel_groups_strict,
+            required_sections=("channels", "variables"),
+            metadata_source="explicit",
         )
-    bundle = load_metadata(metadata_source)
-    metadata_file = bundle.path
-    metadata = bundle.payload
+
+    if metadata_bundle.scenario.name != primary_scenario:
+        raise ValueError(
+            "Scenario mismatch between RunConfig and metadata bundle: "
+            f"{primary_scenario!r} vs {metadata_bundle.scenario.name!r}."
+        )
+
+    if len(config.scenario_names) > 1:
+        logger.warning(
+            "Multiple scenarios were requested (%s); using primary scenario '%s' for channel selection.",
+            ", ".join(config.scenario_names),
+            primary_scenario,
+        )
+        config.scenario_names = [primary_scenario]
+
+    primary_scenario = metadata_bundle.scenario.name
+    metadata_file = metadata_bundle.metadata_path
+    metadata = metadata_bundle.metadata
+    channels_data = metadata_bundle.channels
     config.metadata_path = str(metadata_file)
 
     metadata_variations = metadata_non_nominal_bases(metadata)
@@ -1702,92 +1667,30 @@ def run_workflow(config: RunConfig) -> None:
         )
 
     weight_variations = weight_variations_from_metadata(metadata, DEFAULT_WEIGHT_VARIATIONS)
-    sample_loader = SampleLoader(
-        default_prefix=config.prefix, weight_variables=weight_variations
-    )
-
-    scenario_names = unique_preserving_order(config.scenario_names)
-    if not scenario_names:
-        scenario_names = [DEFAULT_SCENARIO_NAME]
-    config.scenario_names = list(scenario_names)
-    primary_scenario = config.scenario_names[0]
-
-    from topeft.modules import scenario_groups
-
-    channels_metadata = metadata.get("channels")
-    channels_data = channels_metadata
-    use_canonical_scenario_channels = scenario_groups.is_scenario(primary_scenario)
-    if use_canonical_scenario_channels:
-        if len(config.scenario_names) > 1:
-            logger.warning(
-                "Scenario '%s' from the canonical scenario definitions was requested "
-                "alongside additional scenarios (%s). Only the primary scenario can be "
-                "used for channel selection; ignoring the rest.",
-                primary_scenario,
-                ", ".join(config.scenario_names[1:]),
-            )
-            config.scenario_names = [primary_scenario]
-        canonical_path = Path(
-            scenario_registry.resolve_scenario_path(primary_scenario)
-        ).resolve()
-        metadata_is_custom = Path(metadata_file).resolve() != canonical_path
-        strict_mode = bool(config.channel_groups_strict)
-        try:
-            scenario_kwargs = {"strict": strict_mode}
-            if metadata_is_custom:
-                channels_data = scenario_groups.load_channels_for_scenario(
-                    primary_scenario,
-                    metadata=metadata,
-                    metadata_path=str(metadata_file),
-                    **scenario_kwargs,
-                )
-                logger.info(
-                    "Loaded %d channel groups for scenario '%s' from metadata '%s'.",
-                    len((channels_data or {}).get("groups", {})),
-                    primary_scenario,
-                    metadata_file,
-                )
-            else:
-                channels_data = scenario_groups.load_channels_for_scenario(
-                    primary_scenario, **scenario_kwargs
-                )
-                logger.info(
-                    "Loaded %d canonical channel groups for scenario '%s'.",
-                    len((channels_data or {}).get("groups", {})),
-                    primary_scenario,
-                )
-        except Exception as exc:  # pragma: no cover - defensive guard
-            logger.warning(
-                "Falling back to inline channel metadata for scenario '%s': %s",
-                primary_scenario,
-                exc,
-            )
-            channels_data = channels_metadata
+    sample_loader = SampleLoader(default_prefix=config.prefix, weight_variables=weight_variations)
 
     if not channels_data:
         raise ValueError(
-            f"Channel metadata is missing for scenario '{primary_scenario}'. "
-            f"Checked canonical scenario definitions and metadata YAML ({metadata_file})."
+            f"Channel metadata is missing for scenario '{primary_scenario}' (source: {metadata_file})."
         )
 
     channel_helper = ChannelMetadataHelper(channels_data)
 
+    strict_mode = bool(config.channel_groups_strict)
     channel_planner = ChannelPlanner(
         channel_helper,
         skip_sr=config.skip_sr,
         skip_cr=config.skip_cr,
         scenario_names=config.scenario_names,
         channel_groups_strict=strict_mode,
-        warn_on_partial_groups=not (metadata_is_custom and not strict_mode),
+        warn_on_partial_groups=True,
     )
 
     var_defs = metadata.get("variables")
     if not isinstance(var_defs, Mapping):
         raise TypeError("metadata['variables'] must be a mapping of histogram definitions")
 
-    histogram_planner = HistogramPlanner(
-        config=config, variable_definitions=var_defs, channel_planner=channel_planner
-    )
+    histogram_planner = HistogramPlanner(config=config, variable_definitions=var_defs, channel_planner=channel_planner)
 
     executor_factory = ExecutorFactory(config)
 

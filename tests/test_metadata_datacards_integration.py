@@ -72,6 +72,8 @@ def test_datacards_cli_respects_metadata_override(tmp_path, monkeypatch):
                 "  groups:",
                 "    TOP22_006_CH_LST_SR:",
                 "      regions: []",
+                "    CH_LST_CR:",
+                "      regions: []",
                 "variables:",
                 "  ptz:",
                 "    variable: [0.0, 1.0]",
@@ -81,13 +83,13 @@ def test_datacards_cli_respects_metadata_override(tmp_path, monkeypatch):
     )
 
     calls = {}
-    original_loader = dpp.load_metadata
+    original_loader = dpp.metadata_authority.load_metadata_bundle
 
-    def spy_loader(path, **kwargs):
+    def spy_loader(path, scenario, **kwargs):
         calls["path"] = Path(path)
-        return original_loader(path, **kwargs)
+        return original_loader(path, scenario, **kwargs)
 
-    monkeypatch.setattr(dpp, "load_metadata", spy_loader)
+    monkeypatch.setattr(dpp.metadata_authority, "load_metadata_bundle", spy_loader)
     monkeypatch.setattr(dpp, "ChannelMetadataHelper", lambda data: data)
     monkeypatch.setattr(dpp, "collect_datacard_channels", lambda helper, scenario: ["dummy_channel"])
     monkeypatch.setattr(dpp, "EXPECTED_FILE_COUNTS", {})

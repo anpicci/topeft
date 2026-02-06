@@ -203,7 +203,7 @@ def main():
         default=None,
         help=(
             "Metadata YAML supplying channels/variables for datacards. "
-            "Defaults to the scenario registry path for the selected scenario."
+            "Defaults to the metadata_authority default for the selected scenario."
         ),
     )
 

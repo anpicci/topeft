@@ -4,6 +4,7 @@ import types
 from pathlib import Path
 from typing import Callable
 
+from topeft.modules.channel_metadata import build_channel_label
 
 _DATASET_NAME = "SingleMuon_A-UL2018"
 
@@ -458,7 +459,11 @@ def test_flavor_split_registers_flavored_histograms(processor):
     njet_ch = "exactly_2j"
     flav_ch = "eee"
 
-    flav_name, base_name = processor._build_channel_names(lep_chan, njet_ch, flav_ch)
+    chan_def_lst = processor._channel_dict["chan_def_lst"]
+    flav_name = build_channel_label(
+        chan_def_lst, jet_selection=njet_ch, lep_flav=flav_ch
+    )
+    base_name = build_channel_label(chan_def_lst, jet_selection=njet_ch)
 
     assert base_name == processor.channel
     assert flav_name == "3l_eee_p_offZ_1b_2j"

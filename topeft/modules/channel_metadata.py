@@ -13,7 +13,6 @@ import logging
 from dataclasses import dataclass
 from typing import Dict, Iterable, Iterator, List, Mapping, Optional, Sequence, Tuple
 
-
 logger = logging.getLogger(__name__)
 
 
@@ -313,9 +312,6 @@ class ChannelMetadataHelper:
         if not self._groups:
             raise KeyError("No channel groups are defined in the metadata")
 
-        # When scenarios are not enumerated we assume the metadata file already
-        # scopes groups to the desired scenario and therefore expose every
-        # available group for whichever scenario name the caller provides.
         return tuple(self._groups.keys())
 
     def selected_group_names(
@@ -375,7 +371,6 @@ class ChannelMetadataHelper:
                         normalized.append(group_name)
             return tuple(normalized)
 
-        # No scenario list is present; return all groups in metadata order.
         ordered_groups: List[str] = []
         seen_all = set()
         for group_name in self._groups.keys():
@@ -384,6 +379,7 @@ class ChannelMetadataHelper:
             seen_all.add(group_name)
             ordered_groups.append(group_name)
         return tuple(ordered_groups)
+
 
 @dataclass(frozen=True)
 class ChannelScenario:

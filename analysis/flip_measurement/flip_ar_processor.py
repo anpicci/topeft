@@ -18,7 +18,7 @@ import topcoffea
 
 from topeft.modules.runner_output import SUMMARY_KEY, materialise_tuple_dict
 from topeft.modules.topcoffea_imports import require_module
-
+from topeft.modules import metadata_access
 
 def _inject_module_exports(module):
     names = getattr(module, "__all__", None)
@@ -32,7 +32,6 @@ tc_corrections = require_module("corrections")
 AttachMuonSF = tc_corrections.AttachMuonSF
 AttachElectronSF = tc_corrections.AttachElectronSF
 AttachPerLeptonFR = tc_corrections.AttachPerLeptonFR
-topcoffea_path = topcoffea.modules.paths.topcoffea_path
 
 
 def _resolve_nested_field(array, *field_paths):
@@ -80,10 +79,20 @@ def in_range_mask(in_var,lo_lim=None,hi_lim=None):
 
 class AnalysisProcessor(processor.ProcessorABC):
 
-    def __init__(self, samples, dtype=np.float32):
+    def __init__(
+        self,
+        samples,
+        dtype=np.float32,
+        metadata=None,
+        metadata_path=None,
+        scenario_name=None,
+    ):
 
         self._samples = samples
         self._dtype = dtype
+        self._metadata = metadata
+        self._metadata_path = metadata_path
+        self._scenario_name = scenario_name or "TOP_22_006"
 
         self._accumulator = processor.dict_accumulator({})
         self._application_region = "flip_application"
@@ -123,6 +132,19 @@ class AnalysisProcessor(processor.ProcessorABC):
     @property
     def columns(self):
         return self._columns
+
+    def _metadata_payload(self):
+        if self._metadata is not None:
+            return self._metadata
+        bundle = metadata_access.load_metadata_bundle_for_processor(
+            metadata_path=self._metadata_path,
+            scenario_name=self._scenario_name,
+            strict=True,
+            required_sections=("channels",),
+        )
+        self._metadata = bundle.metadata
+        self._metadata_path = str(bundle.metadata_path)
+        return self._metadata
 
     # Main function: run on a given dataset
     def process(self, events):
@@ -225,14 +247,8 @@ class AnalysisProcessor(processor.ProcessorABC):
             mu["gen_gparent_pdgId"] = gparent_pdg_mu
 
         # Get the lumi mask for data
-        if year == "2016" or year == "2016APV":
-            golden_json_path = topcoffea_path("data/goldenJsons/Cert_271036-284044_13TeV_Legacy2016_Collisions16_JSON.txt")
-        elif year == "2017":
-            golden_json_path = topcoffea_path("data/goldenJsons/Cert_294927-306462_13TeV_UL2017_Collisions17_GoldenJSON.txt")
-        elif year == "2018":
-            golden_json_path = topcoffea_path("data/goldenJsons/Cert_314472-325175_13TeV_Legacy2018_Collisions18_JSON.txt")
-        else:
-            raise ValueError(f"Error: Unknown year \"{year}\".")
+        metadata = self._metadata_payload()
+        golden_json_path = metadata_access.golden_json_for_year(metadata, str(year))
         lumi_mask = LumiMask(golden_json_path)(events.run,events.luminosityBlock)
 
 

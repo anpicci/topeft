@@ -17,8 +17,9 @@ The high-level flow is:
    input manifests and returns a normalized ``samplesdict`` together with the
    expanded file list per sample.
 3. :class:`analysis.topeft_run2.workflow.ChannelPlanner` resolves the metadata
-   scenarios declared in ``analysis/metadata/metadata.yml`` and attaches the
-   resulting channel dictionaries to each histogram task.
+   scenarios declared in ``analysis/metadata/run2_scenarios.yaml`` (via
+   `analysis/topeft_run2/metadata_authority.py`) and attaches the resulting
+   channel dictionaries to each histogram task.
 4. :class:`analysis.topeft_run2.workflow.HistogramPlanner` enumerates histogram
    combinations by crossing samples, channel metadata, Coffea applications, and
    systematic toggles.  The result is a :class:`HistogramPlan` which records the
@@ -185,8 +186,6 @@ The ``config`` returned here is the same structure used by the quickstart
 utilities.  Persisting it (for example via ``dataclasses.asdict``) provides a
 compact audit trail that complements the stored output pickle.
 
-When ``--options`` is present the YAML file becomes authoritative—CLI flags are
-ignored so that the captured configuration remains reproducible (aside from the
-handful of workload overrides noted in
-[run_analysis_configuration.md](run_analysis_configuration.md)).  Drop the
+When ``--options`` is present the YAML file becomes authoritative and other CLI
+flags are rejected so the captured configuration remains reproducible. Drop the
 argument entirely for ad-hoc runs driven purely from the command line.

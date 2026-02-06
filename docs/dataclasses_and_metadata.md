@@ -87,7 +87,8 @@ sections that drive channel discovery and systematic planning:
   data vs. MC. 【F:analysis/metadata/metadata.yml†L9-L111】
 - `variables` (further down in the file) describes histogram axes, binning, and
   callable expressions that populate the planner’s `variable_info` payloads.
-- `scenarios` binds friendly scenario names to channel groups so the CLI/YAML
+- Run‑2 scenario definitions live in `analysis/metadata/run2_scenarios.yaml` and
+  are resolved by `analysis/topeft_run2/metadata_authority.py` when the CLI/YAML
   `scenarios` knobs translate into concrete region selections.
 - `systematics` enumerates weight and object variations, each of which can
   declare `sum_of_weights` keys that the loader must find in JSON manifests.
@@ -103,6 +104,11 @@ configuration, metadata catalogues, and the Coffea execution pipeline.  Editing
 one layer (for example, adding a new systematic in the YAML) automatically
 propagates through the JSON schema validation, histogram planning, and task
 summaries without additional glue code.
+
+Non‑Run2 processors that still need metadata-driven utilities (such as golden
+JSON resolution) should import `topeft.modules.metadata_access`, which provides
+a Run‑2‑agnostic helper surface while delegating authority decisions to
+`analysis/topeft_run2/metadata_authority.py`.
 
 ## Metadata editing checklist
 
