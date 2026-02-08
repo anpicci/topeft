@@ -318,7 +318,7 @@ hist.plot1d(h, stack=True)
 #fig.show() #not needed in Jupyter, but this draws the figure in the terminal
 
 
-# # topcoffea.modules.HistEFT
+# # topcoffea.modules.histEFT
 
 # I'll continue using the pkl file from above<br>
 # Now we'll use methods that are unique to HistEFT (e.g. `set_wilson_coefficients()` to scale the Wilson Coefficient (WC) values)
@@ -422,7 +422,6 @@ lumi = hep.cms.label(ax=ax, lumi='41.48', label="Preliminary")
 
 
 # In[ ]:
-
 
 
 

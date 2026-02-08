@@ -35,31 +35,26 @@ def _load_hist_eft():  # pragma: no cover - import shim exercised in dedicated t
     if topcoffea is None:
         return None
 
-    candidates = (
-        "topcoffea.modules.histEFT",
-        "topcoffea.modules.HistEFT",
-    )
-    errors = []
-    for module_path in candidates:
-        try:
-            module = __import__(module_path, fromlist=["HistEFT"])
-        except ModuleNotFoundError as exc:
-            errors.append(f"{module_path}: {exc}")
-            continue
-        except Exception as exc:
-            errors.append(f"{module_path}: {exc}")
-            continue
+    module_path = "topcoffea.modules.histEFT"
+    try:
+        module = __import__(module_path, fromlist=["HistEFT"])
+    except Exception as exc:
+        raise ImportError(
+            "topcoffea is installed but does not provide a HistEFT class in "
+            "topcoffea.modules.histEFT. Update the dependency (for example by "
+            "checking out the ch_update_calcoffea branch) and reinstall to "
+            "restore tuple-keyed histogram support."
+        ) from exc
 
-        candidate = getattr(module, "HistEFT", None)
-        if candidate is not None:
-            return candidate
-        errors.append(f"{module_path}: missing HistEFT attribute")
+    candidate = getattr(module, "HistEFT", None)
+    if candidate is not None:
+        return candidate
 
     raise ImportError(
-        "topcoffea is installed but does not provide a HistEFT class in either "
-        "topcoffea.modules.histEFT or topcoffea.modules.HistEFT. "
-        "Update the dependency (for example by checking out the ch_update_calcoffea "
-        "branch) and reinstall to restore tuple-keyed histogram support."
+        "topcoffea is installed but does not provide a HistEFT class in "
+        "topcoffea.modules.histEFT. Update the dependency (for example by "
+        "checking out the ch_update_calcoffea branch) and reinstall to "
+        "restore tuple-keyed histogram support."
     )
 
 
