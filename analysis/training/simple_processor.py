@@ -26,6 +26,25 @@ efth = topcoffea.modules.eft_helper
 class HistWithIdentity(hist.Hist):
     """Small helper to provide coffea-style identity semantics for boost-hist histograms."""
 
+    def __init__(self, *args, **kwargs):
+        # Keep a local copy so tests can still inspect axes even when upstream
+        # stubs provide a minimal Hist implementation.
+        self._axes_fallback = tuple(args)
+        super().__init__(*args, **kwargs)
+
+    @property
+    def axes(self):
+        if hasattr(self, "_axes_override"):
+            return self._axes_override
+        try:
+            return hist.Hist.axes.__get__(self, type(self))
+        except Exception:
+            return self._axes_fallback
+
+    @axes.setter
+    def axes(self, value):
+        self._axes_override = value
+
     def identity(self):
         clone = self.copy()
         clone.reset()
@@ -66,6 +85,36 @@ def _ensure_ak_array(values, dtype=None):
     if dtype is not None:
         values = ak.values_astype(values, dtype)
     return values
+
+
+def _normalize_bool_mask(mask, template):
+    """Return a bool mask broadcastable to ``template``.
+
+    ``template`` is expected to be the array being sliced (e.g. ``jets.pt``).
+    This guards against scalar/1D masks leaking from alternate ``isClean``
+    implementations in mixed test environments.
+    """
+
+    if isinstance(mask, (bool, np.bool_)):
+        return ak.full_like(template, bool(mask), dtype=bool)
+
+    if not isinstance(mask, ak.Array):
+        mask = ak.Array(mask)
+
+    fields = ak.fields(mask)
+    if fields:
+        mask = mask["pt"] if "pt" in fields else mask[fields[0]]
+
+    if mask.ndim == 0:
+        scalar = bool(np.asarray(ak.to_numpy(mask)).item())
+        return ak.full_like(template, scalar, dtype=bool)
+
+    try:
+        normalized = ak.broadcast_arrays(mask, template)[0]
+    except Exception as exc:
+        raise ValueError("Mask cannot be broadcast to target collection shape") from exc
+
+    return ak.values_astype(normalized, np.bool_)
 
 
 @dataclass
@@ -272,8 +321,10 @@ class AnalysisProcessor(processor.ProcessorABC):
         j = j[j_selec]
         print("\tjpt", j.pt)
 
-        j['isClean'] = isClean(j, e, drmin=0.4) & isClean(j, m, drmin=0.4)
-        j_isclean = isClean(j, e, drmin=0.4) & isClean(j, m, drmin=0.4)
+        j_clean_e = _normalize_bool_mask(isClean(j, e, drmin=0.4), j.pt)
+        j_clean_m = _normalize_bool_mask(isClean(j, m, drmin=0.4), j.pt)
+        j_isclean = j_clean_e & j_clean_m
+        j['isClean'] = j_isclean
         print("\tj is clean", j_isclean)
 
         j = j[j_isclean]
@@ -393,4 +444,3 @@ class AnalysisProcessor(processor.ProcessorABC):
 
     def postprocess(self, accumulator):
         return accumulator
-

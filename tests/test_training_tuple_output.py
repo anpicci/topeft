@@ -13,14 +13,19 @@ import pytest
 from hist import Hist, axis, storage
 
 
-def _install_training_stubs() -> None:
+def _install_training_stubs(monkeypatch: pytest.MonkeyPatch) -> None:
     """Provide lightweight shims for the topcoffea modules used by the processor."""
 
-    topcoffea_pkg = sys.modules.setdefault("topcoffea", types.ModuleType("topcoffea"))
-    modules_pkg = sys.modules.setdefault("topcoffea.modules", types.ModuleType("topcoffea.modules"))
+    topcoffea_pkg = types.ModuleType("topcoffea")
+    topcoffea_pkg.__path__ = []  # type: ignore[attr-defined]
+    modules_pkg = types.ModuleType("topcoffea.modules")
+    modules_pkg.__path__ = []  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "topcoffea", topcoffea_pkg)
+    monkeypatch.setitem(sys.modules, "topcoffea.modules", modules_pkg)
     topcoffea_pkg.modules = modules_pkg  # type: ignore[attr-defined]
 
-    objects_module = sys.modules.setdefault("topcoffea.modules.objects", types.ModuleType("topcoffea.modules.objects"))
+    objects_module = types.ModuleType("topcoffea.modules.objects")
+    monkeypatch.setitem(sys.modules, "topcoffea.modules.objects", objects_module)
     modules_pkg.objects = objects_module  # type: ignore[attr-defined]
 
     def _always_clean(jets, leptons, drmin=0.4):  # pragma: no cover - exercised indirectly
@@ -28,12 +33,12 @@ def _install_training_stubs() -> None:
 
     objects_module.isClean = _always_clean  # type: ignore[attr-defined]
 
-    selection_module = sys.modules.setdefault("topcoffea.modules.selection", types.ModuleType("topcoffea.modules.selection"))
+    selection_module = types.ModuleType("topcoffea.modules.selection")
+    monkeypatch.setitem(sys.modules, "topcoffea.modules.selection", selection_module)
     modules_pkg.selection = selection_module  # type: ignore[attr-defined]
 
-    eft_helper_module = sys.modules.setdefault(
-        "topcoffea.modules.eft_helper", types.ModuleType("topcoffea.modules.eft_helper")
-    )
+    eft_helper_module = types.ModuleType("topcoffea.modules.eft_helper")
+    monkeypatch.setitem(sys.modules, "topcoffea.modules.eft_helper", eft_helper_module)
     modules_pkg.eft_helper = eft_helper_module  # type: ignore[attr-defined]
     eft_helper_module.remap_coeffs = lambda *_args, **_kwargs: _args[2] if len(_args) > 2 else None  # type: ignore[attr-defined]
     eft_helper_module.calc_w2_coeffs = lambda coeffs, *_: coeffs  # type: ignore[attr-defined]
@@ -71,16 +76,17 @@ def _install_training_stubs() -> None:
 
     hist_eft_module = types.ModuleType("topcoffea.modules.HistEFT")
     hist_eft_module.HistEFT = _DummyHistEFT
-    sys.modules["topcoffea.modules.HistEFT"] = hist_eft_module
-    sys.modules["topcoffea.modules.histEFT"] = hist_eft_module
+    monkeypatch.setitem(sys.modules, "topcoffea.modules.HistEFT", hist_eft_module)
+    monkeypatch.setitem(sys.modules, "topcoffea.modules.histEFT", hist_eft_module)
     modules_pkg.HistEFT = hist_eft_module  # type: ignore[attr-defined]
     modules_pkg.histEFT = hist_eft_module  # type: ignore[attr-defined]
 
 
 @pytest.fixture()
 def training_processor(monkeypatch):
-    _install_training_stubs()
+    _install_training_stubs(monkeypatch)
     module = importlib.import_module("analysis.training.simple_processor")
+    module = importlib.reload(module)
 
     original_num = module.ak.num
 

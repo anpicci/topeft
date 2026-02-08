@@ -4,17 +4,16 @@ np = pytest.importorskip("numpy")
 ak = pytest.importorskip("awkward")
 
 import sys
-import types
+import topcoffea
 
-if "topcoffea.modules.corrections" not in sys.modules:
-    corrections_stub = types.ModuleType("topcoffea.modules.corrections")
-    corrections_stub.AttachPSWeights = lambda *args, **kwargs: None  # type: ignore[assignment]
-    corrections_stub.AttachScaleWeights = lambda *args, **kwargs: None  # type: ignore[assignment]
-    sys.modules["topcoffea.modules.corrections"] = corrections_stub
-    topcoffea_pkg = sys.modules.setdefault("topcoffea", types.ModuleType("topcoffea"))
-    modules_pkg = sys.modules.setdefault("topcoffea.modules", types.ModuleType("topcoffea.modules"))
-    topcoffea_pkg.modules = modules_pkg  # type: ignore[attr-defined]
-    modules_pkg.corrections = corrections_stub  # type: ignore[attr-defined]
+# Import real topcoffea.modules before importing sow_processor.
+for module_name in ("topcoffea.modules",):
+    module = sys.modules.get(module_name)
+    if module is not None and getattr(module, "__file__", None) is None:
+        # Remove lightweight stubs installed by other tests so we import real modules.
+        sys.modules.pop(module_name, None)
+
+topcoffea.import_module("topcoffea.modules")
 
 from analysis.topeft_run2 import sow_processor
 
@@ -75,15 +74,34 @@ def sample_processor(monkeypatch):
         for key, value in weights.items():
             events[key] = value
 
+    class _SimpleHistEFT:
+        def __init__(self, *args, **kwargs):
+            self._sum = 0.0
+
+        def fill(self, *args, weight=None, **kwargs):
+            if weight is None:
+                return
+            self._sum += float(np.sum(np.asarray(weight)))
+
+        def values(self):
+            return np.array([self._sum], dtype=np.float64)
+
+    monkeypatch.setattr(
+        sow_processor,
+        "HistEFT",
+        _SimpleHistEFT,
+    )
     monkeypatch.setattr(
         sow_processor.corrections,
         "AttachPSWeights",
         fake_ps_weights,
+        raising=False,
     )
     monkeypatch.setattr(
         sow_processor.corrections,
         "AttachScaleWeights",
         fake_scale_weights,
+        raising=False,
     )
 
     return sow_processor.AnalysisProcessor(
@@ -134,4 +152,3 @@ def test_sow_processor_builds_histograms_and_metadata(sample_processor):
     norm_totals = dataset_meta["normalized_totals"]
     assert norm_totals["nom"] == pytest.approx(np.sum(gen_weight))
     assert norm_totals["ISRUp"] == pytest.approx(expected_isr_up)
-

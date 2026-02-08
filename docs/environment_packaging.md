@@ -45,6 +45,25 @@ For reproducible verification, run from the repo root or use absolute paths:
        PYTHONPATH="" PYTHONNOUSERSITE=1 $PYTHON_ENV -m pytest -q \
          /users/apiccine/work/ChUpdate/topeft/tests/test_numpy_abi_import.py
 
+## Wrapper usage (avoid login shells)
+
+When running through `codex-run.sh`, avoid `bash -lc`. Login shells can
+reintroduce system/CVMFS paths after the wrapper sanitizes the environment,
+leading to `numpy` imports from `/usr/lib64/python3.9/site-packages`.
+
+Preferred patterns (define the helper vars once in your shell):
+
+       WRAP=/users/apiccine/work/ChUpdate/codex-run.sh
+       PYTHON_ENV=/users/apiccine/work/miniconda3/envs/coffea2025/bin/python
+
+Then run:
+
+       $WRAP /bin/bash --noprofile --norc -c 'cd /users/apiccine/work/ChUpdate/topeft && $PYTHON_ENV -m pytest -q'
+       $WRAP bash -c 'cd /users/apiccine/work/ChUpdate/topeft && $PYTHON_ENV -m pytest -q'
+
+These keep the wrapper's environment cleanup intact while still allowing
+one-line invocations for CI and local debugging.
+
 1. Recreate the local Conda environment so the lock file matches the new pins::
 
        conda env update -f environment.yml --prune

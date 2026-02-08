@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import json
 import re
+import subprocess
 from pathlib import Path
 from typing import Iterable, Iterator, List, Tuple
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
+_EXCLUDED_TOP_LEVEL = {"topcoffea", "tests", "build"}
 _BANNED_PATTERNS: Tuple[Tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"^\s*from\s+topcoffea\."), "use 'import topcoffea' and attribute access"),
     (re.compile(r"^\s*import\s+topcoffea\.modules"), "import the top-level package instead of submodules"),
@@ -19,13 +21,40 @@ _BANNED_PATTERNS: Tuple[Tuple[re.Pattern[str], str], ...] = (
 
 
 def _iter_source_files() -> Iterator[Path]:
+    try:
+        listed = subprocess.run(
+            ["git", "ls-files", "*.py", "*.ipynb"],
+            cwd=_REPO_ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        for relative in listed.stdout.splitlines():
+            path = _REPO_ROOT / relative
+            if not path.exists():
+                continue
+            if relative.startswith("tests/"):
+                continue
+            if path.suffix == ".py" and path.name.endswith("_loc.py"):
+                continue
+            yield path
+        return
+    except Exception:
+        pass
+
     for pattern in ("*.py", "*.ipynb"):
-        yield from _REPO_ROOT.rglob(pattern)
+        for path in _REPO_ROOT.rglob(pattern):
+            relative = path.relative_to(_REPO_ROOT)
+            if relative.parts and relative.parts[0] in _EXCLUDED_TOP_LEVEL:
+                continue
+            if path.suffix == ".py" and path.name.endswith("_loc.py"):
+                continue
+            yield path
 
 
 def _is_vendor_file(path: Path) -> bool:
     relative = path.relative_to(_REPO_ROOT)
-    return relative.parts and relative.parts[0] == "topcoffea"
+    return relative.parts and relative.parts[0] in _EXCLUDED_TOP_LEVEL
 
 
 def _scan_text_lines(path: Path, lines: Iterable[str]) -> List[str]:

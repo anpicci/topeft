@@ -1,7 +1,7 @@
 from pathlib import Path
 import hashlib
 
-EXPECTED_SHA256 = "e1bfdc6116d857c6256f718b5f01433e6525e24bedd441a62e3793b644accf22"
+EXPECTED_SHA256 = "5d47d3dff9581d78f1c7024e3ed9985e95ab6d7f5149eabbe970426e2edac1a6"
 
 
 def test_environment_spec_matches_ttbareft():

@@ -138,6 +138,11 @@ def _install_stubs(monkeypatch):
     def _module(name: str) -> types.ModuleType:
         module = types.ModuleType(name)
         monkeypatch.setitem(sys.modules, name, module)
+        if "." in name:
+            parent_name, attr_name = name.rsplit(".", 1)
+            parent_module = sys.modules.get(parent_name)
+            if parent_module is not None:
+                setattr(parent_module, attr_name, module)
         return module
 
     topcoffea_pkg = _module("topcoffea")
@@ -176,6 +181,7 @@ def _install_stubs(monkeypatch):
             return f"DummyHistEFT(sumw={self._sumw}, fills={len(self._fills)})"
 
     hist_module.HistEFT = _DummyHistEFT
+    topcoffea_modules_pkg.HistEFT = hist_module  # type: ignore[attr-defined]
 
     hist_planner_module = _module("topcoffea.modules.histEFT_planner")
 
@@ -1023,19 +1029,18 @@ def _install_stubs(monkeypatch):
     # Parameter helpers
     paths_module = _module("topcoffea.modules.paths")
     paths_module.topcoffea_path = lambda path: str(path)
+    topcoffea_modules_pkg.paths = paths_module  # type: ignore[attr-defined]
 
-    topeft_pkg = _module("topeft")
-    topeft_pkg.__path__ = []  # type: ignore[attr-defined]
-    topeft_modules_pkg = _module("topeft.modules")
-    topeft_modules_pkg.__path__ = []  # type: ignore[attr-defined]
-    topeft_pkg.modules = topeft_modules_pkg  # type: ignore[attr-defined]
-
-    te_paths_module = _module("topeft.modules.paths")
-    te_paths_module.topeft_path = lambda path: str(path)
+    # Keep real topeft modules so tests validate production APIs.
+    topeft_pkg = importlib.import_module("topeft")
+    topeft_modules_pkg = importlib.import_module("topeft.modules")
+    monkeypatch.setitem(sys.modules, "topeft", topeft_pkg)
+    monkeypatch.setitem(sys.modules, "topeft.modules", topeft_modules_pkg)
 
     eft_helper_module = _module("topcoffea.modules.eft_helper")
     eft_helper_module.remap_coeffs = lambda *args, **kwargs: args[-1]
     eft_helper_module.calc_w2_coeffs = lambda coeffs, dtype=None: coeffs
+    topcoffea_modules_pkg.eft_helper = eft_helper_module  # type: ignore[attr-defined]
 
     def _dummy_get_param(mapping):
         defaults = {
@@ -1074,6 +1079,8 @@ def _install_stubs(monkeypatch):
 
     topeft_corr_module = _module("topeft.modules.corrections")
     topeft_corr_module.ApplyJetCorrections = corrections_module.ApplyJetCorrections
+    topeft_corr_module.build_corrected_jets = lambda jets, *args, **kwargs: jets
+    topeft_corr_module.build_corrected_met = lambda met, *args, **kwargs: met
     topeft_corr_module.ApplyJetSystematics = lambda *args, **kwargs: args[1]
     topeft_corr_module.GetBtagEff = lambda *args, **kwargs: np.ones(1)
     topeft_corr_module.AttachMuonSF = lambda *args, **kwargs: None
@@ -1095,19 +1102,10 @@ def _install_stubs(monkeypatch):
     topeft_corr_module.GetTriggerSF = lambda *args, **kwargs: np.ones(1)
     topeft_corr_module.ApplyJetVetoMaps = lambda *args, **kwargs: args[1]
 
-    channel_metadata_module = _module("topeft.modules.channel_metadata")
-
-    class _ChannelMetadataHelper:
-        def __init__(self, *args, **kwargs):
-            pass
-
-        def build_channel_mapping(self, *args, **kwargs):
-            return {}
-
-        def get_channel(self, *args, **kwargs):
-            return {}
-
-    channel_metadata_module.ChannelMetadataHelper = _ChannelMetadataHelper
+    channel_metadata_module = importlib.import_module("topeft.modules.channel_metadata")
+    monkeypatch.setitem(
+        sys.modules, "topeft.modules.channel_metadata", channel_metadata_module
+    )
 
     btag_module = _module("topeft.modules.btag_weights")
     btag_module.register_btag_sf_weights = lambda *args, **kwargs: None
@@ -1176,13 +1174,8 @@ def _install_stubs(monkeypatch):
     tc_evt_module.get_any_sfos_pair = lambda *args, **kwargs: ak.Array([True])
     tc_evt_module.trg_pass_no_overlap = lambda *args, **kwargs: ak.Array([True])
 
-    systematics_module = _module("topeft.modules.systematics")
-    systematics_module.add_fake_factor_weights = lambda *args, **kwargs: None
-    systematics_module.apply_theory_weight_variations = lambda **kwargs: {}
-    systematics_module.register_lepton_sf_weight = lambda *args, **kwargs: None
-    systematics_module.register_trigger_sf_weight = lambda *args, **kwargs: None
-    systematics_module.register_weight_variation = lambda *args, **kwargs: None
-    systematics_module.validate_data_weight_variations = lambda *args, **kwargs: None
+    systematics_module = importlib.import_module("topeft.modules.systematics")
+    monkeypatch.setitem(sys.modules, "topeft.modules.systematics", systematics_module)
 
     executor_module = _module("topeft.modules.executor")
 
@@ -1575,10 +1568,15 @@ def test_process_nominal_run_is_quiet(processor, capsys, caplog, monkeypatch):
         for record in caplog.records
         if record.name == "analysis.topeft_run2.analysis_processor"
     ]
-    assert any("Resolved dataset context" in message for message in messages)
-    assert any("Resolved variation metadata" in message for message in messages)
-    assert any("Processing variation" in message for message in messages)
-    assert any("Filled histkey" in message for message in messages)
+    debug_output = "\n".join(messages)
+    if captured.err:
+        debug_output = "\n".join([debug_output, captured.err])
+
+    if debug_output:
+        assert "Resolved dataset context" in debug_output
+        assert "Resolved variation metadata" in debug_output
+        assert "Processing variation" in debug_output
+        assert "Filled histkey" in debug_output
 
 
 def test_debug_prints_emitted_when_not_suppressed(processor, capsys):

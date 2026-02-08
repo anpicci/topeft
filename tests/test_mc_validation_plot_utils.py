@@ -27,9 +27,22 @@ else:  # pragma: no cover - fallback used when topcoffea is absent
     _HistEFT = None
 
 
+def _supports_histeft_contract() -> bool:
+    if _HistEFT is None:
+        return False
+    try:
+        probe = _HistEFT(axis.Regular(1, 0.0, 1.0, name="observable"), wc_names=[], label="Events")
+    except Exception:
+        return False
+    return hasattr(probe, "dense_axis") and callable(getattr(probe, "values", None))
+
+
+_USE_HISTEFT = _supports_histeft_contract()
+
+
 def _build_histogram(values):
     dense_axis = axis.Regular(4, 0.0, 4.0, name="observable")
-    if _HistEFT is not None:
+    if _USE_HISTEFT:
         histogram = _HistEFT(dense_axis, wc_names=[], label="Events")
     else:
         histogram = Hist(dense_axis, storage=storage.Double(), label="Events")
@@ -138,4 +151,3 @@ def test_require_tuple_histogram_items_rejects_legacy_keys():
 def test_require_tuple_histogram_items_rejects_missing_tuple_entries():
     with pytest.raises(ValueError):
         require_tuple_histogram_items({"not_a_tuple": _constant_histogram(1.0)})
-

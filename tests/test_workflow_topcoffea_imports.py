@@ -30,23 +30,23 @@ def test_workflow_imports_topcoffea_helpers(monkeypatch: pytest.MonkeyPatch) -> 
             "analysis.topeft_run2.workflow", run_name="analysis.topeft_run2.workflow"
         )
 
-    assert callable(module_globals["topcoffea_path"])
+    assert callable(module_globals["_import_topcoffea_submodule"])
     assert module_globals["topcoffea_utils"] is not None
 
 
 def test_workflow_imports_missing_paths(monkeypatch: pytest.MonkeyPatch) -> None:
     _clear_modules(
-        monkeypatch, "analysis.topeft_run2", "analysis.topeft_run2.workflow", "topcoffea.modules.paths"
+        monkeypatch, "analysis.topeft_run2", "analysis.topeft_run2.workflow", "topcoffea.modules.utils"
     )
 
     real_import_module = importlib.import_module
 
-    def _raise_for_paths(name: str, *args, **kwargs):
-        if name.endswith(".modules.paths"):
-            raise ModuleNotFoundError("paths module unavailable")
+    def _raise_for_utils(name: str, *args, **kwargs):
+        if name.endswith(".modules.utils"):
+            raise ModuleNotFoundError("utils module unavailable")
         return real_import_module(name, *args, **kwargs)
 
-    monkeypatch.setattr(importlib, "import_module", _raise_for_paths)
+    monkeypatch.setattr(importlib, "import_module", _raise_for_utils)
 
     with warnings.catch_warnings():
         warnings.filterwarnings("ignore", category=RuntimeWarning)

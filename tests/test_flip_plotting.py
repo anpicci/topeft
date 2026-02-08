@@ -2,16 +2,27 @@
 
 from __future__ import annotations
 
+import importlib
+
 import matplotlib
 
 matplotlib.use("Agg")
 
 import matplotlib.pyplot as plt
 import numpy as np
+import pytest
 from hist import Hist, axis, storage
 
 from analysis.flip_measurement import flip_ar_plotter
 from analysis.flip_measurement.plot_utils import tuple_histogram_entries
+
+try:
+    importlib.import_module("mplhep.plot")
+except Exception:
+    pytest.skip(
+        "mplhep plotting helpers are unavailable; skipping flip plotting tests.",
+        allow_module_level=True,
+    )
 
 
 def _build_histogram(values: np.ndarray) -> Hist:

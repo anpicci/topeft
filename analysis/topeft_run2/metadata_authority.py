@@ -117,11 +117,12 @@ def golden_json_for_year(metadata: Mapping[str, object], year: str) -> str:
     if candidate.is_absolute():
         return str(candidate)
     try:
-        from topcoffea.modules.paths import topcoffea_path
+        import topcoffea
     except ImportError as exc:  # pragma: no cover - dependency guard
         raise ImportError(
             "topcoffea.modules.paths is required to resolve golden JSON paths."
         ) from exc
+    topcoffea_path = topcoffea.modules.paths.topcoffea_path
     return topcoffea_path(str(candidate))
 
 
