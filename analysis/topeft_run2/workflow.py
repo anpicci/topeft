@@ -1049,8 +1049,8 @@ class RunWorkflow:
         coffea_processor_module: Any,
     ) -> Mapping[str, Any]:
         try:
-            from topcoffea.modules import dynamic_data_reduction as ddr_helpers
-        except ImportError as exc:  # pragma: no cover - dependency guard
+            ddr_helpers = topcoffea.modules.dynamic_data_reduction
+        except (ImportError, AttributeError) as exc:  # pragma: no cover - dependency guard
             raise RuntimeError(
                 "The 'taskvine' executor requires topcoffea.modules.dynamic_data_reduction. "
                 "Update the topcoffea checkout to include tc/feat-ddr-helpers."

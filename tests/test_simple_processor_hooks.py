@@ -1,16 +1,17 @@
+import importlib
 import sys
 import types
 
 import pytest
 
 
-def _install_test_stubs():
+def _install_test_stubs(monkeypatch: pytest.MonkeyPatch):
     if "numpy" not in sys.modules:
         np_module = types.ModuleType("numpy")
         np_module.seterr = lambda **_: None
         np_module.float32 = float
         np_module.ndarray = object
-        sys.modules["numpy"] = np_module
+        monkeypatch.setitem(sys.modules, "numpy", np_module)
 
     if "awkward" not in sys.modules:
         ak_module = types.ModuleType("awkward")
@@ -18,9 +19,11 @@ def _install_test_stubs():
         ak_module.num = lambda array: array  # type: ignore[attr-defined]
         ak_module.concatenate = lambda arrays, axis=0: sum(arrays, [])  # type: ignore[attr-defined]
         ak_module.argmax = lambda array, axis=None, keepdims=False: 0  # type: ignore[attr-defined]
-        sys.modules["awkward"] = ak_module
+        monkeypatch.setitem(sys.modules, "awkward", ak_module)
 
-    coffea_pkg = sys.modules.setdefault("coffea", types.ModuleType("coffea"))
+    coffea_pkg = types.ModuleType("coffea")
+    coffea_pkg.__path__ = []  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "coffea", coffea_pkg)
 
     hist_module = types.ModuleType("hist")
 
@@ -49,7 +52,7 @@ def _install_test_stubs():
     )
     hist_module.storage = types.SimpleNamespace(Double=_DummyStorage)
     hist_module.Hist = _DummyHist
-    sys.modules["hist"] = hist_module
+    monkeypatch.setitem(sys.modules, "hist", hist_module)
 
     processor_module = types.ModuleType("coffea.processor")
 
@@ -65,7 +68,7 @@ def _install_test_stubs():
 
     processor_module.ProcessorABC = _DummyProcessorABC
     processor_module.dict_accumulator = _dict_accumulator
-    sys.modules["coffea.processor"] = processor_module
+    monkeypatch.setitem(sys.modules, "coffea.processor", processor_module)
     coffea_pkg.processor = processor_module  # type: ignore[attr-defined]
 
     analysis_tools_module = types.ModuleType("coffea.analysis_tools")
@@ -78,19 +81,23 @@ def _install_test_stubs():
             return []
 
     analysis_tools_module.PackedSelection = _DummyPackedSelection
-    sys.modules["coffea.analysis_tools"] = analysis_tools_module
+    monkeypatch.setitem(sys.modules, "coffea.analysis_tools", analysis_tools_module)
 
-    topcoffea_pkg = sys.modules.setdefault("topcoffea", types.ModuleType("topcoffea"))
-    modules_pkg = sys.modules.setdefault("topcoffea.modules", types.ModuleType("topcoffea.modules"))
+    topcoffea_pkg = types.ModuleType("topcoffea")
+    topcoffea_pkg.__path__ = []  # type: ignore[attr-defined]
+    modules_pkg = types.ModuleType("topcoffea.modules")
+    modules_pkg.__path__ = []  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "topcoffea", topcoffea_pkg)
+    monkeypatch.setitem(sys.modules, "topcoffea.modules", modules_pkg)
     topcoffea_pkg.modules = modules_pkg  # type: ignore[attr-defined]
 
     objects_module = types.ModuleType("topcoffea.modules.objects")
     objects_module.isClean = lambda *_, **__: True  # type: ignore[attr-defined]
-    sys.modules["topcoffea.modules.objects"] = objects_module
+    monkeypatch.setitem(sys.modules, "topcoffea.modules.objects", objects_module)
     modules_pkg.objects = objects_module  # type: ignore[attr-defined]
 
     selection_module = types.ModuleType("topcoffea.modules.selection")
-    sys.modules["topcoffea.modules.selection"] = selection_module
+    monkeypatch.setitem(sys.modules, "topcoffea.modules.selection", selection_module)
     modules_pkg.selection = selection_module  # type: ignore[attr-defined]
 
     class _DummyHistEFT:
@@ -102,24 +109,27 @@ def _install_test_stubs():
 
     hist_eft_module = types.ModuleType("topcoffea.modules.HistEFT")
     hist_eft_module.HistEFT = _DummyHistEFT
-    sys.modules["topcoffea.modules.HistEFT"] = hist_eft_module
+    monkeypatch.setitem(sys.modules, "topcoffea.modules.HistEFT", hist_eft_module)
     modules_pkg.HistEFT = hist_eft_module  # type: ignore[attr-defined]
 
     hist_eft_lower_module = types.ModuleType("topcoffea.modules.histEFT")
     hist_eft_lower_module.HistEFT = _DummyHistEFT
-    sys.modules["topcoffea.modules.histEFT"] = hist_eft_lower_module
+    monkeypatch.setitem(sys.modules, "topcoffea.modules.histEFT", hist_eft_lower_module)
     modules_pkg.histEFT = hist_eft_lower_module  # type: ignore[attr-defined]
 
     eft_helper_module = types.ModuleType("topcoffea.modules.eft_helper")
     eft_helper_module.calc_w2_coeffs = lambda *_, **__: None  # type: ignore[attr-defined]
     eft_helper_module.remap_coeffs = lambda *args, **__: args[2] if len(args) > 2 else None  # type: ignore[attr-defined]
-    sys.modules["topcoffea.modules.eft_helper"] = eft_helper_module
+    monkeypatch.setitem(sys.modules, "topcoffea.modules.eft_helper", eft_helper_module)
     modules_pkg.eft_helper = eft_helper_module  # type: ignore[attr-defined]
 
 
 def _build_processor(monkeypatch, is_data):
-    _install_test_stubs()
-    from analysis.training.simple_processor import AnalysisProcessor, ProcessingContext
+    _install_test_stubs(monkeypatch)
+    simple_processor = importlib.import_module("analysis.training.simple_processor")
+    simple_processor = importlib.reload(simple_processor)
+    AnalysisProcessor = simple_processor.AnalysisProcessor
+    ProcessingContext = simple_processor.ProcessingContext
 
     sample_key = "SampleData" if is_data else "SampleMC"
     samples = {

@@ -14,13 +14,13 @@ import gzip
 import pickle
 import correctionlib
 import json
-from topcoffea.modules.CorrectedMETFactory import CorrectedMETFactory
 from coffea.btag_tools import BTagScaleFactor
 from coffea.lookup_tools import txt_converters, rochester_lookup
 
 import topcoffea
 
 topcoffea_path = topcoffea.modules.paths.topcoffea_path
+CorrectedMETFactory = topcoffea.modules.CorrectedMETFactory.CorrectedMETFactory
 CorrectedJetsFactory = topcoffea.modules.CorrectedJetsFactory.CorrectedJetsFactory
 JECStack = topcoffea.modules.JECStack.JECStack
 GetParam = topcoffea.modules.get_param_from_jsons.GetParam
@@ -1503,10 +1503,13 @@ def ApplyJetCorrections(
     return CorrectedJetsFactory(name_map, jec_stack, allowed_variations=allowed_variations)
 
 
-def build_corrected_jets(jet_factory, jets):
-    """Materialise corrected jets."""
+def build_corrected_jets(jet_factory, jets, lazy_cache=None):
+    """Materialise corrected jets, optionally wiring through a coffea lazy cache."""
 
-    corrected = jet_factory.build(jets)
+    if lazy_cache is None:
+        corrected = jet_factory.build(jets)
+    else:
+        corrected = jet_factory.build(jets, lazy_cache=lazy_cache)
     return ak.Array(corrected)
 
 

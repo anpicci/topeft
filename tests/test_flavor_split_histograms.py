@@ -169,7 +169,7 @@ def _maybe_install_stub(
     try:
         importlib.import_module(name)
         return
-    except (ModuleNotFoundError, ImportError):
+    except (ModuleNotFoundError, ImportError, AttributeError):
         pass
 
     module = factory()
@@ -217,11 +217,17 @@ def _install_test_stubs(monkeypatch: pytest.MonkeyPatch) -> None:
     def _hist_eft_factory() -> types.ModuleType:
         module = types.ModuleType("topcoffea.modules.HistEFT")
         module.HistEFT = _DummyHistEFT
-        sys.modules["topcoffea.modules.histEFT"] = module
         return module
 
-    _maybe_install_stub(monkeypatch, "topcoffea.modules.HistEFT", _hist_eft_factory)
-    _maybe_install_stub(monkeypatch, "topcoffea.modules.histEFT", _hist_eft_factory)
+    hist_eft_module = _hist_eft_factory()
+    _install_module(monkeypatch, "topcoffea.modules.HistEFT", hist_eft_module)
+    _install_module(monkeypatch, "topcoffea.modules.histEFT", hist_eft_module)
+
+    topcoffea_pkg = importlib.import_module("topcoffea")
+    modules_pkg = importlib.import_module("topcoffea.modules")
+    modules_pkg.HistEFT = hist_eft_module  # type: ignore[attr-defined]
+    modules_pkg.histEFT = hist_eft_module  # type: ignore[attr-defined]
+    topcoffea_pkg.modules = modules_pkg  # type: ignore[attr-defined]
 
     def _topcoffea_corrections_factory() -> types.ModuleType:
         module = types.ModuleType("topcoffea.modules.corrections")
@@ -310,6 +316,8 @@ def _install_test_stubs(monkeypatch: pytest.MonkeyPatch) -> None:
     def _topeft_corrections_factory() -> types.ModuleType:
         module = types.ModuleType("topeft.modules.corrections")
         module.ApplyJetCorrections = _DummyJetCorrections
+        module.build_corrected_jets = lambda events, **kwargs: getattr(events, "Jet", None)
+        module.build_corrected_met = lambda events, **kwargs: getattr(events, "MET", None)
         module.GetBtagEff = lambda *args, **kwargs: np.ones(1)
         module.AttachMuonSF = lambda *args, **kwargs: None
         module.AttachElectronSF = lambda *args, **kwargs: None
@@ -374,7 +382,9 @@ def _install_test_stubs(monkeypatch: pytest.MonkeyPatch) -> None:
 def processor(tmp_path, monkeypatch):
     _install_test_stubs(monkeypatch)
 
-    from analysis.topeft_run2.analysis_processor import AnalysisProcessor
+    analysis_processor_module = importlib.import_module("analysis.topeft_run2.analysis_processor")
+    analysis_processor_module = importlib.reload(analysis_processor_module)
+    AnalysisProcessor = analysis_processor_module.AnalysisProcessor
 
     sample = {
         "isData": True,

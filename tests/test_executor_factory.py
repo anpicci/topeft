@@ -112,14 +112,18 @@ def test_executor_factory_taskvine_instantiates(tmp_path, monkeypatch, stub_remo
         )
 
     call_args: dict = {}
+    executor_base_cls = pytest.importorskip("coffea.processor.executor").ExecutorBase
 
-    class RecordingTaskVineExecutor:
+    class RecordingTaskVineExecutor(executor_base_cls):
         def __init__(self, *args, **kwargs):
             call_args["args"] = args
             call_args["kwargs"] = kwargs
             self.kwargs = kwargs
             self.manager_name = kwargs.get("manager_name")
             self.filepath = kwargs.get("filepath")
+
+        def __call__(self, items, function, accumulator):
+            return accumulator
 
     monkeypatch.setattr(processor, "TaskVineExecutor", RecordingTaskVineExecutor)
 

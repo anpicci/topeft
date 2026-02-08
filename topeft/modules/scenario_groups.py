@@ -102,7 +102,7 @@ def select_channels_for_scenario(
         )
 
     if missing_groups and not strict:
-        logger.warning(
+        logging.getLogger().warning(
             "Scenario '%s': using subset of channel groups from metadata (channels_payload). "
             "Requested: %s | Found: %s | Missing: %s",
             scenario.name,

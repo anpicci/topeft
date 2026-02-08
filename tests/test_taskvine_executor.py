@@ -1,3 +1,4 @@
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -7,6 +8,16 @@ import pytest
 
 def test_run_analysis_with_taskvine(tmp_path):
     """Launch run_analysis.py with the TaskVine executor and verify the output."""
+
+    if os.environ.get("TOPEFT_RUN_TASKVINE_INTEGRATION", "").strip().lower() not in {
+        "1",
+        "true",
+        "yes",
+    }:
+        pytest.skip(
+            "TaskVine integration test disabled by default. "
+            "Set TOPEFT_RUN_TASKVINE_INTEGRATION=1 to enable."
+        )
 
     taskvine = pytest.importorskip(
         "ndcctools.taskvine", reason="TaskVine Python bindings are unavailable."
@@ -61,6 +72,8 @@ def test_run_analysis_with_taskvine(tmp_path):
         "http://www.crc.nd.edu/~kmohrman/files/root_files/for_ci/",
         "--summary-verbosity",
         "none",
+        "--log-level",
+        "none",
     ]
 
     factory = taskvine.Factory("local", manager_host_port=manager_host_port)
@@ -69,12 +82,20 @@ def test_run_analysis_with_taskvine(tmp_path):
     factory.cores = 1
     factory.memory = 2000
     factory.disk = 2000
-    factory.scratch_dir = str(tmp_path / "factory")
+    factory_dir = tmp_path / "factory"
+    factory_dir.mkdir(parents=True, exist_ok=True)
+    factory.scratch_dir = str(factory_dir)
+    env = os.environ.copy()
+    existing_pythonpath = env.get("PYTHONPATH", "")
+    env["PYTHONPATH"] = (
+        f"{analysis_dir}:{existing_pythonpath}" if existing_pythonpath else str(analysis_dir)
+    )
 
     with factory:
         subprocess.run(
             args,
             cwd=analysis_dir,
+            env=env,
             check=True,
             timeout=420,
         )

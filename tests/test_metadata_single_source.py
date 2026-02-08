@@ -1,7 +1,36 @@
 import sys
 from types import ModuleType
 
+import pytest
 import yaml
+
+_STUBBED_MODULE_NAMES = (
+    "topcoffea",
+    "topcoffea.modules",
+    "topcoffea.modules.paths",
+    "topcoffea.modules.utils",
+    "topcoffea.modules.remote_environment",
+    "topcoffea.modules.dynamic_data_reduction",
+    "topcoffea.modules.HistEFT",
+    "topcoffea.modules.get_param_from_jsons",
+    "topcoffea.modules.HTMLGenerator",
+    "topcoffea.scripts",
+    "topcoffea.scripts.make_html",
+    "numpy",
+    "matplotlib",
+    "matplotlib.pyplot",
+    "mplhep",
+    "hist",
+    "cycler",
+    "boost_histogram",
+    "boost_histogram.storage",
+    "uproot",
+    "coffea",
+    "coffea.nanoevents",
+    "coffea.nanoevents.factory",
+    "coffea.hist",
+)
+_ORIGINAL_MODULES = {name: sys.modules.get(name) for name in _STUBBED_MODULE_NAMES}
 
 
 def _install_topcoffea_stub() -> None:
@@ -161,6 +190,16 @@ from analysis.topeft_run2 import metadata_authority
 from analysis.topeft_run2 import datacards_post_processing as dpp
 from analysis.topeft_run2 import make_cr_and_sr_plots as plots
 from analysis.topeft_run2 import comp as comp_module
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _restore_stubbed_modules_after_module():
+    yield
+    for name, original in _ORIGINAL_MODULES.items():
+        if original is None:
+            sys.modules.pop(name, None)
+        else:
+            sys.modules[name] = original
 
 
 def test_load_metadata_prefers_custom_file(tmp_path):

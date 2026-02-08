@@ -6,9 +6,7 @@ import pytest
 from analysis.topeft_run2 import metadata_authority
 
 
-def _install_topcoffea_stub() -> None:
-    if "topcoffea" in sys.modules:
-        return
+def _install_topcoffea_stub(monkeypatch: pytest.MonkeyPatch) -> None:
     modules_pkg = ModuleType("topcoffea.modules")
     paths_mod = ModuleType("topcoffea.modules.paths")
     paths_mod.topcoffea_path = lambda relative: f"/abs/{relative}"
@@ -18,13 +16,13 @@ def _install_topcoffea_stub() -> None:
     topcoffea_stub.modules = modules_pkg
     topcoffea_stub.__path__ = []
 
-    sys.modules["topcoffea"] = topcoffea_stub
-    sys.modules["topcoffea.modules"] = modules_pkg
-    sys.modules["topcoffea.modules.paths"] = paths_mod
+    monkeypatch.setitem(sys.modules, "topcoffea", topcoffea_stub)
+    monkeypatch.setitem(sys.modules, "topcoffea.modules", modules_pkg)
+    monkeypatch.setitem(sys.modules, "topcoffea.modules.paths", paths_mod)
 
 
-def test_golden_json_for_year_uses_metadata_mapping() -> None:
-    _install_topcoffea_stub()
+def test_golden_json_for_year_uses_metadata_mapping(monkeypatch: pytest.MonkeyPatch) -> None:
+    _install_topcoffea_stub(monkeypatch)
     metadata = {
         "golden_jsons": {
             "2017": "data/goldenJsons/Cert_2017.txt",
@@ -36,8 +34,8 @@ def test_golden_json_for_year_uses_metadata_mapping() -> None:
     assert result == "/abs/data/goldenJsons/Cert_2017.txt"
 
 
-def test_golden_json_for_year_missing_key_raises() -> None:
-    _install_topcoffea_stub()
+def test_golden_json_for_year_missing_key_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    _install_topcoffea_stub(monkeypatch)
     metadata = {"golden_jsons": {"2017": "data/goldenJsons/Cert_2017.txt"}}
 
     with pytest.raises(KeyError, match="2018"):
