@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, Optional
 
 import topcoffea
+from topcoffea.modules.histEFT import HistEFT
 from topeft.modules.topcoffea_imports import require_module
 
 def _inject_module_exports(module):
@@ -19,7 +20,6 @@ def _inject_module_exports(module):
 
 _inject_module_exports(require_module("objects"))
 _inject_module_exports(require_module("selection"))
-HistEFT = topcoffea.modules.HistEFT.HistEFT
 efth = topcoffea.modules.eft_helper
 
 

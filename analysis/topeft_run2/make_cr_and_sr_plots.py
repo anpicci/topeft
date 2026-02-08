@@ -11,6 +11,7 @@ from cycler import cycler
 import mplhep as hep
 import hist
 import topcoffea
+from topcoffea.modules.histEFT import HistEFT
 
 from topeft.modules.topcoffea_imports import require_script
 from analysis.topeft_run2 import metadata_authority
@@ -19,7 +20,6 @@ _AXES_INFO = None
 from topeft.modules.yield_tools import YieldTools
 import topeft.modules.get_rate_systs as grs
 
-HistEFT = topcoffea.modules.HistEFT.HistEFT
 topcoffea_path = topcoffea.modules.paths.topcoffea_path
 GetParam = topcoffea.modules.get_param_from_jsons.GetParam
 get_tc_param = GetParam(topcoffea_path("params/params.json"))
@@ -206,17 +206,6 @@ def get_dict_with_stripped_bin_names(in_chan_dict,type_of_info_to_strip):
                 out_chan_dict[cat].append(bin_name_no_njet)
     return (out_chan_dict)
 
-def group(h: HistEFT, oldname: str, newname: str, grouping: dict[str, list[str]]):
-    hnew = HistEFT(
-        hist.axis.StrCategory(grouping, name=newname),
-        *(ax for ax in h.axes if ax.name != oldname),
-        wc_names=h.wc_names,
-    )
-    for i, indices in enumerate(grouping.values()):
-        ind = [c for c in indices if c in h.axes[0]]
-        hnew.view(flow=True)[i] = h[{oldname: ind}][{oldname: sum}].view(flow=True)
-
-    return hnew
 # Group bins in a hist, returns a new hist
 def group_bins(histo,bin_map,axis_name="process",drop_unspecified=False):
 
@@ -232,11 +221,8 @@ def group_bins(histo,bin_map,axis_name="process",drop_unspecified=False):
                 bin_map[bin_name] = bin_name
     bin_map = {m:bin_map[m] for m in bin_map if any(a in list(histo.axes[axis_name]) for a in bin_map[m])}
 
-    # Remap the bins
-    old_ax = histo.axes[axis_name]
-    #new_ax = hist.axis.StrCategory([], name=old_ax.name, label=old_ax.label, growth=True)
-    new_histo = group(histo, axis_name, axis_name, bin_map)
-    #new_histo = histo.group(axis_name, bin_map)
+    # Remap the bins with the canonical SparseHist API.
+    new_histo = histo.group(axis_name, bin_map)
 
     return new_histo
 

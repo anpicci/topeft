@@ -21,6 +21,7 @@ import coffea
 import coffea.processor as processor
 import hist
 import topcoffea
+from topcoffea.modules.histEFT import HistEFT
 from coffea.analysis_tools import PackedSelection
 from coffea.lumi_tools import LumiMask
 from typing import Any, Dict, List, Optional, Sequence, Set, Tuple, Union
@@ -55,7 +56,6 @@ from topeft.modules.systematics import (
     SystematicVariation,
 )
 
-HistEFT = topcoffea.modules.HistEFT.HistEFT
 topcoffea_path = topcoffea.modules.paths.topcoffea_path
 efth = topcoffea.modules.eft_helper
 tc_es = topcoffea.modules.event_selection

@@ -20,10 +20,9 @@ import coffea.processor as processor
 from coffea.nanoevents import NanoAODSchema
 
 import topcoffea
+from topcoffea.modules.histEFT import HistEFT
 
 import simple_processor
-
-HistEFT = topcoffea.modules.HistEFT.HistEFT
 
 
 def _ensure_numpy(array: Any) -> np.ndarray:

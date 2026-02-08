@@ -9,8 +9,8 @@ import coffea.processor as processor
 
 import hist
 import topcoffea
+from topcoffea.modules.histEFT import HistEFT
 
-HistEFT = topcoffea.modules.HistEFT.HistEFT
 efth = topcoffea.modules.eft_helper
 corrections = topcoffea.modules.corrections
 
