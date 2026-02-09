@@ -2,7 +2,7 @@ import numpy as np
 
 
 def add_sumw2_stub(eval_d, sumw2=False):
-    # compatibility with the coffea.Hist. add a row of zeros for sumw2.
+    # compatibility with legacy histogram outputs: add a row of zeros for sumw2.
     eval_d2 = {}
     for k, v in eval_d.items():
         if not sumw2:

@@ -16,7 +16,7 @@ from topeft.modules.channel_metadata import ChannelMetadataHelper
 IGNORE_LINES = [
     "FutureWarning: In coffea version v2023.3.0 (target date: 31 Mar 2023), this will be an error.",
     "(Set coffea.deprecations_as_errors = True to get a stack trace now.)",
-    "ImportError: coffea.hist is deprecated",
+    "ImportError: legacy coffea histogram API is deprecated",
     "warnings.warn(message, FutureWarning)",
 ]
 

@@ -1,4 +1,4 @@
-[![Binder](https://mybinder.org/badge_logo.svg)](https://mybinder.org/v2/gh/TopEFT/topeft/master?labpath=analysis%2Ftraining%2Fintro_coffea.hist.ipynb)<br>
+[![Binder](https://mybinder.org/badge_logo.svg)](https://mybinder.org/v2/gh/TopEFT/topeft/master?labpath=analysis%2Ftraining%2Fintro_hist.ipynb)<br>
 
 ## training
 This directory contains example scripts that may be useful for learning to run coffea and topcoffea. 
@@ -23,5 +23,5 @@ This directory contains example scripts that may be useful for learning to run c
     python simple_run.py ../../topcoffea/json/test_samples/UL17_private_ttH_for_CI.json
     ```
 
-* `intro_coffea.hist.py` and `intro_coffea.hist.ipynb`: A very basic introduction to coffea histogram (deprecated). Introduces some important coffea methods used in filling, transforming, and plotting the hist object.
+* `intro_hist.py` and `intro_hist.ipynb`: A basic introduction to the supported histogram stack (`hist` + `mplhep`), including modern filling, slicing, and 2D plotting.
     - To run the jupyter notebook, one can use coffea casa facility (instructions to login to coffea-casa can be found [here](https://coffea-casa.readthedocs.io/en/latest/cc_user.html#access)). Then, one can clone this repository using [these instructions](https://coffea-casa.readthedocs.io/en/latest/cc_user.html#using-git). 
