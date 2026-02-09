@@ -12,6 +12,11 @@ try:  # pragma: no cover - optional dependency in CI
 except ModuleNotFoundError:  # pragma: no cover - fallback used when topcoffea is absent
     topcoffea = None  # type: ignore[assignment]
 
+try:  # pragma: no cover - optional dependency in CI
+    from topcoffea.modules.histEFT import HistEFT as _HistEFT
+except Exception:  # pragma: no cover - fallback used when HistEFT is unavailable
+    _HistEFT = None  # type: ignore[assignment]
+
 from analysis.mc_validation.plot_utils import (
     build_dataset_histograms,
     component_labels,
@@ -20,12 +25,6 @@ from analysis.mc_validation.plot_utils import (
     require_tuple_histogram_items,
     tuple_histogram_items,
 )
-
-if topcoffea is not None:  # pragma: no branch - optional dependency in CI
-    _HistEFT = getattr(topcoffea.modules.HistEFT, "HistEFT", None)
-else:  # pragma: no cover - fallback used when topcoffea is absent
-    _HistEFT = None
-
 
 def _supports_histeft_contract() -> bool:
     if _HistEFT is None:

@@ -15,7 +15,7 @@ def _module(name: str) -> types.ModuleType:
 
 
 def _reload_runner_output(monkeypatch, module_map: dict[str, types.ModuleType]):
-    for stale_name in ("topcoffea.modules.HistEFT", "topcoffea.modules.histEFT"):
+    for stale_name in ("topcoffea.modules.histEFT",):
         monkeypatch.delitem(sys.modules, stale_name, raising=False)
     for key, value in module_map.items():
         monkeypatch.setitem(sys.modules, key, value)

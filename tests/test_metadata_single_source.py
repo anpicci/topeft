@@ -11,7 +11,7 @@ _STUBBED_MODULE_NAMES = (
     "topcoffea.modules.utils",
     "topcoffea.modules.remote_environment",
     "topcoffea.modules.dynamic_data_reduction",
-    "topcoffea.modules.HistEFT",
+    "topcoffea.modules.histEFT",
     "topcoffea.modules.get_param_from_jsons",
     "topcoffea.modules.HTMLGenerator",
     "topcoffea.scripts",
@@ -51,9 +51,9 @@ def _install_topcoffea_stub() -> None:
     modules_pkg.utils = utils_mod
     modules_pkg.remote_environment = remote_env_mod
     modules_pkg.dynamic_data_reduction = ModuleType("topcoffea.modules.dynamic_data_reduction")
-    hist_mod = ModuleType("topcoffea.modules.HistEFT")
+    hist_mod = ModuleType("topcoffea.modules.histEFT")
     hist_mod.HistEFT = type("HistEFT", (), {})
-    modules_pkg.HistEFT = hist_mod
+    modules_pkg.histEFT = hist_mod
     get_param_mod = ModuleType("topcoffea.modules.get_param_from_jsons")
     get_param_mod.GetParam = lambda *args, **kwargs: lambda key: 1.0
     modules_pkg.get_param_from_jsons = get_param_mod
@@ -77,7 +77,7 @@ def _install_topcoffea_stub() -> None:
     sys.modules["topcoffea.modules.utils"] = utils_mod
     sys.modules["topcoffea.modules.remote_environment"] = remote_env_mod
     sys.modules["topcoffea.modules.dynamic_data_reduction"] = modules_pkg.dynamic_data_reduction
-    sys.modules["topcoffea.modules.HistEFT"] = hist_mod
+    sys.modules["topcoffea.modules.histEFT"] = hist_mod
     sys.modules["topcoffea.modules.get_param_from_jsons"] = get_param_mod
     sys.modules["topcoffea.modules.HTMLGenerator"] = html_mod
     sys.modules["topcoffea.scripts"] = scripts_pkg

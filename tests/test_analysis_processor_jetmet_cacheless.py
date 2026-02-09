@@ -7,7 +7,7 @@ import numpy as np
 
 from coffea.nanoevents import BaseSchema, NanoEventsFactory
 
-_hist_eft_stub = types.ModuleType("topcoffea.modules.HistEFT")
+_hist_eft_stub = types.ModuleType("topcoffea.modules.histEFT")
 
 
 class _DummyHistEFT:
@@ -21,8 +21,8 @@ class _DummyHistEFT:
 _hist_eft_stub.HistEFT = _DummyHistEFT
 importlib.import_module("topcoffea")
 modules_pkg = importlib.import_module("topcoffea.modules")
-modules_pkg.HistEFT = _hist_eft_stub  # type: ignore[attr-defined]
-sys.modules["topcoffea.modules.HistEFT"] = _hist_eft_stub
+modules_pkg.histEFT = _hist_eft_stub  # type: ignore[attr-defined]
+sys.modules["topcoffea.modules.histEFT"] = _hist_eft_stub
 sys.modules["topcoffea.modules.histEFT"] = _hist_eft_stub
 
 import analysis.topeft_run2.analysis_processor as ap

@@ -30,11 +30,11 @@ summarises the setup steps and links to the TaskVine environment packaging guide
 All CLI entry points validate that the `topcoffea` branch matches
 `ch_update_calcoffea` (or the release tag you specify via `TOPCOFFEA_BRANCH`).
 
-### Legacy HistEFT support
+### HistEFT support
 
 The repository now expects the `topcoffea` package to be installed in the active
 environment instead of shipping a partial vendor copy. The upstream project still
-exposes the legacy `HistEFT` helpers via `topcoffea.modules.HistEFT`, so existing
+exposes `HistEFT` via `topcoffea.modules.histEFT`, so existing
 imports keep working once the dependency is installed. CI includes a smoke test
 that asserts `import topcoffea` resolves outside the `topeft` checkout—remove any
 stray `topcoffea/` directories under this repository and reinstall the sibling
