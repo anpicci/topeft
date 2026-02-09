@@ -107,10 +107,10 @@ def _install_test_stubs(monkeypatch: pytest.MonkeyPatch):
         def fill(self, **__):
             pass
 
-    hist_eft_module = types.ModuleType("topcoffea.modules.HistEFT")
+    hist_eft_module = types.ModuleType("topcoffea.modules.histEFT")
     hist_eft_module.HistEFT = _DummyHistEFT
-    monkeypatch.setitem(sys.modules, "topcoffea.modules.HistEFT", hist_eft_module)
-    modules_pkg.HistEFT = hist_eft_module  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "topcoffea.modules.histEFT", hist_eft_module)
+    modules_pkg.histEFT = hist_eft_module  # type: ignore[attr-defined]
 
     hist_eft_lower_module = types.ModuleType("topcoffea.modules.histEFT")
     hist_eft_lower_module.HistEFT = _DummyHistEFT

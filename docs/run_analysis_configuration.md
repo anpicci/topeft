@@ -269,7 +269,7 @@ switching executors once the run is ready to scale beyond the local machine.
   paths were provided.  Always invoke ``run_analysis.py`` from the repository
   root or supply absolute paths.
 * If histogram handling fails with an ``ImportError`` noting that
-  ``topcoffea.modules.histEFT``/``topcoffea.modules.HistEFT`` is missing, confirm
+  ``topcoffea.modules.histEFT`` is missing, confirm
   that your sibling ``topcoffea`` checkout is on the ``ch_update_calcoffea``
   branch (or matching tag) and reinstall it with ``pip install -e ../topcoffea``
   before retrying the run.

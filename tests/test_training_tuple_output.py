@@ -74,11 +74,11 @@ def _install_training_stubs(monkeypatch: pytest.MonkeyPatch) -> None:
             converted.setdefault("quadratic_term", np.zeros(length, dtype=int))
             return super().fill(**converted)
 
-    hist_eft_module = types.ModuleType("topcoffea.modules.HistEFT")
+    hist_eft_module = types.ModuleType("topcoffea.modules.histEFT")
     hist_eft_module.HistEFT = _DummyHistEFT
-    monkeypatch.setitem(sys.modules, "topcoffea.modules.HistEFT", hist_eft_module)
     monkeypatch.setitem(sys.modules, "topcoffea.modules.histEFT", hist_eft_module)
-    modules_pkg.HistEFT = hist_eft_module  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "topcoffea.modules.histEFT", hist_eft_module)
+    modules_pkg.histEFT = hist_eft_module  # type: ignore[attr-defined]
     modules_pkg.histEFT = hist_eft_module  # type: ignore[attr-defined]
 
 
