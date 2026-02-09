@@ -3,8 +3,8 @@ import copy
 from collections.abc import Mapping
 
 import topcoffea
+from topcoffea.modules.histEFT import HistEFT
 
-HistEFT = topcoffea.modules.HistEFT.HistEFT
 utils = topcoffea.modules.utils
 from topeft.modules.compatibility import add_sumw2_stub
 from topeft.modules.runner_output import SUMMARY_KEY
@@ -828,5 +828,4 @@ class YieldTools():
 
             print_ratios(yld_sum_dict["ee"],yld_sum_dict["mm"],2)
             print_ratios(yld_sum_dict["eee"],yld_sum_dict["mmm"],3)
-
 

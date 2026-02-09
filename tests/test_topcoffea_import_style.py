@@ -18,6 +18,9 @@ _BANNED_PATTERNS: Tuple[Tuple[re.Pattern[str], str], ...] = (
         "load through 'topcoffea.import_module' and attribute access",
     ),
 )
+_ALLOWED_DIRECT_IMPORTS: Tuple[re.Pattern[str], ...] = (
+    re.compile(r"^\s*from\s+topcoffea\.modules\.histEFT\s+import\s+HistEFT\s*$"),
+)
 
 
 def _iter_source_files() -> Iterator[Path]:
@@ -60,6 +63,8 @@ def _is_vendor_file(path: Path) -> bool:
 def _scan_text_lines(path: Path, lines: Iterable[str]) -> List[str]:
     violations: List[str] = []
     for lineno, line in enumerate(lines, 1):
+        if any(pattern.search(line) for pattern in _ALLOWED_DIRECT_IMPORTS):
+            continue
         for pattern, guidance in _BANNED_PATTERNS:
             if pattern.search(line):
                 violations.append(

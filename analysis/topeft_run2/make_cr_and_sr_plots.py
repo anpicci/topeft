@@ -11,6 +11,7 @@ from cycler import cycler
 import mplhep as hep
 import hist
 import topcoffea
+from topcoffea.modules.histEFT import HistEFT
 
 from topeft.modules.topcoffea_imports import require_script
 from analysis.topeft_run2 import metadata_authority
@@ -19,7 +20,6 @@ _AXES_INFO = None
 from topeft.modules.yield_tools import YieldTools
 import topeft.modules.get_rate_systs as grs
 
-HistEFT = topcoffea.modules.HistEFT.HistEFT
 topcoffea_path = topcoffea.modules.paths.topcoffea_path
 GetParam = topcoffea.modules.get_param_from_jsons.GetParam
 get_tc_param = GetParam(topcoffea_path("params/params.json"))
@@ -206,17 +206,6 @@ def get_dict_with_stripped_bin_names(in_chan_dict,type_of_info_to_strip):
                 out_chan_dict[cat].append(bin_name_no_njet)
     return (out_chan_dict)
 
-def group(h: HistEFT, oldname: str, newname: str, grouping: dict[str, list[str]]):
-    hnew = HistEFT(
-        hist.axis.StrCategory(grouping, name=newname),
-        *(ax for ax in h.axes if ax.name != oldname),
-        wc_names=h.wc_names,
-    )
-    for i, indices in enumerate(grouping.values()):
-        ind = [c for c in indices if c in h.axes[0]]
-        hnew.view(flow=True)[i] = h[{oldname: ind}][{oldname: sum}].view(flow=True)
-
-    return hnew
 # Group bins in a hist, returns a new hist
 def group_bins(histo,bin_map,axis_name="process",drop_unspecified=False):
 
@@ -232,11 +221,8 @@ def group_bins(histo,bin_map,axis_name="process",drop_unspecified=False):
                 bin_map[bin_name] = bin_name
     bin_map = {m:bin_map[m] for m in bin_map if any(a in list(histo.axes[axis_name]) for a in bin_map[m])}
 
-    # Remap the bins
-    old_ax = histo.axes[axis_name]
-    #new_ax = hist.axis.StrCategory([], name=old_ax.name, label=old_ax.label, growth=True)
-    new_histo = group(histo, axis_name, axis_name, bin_map)
-    #new_histo = histo.group(axis_name, bin_map)
+    # Remap the bins with the canonical SparseHist API.
+    new_histo = histo.group(axis_name, bin_map)
 
     return new_histo
 
@@ -529,61 +515,72 @@ def make_cr_fig(h_mc,h_data,unit_norm_bool,axis='process',var='lj0pt',bins=[],gr
         h_mc.scale(1.0/sum_mc)
         h_data.scale(1.0/sum_data)
 
+    # Build a grouped process histogram using the same strategy as ttbarEFT's CR plotting:
+    # aggregate process categories first, then stack the grouped process axis.
+    h_mc_as_hist = h_mc.as_hist({})
+    process_axis = "process"
+    available_processes = list(h_mc.axes[process_axis])
+    grouping = {
+        proc: [member for member in group[proc] if member in available_processes]
+        for proc in group
+        if any(member in available_processes for member in group[proc])
+    }
+    if grouping:
+        grouped_processes = list(grouping.keys())
+        h_mc_grouped = hist.Hist(
+            hist.axis.StrCategory(grouped_processes, name=process_axis, growth=True),
+            h_mc_as_hist.axes[var],
+            storage=h_mc_as_hist.storage_type(),
+        )
+        for proc_name, members in grouping.items():
+            grouped_idx = h_mc_grouped.axes[process_axis].index(proc_name)
+            h_mc_grouped.view(flow=True)[grouped_idx] = (
+                h_mc_as_hist[{process_axis: members}][{process_axis: sum}].view(flow=True)
+            )
+    else:
+        h_mc_grouped = h_mc_as_hist
+
+    h_data_projected = h_data[{process_axis: sum}].as_hist({}).project(var)
+
     # Plot the MC
-    years = {}
-    for axis_name in h_mc.axes[axis]:
-        name = axis_name.split('UL')[0].replace('_private', '').replace('_central', '')
-        if name in years:
-            years[name].append(axis_name)
-        else:
-            years[name] = [axis_name]
     hep.style.use("CMS")
     plt.sca(ax)
     hep.cms.label(lumi='138')
-    # Hack for grouping until fixed
-    grouping = {proc: [good_proc for good_proc in group[proc] if good_proc in h_mc.axes['process']] for proc in group if any(p in h_mc.axes['process'] for p in group[proc])}
-    if group:
-        vals = [h_mc[{'process': grouping[proc]}][{'process': sum}].eval({})[()][1:-1] for proc in grouping]
-        mc_vals = {proc: h_mc[{'process': grouping[proc]}][{'process': sum}].as_hist({}).values(flow=True)[1:] for proc in grouping}
-    else:
-        vals = [h_mc[{'process': proc}].eval({})[()][1:-1] for proc in grouping]
-        mc_vals = {proc: h_mc[{'process': proc}].as_hist({}).values(flow=True)[1:] for proc in grouping}
-    bins = h_data[{'process': sum}].as_hist({}).axes[var].edges
-    bins = np.append(bins, [bins[-1] + (bins[-1] - bins[-2])*0.3])
+    mc_stack = h_mc_grouped.stack(process_axis)
+    bins = h_data_projected.axes[var].edges
+    bins_with_tail = np.append(bins, [bins[-1] + (bins[-1] - bins[-2]) * 0.3])
     hep.histplot(
-        list(mc_vals.values()),
+        list(mc_stack),
         ax=ax,
-        bins=bins,
+        bins=bins_with_tail,
         stack=True,
         density=unit_norm_bool,
-        label=list(mc_vals.keys()),
+        label=[stack_item.name for stack_item in mc_stack],
         histtype='fill',
     )
 
     # Plot the data
     hep.histplot(
-        h_data[{'process':sum}].as_hist({}).values(flow=True)[1:],
-        #error_opts = DATA_ERR_OPS,
+        h_data_projected.values(flow=True)[1:],
         ax=ax,
-        bins=bins,
+        bins=bins_with_tail,
         stack=False,
         density=unit_norm_bool,
         label='Data',
-        #flow='show',
         histtype='errorbar',
         **DATA_ERR_OPS,
     )
 
     # Make the ratio plot
+    h_total_mc = h_mc_grouped.project(var)
+    ratio_hist = h_data_projected / h_total_mc
     hep.histplot(
-        (h_data[{'process':sum}].as_hist({}).values(flow=True)/h_mc[{"process": sum}].as_hist({}).values(flow=True))[1:],
-        yerr=(np.sqrt(h_data[{'process':sum}].as_hist({}).values(flow=True)) / h_data[{'process':sum}].as_hist({}).values(flow=True))[1:],
-        #error_opts = DATA_ERR_OPS,
+        ratio_hist,
+        yerr=False,
         ax=rax,
-        bins=bins,
+        bins=bins_with_tail,
         stack=False,
         density=unit_norm_bool,
-        #flow='show',
         histtype='errorbar',
         **DATA_ERR_OPS,
     )
@@ -597,11 +594,12 @@ def make_cr_fig(h_mc,h_data,unit_norm_bool,axis='process',var='lj0pt',bins=[],gr
         #err_ratio_m = np.append(err_ratio_m,0) # Work around off by one error
         ax.fill_between(bin_edges_arr,err_m,err_p, step='post', facecolor='none', edgecolor='gray', label='Syst err', hatch='////')
         rax.fill_between(bin_edges_arr,err_ratio_m,err_ratio_p,step='post', facecolor='none', edgecolor='gray', label='Syst err', hatch='////')
-    err_m = np.append(h_mc[{'process': sum}].as_hist({}).values(flow=True)[1:]-np.sqrt(h_mc[{'process': sum}].as_hist({}).values(flow=True)[1:]), 1)
-    err_p = np.append(h_mc[{'process': sum}].as_hist({}).values(flow=True)[1:]+np.sqrt(h_mc[{'process': sum}].as_hist({}).values(flow=True)[1:]), 1)
-    err_ratio_m = np.append(1-1/np.sqrt(h_mc[{'process': sum}].as_hist({}).values(flow=True)[1:]), 1)
-    err_ratio_p = np.append(1+1/np.sqrt(h_mc[{'process': sum}].as_hist({}).values(flow=True)[1:]), 1)
-    rax.fill_between(bins,err_ratio_m,err_ratio_p,step='post', facecolor='none', edgecolor='gray', label='Stat err', hatch='////')
+    total_vals = h_total_mc.values(flow=True)[1:]
+    err_m = np.append(total_vals - np.sqrt(total_vals), 1)
+    err_p = np.append(total_vals + np.sqrt(total_vals), 1)
+    err_ratio_m = np.append(1 - 1 / np.sqrt(total_vals), 1)
+    err_ratio_p = np.append(1 + 1 / np.sqrt(total_vals), 1)
+    rax.fill_between(bins_with_tail,err_ratio_m,err_ratio_p,step='post', facecolor='none', edgecolor='gray', label='Stat err', hatch='////')
 
     # Scale the y axis and labels
     ax.autoscale(axis='y')

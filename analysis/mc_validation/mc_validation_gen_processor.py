@@ -9,6 +9,7 @@ from collections import OrderedDict, defaultdict
 from typing import Any, Dict, Tuple, Union
 
 import topcoffea
+from topcoffea.modules.histEFT import HistEFT
 from topeft.modules.topcoffea_imports import require_module
 
 from topeft.modules.runner_output import SUMMARY_KEY, materialise_tuple_dict
@@ -22,7 +23,6 @@ def _inject_module_exports(module):
 
 _inject_module_exports(require_module("objects"))
 _inject_module_exports(require_module("selection"))
-HistEFT = topcoffea.modules.HistEFT.HistEFT
 efth = topcoffea.modules.eft_helper
 get_lumi = topcoffea.modules.GetValuesFromJsons.get_lumi
 

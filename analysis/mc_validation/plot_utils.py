@@ -18,13 +18,8 @@ from typing import Any, Dict, Iterable, Mapping, MutableMapping, Optional, Seque
 import hist
 
 try:  # pragma: no cover - HistEFT is optional in some environments
-    import topcoffea
-except ModuleNotFoundError:  # pragma: no cover - fallback when HistEFT is unavailable
-    topcoffea = None  # type: ignore[assignment]
-
-if topcoffea is not None:
-    HistEFT = getattr(topcoffea.modules.HistEFT, "HistEFT", None)
-else:  # pragma: no cover - fallback when HistEFT is unavailable
+    from topcoffea.modules.histEFT import HistEFT
+except Exception:  # pragma: no cover - fallback when HistEFT is unavailable
     HistEFT = None  # type: ignore[assignment]
 
 
@@ -278,4 +273,3 @@ __all__ = [
     "require_tuple_histogram_items",
     "tuple_histogram_items",
 ]
-
