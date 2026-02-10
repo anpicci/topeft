@@ -1,3 +1,21 @@
+"""Run the Sum-of-Weights preprocessing workflow for input samples.
+
+Purpose:
+- Execute ``sow_processor`` over JSON/CFG sample manifests to produce
+  SumOfWeights histograms used to normalize downstream analysis jobs.
+
+Inputs/outputs:
+- Reads sample manifests and ROOT files listed in those manifests.
+- Writes a gzip+pickle histogram artifact (default: ``histos/sowTopEFT.pkl.gz``).
+
+Side effects:
+- Creates output directories/files and may run distributed execution backends.
+
+How to run:
+- ``python analysis/topeft_run2/run_sow.py --help``
+- ``python analysis/topeft_run2/run_sow.py input_samples/sample_jsons/test_samples/UL17_private_ttH_for_CI.json -x futures``
+"""
+
 import argparse
 import cloudpickle
 import gzip

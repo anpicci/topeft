@@ -1,3 +1,22 @@
+"""Prototype utility for plotting 1D EFT quadratic fits from NanoAOD events.
+
+Purpose:
+- Build per-WC quadratic-fit summaries from one input sample and write quick
+  diagnostic plots.
+
+Inputs/outputs:
+- Reads one NanoAOD ROOT file (local path + optional redirector).
+- Writes PNG plots and optional ``index.html`` in the output directory.
+
+Side effects:
+- Creates output directories/files and performs remote file reads when a
+  redirector is provided.
+
+How to run:
+- ``python analysis/topeft_run2/make_1d_quad_plots.py --help``
+- ``python analysis/topeft_run2/make_1d_quad_plots.py -i /store/.../sample.root -o quad_plots`` 
+"""
+
 import os
 import argparse
 import datetime
@@ -10,12 +29,6 @@ from topeft.modules.topcoffea_imports import require_script
 qft = topcoffea.modules.quad_fit_tools
 utils = topcoffea.modules.utils
 make_html = require_script("make_html").make_html
-
-# This is more or less a placeholder script
-#   - It shows  an example of how we might want to access the quadratic fit information using topcoffea.modules.quad_fit_tools
-#   - Currently the script doesn't do much (just processes a single ttH file, prints where fits cross a threshold, and makes 1d quadratic plots)
-#   - So this is probably not all that useful right now, but might give us a place to build from in the future
-#   - Example usage: python make_1d_quad_plots.py -o ~/www/some/dir/in/your/web/area
 
 def main():
     from topeft.modules.logging_config import configure_topeft_logging

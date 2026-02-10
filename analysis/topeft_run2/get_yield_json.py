@@ -1,3 +1,21 @@
+"""Extract category yields from histogram pickles and save JSON outputs.
+
+Purpose:
+- Read tuple-keyed histogram pickles and emit year/category yield summaries for
+  regression checks and datacard preparation.
+
+Inputs/outputs:
+- Reads one histogram pickle (default ``histos/plotsTopEFT.pkl.gz``).
+- Writes a JSON yield file (timestamped by default) and optional table output.
+
+Side effects:
+- Creates JSON files in the current working directory.
+
+How to run:
+- ``python analysis/topeft_run2/get_yield_json.py --help``
+- ``python analysis/topeft_run2/get_yield_json.py -f histos/plotsTopEFT.pkl.gz -y 2018``
+"""
+
 import argparse
 import json
 import datetime
@@ -8,10 +26,6 @@ from topeft.modules.yield_tools import YieldTools
 
 mlt = topcoffea.modules.MakeLatexTable
 utils = topcoffea.modules.utils
-
-# This script takes a pkl file, finds the yields in the analysis categories, saves the yields to a json
-#   - If you do not specify a pkl file path, will default to "hists/plotsTopEFT.pkl.gz"
-#   - Example usage: python get_yield_json.py -f histos/plotsTopEFT.pkl.gz
 
 def main():
     from topeft.modules.logging_config import configure_topeft_logging

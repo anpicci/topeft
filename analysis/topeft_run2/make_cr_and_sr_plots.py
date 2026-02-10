@@ -1,3 +1,21 @@
+"""Produce control/signal-region plots from tuple-keyed histogram pickles.
+
+Purpose:
+- Build CR/SR plots, uncertainty bands, and optional web-friendly outputs from
+  Run-2 histogram artifacts.
+
+Inputs/outputs:
+- Reads a histogram pickle plus optional metadata/scenario configuration.
+- Writes plot images (and optional html indices) into the chosen output path.
+
+Side effects:
+- Creates directories/files and may overwrite existing plots with same names.
+
+How to run:
+- ``python analysis/topeft_run2/make_cr_and_sr_plots.py --help``
+- ``python analysis/topeft_run2/make_cr_and_sr_plots.py -f histos/plotsTopEFT.pkl.gz -o plots/cr_sr`` 
+"""
+
 import numpy as np
 import os
 import copy
@@ -26,14 +44,6 @@ get_tc_param = GetParam(topcoffea_path("params/params.json"))
 utils = topcoffea.modules.utils
 make_html = require_script("make_html").make_html
 
-
-# This script takes an input pkl file that should have both data and background MC included.
-# The input is expected to be the 5-tuple histogram pickle produced by the current topcoffea
-# runners (including TaskVine) and saved with utils.dump_to_pkl/normalise_runner_output.
-# Use the -y option to specify a year; if no year is specified, all years will be included.
-# There are various other options available from the command line.
-# For example, to make unit normalized plots for 2018, with the timestamp appended to the directory name, you would run:
-#     python make_cr_plots.py -f histos/your.pkl.gz -o ~/www/somewhere/in/your/web/dir -n some_dir_name -y 2018 -t -u
 
 # Some options for plotting the data and MC
 DATA_ERR_OPS = {'linestyle':'none', 'marker': '.', 'markersize': 10., 'color':'k', 'elinewidth': 1,}

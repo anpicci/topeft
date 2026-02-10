@@ -1,3 +1,21 @@
+"""Create skimmed-sample JSON manifests from existing template JSONs.
+
+Purpose:
+- Match skim directories to existing sample JSON files and emit updated JSON
+  manifests that point to skimmed outputs.
+
+Inputs/outputs:
+- Reads source skim directories and template JSON files.
+- Writes skim JSON files (in-place or to a dedicated output directory).
+
+Side effects:
+- Creates/updates JSON files on disk.
+
+How to run:
+- ``python analysis/topeft_run2/make_skim_jsons.py --help``
+- ``python analysis/topeft_run2/make_skim_jsons.py /path/to/skim_parent --json-dir input_samples/sample_jsons`` 
+"""
+
 import os
 import argparse
 
@@ -134,5 +152,4 @@ def main():
 
 if __name__ == "__main__":
     main()
-
 

@@ -1,12 +1,21 @@
 #!/usr/bin/env python
 
-"""Command-line interface for the Run 2 analysis workflow.
+"""Command-line entrypoint for Run-2 histogram production.
 
-The YAML-first configuration pipeline, helper responsibilities, and common
-extension points are documented in ``docs/run_analysis_configuration.md``.  For
-a step-by-step walkthrough of environment prerequisites, metadata bundles, and
-example invocations that mirror ``fullR2_run.sh``, consult the
-``docs/quickstart_top22_006.md`` guide.
+Purpose:
+- Parse CLI/YAML options and launch the Run-2 workflow planner/executor stack.
+
+Inputs/outputs:
+- Reads sample manifests (JSON/CFG) plus optional YAML option profiles.
+- Writes tuple-keyed histogram pickles and run summaries to the configured
+  output directory.
+
+Side effects:
+- Creates output files/directories and may dispatch tasks to futures/TaskVine.
+
+How to run:
+- ``python analysis/topeft_run2/run_analysis.py --help``
+- ``python analysis/topeft_run2/run_analysis.py --options analysis/topeft_run2/configs/fullR2_run.yml:cr``
 """
 
 from __future__ import annotations

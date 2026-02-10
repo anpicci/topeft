@@ -1,17 +1,21 @@
-# About this script:
-#     - This script takes as input the information from the template histograms
-#     - The goal is to reconstruct the quadratic parameterizations from the templates
-#     - The script extracts the full 26-dimensional quadratic, but currently just plots the 1d quadratics
-# About the input to this script:
-#     - The relevant templates are the ones produced by topcoffea's datacard_maker.py, which should be passed
-#       to EFTFit's look_at_templates.C (which opens the templates, optionally extrapolates the up/down beyond +-1sigma,
-#       and dumps the info into a python dictionary), so it is the output of look_at_templates.C that this script runs on
-#     - It would probably be better for look_at_templates.C to dump the info into e.g. a json, but right now it just prints
-#       the info to the screen in the form of a python dictionary, so this script assumes that dictionary has been pasted
-#       into a .py file and we can just directly import the dictionary
-#     - That dictionary that we import is a global variable called IN_DICT in the script
-#     - Note that so far this script assumes the templates are just njets (i.e. none of the naming and conventions etc. are
-#       currently set up to work with e.g. bins in lj0pt)
+"""Reconstruct EFT quadratic fits from template histogram decompositions.
+
+Purpose:
+- Convert decomposed template values (SM/linear/quadratic/mixed terms) into
+  full quadratic parameterizations and produce 1D diagnostic plots.
+
+Inputs/outputs:
+- Reads a python module that defines the template dictionary (``IN_DICT``) as
+  exported from template-inspection tooling.
+- Writes reconstructed-fit plots and optional summary artifacts.
+
+Side effects:
+- Creates output plots/files and imports the provided template dictionary module.
+
+How to run:
+- ``python analysis/topeft_run2/make_1d_quad_plots_from_template_histos.py --help``
+- ``python analysis/topeft_run2/make_1d_quad_plots_from_template_histos.py -i templates_dump.py -o quad_plots`` 
+"""
 
 # Some notes on the naming conventions for the decomposed and reconstructed quadratic parameterization
 # This is based on Eqn 5 of CMS AN-20-204 ("EFT model for SMP measurements")
