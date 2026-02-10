@@ -6,6 +6,7 @@ import time
 import cloudpickle
 import gzip
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -123,6 +124,166 @@ def _cleanup_work_queue_staging_directory(path, eligible_for_cleanup):
             "Warning: Failed to clean up Work Queue staging directory {} ({}). You may want to "
             "remove it manually.".format(path, exc)
         )
+
+
+_REQUIRED_JSON_KEYS = (
+    "files",
+    "year",
+    "xsec",
+    "nEvents",
+    "nGenEvents",
+    "nSumOfWeights",
+    "isData",
+    "histAxisName",
+    "treeName",
+    "options",
+)
+_YEAR_CANONICAL_MAP = {
+    "2016": "2016",
+    "UL16": "2016",
+    "2016APV": "2016APV",
+    "UL16APV": "2016APV",
+    "2017": "2017",
+    "UL17": "2017",
+    "2018": "2018",
+    "UL18": "2018",
+    "2022": "2022",
+    "2022EE": "2022EE",
+    "2023": "2023",
+    "2023BPix": "2023BPix",
+}
+_YEAR_TOKEN_PATTERN = re.compile(
+    r"(2016APV|UL16APV|2023BPix|2022EE|UL16|2016|UL17|2017|UL18|2018|2022|2023)"
+)
+
+
+def _canonicalize_year_label(year_label):
+    return _YEAR_CANONICAL_MAP.get(str(year_label), str(year_label))
+
+
+def _strip_year_keys(payload):
+    if isinstance(payload, dict):
+        return {k: _strip_year_keys(v) for k, v in payload.items() if k != "year"}
+    if isinstance(payload, list):
+        return [_strip_year_keys(item) for item in payload]
+    return payload
+
+
+def _validate_payload_schema(payload, json_path):
+    if not isinstance(payload, dict):
+        raise RuntimeError(
+            f"[ERROR] Invalid JSON payload in {json_path}: expected object, got {type(payload).__name__}."
+        )
+
+    for key in _REQUIRED_JSON_KEYS:
+        if key not in payload:
+            raise RuntimeError(
+                f"[ERROR] Invalid JSON payload in {json_path}: missing required key '{key}'."
+            )
+
+    if not isinstance(payload["files"], list):
+        raise RuntimeError(
+            f"[ERROR] Invalid JSON payload in {json_path}: key 'files' must be list, got {type(payload['files']).__name__}."
+        )
+
+    if not isinstance(payload["year"], str):
+        raise RuntimeError(
+            f"[ERROR] Invalid JSON payload in {json_path}: key 'year' must be str, got {type(payload['year']).__name__}."
+        )
+
+    if not isinstance(payload["isData"], bool):
+        raise RuntimeError(
+            f"[ERROR] Invalid JSON payload in {json_path}: key 'isData' must be bool, got {type(payload['isData']).__name__}."
+        )
+
+
+def _validate_payload_year_tokens(payload, json_path):
+    payload_year = str(payload["year"])
+    canonical_payload_year = _canonicalize_year_label(payload_year)
+
+    payload_without_year = _strip_year_keys(payload)
+    scan_text = json.dumps(payload_without_year, sort_keys=True, separators=(",", ":"))
+    tokens = _YEAR_TOKEN_PATTERN.findall(scan_text)
+    if not tokens:
+        return None
+
+    canonical_hits = sorted({_canonicalize_year_label(token) for token in tokens})
+    unique_tokens = sorted(set(tokens))
+
+    if len(canonical_hits) == 1 and canonical_hits[0] != canonical_payload_year:
+        raise RuntimeError(
+            (
+                f"[ERROR] Year mismatch detected in {json_path}.\n"
+                f"  payload year: {payload_year}\n"
+                f"  detected year from internal JSON content: {canonical_hits[0]}\n"
+                f"  matching tokens: {', '.join(unique_tokens)}\n"
+                "How to fix: ensure payload['year'] matches the year implied by internal metadata content."
+            )
+        )
+
+    if len(canonical_hits) > 1:
+        return {
+            "path": os.path.abspath(json_path),
+            "payload_year": payload_year,
+            "canonical_payload_year": canonical_payload_year,
+            "canonical_hits": canonical_hits,
+            "tokens": unique_tokens,
+        }
+
+    return None
+
+
+def _raise_if_missing_referenced_jsons(missing_referenced_jsons):
+    if not missing_referenced_jsons:
+        return
+
+    seen = set()
+    unique = []
+    for cfg_file, missing in missing_referenced_jsons:
+        key = (cfg_file, missing)
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append((cfg_file, missing))
+
+    msg_lines = ["[ERROR] Missing referenced JSON file(s) while parsing cfg inputs:"]
+    for cfg_file, missing in unique:
+        msg_lines.append(f"  - {missing} (referenced from cfg: {cfg_file})")
+    raise SystemExit("\n".join(msg_lines))
+
+
+def _find_duplicate_input_files(samplesdict):
+    file_to_samples = {}
+    for sample_name, sample in samplesdict.items():
+        redirector = sample.get("redirector", "")
+        for file_path in sample.get("files", []):
+            key = f"{redirector}{file_path}"
+            file_to_samples.setdefault(key, set()).add(sample_name)
+
+    return {
+        file_path: sorted(sample_names)
+        for file_path, sample_names in file_to_samples.items()
+        if len(sample_names) > 1
+    }
+
+
+def _warn_duplicate_input_files(samplesdict, max_examples=10):
+    duplicates = _find_duplicate_input_files(samplesdict)
+    if not duplicates:
+        return
+
+    duplicate_items = sorted(duplicates.items())
+    print(
+        "[WARNING] Found {} input file path(s) reused across multiple samples "
+        "(comparison uses redirector+file).".format(len(duplicate_items))
+    )
+    for file_path, sample_names in duplicate_items[:max_examples]:
+        print(f"  - {file_path}")
+        print(f"    samples: {', '.join(sample_names)}")
+
+    if len(duplicate_items) > max_examples:
+        print(f"  ... and {len(duplicate_items) - max_examples} more duplicated file path(s).")
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="You can customize your run")
@@ -585,6 +746,7 @@ if __name__ == "__main__":
 
     # NEW: keep track of missing JSONs referenced inside cfg files
     missing_referenced_jsons = []
+    year_scan_warnings = []
 
     def _resolve_cfg_token_as_file(cfg_file, token):
         """
@@ -615,6 +777,10 @@ if __name__ == "__main__":
         source_json_path = os.path.abspath(jsonFile)
         with open(jsonFile, encoding="utf-8") as jf:
             payload = json.load(jf)
+        _validate_payload_schema(payload, source_json_path)
+        year_scan_warning = _validate_payload_year_tokens(payload, source_json_path)
+        if year_scan_warning is not None:
+            year_scan_warnings.append(year_scan_warning)
         payload_signature = json.dumps(payload, sort_keys=True, separators=(",", ":"))
         hist_axis_name = payload.get("histAxisName")
 
@@ -709,21 +875,32 @@ if __name__ == "__main__":
 
                         LoadJsonToSampleName(resolved, prefix)
 
-    # NEW: after parsing all cfgs, abort if any referenced json was missing
-    if missing_referenced_jsons:
-        seen = set()
-        unique = []
-        for cfg_file, missing in missing_referenced_jsons:
-            key = (cfg_file, missing)
-            if key in seen:
-                continue
-            seen.add(key)
-            unique.append((cfg_file, missing))
+    _raise_if_missing_referenced_jsons(missing_referenced_jsons)
 
-        msg_lines = ["[ERROR] Missing referenced JSON file(s) while parsing cfg inputs:"]
-        for cfg_file, missing in unique:
-            msg_lines.append(f"  - {missing} (referenced from cfg: {cfg_file})")
-        raise SystemExit("\n".join(msg_lines))
+    if year_scan_warnings:
+        print(
+            "[WARNING] Found ambiguous year-token matches in {} JSON payload(s); "
+            "continuing because detected year is not unique.".format(
+                len(year_scan_warnings)
+            )
+        )
+        for warning in year_scan_warnings[:10]:
+            print(f"  - path: {warning['path']}")
+            print(
+                "    payload year: {} (canonical: {})".format(
+                    warning["payload_year"], warning["canonical_payload_year"]
+                )
+            )
+            print(
+                "    canonical hits: {} | matching tokens: {}".format(
+                    ", ".join(warning["canonical_hits"]),
+                    ", ".join(warning["tokens"]),
+                )
+            )
+        if len(year_scan_warnings) > 10:
+            print(
+                f"  ... and {len(year_scan_warnings) - 10} more ambiguous year-token match(es)."
+            )
 
     requested_years = None
     if args.years:
@@ -790,6 +967,8 @@ if __name__ == "__main__":
             raise ValueError(
                 "No samples remaining after applying the requested year filter."
             )
+
+    _warn_duplicate_input_files(samplesdict)
 
     flist = {}
     nevts_total = 0
