@@ -6,6 +6,7 @@ import time
 import cloudpickle
 import gzip
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -123,6 +124,98 @@ def _cleanup_work_queue_staging_directory(path, eligible_for_cleanup):
             "Warning: Failed to clean up Work Queue staging directory {} ({}). You may want to "
             "remove it manually.".format(path, exc)
         )
+
+
+_DIR_YEAR_PATTERN = re.compile(r"(?:^|/)ND_skim(2022EE|2023BPix|2022|2023)(?:/|$)")
+
+
+def _infer_directory_year(json_path):
+    normalized_path = os.path.abspath(json_path).replace("\\", "/")
+    match = _DIR_YEAR_PATTERN.search(normalized_path)
+    if match is None:
+        return None
+    return match.group(1)
+
+
+def _build_json_metadata_entry(sample_name, json_path, payload, redirector):
+    return {
+        "basename": sample_name,
+        "path": os.path.abspath(json_path),
+        "histAxisName": payload.get("histAxisName"),
+        "payloadYear": payload.get("year"),
+        "dirYear": _infer_directory_year(json_path),
+        "payloadSignature": json.dumps(payload, sort_keys=True, separators=(",", ":")),
+        "redirector": redirector,
+    }
+
+
+def _format_json_metadata_entry(entry):
+    return (
+        f"    - path: {entry['path']}\n"
+        f"      histAxisName: {entry.get('histAxisName')}\n"
+        f"      payload year: {entry.get('payloadYear')}\n"
+        f"      inferred dir-year: {entry.get('dirYear') or 'Unclear'}"
+    )
+
+
+def _validate_json_metadata_entries(entries):
+    if not entries:
+        return
+
+    basename_groups = {}
+    year_mismatches = []
+    for entry in entries:
+        basename_groups.setdefault(entry["basename"], []).append(entry)
+        dir_year = entry.get("dirYear")
+        payload_year = entry.get("payloadYear")
+        if dir_year is not None and payload_year != dir_year:
+            year_mismatches.append(entry)
+
+    collision_groups = []
+    for basename, group in basename_groups.items():
+        if len(group) < 2:
+            continue
+
+        hist_axis_names = {item.get("histAxisName") for item in group}
+        payload_signatures = {item.get("payloadSignature") for item in group}
+        redirectors = {item.get("redirector") for item in group}
+
+        if len(hist_axis_names) > 1 or len(payload_signatures) > 1 or len(redirectors) > 1:
+            collision_groups.append((basename, group, len(hist_axis_names), len(payload_signatures), len(redirectors)))
+
+    if not collision_groups and not year_mismatches:
+        return
+
+    lines = ["[ERROR] Invalid JSON metadata detected while parsing inputs."]
+
+    if collision_groups:
+        lines.append("")
+        lines.append("Basename collisions with ambiguous metadata:")
+        for basename, group, n_hist, n_payload, n_redirector in sorted(collision_groups, key=lambda item: item[0]):
+            lines.append(f'  Basename: "{basename}"')
+            for entry in group:
+                lines.append(_format_json_metadata_entry(entry))
+            lines.append(
+                "    conflict summary: "
+                f"histAxisName variants={n_hist}, payload variants={n_payload}, redirector variants={n_redirector}"
+            )
+
+    if year_mismatches:
+        lines.append("")
+        lines.append('Directory-year vs payload "year" mismatches:')
+        for entry in year_mismatches:
+            lines.append(_format_json_metadata_entry(entry))
+            lines.append(
+                f'      fix: set payload "year" to "{entry["dirYear"]}" in {entry["path"]}'
+            )
+
+    lines.append("")
+    lines.append("How to fix:")
+    lines.append("  1) Ensure each JSON basename key is unique across the resolved input set.")
+    lines.append("  2) For duplicate basenames, make histAxisName and payload metadata identical or rename files.")
+    lines.append('  3) Set each JSON payload "year" to match the directory year token (e.g. ND_skim2023BPix -> 2023BPix).')
+
+    raise RuntimeError("\n".join(lines))
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="You can customize your run")
@@ -579,8 +672,7 @@ if __name__ == "__main__":
 
     ### Load samples from json
     samplesdict = {}
-    sample_sources = {}
-    sample_payload_signatures = {}
+    json_metadata_entries = []
     allInputFiles = []
 
     # NEW: keep track of missing JSONs referenced inside cfg files
@@ -612,50 +704,18 @@ if __name__ == "__main__":
         if sampleName.endswith(".json"):
             sampleName = sampleName[:-5]
 
-        source_json_path = os.path.abspath(jsonFile)
         with open(jsonFile, encoding="utf-8") as jf:
             payload = json.load(jf)
-        payload_signature = json.dumps(payload, sort_keys=True, separators=(",", ":"))
-        hist_axis_name = payload.get("histAxisName")
+        json_metadata_entries.append(
+            _build_json_metadata_entry(sampleName, jsonFile, payload, prefix)
+        )
 
         if sampleName in samplesdict:
-            prev_payload = samplesdict[sampleName]
-            prev_signature = sample_payload_signatures[sampleName]
-            prev_source = sample_sources[sampleName]
-            prev_hist_axis_name = prev_payload.get("histAxisName")
-            prev_redirector = prev_payload.get("redirector", "")
-
-            if prev_signature != payload_signature or prev_hist_axis_name != hist_axis_name:
-                raise RuntimeError(
-                    (
-                        f'Colliding sample basename key "{sampleName}" while loading JSONs.\n'
-                        f"  Existing json path: {prev_source}\n"
-                        f"  New json path:      {source_json_path}\n"
-                        f"  Existing histAxisName: {prev_hist_axis_name}\n"
-                        f"  New histAxisName:      {hist_axis_name}\n"
-                        "Refusing to continue because payloads are not identical."
-                    )
-                )
-
-            if prev_redirector != prefix:
-                raise RuntimeError(
-                    (
-                        f'Colliding sample basename key "{sampleName}" with conflicting redirector.\n'
-                        f"  Existing json path: {prev_source}\n"
-                        f"  New json path:      {source_json_path}\n"
-                        f'  Existing redirector: "{prev_redirector}"\n'
-                        f'  New redirector:      "{prefix}"\n'
-                        "Refusing to continue because duplicate entries disagree."
-                    )
-                )
-
-            # Duplicate identical entry: keep the first deterministic instance.
+            # Keep first instance deterministic; validation pass checks ambiguities.
             return
 
         samplesdict[sampleName] = payload
         samplesdict[sampleName]["redirector"] = prefix
-        sample_sources[sampleName] = source_json_path
-        sample_payload_signatures[sampleName] = payload_signature
 
     if isinstance(jsonFiles, str) and "," in jsonFiles:
         jsonFiles = jsonFiles.replace(" ", "").split(",")
@@ -724,6 +784,8 @@ if __name__ == "__main__":
         for cfg_file, missing in unique:
             msg_lines.append(f"  - {missing} (referenced from cfg: {cfg_file})")
         raise SystemExit("\n".join(msg_lines))
+
+    _validate_json_metadata_entries(json_metadata_entries)
 
     requested_years = None
     if args.years:
