@@ -28,7 +28,6 @@ _STUBBED_MODULE_NAMES = (
     "coffea",
     "coffea.nanoevents",
     "coffea.nanoevents.factory",
-    "coffea.hist",
 )
 _ORIGINAL_MODULES = {name: sys.modules.get(name) for name in _STUBBED_MODULE_NAMES}
 
@@ -162,10 +161,6 @@ def _install_coffea_stub() -> None:
     coffea_pkg = ModuleType("coffea")
     nanoevents_mod = ModuleType("coffea.nanoevents")
     factory_mod = ModuleType("coffea.nanoevents.factory")
-    hist_mod = ModuleType("coffea.hist")
-    class _Bin:
-        def __init__(self, *args, **kwargs):
-            pass
 
     class _Factory:
         @staticmethod
@@ -174,14 +169,10 @@ def _install_coffea_stub() -> None:
 
     nanoevents_mod.NanoEventsFactory = _Factory
     factory_mod.NanoEventsFactory = _Factory
-    hist_mod.Bin = _Bin
-
     coffea_pkg.nanoevents = nanoevents_mod
-    coffea_pkg.hist = hist_mod
     sys.modules["coffea"] = coffea_pkg
     sys.modules["coffea.nanoevents"] = nanoevents_mod
     sys.modules["coffea.nanoevents.factory"] = factory_mod
-    sys.modules["coffea.hist"] = hist_mod
 
 
 _install_coffea_stub()

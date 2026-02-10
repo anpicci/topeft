@@ -13,8 +13,6 @@ import datetime
 import argparse
 import math
 
-import coffea.hist as hist
-
 from scipy.optimize import curve_fit
 from numpy.linalg import eig
 from scipy.odr import *
@@ -83,12 +81,8 @@ def group_bins(histo,bin_map,axis_name="sample",drop_unspecified=True):
             if bin_name not in bins_to_remap_lst:
                 bin_map[bin_name] = bin_name
 
-    # Remap the bins
-    old_ax = histo.axis(axis_name)
-    new_ax = hist.Cat(old_ax.name,old_ax.label)
-    new_histo = histo.group(old_ax,new_ax,bin_map,overflow="over")
-
-    return new_histo
+    # Remap bins via the modern histogram grouping contract.
+    return histo.group(axis_name, bin_map)
 
 
 def getPoints(dict_of_hists):
