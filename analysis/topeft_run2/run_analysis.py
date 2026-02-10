@@ -579,6 +579,8 @@ if __name__ == "__main__":
 
     ### Load samples from json
     samplesdict = {}
+    sample_sources = {}
+    sample_payload_signatures = {}
     allInputFiles = []
 
     # NEW: keep track of missing JSONs referenced inside cfg files
@@ -609,9 +611,51 @@ if __name__ == "__main__":
         )
         if sampleName.endswith(".json"):
             sampleName = sampleName[:-5]
-        with open(jsonFile) as jf:
-            samplesdict[sampleName] = json.load(jf)
-            samplesdict[sampleName]["redirector"] = prefix
+
+        source_json_path = os.path.abspath(jsonFile)
+        with open(jsonFile, encoding="utf-8") as jf:
+            payload = json.load(jf)
+        payload_signature = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+        hist_axis_name = payload.get("histAxisName")
+
+        if sampleName in samplesdict:
+            prev_payload = samplesdict[sampleName]
+            prev_signature = sample_payload_signatures[sampleName]
+            prev_source = sample_sources[sampleName]
+            prev_hist_axis_name = prev_payload.get("histAxisName")
+            prev_redirector = prev_payload.get("redirector", "")
+
+            if prev_signature != payload_signature or prev_hist_axis_name != hist_axis_name:
+                raise RuntimeError(
+                    (
+                        f'Colliding sample basename key "{sampleName}" while loading JSONs.\n'
+                        f"  Existing json path: {prev_source}\n"
+                        f"  New json path:      {source_json_path}\n"
+                        f"  Existing histAxisName: {prev_hist_axis_name}\n"
+                        f"  New histAxisName:      {hist_axis_name}\n"
+                        "Refusing to continue because payloads are not identical."
+                    )
+                )
+
+            if prev_redirector != prefix:
+                raise RuntimeError(
+                    (
+                        f'Colliding sample basename key "{sampleName}" with conflicting redirector.\n'
+                        f"  Existing json path: {prev_source}\n"
+                        f"  New json path:      {source_json_path}\n"
+                        f'  Existing redirector: "{prev_redirector}"\n'
+                        f'  New redirector:      "{prefix}"\n'
+                        "Refusing to continue because duplicate entries disagree."
+                    )
+                )
+
+            # Duplicate identical entry: keep the first deterministic instance.
+            return
+
+        samplesdict[sampleName] = payload
+        samplesdict[sampleName]["redirector"] = prefix
+        sample_sources[sampleName] = source_json_path
+        sample_payload_signatures[sampleName] = payload_signature
 
     if isinstance(jsonFiles, str) and "," in jsonFiles:
         jsonFiles = jsonFiles.replace(" ", "").split(",")
