@@ -67,7 +67,7 @@ def _verify_numpy_pandas_abi() -> None:
             "refreshed environment for both futures and TaskVine runs."
         ) from exc
 
-from run_analysis_helpers import (
+from analysis.topeft_run2.run_analysis_helpers import (
     RunConfig,
     RunConfigBuilder,
     _normalize_executor_name,
