@@ -161,7 +161,6 @@ _DATE_TAG_PATTERN = re.compile(
     r"\b\d{1,2}(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)20\d{2}\b",
     re.IGNORECASE,
 )
-_OUTPUT_YEAR_TAG_PATTERN = re.compile(r"(?i)\boutput_(20(?:16|17|18|22|23))\b")
 _YEAR_STRONG_UL_PATTERN = re.compile(r"(UL(?:2016APV|16APV|2016|16|2017|17|2018|18))")
 _YEAR_STRONG_RUN_ERA_PATTERN = re.compile(r"(Run(2016|2017|2018|2022|2023)[A-H])")
 _YEAR_STRONG_DELIMITED_PATTERN = re.compile(
@@ -237,19 +236,27 @@ def _record_year_hit(hit_map, token, canonical, source_key, source_value, start,
         )
 
 
+def _normalize_scan_value(source_key, source_value):
+    if source_key not in {"files", "path"}:
+        return source_value
+
+    normalized = source_value.replace("\\", "/")
+    return normalized.rsplit("/", 1)[0] if "/" in normalized else ""
+
+
 def _extract_year_hits_from_trusted_content(payload):
     strong_hits = {}
     weak_hits = {}
 
     for source_key, source_value in _collect_trusted_year_scan_strings(payload):
-        scan_value = _DATE_TAG_PATTERN.sub(" ", source_value)
-        scan_value = _OUTPUT_YEAR_TAG_PATTERN.sub(" ", scan_value)
+        scan_source_value = _normalize_scan_value(source_key, source_value)
+        scan_value = _DATE_TAG_PATTERN.sub(" ", scan_source_value)
 
         for match in _YEAR_STRONG_UL_PATTERN.finditer(scan_value):
             token = match.group(1)
             canonical = _canonicalize_year_label(token)
             _record_year_hit(
-                strong_hits, token, canonical, source_key, source_value, match.start(1), match.end(1)
+                strong_hits, token, canonical, source_key, scan_source_value, match.start(1), match.end(1)
             )
 
         for match in _YEAR_STRONG_RUN_ERA_PATTERN.finditer(scan_value):
@@ -259,7 +266,7 @@ def _extract_year_hits_from_trusted_content(payload):
                 match.group(1),
                 canonical,
                 source_key,
-                source_value,
+                scan_source_value,
                 match.start(1),
                 match.end(1),
             )
@@ -268,14 +275,14 @@ def _extract_year_hits_from_trusted_content(payload):
             token = match.group(1)
             canonical = _canonicalize_year_label(token)
             _record_year_hit(
-                strong_hits, token, canonical, source_key, source_value, match.start(1), match.end(1)
+                strong_hits, token, canonical, source_key, scan_source_value, match.start(1), match.end(1)
             )
 
         for match in _YEAR_WEAK_PATTERN.finditer(scan_value):
             token = match.group(1)
             canonical = _canonicalize_year_label(token)
             _record_year_hit(
-                weak_hits, token, canonical, source_key, source_value, match.start(1), match.end(1)
+                weak_hits, token, canonical, source_key, scan_source_value, match.start(1), match.end(1)
             )
 
     return strong_hits, weak_hits
@@ -297,7 +304,7 @@ def _format_year_hit_examples(hit_map, canonical_hits):
 
 def _debug_year_scan_selfcheck():
     cases = [
-        ("suppressed_output_year", "/NAOD/sample/2022/subset/output_2023.root"),
+        ("basename_ignored", "/NAOD/sample/2022/subset/output_2023.root"),
         ("valid_2023_path", "/NAOD/sample/2023/subset/something.root"),
     ]
 
@@ -311,11 +318,14 @@ def _debug_year_scan_selfcheck():
         print(f"  strong keys: {strong_keys}")
         print(f"  weak keys: {weak_keys}")
 
-    suppressed_strong, suppressed_weak = _extract_year_hits_from_trusted_content(
+    case_a_strong, case_a_weak = _extract_year_hits_from_trusted_content(
         {"files": [cases[0][1]]}
     )
-    if "2023" in suppressed_strong or "2023" in suppressed_weak:
-        raise RuntimeError("debug year scan failed: output_2023 still contributes a 2023 hit")
+    case_a_collapsed_strong = _collapse_year_families(set(case_a_strong.keys()))
+    if "2022" not in case_a_collapsed_strong:
+        raise RuntimeError("debug year scan failed: 2022 directory did not produce a 2022 strong hit")
+    if "2023" in case_a_strong or "2023" in case_a_weak:
+        raise RuntimeError("debug year scan failed: basename contributed an unexpected 2023 hit")
 
     valid_strong, _ = _extract_year_hits_from_trusted_content({"files": [cases[1][1]]})
     if "2023" not in valid_strong:
