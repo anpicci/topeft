@@ -102,7 +102,7 @@ def test_case_d_year_mismatch_detected_from_internal_tokens(tmp_path):
     payload = _base_payload(
         hist_axis_name="ttH_private",
         year="2022EE",
-        files=["/store/user/foo/ND_skim2023BPix/output.root"],
+        files=["/store/user/foo/year-2023BPix/output.root"],
     )
     _write_payload(json_path, payload)
 
@@ -139,6 +139,21 @@ def test_case_e_run2_synonyms_behavior():
     assert "payload year: 2016" in message
     assert "detected year from internal JSON content: 2017" in message
     assert "UL17" in message
+
+
+def test_case_g_embedded_year_substrings_do_not_match():
+    run_analysis = _load_run_analysis_module()
+
+    payload = _base_payload(hist_axis_name="h", year="2016")
+    payload["tag"] = "foo2016bar"
+    payload["dataset"] = "Run2016X"
+    payload["note"] = "UL16APVish"
+    # Embedded alphanumeric substrings should not be matched as standalone year tokens.
+    assert run_analysis._validate_payload_year_tokens(payload, "/tmp/no_false_positive.json") is None
+
+    # Positive control: properly delimited token should still be matched and canonicalized.
+    payload["note"] = "campaign_UL16"
+    assert run_analysis._validate_payload_year_tokens(payload, "/tmp/positive_control.json") is None
 
 
 def test_case_f_duplicate_file_reuse_warns_only(capsys):
