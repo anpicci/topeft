@@ -161,6 +161,7 @@ _DATE_TAG_PATTERN = re.compile(
     r"\b\d{1,2}(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)20\d{2}\b",
     re.IGNORECASE,
 )
+_OUTPUT_YEAR_TAG_PATTERN = re.compile(r"(?i)\boutput_(20(?:16|17|18|22|23))\b")
 _YEAR_STRONG_UL_PATTERN = re.compile(r"(UL(?:2016APV|16APV|2016|16|2017|17|2018|18))")
 _YEAR_STRONG_RUN_ERA_PATTERN = re.compile(r"(Run(2016|2017|2018|2022|2023)[A-H])")
 _YEAR_STRONG_DELIMITED_PATTERN = re.compile(
@@ -242,6 +243,7 @@ def _extract_year_hits_from_trusted_content(payload):
 
     for source_key, source_value in _collect_trusted_year_scan_strings(payload):
         scan_value = _DATE_TAG_PATTERN.sub(" ", source_value)
+        scan_value = _OUTPUT_YEAR_TAG_PATTERN.sub(" ", scan_value)
 
         for match in _YEAR_STRONG_UL_PATTERN.finditer(scan_value):
             token = match.group(1)
@@ -291,6 +293,33 @@ def _format_year_hit_examples(hit_map, canonical_hits):
             if len(examples) >= 6:
                 return examples
     return examples
+
+
+def _debug_year_scan_selfcheck():
+    cases = [
+        ("suppressed_output_year", "/NAOD/sample/2022/subset/output_2023.root"),
+        ("valid_2023_path", "/NAOD/sample/2023/subset/something.root"),
+    ]
+
+    for case_name, file_path in cases:
+        payload = {"files": [file_path]}
+        strong_hits, weak_hits = _extract_year_hits_from_trusted_content(payload)
+        strong_keys = sorted(_collapse_year_families(set(strong_hits.keys())))
+        weak_keys = sorted(_collapse_year_families(set(weak_hits.keys())))
+        print(f"[DEBUG_YEAR_SCAN] {case_name}")
+        print(f"  files[0]: {file_path}")
+        print(f"  strong keys: {strong_keys}")
+        print(f"  weak keys: {weak_keys}")
+
+    suppressed_strong, suppressed_weak = _extract_year_hits_from_trusted_content(
+        {"files": [cases[0][1]]}
+    )
+    if "2023" in suppressed_strong or "2023" in suppressed_weak:
+        raise RuntimeError("debug year scan failed: output_2023 still contributes a 2023 hit")
+
+    valid_strong, _ = _extract_year_hits_from_trusted_content({"files": [cases[1][1]]})
+    if "2023" not in valid_strong:
+        raise RuntimeError("debug year scan failed: 2023 path did not produce a 2023 strong hit")
 
 
 def _validate_payload_schema(payload, json_path):
@@ -653,9 +682,17 @@ if __name__ == "__main__":
             "environment.yml) when remote packaging fails."
         ),
     )
+    parser.add_argument(
+        "--debug-year-scan",
+        action="store_true",
+        help="Run a lightweight self-check for year token extraction and exit.",
+    )
     parser.set_defaults(use_remote_env=True)
 
     args = parser.parse_args()
+    if args.debug_year_scan:
+        _debug_year_scan_selfcheck()
+        raise SystemExit(0)
     if args.workers is not None:
         args.nworkers = args.workers
     _ensure_topcoffea_data_available(args.skip_topcoffea_data_check)
