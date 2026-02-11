@@ -141,20 +141,32 @@ _REQUIRED_JSON_KEYS = (
 _YEAR_CANONICAL_MAP = {
     "2016": "2016",
     "UL16": "2016",
+    "UL2016": "2016",
     "2016APV": "2016APV",
     "UL16APV": "2016APV",
+    "UL2016APV": "2016APV",
     "2017": "2017",
     "UL17": "2017",
+    "UL2017": "2017",
     "2018": "2018",
     "UL18": "2018",
+    "UL2018": "2018",
     "2022": "2022",
     "2022EE": "2022EE",
     "2023": "2023",
     "2023BPix": "2023BPix",
 }
-_YEAR_TOKEN_PATTERN = re.compile(
-    r"(?<![A-Za-z0-9])(2016APV|UL16APV|2023BPix|2022EE|UL16|2016|UL17|2017|UL18|2018|2022|2023)(?![A-Za-z0-9])"
+_TRUSTED_YEAR_HINT_KEYS = {"files", "path", "histAxisName"}
+_DATE_TAG_PATTERN = re.compile(
+    r"\b\d{1,2}(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)20\d{2}\b",
+    re.IGNORECASE,
 )
+_YEAR_STRONG_UL_PATTERN = re.compile(r"(UL(?:2016APV|16APV|2016|16|2017|17|2018|18))")
+_YEAR_STRONG_RUN_ERA_PATTERN = re.compile(r"(Run(2016|2017|2018|2022|2023)[A-H])")
+_YEAR_STRONG_DELIMITED_PATTERN = re.compile(
+    r"(?<![A-Za-z0-9])(2023BPix|2022EE|2016APV|UL2016APV|UL16APV|2016|2017|2018|2022|2023)(?![A-Za-z0-9])"
+)
+_YEAR_WEAK_PATTERN = re.compile(r"(?<![A-Za-z0-9])(20(?:16|17|18|22|23))(?![A-Za-z0-9])")
 
 
 def _canonicalize_year_label(year_label):
@@ -167,6 +179,118 @@ def _strip_year_keys(payload):
     if isinstance(payload, list):
         return [_strip_year_keys(item) for item in payload]
     return payload
+
+
+def _collect_trusted_year_scan_strings(payload):
+    values = []
+
+    def _walk(node):
+        if isinstance(node, dict):
+            files = node.get("files")
+            if "files" in _TRUSTED_YEAR_HINT_KEYS and isinstance(files, list):
+                for item in files:
+                    if isinstance(item, str):
+                        values.append(("files", item))
+            for key in ("path", "histAxisName"):
+                value = node.get(key)
+                if key in _TRUSTED_YEAR_HINT_KEYS and isinstance(value, str):
+                    values.append((key, value))
+            for nested in node.values():
+                _walk(nested)
+            return
+        if isinstance(node, list):
+            for item in node:
+                _walk(item)
+
+    _walk(payload)
+    return values
+
+
+def _collapse_year_families(canonical_hits):
+    collapsed = set(canonical_hits)
+    if "2016APV" in collapsed:
+        collapsed.discard("2016")
+    if "2022EE" in collapsed:
+        collapsed.discard("2022")
+    if "2023BPix" in collapsed:
+        collapsed.discard("2023")
+    return collapsed
+
+
+def _snippet_around(text, start, end, radius=24):
+    left = max(0, start - radius)
+    right = min(len(text), end + radius)
+    snippet = text[left:right]
+    return snippet.replace("\n", " ")
+
+
+def _record_year_hit(hit_map, token, canonical, source_key, source_value, start, end):
+    hit_map.setdefault(canonical, [])
+    if len(hit_map[canonical]) < 3:
+        hit_map[canonical].append(
+            {
+                "token": token,
+                "key": source_key,
+                "snippet": _snippet_around(source_value, start, end),
+            }
+        )
+
+
+def _extract_year_hits_from_trusted_content(payload):
+    strong_hits = {}
+    weak_hits = {}
+
+    for source_key, source_value in _collect_trusted_year_scan_strings(payload):
+        scan_value = _DATE_TAG_PATTERN.sub(" ", source_value)
+
+        for match in _YEAR_STRONG_UL_PATTERN.finditer(scan_value):
+            token = match.group(1)
+            canonical = _canonicalize_year_label(token)
+            _record_year_hit(
+                strong_hits, token, canonical, source_key, source_value, match.start(1), match.end(1)
+            )
+
+        for match in _YEAR_STRONG_RUN_ERA_PATTERN.finditer(scan_value):
+            canonical = _canonicalize_year_label(match.group(2))
+            _record_year_hit(
+                strong_hits,
+                match.group(1),
+                canonical,
+                source_key,
+                source_value,
+                match.start(1),
+                match.end(1),
+            )
+
+        for match in _YEAR_STRONG_DELIMITED_PATTERN.finditer(scan_value):
+            token = match.group(1)
+            canonical = _canonicalize_year_label(token)
+            _record_year_hit(
+                strong_hits, token, canonical, source_key, source_value, match.start(1), match.end(1)
+            )
+
+        for match in _YEAR_WEAK_PATTERN.finditer(scan_value):
+            token = match.group(1)
+            canonical = _canonicalize_year_label(token)
+            _record_year_hit(
+                weak_hits, token, canonical, source_key, source_value, match.start(1), match.end(1)
+            )
+
+    return strong_hits, weak_hits
+
+
+def _format_year_hit_examples(hit_map, canonical_hits):
+    examples = []
+    for canonical in canonical_hits:
+        for hit in hit_map.get(canonical, []):
+            examples.append(
+                "{token} [{key}] \"{snippet}\"".format(
+                    token=hit["token"], key=hit["key"], snippet=hit["snippet"]
+                )
+            )
+            if len(examples) >= 6:
+                return examples
+    return examples
 
 
 def _validate_payload_schema(payload, json_path):
@@ -202,32 +326,44 @@ def _validate_payload_year_tokens(payload, json_path):
     canonical_payload_year = _canonicalize_year_label(payload_year)
 
     payload_without_year = _strip_year_keys(payload)
-    scan_text = json.dumps(payload_without_year, sort_keys=True, separators=(",", ":"))
-    tokens = _YEAR_TOKEN_PATTERN.findall(scan_text)
-    if not tokens:
+    strong_hits, weak_hits = _extract_year_hits_from_trusted_content(payload_without_year)
+    collapsed_strong_hits = sorted(_collapse_year_families(set(strong_hits.keys())))
+
+    if not collapsed_strong_hits:
         return None
 
-    canonical_hits = sorted({_canonicalize_year_label(token) for token in tokens})
-    unique_tokens = sorted(set(tokens))
+    matching_tokens = sorted(
+        {
+            hit["token"]
+            for canonical in collapsed_strong_hits
+            for hit in strong_hits.get(canonical, [])
+        }
+    )
+    examples = _format_year_hit_examples(strong_hits, collapsed_strong_hits)
 
-    if len(canonical_hits) == 1 and canonical_hits[0] != canonical_payload_year:
+    if len(collapsed_strong_hits) == 1 and collapsed_strong_hits[0] != canonical_payload_year:
         raise RuntimeError(
             (
                 f"[ERROR] Year mismatch detected in {json_path}.\n"
                 f"  payload year: {payload_year}\n"
-                f"  detected year from internal JSON content: {canonical_hits[0]}\n"
-                f"  matching tokens: {', '.join(unique_tokens)}\n"
+                f"  canonical payload year: {canonical_payload_year}\n"
+                f"  inferred canonical year set (strong): {collapsed_strong_hits[0]}\n"
+                f"  detected year from internal JSON content: {collapsed_strong_hits[0]}\n"
+                f"  matching tokens (strong): {', '.join(matching_tokens)}\n"
+                f"  examples: {' | '.join(examples) if examples else 'n/a'}\n"
                 "How to fix: ensure payload['year'] matches the year implied by internal metadata content."
             )
         )
 
-    if len(canonical_hits) > 1:
+    if len(collapsed_strong_hits) > 1:
         return {
             "path": os.path.abspath(json_path),
             "payload_year": payload_year,
             "canonical_payload_year": canonical_payload_year,
-            "canonical_hits": canonical_hits,
-            "tokens": unique_tokens,
+            "canonical_hits": collapsed_strong_hits,
+            "tokens": matching_tokens,
+            "examples": examples,
+            "weak_canonical_hits": sorted(_collapse_year_families(set(weak_hits.keys()))),
         }
 
     return None
@@ -897,6 +1033,14 @@ if __name__ == "__main__":
                     ", ".join(warning["tokens"]),
                 )
             )
+            if warning.get("examples"):
+                print("    examples: {}".format(" | ".join(warning["examples"])))
+            if warning.get("weak_canonical_hits"):
+                print(
+                    "    weak canonical hits (diagnostic only): {}".format(
+                        ", ".join(warning["weak_canonical_hits"])
+                    )
+                )
         if len(year_scan_warnings) > 10:
             print(
                 f"  ... and {len(year_scan_warnings) - 10} more ambiguous year-token match(es)."

@@ -125,34 +125,40 @@ def test_case_d_year_mismatch_detected_from_internal_tokens(tmp_path):
 def test_case_e_run2_synonyms_behavior():
     run_analysis = _load_run_analysis_module()
 
-    ok_payload = _base_payload(hist_axis_name="h", year="2016")
-    ok_payload["notes"] = "UL16 campaign"
+    ok_payload = _base_payload(
+        hist_axis_name="DY10to50_centralUL16",
+        year="2016",
+        files=["/store/mc/RunIISummer20UL16NanoAODv9/file.root"],
+    )
     # Should not raise: UL16 canonicalizes to 2016.
     assert run_analysis._validate_payload_year_tokens(ok_payload, "/tmp/ok.json") is None
 
-    bad_payload = _base_payload(hist_axis_name="h", year="2016")
-    bad_payload["notes"] = "UL17 campaign"
+    bad_payload = _base_payload(
+        hist_axis_name="h",
+        year="2016",
+        files=["/store/mc/RunIISummer20UL17NanoAODv9/file.root"],
+    )
     with pytest.raises(RuntimeError) as excinfo:
         run_analysis._validate_payload_year_tokens(bad_payload, "/tmp/bad.json")
 
     message = str(excinfo.value)
     assert "payload year: 2016" in message
     assert "detected year from internal JSON content: 2017" in message
-    assert "UL17" in message
+    assert "UL17" in message or "RunIISummer20UL17" in message
 
 
 def test_case_g_embedded_year_substrings_do_not_match():
     run_analysis = _load_run_analysis_module()
 
     payload = _base_payload(hist_axis_name="h", year="2016")
-    payload["tag"] = "foo2016bar"
-    payload["dataset"] = "Run2016X"
-    payload["note"] = "UL16APVish"
+    payload["histAxisName"] = "foo2016bar"
+    payload["files"] = ["/store/test/sample_Run2016X_campaignTag.root"]
     # Embedded alphanumeric substrings should not be matched as standalone year tokens.
     assert run_analysis._validate_payload_year_tokens(payload, "/tmp/no_false_positive.json") is None
 
-    # Positive control: properly delimited token should still be matched and canonicalized.
-    payload["note"] = "campaign_UL16"
+    # Positive control: UL tokens are intentionally matched even when embedded in larger strings.
+    payload["histAxisName"] = "DY10to50_centralUL16"
+    payload["files"] = ["/store/mc/RunIISummer20UL16NanoAODv9/file.root"]
     assert run_analysis._validate_payload_year_tokens(payload, "/tmp/positive_control.json") is None
 
 
@@ -171,3 +177,39 @@ def test_case_f_duplicate_file_reuse_warns_only(capsys):
     assert "[WARNING] Found 1 input file path(s) reused across multiple samples" in captured.out
     assert "root://x//store/a.root" in captured.out
     assert "sampleA, sampleB" in captured.out
+
+
+def test_case_h_date_tag_is_ignored_for_year_inference():
+    run_analysis = _load_run_analysis_module()
+
+    payload = _base_payload(
+        hist_axis_name="DoubleMuon_Run2022G_2022EE",
+        year="2022EE",
+        files=["/store/data/Muon_Run2022G-22Sep2023/file.root"],
+    )
+    assert run_analysis._validate_payload_year_tokens(payload, "/tmp/date_tag.json") is None
+
+
+def test_case_i_family_collapse_removes_parent_year_noise():
+    run_analysis = _load_run_analysis_module()
+
+    payload = _base_payload(
+        hist_axis_name="MuonEG_Run2022E_2022EE",
+        year="2022EE",
+        files=["/store/data/Run2022E/single_file.root"],
+    )
+    assert run_analysis._validate_payload_year_tokens(payload, "/tmp/collapse_ok.json") is None
+
+
+def test_case_j_single_conflicting_year_still_hard_errors():
+    run_analysis = _load_run_analysis_module()
+
+    payload = _base_payload(
+        hist_axis_name="Dataset_Run2023C",
+        year="2022",
+        files=["/store/data/Run2023C/file.root"],
+    )
+    with pytest.raises(RuntimeError) as excinfo:
+        run_analysis._validate_payload_year_tokens(payload, "/tmp/strict_mismatch.json")
+    assert "payload year: 2022" in str(excinfo.value)
+    assert "detected year from internal JSON content: 2023" in str(excinfo.value)
