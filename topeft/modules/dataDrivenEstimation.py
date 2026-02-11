@@ -1,3 +1,21 @@
+"""Construct data-driven fake/nonprompt estimates from histogram pickles.
+
+Purpose:
+Apply process/channel regrouping and subtraction rules to histogram outputs in
+order to build data-driven background estimates for downstream plotting/cards.
+
+Inputs/outputs:
+- Input: histogram dictionaries or ``.pkl.gz`` artifacts.
+- Output: transformed histogram dictionary, optionally serialized to pickle.
+
+Side effects:
+- Reads and writes gzip+pickle files on disk.
+- Mutates histogram dictionaries during grouping/removal operations.
+
+How to run:
+- ``python topeft/modules/dataDrivenEstimation.py --pkl-file-path histos/plotsTopEFT.pkl.gz``
+"""
+
 import argparse
 import cloudpickle
 from collections import defaultdict
@@ -358,8 +376,10 @@ if __name__ == "__main__":
     from topeft.modules.logging_config import configure_topeft_logging
 
     configure_topeft_logging("INFO")
-    parser = argparse.ArgumentParser()
-    parser.add_argument("-f", "--pkl-file-path", default="histos/plotsTopEFT.pkl.gz", help = "The path to the pkl file")
+    parser = argparse.ArgumentParser(
+        description="Build data-driven estimation histograms from an input pickle."
+    )
+    parser.add_argument("-f", "--pkl-file-path", default="histos/plotsTopEFT.pkl.gz", help = "Path to the input histogram pickle (.pkl.gz)")
     args = parser.parse_args()
 
     DataDrivenProducer(args.pkl_file_path, '')

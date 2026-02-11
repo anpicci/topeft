@@ -1,10 +1,22 @@
-'''
-Script for comparing two pkl files
-example:
-`python comp.py histos/example_name_np.pkl.gz ~/../../k/kmohrman/Public/fullR2_files/pkl_files/feb15_fullRun2_withSys_anatest25_np.pkl.gz --newHist1`
---newHist1 tells it the first pkl file is using the new histEFT based on scikithep hist
---newHist2 would tell it the second pkl file is using the new histEFT based on scikithep hist
-'''
+"""Compare two histogram pickle outputs from Run-2 workflows.
+
+Purpose:
+Load two ``.pkl.gz`` histogram artifacts, compare yields bin-by-bin across
+process/channel/application/systematic axes, and report mismatches.
+
+Inputs/outputs:
+- Input: two histogram pickle paths plus optional format flags and metadata.
+- Output: console diagnostics, ``comp_log.txt``, and JSON dumps of compared
+  yields derived from each input file.
+
+Side effects:
+- Reads compressed pickle histogram payloads from disk.
+- Writes ``comp_log.txt`` and per-input JSON summaries in the working directory.
+
+How to run:
+- ``python analysis/topeft_run2/comp.py histos/run_a_np.pkl.gz histos/run_b_np.pkl.gz --newHist1 --newHist2``
+- ``python analysis/topeft_run2/comp.py histos/run_a_np.pkl.gz histos/run_b_np.pkl.gz --tolerance 1e-3``
+"""
 import pickle
 import gzip
 import numpy as np
@@ -363,12 +375,14 @@ if __name__ == '__main__':
     yields1={}
     yields2={}
 
-    parser = argparse.ArgumentParser(description='You can select which file to run over')
-    parser.add_argument('fin1'   , default='analysis/topEFT/histos/mar03_central17_pdf_np.pkl.gz' , help = 'Variable to run over')
-    parser.add_argument('fin2'   , default='analysis/topEFT/histos/mar03_central17_pdf_np.pkl.gz' , help = 'Variable to run over')
-    parser.add_argument('--newHist1', action='store_true', help='First file was made with the new histEFT')
-    parser.add_argument('--newHist2', action='store_true', help='Second file was made with the new histEFT')
-    parser.add_argument('--tolerance', '-t', default='1e-3', help='Tolerance for warnings')
+    parser = argparse.ArgumentParser(
+        description="Compare two Run-2 histogram pickle files and report yield differences."
+    )
+    parser.add_argument('fin1', help='Path to the first input histogram pickle (.pkl.gz)')
+    parser.add_argument('fin2', help='Path to the second input histogram pickle (.pkl.gz)')
+    parser.add_argument('--newHist1', action='store_true', help='Flag the first file as the modern HistEFT-backed format')
+    parser.add_argument('--newHist2', action='store_true', help='Flag the second file as the modern HistEFT-backed format')
+    parser.add_argument('--tolerance', '-t', default='1e-3', help='Relative-difference threshold used for mismatch warnings')
     parser.add_argument(
         '--metadata',
         default=None,
