@@ -1,4 +1,21 @@
-"""Plotter for tuple-keyed flip application region histograms."""
+"""Plot comparison figures for flip application-region histograms.
+
+Purpose:
+Load tuple-keyed histogram output and produce per-variable comparison plots for
+the ``ssz`` and ``osz`` channels used in the flip application workflow.
+
+Inputs/outputs:
+- Input: a pickle/gzip histogram artifact produced by the flip workflow.
+- Output: PNG image files saved under ``--outpath``.
+
+Side effects:
+- Reads histogram files from disk.
+- Creates output directories/files and writes plot images.
+
+How to run:
+- ``python analysis/flip_measurement/flip_ar_plotter.py histos/flipTopEFT.pkl.gz``
+- ``python analysis/flip_measurement/flip_ar_plotter.py histos/flipTopEFT.pkl.gz --outpath plots/flip_ar``
+"""
 
 from __future__ import annotations
 
@@ -76,13 +93,15 @@ def main() -> None:
     from topeft.modules.logging_config import configure_topeft_logging
     configure_topeft_logging("INFO")
 
-    parser = argparse.ArgumentParser(description="Plot flip application histograms")
+    parser = argparse.ArgumentParser(
+        description="Plot ssz/osz comparisons from flip application-region histograms."
+    )
     parser.add_argument(
         "filepath",
         default="histos/flipTopEFT.pkl.gz",
-        help="path of file with histograms",
+        help="Path to the histogram pickle produced by the flip workflow",
     )
-    parser.add_argument("--outpath", "-o", default=".", help="Path to the output directory")
+    parser.add_argument("--outpath", "-o", default=".", help="Directory where plot images are written")
     args = parser.parse_args()
 
     tuple_histograms = load_histograms(args.filepath)

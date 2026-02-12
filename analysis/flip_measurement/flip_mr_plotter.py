@@ -1,4 +1,20 @@
-"""Plotter for the flip measurement tuple-keyed histogram output."""
+"""Build flip-rate maps from flip-measurement histograms.
+
+Purpose:
+Aggregate tuple-keyed flip measurement histograms by year and derive
+``truthFlip / (truthFlip + truthNoFlip)`` maps for each Run-2 campaign.
+
+Inputs/outputs:
+- Input: a pickle/gzip histogram artifact from the flip measurement workflow.
+- Output: per-year ROOT payloads and PNG 2D plots.
+
+Side effects:
+- Reads and deserializes histogram files from disk.
+- Writes ROOT and image files in the current working directory.
+
+How to run:
+- ``python analysis/flip_measurement/flip_mr_plotter.py histos/flipMR_TopEFT.pkl.gz``
+"""
 
 from __future__ import annotations
 
@@ -94,11 +110,13 @@ def main() -> None:
     from topeft.modules.logging_config import configure_topeft_logging
     configure_topeft_logging("INFO")
 
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(
+        description="Compute and save per-year flip-rate maps from measurement histograms."
+    )
     parser.add_argument(
         "filepath",
         default="histos/flipMR_TopEFT.pkl.gz",
-        help="path of file with histograms",
+        help="Path to the histogram pickle produced by the flip measurement workflow",
     )
     args = parser.parse_args()
 

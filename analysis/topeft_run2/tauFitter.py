@@ -1,11 +1,20 @@
-##############################################################
-# Script for creating the fake tau scale factors
-# To use, run command python tauFitter.py -f /path/to/pkl/file
-# pkl file should have CRs listed below and have all other
-# corrections aside from fake tau SFs
-# output is in the form of linear fit y = mx+b
-# where m and b are in numerical form, y is the SF, and x is the tau pt
-# pt bins are from [20, 30], [30, 40], [40, 50], [50, 60], [60, 80], [80, 100], [100, 200]
+"""Fit fake-tau scale factors from control-region histogram outputs.
+
+Purpose:
+- Derive linear fake-tau scale-factor fits and uncertainty summaries from
+  control-region histograms.
+
+Inputs/outputs:
+- Reads one histogram pickle containing tau control-region yields.
+- Writes scale-factor fit plots/tables and optional JSON outputs.
+
+Side effects:
+- Creates output files and can generate web-index pages for saved plots.
+
+How to run:
+- ``python analysis/topeft_run2/tauFitter.py --help``
+- ``python analysis/topeft_run2/tauFitter.py -f histos/plotsTopEFT.pkl.gz`` 
+"""
 
 import numpy as np
 import copy

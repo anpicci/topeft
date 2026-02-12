@@ -1,3 +1,24 @@
+"""Run the extreme-events study processor over sample manifests.
+
+Purpose:
+Execute the ``extreme_events`` analysis processor with configurable executor
+settings to inspect high-value event tails.
+
+Inputs/outputs:
+- Input: JSON/CFG sample manifests and optional redirector overrides.
+- Output: a gzip-compressed cloudpickle histogram file in ``--outpath``
+  (default base name: ``flipTopEFT``).
+
+Side effects:
+- Reads local/remote ROOT files listed in input manifests.
+- May submit distributed tasks (futures or TaskVine) and stage worker envs.
+- Writes output histogram artifacts and runtime metadata.
+
+How to run:
+- ``python analysis/extreme_events_study/run_extreme_events.py input_samples/sample_jsons/test_samples/UL17_private_ttH_for_CI.json``
+- ``python analysis/extreme_events_study/run_extreme_events.py input_samples/sample_jsons/test_samples/UL17_private_ttH_for_CI.json --executor futures --max-files 2``
+"""
+
 import argparse
 import cloudpickle
 import gzip
@@ -28,7 +49,7 @@ update_cfg = tc_utils.update_cfg
 
 
 parser = argparse.ArgumentParser(
-    description='You can customize your run',
+    description='Run the extreme-events processor and write histogram output.',
     formatter_class=argparse.RawDescriptionHelpFormatter,
     epilog=(
         "TaskVine workers can be launched with:\n"
@@ -37,14 +58,14 @@ parser = argparse.ArgumentParser(
         "Adjust the resources and manager to match your deployment."
     ),
 )
-parser.add_argument('inputFiles'            , nargs='?', default='', help = 'Json or cfg file(s) containing files and metadata')
+parser.add_argument('inputFiles'            , nargs='?', default='', help = 'JSON or CFG file(s) containing sample metadata')
 parser.add_argument('--chunksize','-s'      , default=100000, type=int, help = 'Number of events per chunk')
-parser.add_argument('--max-files','-N'      , default=0, type=int, help = 'If specified, limit the number of root files per sample. Useful for testing')
-parser.add_argument('--nchunks','-c'        , default=0, type=int, help = 'You can choose to run only a number of chunks')
-parser.add_argument('--outname','-o'        , default='flipTopEFT', help = 'Name of the output file with histograms')
-parser.add_argument('--outpath','-p'        , default='histos', help = 'Name of the output directory')
-parser.add_argument('--treename'            , default='Events', help = 'Name of the tree inside the files')
-parser.add_argument('--xrd'                 , default='', help = 'The XRootD redirector to use when reading directly from json files')
+parser.add_argument('--max-files','-N'      , default=0, type=int, help = 'Limit the number of ROOT files per sample (useful for testing)')
+parser.add_argument('--nchunks','-c'        , default=0, type=int, help = 'Limit the number of chunks processed')
+parser.add_argument('--outname','-o'        , default='flipTopEFT', help = 'Base name for the output histogram file')
+parser.add_argument('--outpath','-p'        , default='histos', help = 'Directory where output files are written')
+parser.add_argument('--treename'            , default='Events', help = 'Tree name inside each input ROOT file')
+parser.add_argument('--xrd'                 , default='', help = 'Redirector prefix applied when reading files from JSON inputs')
 EXECUTOR_CLI = ExecutorCLIHelper(
     remote_environment=remote_environment,
     futures_spec=FuturesArgumentSpec(

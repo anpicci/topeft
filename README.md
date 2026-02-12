@@ -179,13 +179,15 @@ where `pytest-cov` is only used if you want to locally check the code coverage.
 
 The `pytest` commands are run automatically in the CI. If you would like to run them locally, you can simply run:
 ```bash
-pytest
+python -m pytest -q
 ```
-from the main topcoffea directory. This will run _all_ the tests, which will take ~20 minutes. To run a subset, use e.g.:
+from the `topeft` repository root. To run a focused subset, use e.g.:
 ```bash
-pytest -k test_futures
+python -m pytest -q tests/test_logging_policy.py
 ```
-where `test_futures` is the file/test you would like to run (check the `tests` directory for all the available tests, or write your own and push it!). If you would also like to see how the coverage changes, you can add `--cov=./ --cov-report=html` to `pytest` commands. This will create an `html` directory that you can then copy to any folder which you have web access to (e.g. `~/www/` on Earth) For a better printout of what passed and failed, add `-rP` to the `pytest` commands.
+where the targeted file can be replaced with any test under `tests/`. If you would also like to see how the coverage changes, you can add `--cov=./ --cov-report=html` to the `python -m pytest` commands. This will create an `html` directory that you can then copy to any folder which you have web access to (e.g. `~/www/` on Earth). For a better printout of what passed and failed, add `-rP` to the command.
+
+More test workflow details are documented in [`tests/README.md`](tests/README.md).
 
 
 

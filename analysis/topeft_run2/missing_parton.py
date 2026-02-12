@@ -1,12 +1,24 @@
-'''
-This script computes the missing parton rate.
+"""Compute missing-parton corrections from central/private template pairs.
 
-It requires the central (tZq) and private (tllq) samples exist in
-`histos/central_sm/` and `histos/private_sm/` respectively. When comparing the
-two, process names are remapped to align the private tllq sample with the
-central tZq histograms (and similarly ttZ→ttll, ttW→ttlnu). To create the
-inputs, run the datacard maker (tllq `with` systematics, tZq without).
-'''
+Purpose:
+Compare private and central histogram templates for selected processes and
+derive missing-parton correction views used in validation plots/artifacts.
+
+Inputs/outputs:
+- Input: ROOT datacard templates under the expected central/private histogram
+  directories plus optional year/channel selections.
+- Output: plot files under ``--output-path`` and updated ROOT artifacts for
+  missing-parton summaries.
+
+Side effects:
+- Reads ROOT/template text files from histogram directories.
+- Writes plot files and updates a ROOT output file.
+- Creates output directories when needed.
+
+How to run:
+- ``python analysis/topeft_run2/missing_parton.py --years 2017 --var njets``
+- ``python analysis/topeft_run2/missing_parton.py --years 2017 2018 --var ptz --output-path results``
+"""
 import numpy as np
 import matplotlib.pyplot as plt
 import uproot
@@ -118,12 +130,14 @@ if __name__ == '__main__':
     import datetime
     import os
 
-    parser = argparse.ArgumentParser(description='You can select which file to run over')
-    parser.add_argument('--years',          default=[], action='extend', nargs='+', help = 'Specify a list of years')
-    parser.add_argument('--time', '-t',     action='store_true', help = 'Append time to dir')
-    parser.add_argument("-o", "--output-path", default=".", help = "The path the output files should be saved to")
-    parser.add_argument('--var',            default='njets', help = 'Specify variable to run over')
-    parser.add_argument('--channels', '-c', default=None, nargs='+', help='Limit the run to a subset of channels')
+    parser = argparse.ArgumentParser(
+        description="Compute missing-parton comparisons from central/private templates."
+    )
+    parser.add_argument('--years', default=[], action='extend', nargs='+', help='Year list (e.g. 2016APV 2016 2017 2018)')
+    parser.add_argument('--time', '-t', action='store_true', help='Append a timestamp to the output directory name')
+    parser.add_argument("-o", "--output-path", default=".", help="Base directory where output files are saved")
+    parser.add_argument('--var', default='njets', help='Histogram variable to process (e.g. njets or ptz)')
+    parser.add_argument('--channels', '-c', default=None, nargs='+', help='Restrict processing to specific channels')
 
     args = parser.parse_args()
     years    = args.years
