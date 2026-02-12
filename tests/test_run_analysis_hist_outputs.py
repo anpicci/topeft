@@ -23,6 +23,10 @@ _EXPECTED_BASE_HISTS = {
     "njets",
     "invmass",
 }
+_MODE_FLAGS_EXCLUSIVE_ERROR = (
+    "Flags are mutually exclusive. Set at most one of: "
+    "--offZ-3l-split, --tau-h-analysis, --fwd-analysis, --all-analysis."
+)
 
 
 def _mock_data_driven(monkeypatch):
@@ -293,3 +297,23 @@ def test_worker_exception_is_reported(monkeypatch, tmp_path):
         sys.path = original_sys_path
 
     assert "worker raised an exception" in str(excinfo.value)
+
+
+def test_conflicting_analysis_mode_flags_raise_clear_error():
+    argv = [
+        "run_analysis.py",
+        str(_SAMPLE_JSON),
+        "--offZ-3l-split",
+        "--tau-h-analysis",
+    ]
+
+    original_sys_path = list(sys.path)
+    sys.path.insert(0, str(_SCRIPT_PATH.parent))
+    try:
+        with mock.patch.object(sys, "argv", argv):
+            with pytest.raises(SystemExit) as excinfo:
+                runpy.run_path(str(_SCRIPT_PATH), run_name="__main__")
+    finally:
+        sys.path = original_sys_path
+
+    assert str(excinfo.value) == _MODE_FLAGS_EXCLUSIVE_ERROR
