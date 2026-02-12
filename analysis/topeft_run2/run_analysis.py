@@ -38,6 +38,11 @@ WGT_VAR_LST = [
     #"nSumOfWeights_renormfactDown",
 ]
 
+_ANALYSIS_MODE_EXCLUSIVE_ERROR = (
+    "Flags are mutually exclusive. Set at most one of: "
+    "--offZ-3l-split, --tau-h-analysis, --fwd-analysis, --all-analysis."
+)
+
 
 def _ensure_topcoffea_data_available(skip_check=False):
     if skip_check:
@@ -124,6 +129,18 @@ def _cleanup_work_queue_staging_directory(path, eligible_for_cleanup):
             "Warning: Failed to clean up Work Queue staging directory {} ({}). You may want to "
             "remove it manually.".format(path, exc)
         )
+
+
+def _validate_analysis_mode_flags(offz_3l_split, tau_h_analysis, fwd_analysis, all_analysis):
+    mode_flags = {
+        "offz_3l_split": bool(offz_3l_split),
+        "tau_h_analysis": bool(tau_h_analysis),
+        "fwd_analysis": bool(fwd_analysis),
+        "all_analysis": bool(all_analysis),
+    }
+    if sum(mode_flags.values()) > 1:
+        raise ValueError(_ANALYSIS_MODE_EXCLUSIVE_ERROR)
+    return mode_flags
 
 
 _REQUIRED_JSON_KEYS = (
@@ -555,12 +572,16 @@ if __name__ == "__main__":
         help="Split up categories by lepton flavor",
     )
     parser.add_argument(
+        "--offZ-3l-split",
         "--offZ-split",
+        dest="offZ_split",
         action="store_true",
         help="Split up 3l offZ categories",
     )
     parser.add_argument(
+        "--tau-h-analysis",
         "--tau_h_analysis",
+        dest="tau_h_analysis",
         action="store_true",
         help=(
             "Add hadronic tau channels, including the DY-like 1l+tau_h control region "
@@ -705,7 +726,6 @@ if __name__ == "__main__":
         raise SystemExit(0)
     if args.workers is not None:
         args.nworkers = args.workers
-    _ensure_topcoffea_data_available(args.skip_topcoffea_data_check)
     jsonFiles = args.jsonFiles
     prefix = args.prefix
     executor_name = args.executor
@@ -738,22 +758,7 @@ if __name__ == "__main__":
     analysis_mode = args.analysis_mode
     env_file_override = args.env_file
     use_remote_env = args.use_remote_env
-
-    # Enforce mutually exclusive SR-mode flags
-    sr_mode_flags = {
-        "offZ_split": bool(offZ_split),
-        "tau_h_analysis": bool(tau_h_analysis),
-        "fwd_analysis": bool(fwd_analysis),
-        "all_analysis": bool(all_analysis),
-    }
-
-    enabled = [name for name, val in sr_mode_flags.items() if val]
-    if len(enabled) > 1:
-        raise SystemExit(
-            "Incompatible analysis mode flags: {}. "
-            "Choose only one of --offZ-split, --tau_h_analysis, --fwd-analysis, --all-analysis."
-            .format(", ".join(enabled))
-        )
+    skip_topcoffea_data_check = args.skip_topcoffea_data_check
 
     if args.options:
         import yaml
@@ -796,6 +801,23 @@ if __name__ == "__main__":
         analysis_mode = ops.pop("analysis_mode", analysis_mode)
         env_file_override = ops.pop("env_file", env_file_override)
         use_remote_env = ops.pop("use_remote_env", use_remote_env)
+        skip_topcoffea_data_check = ops.pop("skip_topcoffea_data_check", skip_topcoffea_data_check)
+
+    try:
+        validated_mode_flags = _validate_analysis_mode_flags(
+            offZ_split,
+            tau_h_analysis,
+            fwd_analysis,
+            all_analysis,
+        )
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
+
+    offZ_split = validated_mode_flags["offz_3l_split"]
+    tau_h_analysis = validated_mode_flags["tau_h_analysis"]
+    fwd_analysis = validated_mode_flags["fwd_analysis"]
+    all_analysis = validated_mode_flags["all_analysis"]
+    _ensure_topcoffea_data_available(skip_topcoffea_data_check)
 
     out_pkl_file = os.path.join(outpath, outname + ".pkl.gz")
     out_pkl_file_name_np = os.path.join(outpath, outname + "_np.pkl.gz")
