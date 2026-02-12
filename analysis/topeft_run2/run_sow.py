@@ -36,20 +36,21 @@ if hasattr(NanoEventsFactory, "warn_missing_crossrefs"):
 elif hasattr(NanoAODSchema, "warn_missing_crossrefs"):
     NanoAODSchema.warn_missing_crossrefs = False
 
-import sow_processor
+from analysis.topeft_run2 import sow_processor
 
 from topeft.modules.executor_cli import (
     ExecutorCLIHelper,
     FuturesArgumentSpec,
     TaskVineArgumentSpec,
 )
+from topeft.modules.executor import (
+    build_futures_executor,
+    futures_runner_overrides,
+    taskvine_log_configurator,
+)
 
 
 remote_environment = topcoffea.modules.remote_environment
-tc_executor = topcoffea.modules.executor
-build_futures_executor = tc_executor.build_futures_executor
-futures_runner_overrides = tc_executor.futures_runner_overrides
-taskvine_log_configurator = tc_executor.taskvine_log_configurator
 tc_utils = topcoffea.modules.utils
 load_sample_json_file = tc_utils.load_sample_json_file
 read_cfg_file = tc_utils.read_cfg_file

@@ -30,7 +30,7 @@ import numpy as np
 import coffea.processor as processor
 from coffea.nanoevents import NanoAODSchema
 
-import btagMCeff
+from analysis.btagMCeff import btagMCeff
 from topeft.modules.runner_output import normalise_runner_output, tuple_dict_stats
 
 if __name__ == '__main__':
@@ -172,5 +172,4 @@ if __name__ == '__main__':
     with gzip.open(outpath + outname + ".pkl.gz", "wb") as fout:
         cloudpickle.dump(serialised_output, fout)
     print('Done!')
-
 
