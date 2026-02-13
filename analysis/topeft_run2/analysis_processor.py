@@ -163,6 +163,16 @@ class AnalysisProcessor(processor.ProcessorABC):
         self.enable_offz_blocks = mode_toggles["enable_offz_blocks"]
         self.enable_tau_blocks = mode_toggles["enable_tau_blocks"]
         self.enable_fwd_blocks = mode_toggles["enable_fwd_blocks"]
+        if self.all_analysis:
+            self._analysis_mode = "all"
+        elif self.offZ_3l_split:
+            self._analysis_mode = "offz"
+        elif self.tau_h_analysis:
+            self._analysis_mode = "tau"
+        elif self.fwd_analysis:
+            self._analysis_mode = "fwd"
+        else:
+            self._analysis_mode = "default"
         self.sr_category_dict_name, self.cr_category_dict_name = resolve_category_dict_names(
             self.offZ_3l_split,
             self.tau_h_analysis,
@@ -325,6 +335,50 @@ class AnalysisProcessor(processor.ProcessorABC):
         self._skip_signal_regions = skip_signal_regions # Whether to skip the SR categories
         self._skip_control_regions = skip_control_regions # Whether to skip the CR categories
 
+
+
+    def _should_skip_histogram_fill(self, dense_axis_name, ch_name, lep_chan):
+        skip_hist = False
+
+        if ((("j0" in dense_axis_name) and ("lj0pt" not in dense_axis_name)) & (("CRZ" in ch_name) or ("CRflip" in ch_name))):
+            skip_hist = True
+        if ((("j0" in dense_axis_name) and ("lj0pt" not in dense_axis_name)) & ("0j" in ch_name)):
+            skip_hist = True
+
+        # Mode flags are mutually exclusive; mirror the historical loop-local
+        # continue/skip behavior by returning a single skip decision.
+        if self._analysis_mode == "all":
+            if (("ptz" in dense_axis_name) & ("onZ" not in lep_chan) & ("offZ_high" not in lep_chan) & ("offZ_low" not in lep_chan)):
+                skip_hist = True
+            if (("lt" in dense_axis_name) and ("fwd" not in lep_chan)):
+                skip_hist = True
+            if (("ptz" in dense_axis_name) and ("2lss" in lep_chan) and ("ptz_wtau" not in dense_axis_name)):
+                skip_hist = True
+            if (("ptz_wtau" in dense_axis_name) and (("1tau" not in lep_chan) or ("onZ" not in lep_chan) or ("2lss" not in lep_chan))):
+                skip_hist = True
+        elif self._analysis_mode == "offz":
+            if (("ptz" in dense_axis_name) & ("onZ" not in lep_chan) & ("offZ_high" not in lep_chan) & ("offZ_low" not in lep_chan)):
+                skip_hist = True
+        elif self._analysis_mode == "tau":
+            if (("ptz" in dense_axis_name) and ("onZ" not in lep_chan)):
+                skip_hist = True
+            if (("ptz" in dense_axis_name) and ("2lss" in lep_chan) and ("ptz_wtau" not in dense_axis_name)):
+                skip_hist = True
+            if (("ptz_wtau" in dense_axis_name) and (("1tau" not in lep_chan) or ("onZ" not in lep_chan) or ("2lss" not in lep_chan))):
+                skip_hist = True
+        elif self._analysis_mode == "fwd":
+            if (("ptz" in dense_axis_name) & ("onZ" not in lep_chan)):
+                skip_hist = True
+            if (("lt" in dense_axis_name) and ("2lss" not in lep_chan)):
+                skip_hist = True
+        else:
+            if (("ptz" in dense_axis_name) & ("onZ" not in lep_chan)):
+                skip_hist = True
+
+        if ((dense_axis_name in ["o0pt", "b0pt", "bl0pt"]) & ("CR" in ch_name)):
+            skip_hist = True
+
+        return skip_hist
 
 
     @property
@@ -1741,33 +1795,11 @@ class AnalysisProcessor(processor.ProcessorABC):
                                                 sumw2_values_cut_map[sumw2_axis_name] = base_values
 
                                         # Fill the histos
-                                        skip_hist = False
-                                        if ((("j0" in dense_axis_name) and ("lj0pt" not in dense_axis_name)) & (("CRZ" in ch_name) or ("CRflip" in ch_name))): skip_hist = True
-                                        if ((("j0" in dense_axis_name) and ("lj0pt" not in dense_axis_name)) & ("0j" in ch_name)): skip_hist = True
-                                        if self.all_analysis:
-                                            if (("ptz" in dense_axis_name) & ("onZ" not in lep_chan)): continue
-                                            if (("lt" in dense_axis_name) and ("fwd" not in lep_chan)): continue
-                                            if (("ptz" in dense_axis_name) and ("2lss" in lep_chan) and ("ptz_wtau" not in dense_axis_name)): continue
-                                            if (("ptz_wtau" in dense_axis_name) and (("1tau" not in lep_chan) or ("onZ" not in lep_chan) or ("2lss" not in lep_chan))): continue
-                                            if (("ptz" in dense_axis_name) & ("onZ" not in lep_chan) & ("offZ_high" not in lep_chan) & ("offZ_low" not in lep_chan)):continue
-                                        elif self.offZ_3l_split:
-                                            if (("ptz" in dense_axis_name) & ("onZ" not in lep_chan) & ("offZ_high" not in lep_chan) & ("offZ_low" not in lep_chan)):
-                                                skip_hist = True
-                                        elif self.tau_h_analysis:
-                                            if (("ptz" in dense_axis_name) and ("onZ" not in lep_chan)): continue
-                                            if (("ptz" in dense_axis_name) and ("2lss" in lep_chan) and ("ptz_wtau" not in dense_axis_name)): continue
-                                            if (("ptz_wtau" in dense_axis_name) and (("1tau" not in lep_chan) or ("onZ" not in lep_chan) or ("2lss" not in lep_chan))): continue
-
-                                        elif self.fwd_analysis:
-                                            if (("ptz" in dense_axis_name) & ("onZ" not in lep_chan)):
-                                                skip_hist = True
-                                            if (("lt" in dense_axis_name) and ("2lss" not in lep_chan)):
-                                                skip_hist = True
-                                        else:
-                                            if (("ptz" in dense_axis_name) & ("onZ" not in lep_chan)):
-                                                skip_hist = True
-                                        if ((dense_axis_name in ["o0pt","b0pt","bl0pt"]) & ("CR" in ch_name)):
-                                            skip_hist = True
+                                        skip_hist = self._should_skip_histogram_fill(
+                                            dense_axis_name,
+                                            ch_name,
+                                            lep_chan,
+                                        )
 
                                         if skip_hist:
                                             continue

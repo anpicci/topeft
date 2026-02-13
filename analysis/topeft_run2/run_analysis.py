@@ -10,6 +10,7 @@ import re
 import shlex
 import shutil
 import subprocess
+import sys
 import tempfile
 
 from coffea import processor
@@ -477,6 +478,38 @@ def _warn_duplicate_input_files(samplesdict, max_examples=10):
         print(f"  ... and {len(duplicate_items) - max_examples} more duplicated file path(s).")
 
 
+def _validate_mutually_exclusive_analysis_modes(
+    offz_3l_split, tau_h_analysis, fwd_analysis, all_analysis
+):
+    enabled = []
+    if offz_3l_split:
+        enabled.append("--offZ-3l-split")
+    if tau_h_analysis:
+        enabled.append("--tau-h-analysis")
+    if fwd_analysis:
+        enabled.append("--fwd-analysis")
+    if all_analysis:
+        enabled.append("--all-analysis")
+
+    if len(enabled) > 1:
+        raise SystemExit(
+            "Flags are mutually exclusive. Set at most one of: "
+            "--offZ-3l-split, --tau-h-analysis, --fwd-analysis, --all-analysis."
+        )
+
+
+def _validate_cli_mode_flags_from_argv(argv_tokens):
+    mode_flags = (
+        "--offZ-3l-split",
+        "--tau-h-analysis",
+        "--fwd-analysis",
+        "--all-analysis",
+    )
+    enabled = [flag for flag in mode_flags if flag in argv_tokens]
+    if len(enabled) > 1:
+        raise SystemExit(_ANALYSIS_MODE_EXCLUSIVE_ERROR)
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="You can customize your run")
     parser.add_argument(
@@ -571,16 +604,15 @@ if __name__ == "__main__":
         action="store_true",
         help="Split up categories by lepton flavor",
     )
-    parser.add_argument(
+    mode_group = parser.add_mutually_exclusive_group()
+    mode_group.add_argument(
         "--offZ-3l-split",
-        "--offZ-split",
-        dest="offZ_split",
+        dest="offZ_3l_split",
         action="store_true",
         help="Split up 3l offZ categories",
     )
-    parser.add_argument(
+    mode_group.add_argument(
         "--tau-h-analysis",
-        "--tau_h_analysis",
         dest="tau_h_analysis",
         action="store_true",
         help=(
@@ -588,12 +620,12 @@ if __name__ == "__main__":
             "with opposite-sign pairs around the visible Z mass."
         ),
     )
-    parser.add_argument(
+    mode_group.add_argument(
         "--fwd-analysis",
         action="store_true",
         help="Add fwd channels",
     )
-    parser.add_argument(
+    mode_group.add_argument(
         "--all-analysis",
         action="store_true",
         help="Add all contributions",
@@ -720,6 +752,7 @@ if __name__ == "__main__":
     )
     parser.set_defaults(use_remote_env=True)
 
+    _validate_cli_mode_flags_from_argv(sys.argv[1:])
     args = parser.parse_args()
     if args.debug_year_scan:
         _debug_year_scan_selfcheck()
@@ -740,7 +773,7 @@ if __name__ == "__main__":
     fill_sumw2 = not args.no_sumw2
     do_systs = args.do_systs
     split_lep_flavor = args.split_lep_flavor
-    offZ_split = args.offZ_split
+    offZ_split = args.offZ_3l_split
     tau_h_analysis = args.tau_h_analysis
     fwd_analysis = args.fwd_analysis
     all_analysis = args.all_analysis
@@ -759,6 +792,13 @@ if __name__ == "__main__":
     env_file_override = args.env_file
     use_remote_env = args.use_remote_env
     skip_topcoffea_data_check = args.skip_topcoffea_data_check
+
+    _validate_mutually_exclusive_analysis_modes(
+        offZ_split,
+        tau_h_analysis,
+        fwd_analysis,
+        all_analysis,
+    )
 
     if args.options:
         import yaml
@@ -818,6 +858,13 @@ if __name__ == "__main__":
     fwd_analysis = validated_mode_flags["fwd_analysis"]
     all_analysis = validated_mode_flags["all_analysis"]
     _ensure_topcoffea_data_available(skip_topcoffea_data_check)
+
+    _validate_mutually_exclusive_analysis_modes(
+        offZ_split,
+        tau_h_analysis,
+        fwd_analysis,
+        all_analysis,
+    )
 
     out_pkl_file = os.path.join(outpath, outname + ".pkl.gz")
     out_pkl_file_name_np = os.path.join(outpath, outname + "_np.pkl.gz")
