@@ -47,6 +47,7 @@ Explore the rest of the documentation via:
 - [Workflow & YAML hub](docs/workflow_and_yaml_hub.md) – start here.
 - [Documentation index](docs/index.md) – curated doc tracks.
 - [TaskVine workflow quickstart](docs/taskvine_workflow.md) – distributed execution focus.
+- [Datacard fitting workflow](docs/fitting.md) – canonical datacard/fit handoff.
 - [Run 2 metadata scenarios](docs/run2_scenarios.md) – scenario definitions and validators.
 toggles, output names, and executor settings in a single place.
 
@@ -142,9 +143,9 @@ The helper resolves your samples, validates the requested scenario, and launches
 a short futures-based run.  Detailed explanations of each switch are covered in
 [docs/quickstart_run2.md](docs/quickstart_run2.md).  When you are ready to scale
 out, switch to the TaskVine executor described above so the packaged environment
-can be reused across distributed resources.  A short legacy note is available in
-[README_WORKQUEUE.md](README_WORKQUEUE.md) for teams referencing the historical
-Work Queue setup.
+can be reused across distributed resources. See
+[docs/taskvine_workflow.md](docs/taskvine_workflow.md) for distributed-execution
+details.
 
 For local futures runs the CLI now exposes dedicated knobs for staging and
 recovery: ``--futures-prefetch`` limits the number of ROOT files staged per

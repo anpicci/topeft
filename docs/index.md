@@ -24,6 +24,8 @@ overlapping quickstarts.
   Flag-by-flag lookup table.
 - [TaskVine workflow quickstart](taskvine_workflow.md) – Distributed executor
   focus, including environment packaging pointers.
+- [Datacard fitting workflow](fitting.md) – Canonical handoff from histogram
+  production to datacard generation and Combine setup.
 - [Environment packaging](environment_packaging.md) – Maintaining the shared
   TaskVine tarball.
 
@@ -49,6 +51,3 @@ overlapping quickstarts.
 
 - [analysis/topeft_run2/README.md](../analysis/topeft_run2/README.md) – Legacy
   directory README preserved for historical context.
-- [README_WORKQUEUE.md](../README_WORKQUEUE.md) – Archived notes for the retired
-  Work Queue backend (TaskVine is current).
-- [README_FITTING.md](../README_FITTING.md) – Historic datacard/fit instructions.
