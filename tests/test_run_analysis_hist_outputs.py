@@ -10,6 +10,8 @@ import cloudpickle
 import coffea.processor as processor
 import pytest
 
+from analysis.topeft_run2.analysis_processor import ANALYSIS_MODE_EXCLUSIVE_ERROR
+
 _SAMPLE_JSON = Path("input_samples/sample_jsons/test_samples/UL17_private_ttH_for_CI.json")
 _SCRIPT_PATH = Path("analysis/topeft_run2/run_analysis.py")
 _EXPECTED_BASE_HISTS = {
@@ -23,10 +25,6 @@ _EXPECTED_BASE_HISTS = {
     "njets",
     "invmass",
 }
-_MODE_FLAGS_EXCLUSIVE_ERROR = (
-    "Flags are mutually exclusive. Set at most one of: "
-    "--offZ-3l-split, --tau-h-analysis, --fwd-analysis, --all-analysis."
-)
 
 
 def _mock_data_driven(monkeypatch):
@@ -62,8 +60,12 @@ def _mock_topcoffea_utils(monkeypatch):
     def _dummy_dump_to_pkl(*args, **kwargs):
         return None
 
+    def _dummy_canonicalize_process_name(name):
+        return name
+
     fake_utils.get_hist_from_pkl = _dummy_get_hist_from_pkl
     fake_utils.dump_to_pkl = _dummy_dump_to_pkl
+    fake_utils.canonicalize_process_name = _dummy_canonicalize_process_name
     monkeypatch.setitem(sys.modules, "topcoffea.modules.utils", fake_utils)
 
 
@@ -316,4 +318,4 @@ def test_conflicting_analysis_mode_flags_raise_clear_error():
     finally:
         sys.path = original_sys_path
 
-    assert str(excinfo.value) == _MODE_FLAGS_EXCLUSIVE_ERROR
+    assert str(excinfo.value) == ANALYSIS_MODE_EXCLUSIVE_ERROR

@@ -87,3 +87,43 @@ def test_analysis_processor_all_mode_enables_all_blocks():
     assert processor.enable_offz_blocks is True
     assert processor.enable_tau_blocks is True
     assert processor.enable_fwd_blocks is True
+
+
+def test_all_mode_keeps_offz_split_ptz_histograms():
+    processor = ap.AnalysisProcessor(
+        samples={},
+        wc_names_lst=[],
+        hist_lst=[],
+        all_analysis=True,
+    )
+    should_skip = processor._should_skip_histogram_fill(
+        dense_axis_name="ptz",
+        ch_name="3l_channel",
+        lep_chan="3l_m_offZ_low_1b",
+    )
+    assert should_skip is False
+
+
+def test_tau_mode_ptz_wtau_gating_is_strict():
+    processor = ap.AnalysisProcessor(
+        samples={},
+        wc_names_lst=[],
+        hist_lst=[],
+        tau_h_analysis=True,
+    )
+    assert (
+        processor._should_skip_histogram_fill(
+            dense_axis_name="ptz_wtau",
+            ch_name="2l_channel",
+            lep_chan="2lss_p_1tau_onZ",
+        )
+        is False
+    )
+    assert (
+        processor._should_skip_histogram_fill(
+            dense_axis_name="ptz_wtau",
+            ch_name="2l_channel",
+            lep_chan="2lss_p_1tau_offZ",
+        )
+        is True
+    )
