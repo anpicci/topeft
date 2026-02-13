@@ -152,9 +152,10 @@ recovery: ``--futures-prefetch`` limits the number of ROOT files staged per
 sample, ``--futures-retries``/``--futures-retry-wait`` control automatic
 resubmission, and ``--futures-status`` or ``--futures-tail-timeout`` let you
 adjust progress logging.  YAML profiles accept the same keys with underscores.
-The [analysis/topeft_run2/README.md](analysis/topeft_run2/README.md) guide
-collects practical recipes for mixing these options when debugging before
-handing jobs off to TaskVine.
+See [docs/run_analysis_cli_reference.md](docs/run_analysis_cli_reference.md) and
+[docs/run_analysis_configuration.md](docs/run_analysis_configuration.md) for
+the canonical options reference and workflow recipes before handing jobs off to
+TaskVine.
 
 
 ## How to contribute

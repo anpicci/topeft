@@ -33,6 +33,8 @@ overlapping quickstarts.
 
 - [Run configuration dataclasses and metadata overview](dataclasses_and_metadata.md)
   – How metadata is stored in dataclasses.
+- [Metadata channels and application structure](metadata_channels.md) – Channel
+  group/application conventions and feature-flag mapping.
 - [Run 2 metadata scenarios guide](run2_scenarios.md) – Scenario/feature
   definitions and validator pointers.
 - [Sample metadata reference](sample_metadata_reference.md) – JSON manifest
@@ -44,10 +46,10 @@ overlapping quickstarts.
   workflow architecture and execution flow.
 - [Tuple key audit](tuple_key_audit.md) – 5‑tuple conventions for histogram
   keys across the repository.
-- [analysis/topeft_run2/DEVELOPER_NOTES.md](../analysis/topeft_run2/DEVELOPER_NOTES.md)
-  – Metadata feature flag behaviours distilled from the processor.
+- [Run 2 legacy notes](run2_legacy_notes.md) – Maintainer-focused legacy
+  context for `analysis/topeft_run2/`.
 
 ## Legacy / archival
 
-- [analysis/topeft_run2/README.md](../analysis/topeft_run2/README.md) – Legacy
-  directory README preserved for historical context.
+- [Run 2 legacy notes](run2_legacy_notes.md) – Curated legacy/internal notes
+  consolidated from historical `analysis/topeft_run2` docs.
