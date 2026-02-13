@@ -22,7 +22,10 @@ from topcoffea.modules.paths import topcoffea_path
 from topeft.modules.dataDrivenEstimation import DataDrivenProducer
 from topeft.modules.get_renormfact_envelope import get_renormfact_envelope
 import analysis_processor
-from analysis.topeft_run2.analysis_processor import ANALYSIS_MODE_EXCLUSIVE_ERROR
+from analysis.topeft_run2.analysis_processor import (
+    ANALYSIS_MODE_EXCLUSIVE_ERROR,
+    validate_analysis_mode_flags as validate_analysis_mode_flags_canonical,
+)
 
 LST_OF_KNOWN_EXECUTORS = ["futures", "work_queue", "taskvine"]
 
@@ -802,7 +805,7 @@ if __name__ == "__main__":
         skip_topcoffea_data_check = ops.pop("skip_topcoffea_data_check", skip_topcoffea_data_check)
 
     try:
-        validated_mode_flags = analysis_processor.validate_analysis_mode_flags(
+        validated_mode_flags = validate_analysis_mode_flags_canonical(
             offZ_split,
             tau_h_analysis,
             fwd_analysis,
@@ -899,7 +902,7 @@ if __name__ == "__main__":
         #     hist_lst.append("l1_SeedEtaOrX_vs_SeedPhiOrY_sumw2")
         # if fill_sumw2 and "l1_eta_vs_phi_sumw2" not in hist_lst:
         #     hist_lst.append("l1_eta_vs_phi_sumw2")
-    elif args.hist_list == ["cr"]:
+    elif hist_list == ["cr"]:
         # Here we hardcode a list of hists used for the CRs
         hist_lst = [
             "lj0pt",
@@ -955,7 +958,7 @@ if __name__ == "__main__":
     else:
         # We want to specify a custom list
         # If we don't specify this argument, it will be None, and the processor will fill all hists
-        hist_lst = args.hist_list
+        hist_lst = hist_list
 
     ### Load samples from json
     samplesdict = {}
@@ -1340,7 +1343,10 @@ if __name__ == "__main__":
     else:
         print("No Wilson coefficients specified")
 
-    print("Variables to be histogrammed: {}".format(", ".join(hist_lst)))
+    if hist_lst is None:
+        print("Variables to be histogrammed: all (processor defaults)")
+    else:
+        print("Variables to be histogrammed: {}".format(", ".join(hist_lst)))
 
     env_extra_pip_local = {"topeft": ["topeft", "setup.py"]}
     wq_staging_dir = None
