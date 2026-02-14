@@ -11,8 +11,10 @@ below.
 - Use [Workflow and YAML overview](workflow_and_yaml_hub.md) and
   [Run 2 quickstart pipeline](quickstart_run2.md) for current execution
   guidance.
+- Use [Run analysis configuration flow](run_analysis_configuration.md) for
+  canonical `run_analysis.py` recipe commands and CLI/YAML behavior.
 
-## Legacy script families in `analysis/topeft_run2/`
+## Legacy script families in `analysis/topeft_run2/` (index only)
 
 The directory still contains historically important utility scripts:
 
@@ -24,9 +26,9 @@ The directory still contains historically important utility scripts:
 - datacard support scripts (`make_cards.py`, `datacards_post_processing.py`,
   `get_datacard_yields.py`).
 
-Many of these utilities predate the current docs structure; prefer canonical
-docs pages for current workflows, and treat script-level README snippets as
-implementation history.
+Many of these utilities predate the current docs structure; treat script-level
+README snippets as implementation history and keep usage recipes in canonical
+docs pages.
 
 ## Metadata feature dependencies (maintainer summary)
 

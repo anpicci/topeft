@@ -161,14 +161,16 @@ Direct CLI runs remain useful for tiny tests or bespoke scans:
 
 ```bash
 # From the topeft repository root
-# UL18 smoke test using the iterative executor and small chunks
+# Five-event futures debug run with verbose diagnostics
 python analysis/topeft_run2/run_analysis.py \
-    input_samples/cfgs/mc_signal_samples_NDSkim.cfg \
+    input_samples/sample_jsons/test_samples/UL17_private_ttH_for_CI.json \
     --scenario TOP_22_006 \
-    --executor iterative \
-    --chunksize 10 --nchunks 2 \
+    --executor futures \
+    --nworkers 1 \
+    --chunksize 5 --nchunks 1 \
+    --log-level DEBUG \
     --summary-verbosity brief \
-    --skip-cr --do-systs
+    --skip-cr
 ```
 
 ```bash
@@ -181,9 +183,25 @@ python analysis/topeft_run2/run_analysis.py \
     --options analysis/topeft_run2/configs/fullR2_run.yml:sr
 ```
 
-The first example relies purely on CLI flags; the second mirrors a typical
-`full_run.sh` command, showing how the YAML preset controls scenarios, metadata,
-and SR/CR toggles without relying on additional CLI overrides.
+```bash
+# From the topeft repository root
+# CLI-only futures run tuned for local retry/prefetch debugging
+python analysis/topeft_run2/run_analysis.py \
+    input_samples/sample_jsons/test_samples/UL17_private_ttH_for_CI.json \
+    --scenario TOP_22_006 \
+    --executor futures \
+    --nworkers 2 \
+    --chunksize 50000 \
+    --nchunks 2 \
+    --futures-prefetch 1 \
+    --futures-retries 2 \
+    --futures-retry-wait 10 \
+    --futures-tail-timeout 300
+```
+
+The first and third examples rely purely on CLI flags for quick debugging; the
+second mirrors a typical `full_run.sh` launch where the YAML preset controls
+scenarios, metadata, and SR/CR toggles without extra CLI overrides.
 
 ### Common pitfalls
 
