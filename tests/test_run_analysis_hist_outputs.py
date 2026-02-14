@@ -1,4 +1,5 @@
 import gzip
+import importlib
 import json
 import runpy
 import sys
@@ -192,24 +193,6 @@ def test_missing_topcoffea_data_reports_guidance(monkeypatch):
     _mock_hist_utils(monkeypatch)
     _mock_topcoffea_utils(monkeypatch)
 
-    fake_analysis_processor = types.ModuleType("analysis_processor")
-
-    class DummyProcessor:
-        def __init__(self, *_, **__):
-            self.accumulator = {}
-
-    def fake_validate_analysis_mode_flags(offz_3l_split, tau_h_analysis, fwd_analysis, all_analysis):
-        return {
-            "offz_3l_split": bool(offz_3l_split),
-            "tau_h_analysis": bool(tau_h_analysis),
-            "fwd_analysis": bool(fwd_analysis),
-            "all_analysis": bool(all_analysis),
-        }
-
-    fake_analysis_processor.AnalysisProcessor = DummyProcessor
-    fake_analysis_processor.validate_analysis_mode_flags = fake_validate_analysis_mode_flags
-    monkeypatch.setitem(sys.modules, "analysis_processor", fake_analysis_processor)
-
     argv = [
         "run_analysis.py",
         str(_SAMPLE_JSON),
@@ -311,15 +294,11 @@ def test_worker_exception_is_reported(monkeypatch, tmp_path):
 
 
 def test_conflicting_analysis_mode_flags_raise_clear_error(monkeypatch):
-    fake_analysis_processor = types.ModuleType("analysis_processor")
     validator_calls = []
 
     def fake_validate_analysis_mode_flags(offz_3l_split, tau_h_analysis, fwd_analysis, all_analysis):
         validator_calls.append((offz_3l_split, tau_h_analysis, fwd_analysis, all_analysis))
         raise ValueError(ANALYSIS_MODE_EXCLUSIVE_ERROR)
-
-    fake_analysis_processor.validate_analysis_mode_flags = fake_validate_analysis_mode_flags
-    monkeypatch.setitem(sys.modules, "analysis_processor", fake_analysis_processor)
 
     argv = [
         "run_analysis.py",
@@ -331,6 +310,13 @@ def test_conflicting_analysis_mode_flags_raise_clear_error(monkeypatch):
     original_sys_path = list(sys.path)
     sys.path.insert(0, str(_SCRIPT_PATH.parent))
     try:
+        ap_cli = importlib.import_module("analysis_processor")
+        monkeypatch.setattr(
+            ap_cli,
+            "validate_analysis_mode_flags",
+            fake_validate_analysis_mode_flags,
+            raising=True,
+        )
         with mock.patch.object(sys, "argv", argv):
             with pytest.raises(SystemExit) as excinfo:
                 runpy.run_path(str(_SCRIPT_PATH), run_name="__main__")
