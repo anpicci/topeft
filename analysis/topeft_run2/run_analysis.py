@@ -24,7 +24,6 @@ from topeft.modules.get_renormfact_envelope import get_renormfact_envelope
 import analysis_processor
 from analysis.topeft_run2.analysis_processor import (
     ANALYSIS_MODE_EXCLUSIVE_ERROR,
-    validate_analysis_mode_flags as validate_analysis_mode_flags_canonical,
 )
 
 LST_OF_KNOWN_EXECUTORS = ["futures", "work_queue", "taskvine"]
@@ -41,22 +40,6 @@ WGT_VAR_LST = [
     #"nSumOfWeights_renormfactUp",
     #"nSumOfWeights_renormfactDown",
 ]
-
-_ANALYSIS_MODE_FLAGS = (
-    "--offZ-3l-split",
-    "--tau-h-analysis",
-    "--fwd-analysis",
-    "--all-analysis",
-)
-
-
-class _RunAnalysisArgumentParser(argparse.ArgumentParser):
-    def error(self, message):
-        mode_flag_mentions = sum(flag in message for flag in _ANALYSIS_MODE_FLAGS)
-        if "not allowed with argument" in message and mode_flag_mentions >= 2:
-            raise SystemExit(ANALYSIS_MODE_EXCLUSIVE_ERROR)
-        super().error(message)
-
 
 def _ensure_topcoffea_data_available(skip_check=False):
     if skip_check:
@@ -480,7 +463,7 @@ def _warn_duplicate_input_files(samplesdict, max_examples=10):
 
 
 if __name__ == "__main__":
-    parser = _RunAnalysisArgumentParser(description="You can customize your run")
+    parser = argparse.ArgumentParser(description="You can customize your run")
     parser.add_argument(
         "jsonFiles",
         nargs="?",
@@ -573,14 +556,13 @@ if __name__ == "__main__":
         action="store_true",
         help="Split up categories by lepton flavor",
     )
-    mode_group = parser.add_mutually_exclusive_group()
-    mode_group.add_argument(
+    parser.add_argument(
         "--offZ-3l-split",
         dest="offZ_3l_split",
         action="store_true",
         help="Split up 3l offZ categories",
     )
-    mode_group.add_argument(
+    parser.add_argument(
         "--tau-h-analysis",
         dest="tau_h_analysis",
         action="store_true",
@@ -589,12 +571,12 @@ if __name__ == "__main__":
             "with opposite-sign pairs around the visible Z mass."
         ),
     )
-    mode_group.add_argument(
+    parser.add_argument(
         "--fwd-analysis",
         action="store_true",
         help="Add fwd channels",
     )
-    mode_group.add_argument(
+    parser.add_argument(
         "--all-analysis",
         action="store_true",
         help="Add all contributions",
@@ -805,7 +787,7 @@ if __name__ == "__main__":
         skip_topcoffea_data_check = ops.pop("skip_topcoffea_data_check", skip_topcoffea_data_check)
 
     try:
-        validated_mode_flags = validate_analysis_mode_flags_canonical(
+        validated_mode_flags = analysis_processor.validate_analysis_mode_flags(
             offZ_split,
             tau_h_analysis,
             fwd_analysis,

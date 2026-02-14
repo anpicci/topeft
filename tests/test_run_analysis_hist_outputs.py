@@ -198,7 +198,16 @@ def test_missing_topcoffea_data_reports_guidance(monkeypatch):
         def __init__(self, *_, **__):
             self.accumulator = {}
 
+    def fake_validate_analysis_mode_flags(offz_3l_split, tau_h_analysis, fwd_analysis, all_analysis):
+        return {
+            "offz_3l_split": bool(offz_3l_split),
+            "tau_h_analysis": bool(tau_h_analysis),
+            "fwd_analysis": bool(fwd_analysis),
+            "all_analysis": bool(all_analysis),
+        }
+
     fake_analysis_processor.AnalysisProcessor = DummyProcessor
+    fake_analysis_processor.validate_analysis_mode_flags = fake_validate_analysis_mode_flags
     monkeypatch.setitem(sys.modules, "analysis_processor", fake_analysis_processor)
 
     argv = [
@@ -301,7 +310,17 @@ def test_worker_exception_is_reported(monkeypatch, tmp_path):
     assert "worker raised an exception" in str(excinfo.value)
 
 
-def test_conflicting_analysis_mode_flags_raise_clear_error():
+def test_conflicting_analysis_mode_flags_raise_clear_error(monkeypatch):
+    fake_analysis_processor = types.ModuleType("analysis_processor")
+    validator_calls = []
+
+    def fake_validate_analysis_mode_flags(offz_3l_split, tau_h_analysis, fwd_analysis, all_analysis):
+        validator_calls.append((offz_3l_split, tau_h_analysis, fwd_analysis, all_analysis))
+        raise ValueError(ANALYSIS_MODE_EXCLUSIVE_ERROR)
+
+    fake_analysis_processor.validate_analysis_mode_flags = fake_validate_analysis_mode_flags
+    monkeypatch.setitem(sys.modules, "analysis_processor", fake_analysis_processor)
+
     argv = [
         "run_analysis.py",
         str(_SAMPLE_JSON),
@@ -319,3 +338,4 @@ def test_conflicting_analysis_mode_flags_raise_clear_error():
         sys.path = original_sys_path
 
     assert str(excinfo.value) == ANALYSIS_MODE_EXCLUSIVE_ERROR
+    assert validator_calls == [(True, True, False, False)]
