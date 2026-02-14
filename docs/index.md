@@ -35,10 +35,21 @@ overlapping quickstarts.
   – How metadata is stored in dataclasses.
 - [Metadata channels and application structure](metadata_channels.md) – Channel
   group/application conventions and feature-flag mapping.
+- [Channel group summary reference](channel_group_summary.md) – Expanded
+  channel-group listings extracted from `analysis/metadata/metadata.yml`.
 - [Run 2 metadata scenarios guide](run2_scenarios.md) – Scenario/feature
   definitions and validator pointers.
 - [Sample metadata reference](sample_metadata_reference.md) – JSON manifest
   schema and troubleshooting tips.
+
+## Developer references
+
+- [Parameters and calibration assets](developer/parameters.md) – Maintainer
+  notes for `topeft/params/`.
+- [Module notes](developer/modules.md) – Consolidated notes for
+  `topeft/modules/`.
+- [Testing guide](developer/testing.md) – Canonical pytest usage and TaskVine
+  test notes.
 
 ## Architecture & internals
 
@@ -53,3 +64,5 @@ overlapping quickstarts.
 
 - [Run 2 legacy notes](run2_legacy_notes.md) – Curated legacy/internal notes
   consolidated from historical `analysis/topeft_run2` docs.
+- [Extreme events study notes](extreme_events_study.md) – Consolidated legacy
+  notes for `analysis/extreme_events_study/`.

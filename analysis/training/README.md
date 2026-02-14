@@ -3,6 +3,8 @@
 ## training
 This directory contains example scripts that may be useful for learning to run coffea and topcoffea. 
 
+Canonical project documentation lives in [docs/index.md](../../docs/index.md).
+
 ### Past tutorials:
 
 * Jun 2021: [2021 TopCoffea tutoral](https://indico.cern.ch/event/1047567/)

@@ -19,7 +19,7 @@ The `topeft/topeft` directory is installable as a Python package:
 - `pyproject.toml`: PEP 517 metadata describing dependencies and bundled data.
 - `topeft/setup.py`: Minimal shim for invoking the package build.
 - `topeft/analysis`: Analysis- and workflow-specific scripts (e.g. `analysis/topeft_run2`).
-- `topeft/tests`: Pytest suites (see [`tests/README.md`](tests/README.md) for details).
+- `topeft/tests`: Pytest suites (see [docs/developer/testing.md](docs/developer/testing.md) for details).
 - `topeft/input_samples`: Sample manifests and CFG bundles used by the workflows.
 
 ## Environment & dependencies
