@@ -1,3 +1,22 @@
+"""Compare two yield JSON files and report differences.
+
+Purpose:
+- Diff nested yield dictionaries and print absolute/percent differences with
+  optional latex table output.
+
+Inputs/outputs:
+- Reads one required yield JSON and one optional comparison JSON/reference tag.
+- Prints comparison tables to stdout and exits non-zero when tolerance checks
+  fail.
+
+Side effects:
+- No file writes by default; process exit code reflects comparison status.
+
+How to run:
+- ``python analysis/topeft_run2/comp_yields.py --help``
+- ``python analysis/topeft_run2/comp_yields.py yields_new.json test/ref_yields.json`` 
+"""
+
 import argparse
 import json
 import sys
@@ -8,11 +27,6 @@ from topeft.modules.yield_tools import YieldTools
 
 mlt = topcoffea.modules.MakeLatexTable
 utils = topcoffea.modules.utils
-
-# This script takes two json files of yields, and prints out information about how they compare
-#   - The second file is optional, will default to the reference yield file
-#   - You can compare to the TOP-19-001 yields by specifying "TOP-19-001" as the filename
-#   - Example usage: python comp_yields.py your_yields_file.json TOP-19-001
 
 def main():
     from topeft.modules.logging_config import configure_topeft_logging

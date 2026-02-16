@@ -1,8 +1,20 @@
-# About this script (Apr 21, 2022)
-#   - This script takes as input the path to a dir that has all of the template root files produced by the datacard maker
-#       - All of the files in the dir should correspond to a single variable
-#       - So far the script has only been tested with njets, but in principle could be extended to other variables too
-#   - The script then grabs all of the nom, up, and down histos from the templates, and plots them and saves to png
+"""Inspect and plot nominal/up/down template histograms from datacard ROOT files.
+
+Purpose:
+- Parse template ROOT files created by datacard workflows and visualize nominal
+  vs systematic-shifted shapes.
+
+Inputs/outputs:
+- Reads a directory containing template ROOT files for a single variable.
+- Writes overlay plots (PNG/PDF) and optional ``index.html`` pages.
+
+Side effects:
+- Creates output image files and can create directories for plot staging.
+
+How to run:
+- ``python analysis/topeft_run2/parse_datacard_templates.py --help``
+- ``python analysis/topeft_run2/parse_datacard_templates.py -i templates_dir -o parsed_templates`` 
+"""
 
 import os
 import argparse

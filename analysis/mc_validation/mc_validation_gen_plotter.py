@@ -1,6 +1,19 @@
-# This script makes plots to compare private and central GEN level distributions
-#   - Should be run on the output of the mc_validation_gen_processor.py processor
-#   - Was used during the June 2022 MC validation studies (for TOP-22-006 pre approval checks)
+"""Compare private vs central GEN-level samples in validation plots.
+
+Purpose:
+- Produce GEN-level overlay/ratio plots for private-vs-central MC validation.
+
+Inputs/outputs:
+- Reads histogram pickles from the GEN validation workflow.
+- Writes plot images and optional helper pickles for derived scale factors.
+
+Side effects:
+- Creates output directories/files and optional ``index.html`` pages.
+
+How to run:
+- ``python analysis/mc_validation/mc_validation_gen_plotter.py --help``
+- ``python analysis/mc_validation/mc_validation_gen_plotter.py -f histos/gen_validation.pkl.gz -o plots/mc_validation_gen`` 
+"""
 
 import os
 import datetime

@@ -1,3 +1,21 @@
+"""Summarize datacard yields into printable tables.
+
+Purpose:
+- Parse Combine datacards and report SM/data yields in plain text and latex
+  table formats used for validation notes.
+
+Inputs/outputs:
+- Reads one datacard directory (or file list) plus optional scenario settings.
+- Writes optional JSON summaries and prints formatted tables to stdout.
+
+Side effects:
+- Creates timestamped output files when save options are enabled.
+
+How to run:
+- ``python analysis/topeft_run2/get_datacard_yields.py --help``
+- ``python analysis/topeft_run2/get_datacard_yields.py cards_out/ptz-lj0pt_withSys --unblind``
+"""
+
 import os
 import copy
 import datetime

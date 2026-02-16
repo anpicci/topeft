@@ -1,4 +1,21 @@
-"""Command line entry point for the Run 2 quickstart helpers."""
+"""Run the lightweight Run-2 quickstart workflow from the command line.
+
+Purpose:
+Provide a convenient entrypoint that validates sample inputs and launches a
+small Coffea run suitable for first-pass checks and onboarding.
+
+Inputs/outputs:
+- Input: sample JSON/CFG/directory plus quickstart execution options.
+- Output: quickstart histogram pickle artifacts under the selected output dir.
+
+Side effects:
+- Reads sample metadata and ROOT files.
+- Executes the analysis runner (futures by default) and writes output files.
+
+How to run:
+- ``python -m topeft.quickstart input_samples/sample_jsons/test_samples/UL17_private_ttH_for_CI.json``
+- ``python -m topeft.quickstart input_samples/sample_jsons/test_samples/UL17_private_ttH_for_CI.json --pretend``
+"""
 
 from __future__ import annotations
 

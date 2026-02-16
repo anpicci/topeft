@@ -35,6 +35,9 @@ partitioning). The planner layer keeps these tags alongside each channel so
 histogram scheduling and downstream summaries stay aligned with the selected
 scenario.
 
+For the expanded per-group channel listings, see
+[Channel group summary reference](channel_group_summary.md).
+
 ## Feature flags used by Run 2 channels
 
 Run 2 channel groups may declare feature tags used by processor-side logic:
@@ -50,5 +53,6 @@ Detailed processor effects are documented in [Run 2 legacy notes](run2_legacy_no
 
 - [Run configuration dataclasses and metadata overview](dataclasses_and_metadata.md)
 - [Run 2 scenarios, groups, and workflows](run2_scenarios.md)
+- [Channel group summary reference](channel_group_summary.md)
 - [`run_analysis.py` CLI and YAML reference](run_analysis_cli_reference.md)
 - [Workflow and YAML overview](workflow_and_yaml_hub.md)

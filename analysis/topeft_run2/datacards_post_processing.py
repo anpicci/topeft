@@ -1,3 +1,21 @@
+"""Post-process and validate datacard/template production outputs.
+
+Purpose:
+- Inspect card/template directories, summarize condor logs, and stage subsets
+  used by standard scenario workflows.
+
+Inputs/outputs:
+- Reads datacard and template directories plus optional condor log files.
+- Writes copied template subsets and JSON summaries in output directories.
+
+Side effects:
+- Performs filesystem copies and can remove/recreate destination directories.
+
+How to run:
+- ``python analysis/topeft_run2/datacards_post_processing.py --help``
+- ``python analysis/topeft_run2/datacards_post_processing.py cards_out -s``
+"""
+
 import os
 import shutil
 import argparse
@@ -7,10 +25,6 @@ from typing import Iterable, List, Tuple
 
 from analysis.topeft_run2 import metadata_authority
 from topeft.modules.channel_metadata import ChannelMetadataHelper
-
-# This script does some basic checks of the cards and templates produced by the `make_cards.py` script.
-#   - It also can parse the condor log files and dump a summary of the contents
-#   - Additionally, it can also grab the right set of ptz and lj0pt templates (for the right categories) used in TOP-22-006
 
 # Lines that show up in the condor err files that we want to ignore
 IGNORE_LINES = [

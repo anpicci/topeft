@@ -1,3 +1,21 @@
+"""Build datacards/templates from tuple-keyed histogram outputs.
+
+Purpose:
+- Consume histogram pickles and materialize Combine-compatible datacards and
+  ROOT templates for selected channels/variables.
+
+Inputs/outputs:
+- Reads one or more histogram pickle files plus optional scenario metadata.
+- Writes datacard text files, template ROOT files, and optional condor payloads.
+
+Side effects:
+- Creates output directories/files and may generate condor submit scripts.
+
+How to run:
+- ``python analysis/topeft_run2/make_cards.py --help``
+- ``python analysis/topeft_run2/make_cards.py histos/plotsTopEFT.pkl.gz -d cards_out``
+"""
+
 import os
 import sys
 import time

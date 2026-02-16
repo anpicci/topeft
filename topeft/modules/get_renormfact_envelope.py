@@ -1,3 +1,22 @@
+"""Build renorm/fact envelope systematics from histogram dictionaries.
+
+Purpose:
+Collapse the six renormalization/factorization systematic variations into the
+most extreme up/down envelope for each process/channel/bin.
+
+Inputs/outputs:
+- Input: a histogram dictionary loaded from a ``.pkl.gz`` artifact.
+- Output: a transformed histogram dictionary written to a pickle file.
+
+Side effects:
+- Reads and writes pickle artifacts on disk.
+- Prints progress and category summaries to stdout.
+
+How to run:
+- ``python topeft/modules/get_renormfact_envelope.py histos/plotsTopEFT.pkl.gz``
+- ``python topeft/modules/get_renormfact_envelope.py histos/plotsTopEFT.pkl.gz --output-name histos/plotsTopEFT_rfenv.pkl.gz``
+"""
+
 import numpy as np
 import argparse
 
@@ -141,9 +160,11 @@ def main():
 
 
     # Set up the command line parser
-    parser = argparse.ArgumentParser()
-    parser.add_argument("pkl_file_path", help = "The path to the pkl file")
-    parser.add_argument("-n", "--output-name", default="histos_dict", help = "A name for the output file")
+    parser = argparse.ArgumentParser(
+        description="Compute renorm/fact envelope variations from a histogram pickle."
+    )
+    parser.add_argument("pkl_file_path", help = "Path to the input histogram pickle (.pkl.gz)")
+    parser.add_argument("-n", "--output-name", default="histos_dict", help = "Output pickle name/path for the envelope result")
     args = parser.parse_args()
 
     # Get the envelope and write to an out pkl
@@ -153,4 +174,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

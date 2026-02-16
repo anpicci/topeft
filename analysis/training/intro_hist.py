@@ -3,8 +3,21 @@
 
 """Intro to modern histogram usage with ``hist`` and ``mplhep``.
 
-This training script replaces the legacy Coffea histogram tutorial and focuses
-on the APIs used by the current topeft/topcoffea stack.
+Purpose:
+- Demonstrate basic 1D/2D histogram filling and plotting with the ``hist`` API.
+- Provide a lightweight training entrypoint for users learning current
+  topeft/topcoffea histogram tooling.
+
+Inputs/outputs:
+- Inputs: no required arguments; optional local pickle path for the loader demo.
+- Outputs: in-memory matplotlib figures and console summary output.
+
+Side effects:
+- Opens windows/files through matplotlib backends when plots are rendered.
+- Optionally reads a gzip+pickle histogram payload when present.
+
+How to run:
+- ``python analysis/training/intro_hist.py``
 """
 
 from __future__ import annotations

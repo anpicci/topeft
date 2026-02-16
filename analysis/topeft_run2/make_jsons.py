@@ -1,6 +1,21 @@
-# This file is essentially a wrapper for createJSON.py:
-#   - It runs createJSON.py for each sample that you include in a dictionary, and moves the resulting json file to the directory you specify
-#   - If the private NAOD has to be remade, the version numbers should be updated in the dictionaries here, then just rerun the script to remake the jsons
+"""Generate batches of sample JSON files for private/central campaigns.
+
+Purpose:
+- Wrap ``topcoffea.modules.createJSON`` calls for predefined sample dictionaries
+  and optionally combine per-batch outputs into campaign-level JSON lists.
+
+Inputs/outputs:
+- Reads hard-coded sample dictionaries in this module plus xsec metadata.
+- Writes JSON files into configured output directories.
+
+Side effects:
+- Executes subprocess calls to JSON-generation utilities and writes many JSONs.
+
+How to run:
+- Edit the enabled ``make_jsons_for_dict_of_samples(...)`` calls in ``main()``
+  to select the campaign slices you want to (re)build.
+- Run ``python analysis/topeft_run2/make_jsons.py`` from the repository root.
+"""
 
 import os
 import re

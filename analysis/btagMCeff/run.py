@@ -1,4 +1,25 @@
 #!/usr/bin/env python
+"""Run the b-tagging MC-efficiency Coffea processor.
+
+Purpose:
+Launch ``btagMCeff.AnalysisProcessor`` over JSON/CFG sample manifests to build
+histograms used for b-tagging efficiency studies.
+
+Inputs/outputs:
+- Input: one or more sample JSON/CFG files plus optional redirector prefix.
+- Output: a gzip-compressed cloudpickle histogram artifact in ``--outpath``
+  (default filename base: ``btagMCeff``).
+
+Side effects:
+- Reads sample metadata files and remote/local ROOT files.
+- Executes Coffea runners (futures executor) and writes output files.
+- Creates the output directory when needed.
+
+How to run:
+- ``python analysis/btagMCeff/run.py input_samples/sample_jsons/test_samples/UL17_private_ttH_for_CI.json``
+- ``python analysis/btagMCeff/run.py input_samples/sample_jsons/test_samples/UL17_private_ttH_for_CI.json --test --outpath histos``
+"""
+
 import json
 import time
 import cloudpickle
@@ -9,7 +30,7 @@ import numpy as np
 import coffea.processor as processor
 from coffea.nanoevents import NanoAODSchema
 
-import btagMCeff
+from analysis.btagMCeff import btagMCeff
 from topeft.modules.runner_output import normalise_runner_output, tuple_dict_stats
 
 if __name__ == '__main__':
@@ -17,16 +38,18 @@ if __name__ == '__main__':
     configure_topeft_logging("INFO")
 
     import argparse
-    parser = argparse.ArgumentParser(description='You can customize your run')
-    parser.add_argument('jsonFiles'        , nargs='?', default='', help = 'Json file(s) containing files and metadata')
-    parser.add_argument('--prefix', '-r'   , nargs='?', default='', help = 'Prefix or redirector to look for the files')
-    parser.add_argument('--test','-t'       , action='store_true'  , help = 'To perform a test, run over a few events in a couple of chunks')
-    parser.add_argument('--nworkers','-n'   , default=8  , help = 'Number of workers')
+    parser = argparse.ArgumentParser(
+        description="Run the b-tag MC-efficiency processor and write histogram output."
+    )
+    parser.add_argument('jsonFiles'        , nargs='?', default='', help = 'JSON or CFG file(s) containing sample metadata')
+    parser.add_argument('--prefix', '-r'   , nargs='?', default='', help = 'Redirector prefix prepended to each input file path')
+    parser.add_argument('--test','-t'       , action='store_true'  , help = 'Run a fast smoke test with reduced chunks/workers')
+    parser.add_argument('--nworkers','-n'   , default=8  , help = 'Number of local workers')
     parser.add_argument('--chunksize','-s'   , default=500000  , help = 'Number of events per chunk')
-    parser.add_argument('--nchunks','-c'   , default=None  , help = 'You can choose to run only a number of chunks')
-    parser.add_argument('--outname','-o'   , default='btagMCeff', help = 'Name of the output file with histograms')
-    parser.add_argument('--outpath','-p'   , default='histos', help = 'Name of the output directory')
-    parser.add_argument('--treename'   , default='Events', help = 'Name of the tree inside the files')
+    parser.add_argument('--nchunks','-c'   , default=None  , help = 'Limit the number of chunks processed')
+    parser.add_argument('--outname','-o'   , default='btagMCeff', help = 'Base name for the output histogram file')
+    parser.add_argument('--outpath','-p'   , default='histos', help = 'Directory where output files are written')
+    parser.add_argument('--treename'   , default='Events', help = 'Tree name inside each input ROOT file')
 
     args = parser.parse_args()
     jsonFiles  = args.jsonFiles
@@ -149,6 +172,4 @@ if __name__ == '__main__':
     with gzip.open(outpath + outname + ".pkl.gz", "wb") as fout:
         cloudpickle.dump(serialised_output, fout)
     print('Done!')
-
-
 
