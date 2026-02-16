@@ -1,4 +1,9 @@
-### Documentation
+# Documentation moved
 
-:warning: Is this documentation out of date?
-* Twiki with the b tag working points (does not have UL16 yet): https://twiki.cern.ch/twiki/bin/viewauth/CMS/BtagRecommendation
+The canonical parameters documentation now lives at:
+
+- [docs/developer/parameters.md](../../docs/developer/parameters.md)
+
+For the full documentation map, see:
+
+- [docs/index.md](../../docs/index.md)

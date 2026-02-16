@@ -4,6 +4,8 @@
 
 This directory contains several scripts that are relevant for the charge flip measurement.
 
+Canonical project documentation lives in [docs/index.md](../../docs/index.md).
+
 ### Processors 
 
 * `flip_mr_processor.py`: This processor is responsible for performing the measurement of the flip probabilities. It is designed to process MC, and based on the MC truth info, counts the number of electrons whose charge has been mismeasured. The information is saved into a 2d `coffea` histogram (with axes for `pt` and `abs(eta)`). 

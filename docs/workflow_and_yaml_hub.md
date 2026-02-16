@@ -29,29 +29,30 @@ This hub pulls together the essentials for launching Run 2 analyses, choosing be
 
    ```bash
    cd analysis/topeft_run2
-   python run_analysis.py \
-       ../../input_samples/sample_jsons/test_samples/UL17_private_ttH_for_CI.json \
-       --options configs/fullR2_run.yml:sr \
+   ./full_run.sh --sr -y UL17 \
        --executor futures \
-       --outpath histos/local_futures \
-       --outname plotsTopEFT
+       --samples ../../input_samples/sample_jsons/test_samples/UL17_private_ttH_for_CI.json \
+       --outdir histos/local_futures \
+       --tag quickstart --dry-run
    ```
 
-   The CLI flags above override any `executor` value in the YAML so you can keep a TaskVine-ready preset while still running locally.
-4. **Run with the TaskVine executor** when you are ready to distribute work. Package the environment once per checkout (`python -m topcoffea.modules.remote_environment`), ensure workers point at the advertised manager name, and let the YAML supply the backend configuration:
+   Drop `--dry-run` to execute. For Run-2 years, `full_run.sh` auto-selects
+   `configs/fullR2_run.yml` (SR/CR profile chosen by `--sr/--cr`) unless you
+   pass explicit `--options` or `--scenario`.
+4. **Run with the TaskVine executor** when you are ready to distribute work. Package the environment once per checkout (`python -m topcoffea.modules.remote_environment`), ensure workers point at the advertised manager name, and let the wrapper select the Run-3 defaults:
 
    ```bash
    cd analysis/topeft_run2
-   python run_analysis.py \
-       ../../input_samples/sample_jsons/test_samples/UL17_private_ttH_for_CI.json \
-       --options configs/fullR2_run.yml:sr \
+   ./full_run.sh --cr -y run3 \
        --executor taskvine \
-       --environment-file "$(python -m topcoffea.modules.remote_environment)" \
-       --outpath histos/taskvine \
-       --outname plotsTopEFT
+       --outdir histos/run3_fwd_validation \
+       --tag dev_validation
    ```
 
-   Launch a worker pool in another terminal and pass the same tarball through `--python-env` when using TaskVine submission helpers (for example `vine_submit_workers ... --python-env "$(python -m topcoffea.modules.remote_environment)" -M ${USER}-taskvine-coffea 10`). See [TaskVine workflow quickstart](taskvine_workflow.md) for a deeper dive.
+   Launch a worker pool in another terminal and pass the same tarball through
+   `--python-env` when using TaskVine submission helpers (for example
+   `vine_submit_workers ... --python-env "$(python -m topcoffea.modules.remote_environment)" -M ${USER}-taskvine-coffea 10`).
+   See [TaskVine workflow quickstart](taskvine_workflow.md) for a deeper dive.
 5. **Turn the histogram pickle into plots** using the existing helper once the run finishes:
 
    ```bash
@@ -65,6 +66,41 @@ This hub pulls together the essentials for launching Run 2 analyses, choosing be
    ```
 
 Both executors emit tuple-keyed histogram pickles in the `(variable, channel, application, sample, systematic)` format that the plotting utilities expect. [analysis_processing.md](analysis_processing.md) describes the tuple schema in more detail. The Run 2 processor also recomputes b-tag multiplicities as integer arrays right before histogramming so Awkward arithmetic has well-defined inputs when building category masks.
+
+## Common wrapper recipes
+
+These compact `full_run.sh` launches cover common Run-2/Run-3 checks and avoid
+repeating the same command fragments in legacy notes:
+
+```bash
+# UL18 iterative dry-run smoke test (prints resolved command only)
+cd analysis/topeft_run2
+./full_run.sh --sr -y UL18 \
+    --executor iterative \
+    --outdir histos/debug_iter_UL18 \
+    --chunksize 10 --nchunks 1 --dry-run
+```
+
+```bash
+# Run-2 SR production-style launch using canonical defaults
+cd analysis/topeft_run2
+./full_run.sh --sr -y run2 \
+    --executor futures \
+    --outdir histos/run2_TOP22_006
+```
+
+```bash
+# Run-3 TaskVine CR launch (defaults to fwd_analysis scenario)
+cd analysis/topeft_run2
+./full_run.sh --cr -y run3 \
+    --executor taskvine \
+    --outdir histos/run3_fwd_validation \
+    --tag dev_validation
+```
+
+For `run_analysis.py`-level debugging patterns (for example compact futures
+runs with retry/prefetch knobs), use the canonical recipes in
+[Run analysis configuration flow](run_analysis_configuration.md#example-commands).
 
 ## YAML structure and merging
 

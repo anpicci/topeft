@@ -19,7 +19,7 @@ The `topeft/topeft` directory is installable as a Python package:
 - `pyproject.toml`: PEP 517 metadata describing dependencies and bundled data.
 - `topeft/setup.py`: Minimal shim for invoking the package build.
 - `topeft/analysis`: Analysis- and workflow-specific scripts (e.g. `analysis/topeft_run2`).
-- `topeft/tests`: Pytest suites (see [`tests/README.md`](tests/README.md) for details).
+- `topeft/tests`: Pytest suites (see [docs/developer/testing.md](docs/developer/testing.md) for details).
 - `topeft/input_samples`: Sample manifests and CFG bundles used by the workflows.
 
 ## Environment & dependencies
@@ -47,6 +47,7 @@ Explore the rest of the documentation via:
 - [Workflow & YAML hub](docs/workflow_and_yaml_hub.md) – start here.
 - [Documentation index](docs/index.md) – curated doc tracks.
 - [TaskVine workflow quickstart](docs/taskvine_workflow.md) – distributed execution focus.
+- [Datacard fitting workflow](docs/fitting.md) – canonical datacard/fit handoff.
 - [Run 2 metadata scenarios](docs/run2_scenarios.md) – scenario definitions and validators.
 toggles, output names, and executor settings in a single place.
 
@@ -142,18 +143,19 @@ The helper resolves your samples, validates the requested scenario, and launches
 a short futures-based run.  Detailed explanations of each switch are covered in
 [docs/quickstart_run2.md](docs/quickstart_run2.md).  When you are ready to scale
 out, switch to the TaskVine executor described above so the packaged environment
-can be reused across distributed resources.  A short legacy note is available in
-[README_WORKQUEUE.md](README_WORKQUEUE.md) for teams referencing the historical
-Work Queue setup.
+can be reused across distributed resources. See
+[docs/taskvine_workflow.md](docs/taskvine_workflow.md) for distributed-execution
+details.
 
 For local futures runs the CLI now exposes dedicated knobs for staging and
 recovery: ``--futures-prefetch`` limits the number of ROOT files staged per
 sample, ``--futures-retries``/``--futures-retry-wait`` control automatic
 resubmission, and ``--futures-status`` or ``--futures-tail-timeout`` let you
 adjust progress logging.  YAML profiles accept the same keys with underscores.
-The [analysis/topeft_run2/README.md](analysis/topeft_run2/README.md) guide
-collects practical recipes for mixing these options when debugging before
-handing jobs off to TaskVine.
+See [docs/run_analysis_cli_reference.md](docs/run_analysis_cli_reference.md) and
+[docs/run_analysis_configuration.md](docs/run_analysis_configuration.md) for
+the canonical options reference and workflow recipes before handing jobs off to
+TaskVine.
 
 
 ## How to contribute

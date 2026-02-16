@@ -4,6 +4,8 @@
 
 This directory contains scripts from the validation studies of the FullR2 private UL MC generated for TOP-22-006 against central UL MC performed during the June 2022 MC validation studies (for TOP-22-006 pre approval checks).
 
+Canonical project documentation lives in [docs/index.md](../../docs/index.md).
+
 * `mc_validation_gen_processor.py`:
     - This script produces gen level histograms for comparison of private and central MC
 
@@ -15,6 +17,5 @@ This directory contains scripts from the validation studies of the FullR2 privat
     - This script makes plots to compare private and central RECO level distributions
     - Should be run on the output of the topeft processor
     - Was used during the June 2022 MC validation studies (for TOP-22-006 pre approval checks)
-
 
 

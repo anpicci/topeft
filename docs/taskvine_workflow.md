@@ -130,3 +130,9 @@ end-to-end examples:
 Both guides call out where to adjust metadata, toggle scenarios, and select the
 TaskVine executor so analysts can move seamlessly from setup to distributed
 submissions.
+
+## Legacy naming note
+
+Older internal notes sometimes referred to this workflow as "Work Queue." The
+supported distributed backend in current `topeft` workflows is TaskVine, and
+this page is the canonical source for setup and execution guidance.
