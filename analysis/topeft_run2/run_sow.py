@@ -1,3 +1,21 @@
+"""Run the Sum-of-Weights preprocessing workflow for input samples.
+
+Purpose:
+- Execute ``sow_processor`` over JSON/CFG sample manifests to produce
+  SumOfWeights histograms used to normalize downstream analysis jobs.
+
+Inputs/outputs:
+- Reads sample manifests and ROOT files listed in those manifests.
+- Writes a gzip+pickle histogram artifact (default: ``histos/sowTopEFT.pkl.gz``).
+
+Side effects:
+- Creates output directories/files and may run distributed execution backends.
+
+How to run:
+- ``python analysis/topeft_run2/run_sow.py --help``
+- ``python analysis/topeft_run2/run_sow.py input_samples/sample_jsons/test_samples/UL17_private_ttH_for_CI.json -x futures``
+"""
+
 import argparse
 import cloudpickle
 import gzip
@@ -18,35 +36,38 @@ if hasattr(NanoEventsFactory, "warn_missing_crossrefs"):
 elif hasattr(NanoAODSchema, "warn_missing_crossrefs"):
     NanoAODSchema.warn_missing_crossrefs = False
 
-import sow_processor
+from analysis.topeft_run2 import sow_processor
 
 from topeft.modules.executor_cli import (
     ExecutorCLIHelper,
     FuturesArgumentSpec,
     TaskVineArgumentSpec,
 )
+from topeft.modules.executor import (
+    build_futures_executor,
+    futures_runner_overrides,
+    taskvine_log_configurator,
+)
 
 
 remote_environment = topcoffea.modules.remote_environment
-tc_executor = topcoffea.modules.executor
-build_futures_executor = tc_executor.build_futures_executor
-futures_runner_overrides = tc_executor.futures_runner_overrides
-taskvine_log_configurator = tc_executor.taskvine_log_configurator
 tc_utils = topcoffea.modules.utils
 load_sample_json_file = tc_utils.load_sample_json_file
 read_cfg_file = tc_utils.read_cfg_file
 update_cfg = tc_utils.update_cfg
 
-parser = argparse.ArgumentParser(description='You can customize your run')
-parser.add_argument('inputFiles'       , nargs='?', default='', help = 'Json or cfg file(s) containing files and metadata')
+parser = argparse.ArgumentParser(
+    description="Run the SumOfWeights preprocessor and write a histogram pickle."
+)
+parser.add_argument('inputFiles'       , nargs='?', default='', help = 'JSON or CFG file(s) containing sample metadata')
 parser.add_argument('--chunksize','-s' , default=100000, type=int, help = 'Number of events per chunk')
-parser.add_argument('--max-files','-N' , default=0, type=int, help = 'If specified, limit the number of root files per sample. Useful for testing')
-parser.add_argument('--nchunks','-c'   , default=0, type=int, help = 'You can choose to run only a number of chunks')
-parser.add_argument('--outname','-o'   , default='sowTopEFT', help = 'Name of the output file with histograms')
-parser.add_argument('--outpath','-p'   , default='histos', help = 'Name of the output directory')
-parser.add_argument('--treename'       , default='Events', help = 'Name of the tree inside the files')
-parser.add_argument('--xrd'            , default='', help = 'The XRootD redirector to use when reading directly from json files')
-parser.add_argument('--wc-list'        , action='extend', nargs='+', help = 'Specify a list of Wilson coefficients to use in filling histograms.')
+parser.add_argument('--max-files','-N' , default=0, type=int, help = 'Limit the number of ROOT files per sample (useful for tests)')
+parser.add_argument('--nchunks','-c'   , default=0, type=int, help = 'Limit the number of chunks processed')
+parser.add_argument('--outname','-o'   , default='sowTopEFT', help = 'Base name for the output histogram file')
+parser.add_argument('--outpath','-p'   , default='histos', help = 'Directory where output files are written')
+parser.add_argument('--treename'       , default='Events', help = 'Tree name inside each input ROOT file')
+parser.add_argument('--xrd'            , default='', help = 'Redirector prefix applied when reading files from JSON inputs')
+parser.add_argument('--wc-list'        , action='extend', nargs='+', help = 'Wilson-coefficient names to include while filling histograms')
 EXECUTOR_CLI = ExecutorCLIHelper(
     remote_environment=remote_environment,
     futures_spec=FuturesArgumentSpec(

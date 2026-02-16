@@ -1,3 +1,21 @@
+"""Entrypoint for flip-measurement processors (MR and AR workflows).
+
+Purpose:
+- Run the flip measurement processors over configured samples and write
+  tuple-keyed histogram outputs for downstream plotting.
+
+Inputs/outputs:
+- Reads JSON/CFG sample manifests and optional executor/runtime settings.
+- Writes gzip+pickle runner outputs in the configured output directory.
+
+Side effects:
+- Creates output files/directories and can submit tasks to futures/TaskVine.
+
+How to run:
+- ``python analysis/flip_measurement/run_flip.py --help``
+- ``python analysis/flip_measurement/run_flip.py input_samples/sample_jsons/test_samples/UL17_private_ttH_for_CI.json`` 
+"""
+
 from __future__ import annotations
 
 import argparse

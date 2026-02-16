@@ -1,3 +1,21 @@
+"""Update sample JSON normalization fields from SumOfWeights histograms.
+
+Purpose:
+- Compare SumOfWeights histograms against sample JSON metadata and update
+  ``nSumOfWeights*`` keys when matching datasets are found.
+
+Inputs/outputs:
+- Reads one SOW histogram pickle and JSON files under a target directory.
+- Rewrites matching JSON files in place (unless ``--dry-run`` is requested).
+
+Side effects:
+- Modifies JSON metadata files on disk.
+
+How to run:
+- ``python analysis/topeft_run2/update_json_sow.py --help``
+- ``python analysis/topeft_run2/update_json_sow.py -f histos/sowTopEFT.pkl.gz``
+"""
+
 import os
 import argparse
 
@@ -14,25 +32,10 @@ get_files = topcoffea.modules.utils.get_files
 get_hist_from_pkl = topcoffea.modules.utils.get_hist_from_pkl
 update_json = topcoffea.modules.update_json.update_json
 
-# Description:
-#   This script runs on a histogram file produced by the sow_processor. It extracts the individual
-#   SumOfWeights histograms and then tries to find a matching json file from somewhere in the
-#   'topcoffea/json' directory. If it finds a matching file it replaces the value for the
-#   'nSumOfWeights' key in the file with the one computed from the histogram.
-#
-#   This is typically a pre-processing step to running the topeft processor so that both the central
-#   and private MC samples can be normalized and treated in the same way. The issue is that when the
-#   JSON files for the EFT samples are initially made, the 'nSumOfWeights' that is computed is not
-#   correct. This means we had to recompute this value to get the correct normaliztion, but only for
-#   the EFT samples! After running this script the EFT sample JSON files will have the correct value
-#   and can be treated the same as the central MC samples.
-#
-# Usage:
-#
 # Note:
-#   A current limitation of this script is that if it encounters two JSON files with the exact
-#   same name, but in different sub-directories, then it skips updating that file and instead prints
-#   an error displaying the confounding JSONs.
+#   A current limitation of this script is that if it encounters two JSON files
+#   with the exact same name in different sub-directories, it skips updating
+#   that sample and prints the conflicting file paths.
 
 MAX_PDIFF = 1e-7
 

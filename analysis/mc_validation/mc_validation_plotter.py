@@ -1,6 +1,20 @@
-# This script makes plots to compare private and central RECO level distributions
-#   - Should be run on the output of the topeft processor
-#   - Was used during the June 2022 MC validation studies (for TOP-22-006 pre approval checks)
+"""Compare private vs central RECO-level samples in validation plots.
+
+Purpose:
+- Build overlay/ratio plots for MC-validation checks using tuple-keyed
+  histogram outputs from the main Run-2 workflow.
+
+Inputs/outputs:
+- Reads one histogram pickle plus optional plotting configuration flags.
+- Writes comparison plots (and optional ``index.html``) to the output path.
+
+Side effects:
+- Creates output directories/files and may read auxiliary ROOT correction files.
+
+How to run:
+- ``python analysis/mc_validation/mc_validation_plotter.py --help``
+- ``python analysis/mc_validation/mc_validation_plotter.py -f histos/plotsTopEFT.pkl.gz -o plots/mc_validation`` 
+"""
 
 import numpy as np
 import os
