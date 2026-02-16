@@ -670,35 +670,35 @@ class AnalysisProcessor(processor.ProcessorABC):
 
             tau["isClean"] = te_os.isClean(tau, l_fo, drmin=0.3)
             tau["isGood"]  =  tau["isClean"] & tau["isPres"]
-            _log_tau_flag_counts(
-                "tau_h_presel",
-                {
-                    "isVLoose": tau["isVLoose"],
-                    "isLoose": tau["isLoose"],
-                    "ismTight": tau["ismTight"],
-                    "isPresVLoose": tau["isPresVLoose"],
-                    "isPresLoose": tau["isPresLoose"],
-                    "isPres": tau["isPres"],
-                    "isClean": tau["isClean"],
-                    "isGood": tau["isGood"],
-                },
-            )
+            # _log_tau_flag_counts(
+            #     "tau_h_presel",
+            #     {
+            #         "isVLoose": tau["isVLoose"],
+            #         "isLoose": tau["isLoose"],
+            #         "ismTight": tau["ismTight"],
+            #         "isPresVLoose": tau["isPresVLoose"],
+            #         "isPresLoose": tau["isPresLoose"],
+            #         "isPres": tau["isPres"],
+            #         "isClean": tau["isClean"],
+            #         "isGood": tau["isGood"],
+            #     },
+            # )
             tau = tau[tau.isGood]
 
             tau['DMflag'] = ((tau.decayMode==0) | (tau.decayMode==1) | (tau.decayMode==10) | (tau.decayMode==11))
-            _log_tau_flag_counts(
-                "tau_h_dmflag",
-                {
-                    "DMflag": tau['DMflag'],
-                },
-            )
+            # _log_tau_flag_counts(
+            #     "tau_h_dmflag",
+            #     {
+            #         "DMflag": tau['DMflag'],
+            #     },
+            # )
             tau = tau[tau['DMflag']]
 
             tau_fo = tau
             tau_fo_padded = ak.pad_none(tau_fo, 1)
             tau0_fo = tau_fo_padded[:,0]
 
-            tau_T = tau_fo[tau_fo["isLoose"]>0]
+            tau_T = tau_fo[tau_fo[f"is{tau_T_tag}"]>0]
             tau_T_padded = ak.pad_none(tau_T, 1)
             tau0_T = tau_T_padded[:,0]
 
@@ -717,14 +717,14 @@ class AnalysisProcessor(processor.ProcessorABC):
 
             tau0 = tau0_T
 
-            _log_tau_flag_counts(
-                "tau_h_event_masks",
-                {
-                    "tau_F_mask": tau_F_mask,
-                    "tau_L_mask": tau_L_mask,
-                    "no_tau_mask": no_tau_mask,
-                },
-            )
+            # _log_tau_flag_counts(
+            #     "tau_h_event_masks",
+            #     {
+            #         "tau_F_mask": tau_F_mask,
+            #         "tau_L_mask": tau_L_mask,
+            #         "no_tau_mask": no_tau_mask,
+            #     },
+            # )
 
             if not isData:
                 AttachTauSF(events, tau_T, year=year, vsJetWP=tau_T_tag)
@@ -760,26 +760,26 @@ class AnalysisProcessor(processor.ProcessorABC):
             )
             tau["isClean"] = te_os.isClean(tau, l_loose, drmin=0.3)
             tau["isGood"]  =  tau["isClean"] & tau["isPres"]
-            _log_tau_flag_counts(
-                "tau_standard_presel",
-                {
-                    "isPres": tau["isPres"],
-                    "isClean": tau["isClean"],
-                    "isGood": tau["isGood"],
-                },
-            )
+            # _log_tau_flag_counts(
+            #     "tau_standard_presel",
+            #     {
+            #         "isPres": tau["isPres"],
+            #         "isClean": tau["isClean"],
+            #         "isGood": tau["isGood"],
+            #     },
+            # )
             tau = tau[tau.isGood] # use these to clean jets
             if is_run2:
                 vs_jet_tight = tau.idDeepTau2017v2p1VSjet
             else:
                 vs_jet_tight = tau.idDeepTau2018v2p5VSjet
             tau["isTight"] = tauSelection.isVLooseTau(vs_jet_tight) # use these to veto
-            _log_tau_flag_counts(
-                "tau_standard_posttight",
-                {
-                    "isTight": tau["isTight"],
-                },
-            )
+            # _log_tau_flag_counts(
+            #     "tau_standard_posttight",
+            #     {
+            #         "isTight": tau["isTight"],
+            #     },
+            # )
 
         ######### Systematics ###########
 
