@@ -27,8 +27,9 @@ The `topeft/topeft` directory is installable as a Python package:
 The analysis relies on the shared `coffea2025` Conda environment and a sibling
 [`topcoffea`](https://github.com/TopEFT/topcoffea) checkout. The start-here hub
 summarises the setup steps and links to the TaskVine environment packaging guide.
-All CLI entry points validate that the `topcoffea` branch matches
-`ch_update_calcoffea` (or the release tag you specify via `TOPCOFFEA_BRANCH`).
+All CLI entry points validate that the installed `topcoffea` ref matches the
+coordinated ref expected for your run; for policy details, see
+`docs/topeft_integration.md` in the `topcoffea` repository.
 
 ### HistEFT support
 
@@ -38,7 +39,8 @@ exposes `HistEFT` via `topcoffea.modules.histEFT`, so existing
 imports keep working once the dependency is installed. CI includes a smoke test
 that asserts `import topcoffea` resolves outside the `topeft` checkout—remove any
 stray `topcoffea/` directories under this repository and reinstall the sibling
-package (for example via `pip install -e ../topcoffea`) if that guard triggers.
+package (for example via `pip install -e /path/to/topcoffea`) if that guard
+triggers.
 
 ## Related docs
 

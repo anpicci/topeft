@@ -24,10 +24,13 @@ next to `topeft` and install it in editable mode:
 cd ..
 git clone https://github.com/TopEFT/topcoffea.git
 cd topcoffea
-git switch ch_update_calcoffea
+git switch <coordinated-ref>
 pip install -e .
 cd ../topeft
 ```
+
+Choose a release tag or feature ref coordinated with your `topeft` checkout.
+Compatibility policy is documented in `topcoffea/docs/topeft_integration.md`.
 
 Upgrading an existing checkout?  Run `conda env update -f environment.yml --prune`
 instead of recreating the environment.  Conda may request a solver update when
@@ -41,10 +44,10 @@ The workflow relies on the refreshed
 `topcoffea.modules.remote_environment.get_environment()` helper to assemble a
 TaskVine-ready archive under `topeft-envs/`.  Run the packaging step after
 installing the editable modules or updating dependencies.  Always invoke the
-helper from the same branch (or tag) you just installed so the tarball mirrors
-the source checkout—every CLI entry point now validates the active branch via
-`.git/HEAD` (or the `TOPCOFFEA_BRANCH` override for detached tags) and aborts
-early when the sibling repository drifts from `ch_update_calcoffea`:
+helper from the same ref (or tag) you just installed so the tarball mirrors the
+source checkout—every CLI entry point now validates `.git/HEAD` (or the
+`TOPCOFFEA_BRANCH` override for detached tags) against the coordinated ref and
+aborts early when the sibling repository drifts:
 
 ```bash
 python -m topcoffea.modules.remote_environment

@@ -14,8 +14,10 @@ This hub pulls together the essentials for launching Run 2 analyses, choosing be
    `topeft` and the sibling [`topcoffea`](https://github.com/TopEFT/topcoffea)
    checkout in editable mode. The commands are summarised in the repository
    `README.md` and expanded in the [environment packaging guide](environment_packaging.md).
-2. Keep `topcoffea` on the `ch_update_calcoffea` branch (or matching release tag)
-   so the cache-free jet/MET corrections match what the Run‑2 workflow expects.
+2. Keep `topcoffea` on a coordinated ref (matching release tags or aligned
+   feature refs) so the cache-free jet/MET corrections match what the Run‑2
+   workflow expects. Compatibility policy is documented in
+   `topcoffea/docs/topeft_integration.md`.
 3. If you plan to run distributed jobs, build the TaskVine environment tarball
    via `python -m topcoffea.modules.remote_environment` before launching any runs.
 4. When you are ready for an end-to-end smoke test, follow the links at the end

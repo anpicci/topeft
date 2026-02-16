@@ -11,8 +11,10 @@ set up the shared `coffea2025` environment plus the sibling
 1. Follow the “Start here” hub to create/activate the shared environment, install
    both repositories in editable mode, and build the TaskVine environment
    tarball (when needed).
-2. Keep `topcoffea` on the `ch_update_calcoffea` branch (or matching tag) so
-   cache-free jet/MET corrections match the workflow expectations.
+2. Keep `topcoffea` on a coordinated ref (matching release tags or aligned
+   feature refs) so cache-free jet/MET corrections match the workflow
+   expectations. For compatibility policy, see
+   `topcoffea/docs/topeft_integration.md`.
 3. Pick a sample manifest such as
    `input_samples/sample_jsons/test_samples/UL17_private_ttH_for_CI.json`. The
    helper accepts directories and `.cfg` bundles as well; see
@@ -25,13 +27,12 @@ minutes using the quickstart module below.
 ### Cache-free jet/MET corrections
 
 Run 2 processing now assumes the cache-free jet and MET correction interfaces
-shipped with the `ch_update_calcoffea` branch of `topcoffea`.  The helper and
-full workflow no longer rely on NanoEvents caches when building corrected jets
-or propagating jet variations into MET; the updated APIs materialise the
-corrections directly.  Make sure your environment uses the matching
-`topcoffea` checkout (or a release containing the same cache-free helpers) so
-the processor can run end-to-end without attaching a `lazy_cache` to the
-NanoEvents object.
+provided by coordinated `topcoffea` refs. The helper and full workflow no
+longer rely on NanoEvents caches when building corrected jets or propagating jet
+variations into MET; the updated APIs materialise the corrections directly. Make
+sure your environment uses a matching `topcoffea` checkout (or a release
+containing the same cache-free helpers) so the processor can run end-to-end
+without attaching a `lazy_cache` to the NanoEvents object.
 
 Run 2 histogramming expects Awkward's native implementations of helpers such as
 `ak.stack` and relies on in-memory arithmetic instead of array-of-arrays
