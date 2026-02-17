@@ -11,6 +11,7 @@ _FORBIDDEN_TOKENS = (
     "from coffea import hist",
     "import coffea.hist",
 )
+_SELF_TEST_RELATIVE = Path("tests/test_no_coffea_hist_imports.py")
 
 
 def _tracked_text_files() -> list[Path]:
@@ -33,6 +34,8 @@ def test_no_legacy_coffea_hist_imports() -> None:
     matches: list[str] = []
     for path in _tracked_text_files():
         relpath = path.relative_to(_ROOT)
+        if relpath == _SELF_TEST_RELATIVE:
+            continue
         for lineno, line in enumerate(path.read_text(encoding="utf-8", errors="ignore").splitlines(), start=1):
             if any(token in line for token in _FORBIDDEN_TOKENS):
                 matches.append(f"{relpath}:{lineno}:{line.strip()}")
