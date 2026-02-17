@@ -45,7 +45,9 @@ def test_branch_guard_rejects_mismatched_branch(monkeypatch, tmp_path):
     with pytest.raises(RuntimeError) as excinfo:
         ensure_topcoffea_branch()
 
-    assert "ch_update_calcoffea" in str(excinfo.value)
+    message = str(excinfo.value)
+    assert "coordinated ref" in message
+    assert "topcoffea/docs/topeft_integration.md" in message
 
 
 def test_branch_guard_accepts_env_override(monkeypatch, tmp_path):

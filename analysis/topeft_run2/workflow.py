@@ -81,7 +81,8 @@ def _import_topcoffea_submodule(submodule: str):
             (
                 "Unable to import required topcoffea helper module '%s'. "
                 "Ensure the sibling topcoffea checkout is available and on the "
-                "'ch_update_calcoffea' branch."
+                "coordinated ref for this topeft checkout. See "
+                "topcoffea/docs/topeft_integration.md for compatibility policy."
             )
             % module_name
         ) from exc

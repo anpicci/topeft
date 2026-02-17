@@ -203,7 +203,7 @@ if __name__ == '__main__':
                 fout[fname_with_var.replace('njets', '2b')] = {proc : np.nan_to_num(parton/total_private, 0)}
             else:
                 lep_bin = re.sub('_'+var, '', fname_with_var)
-                lep_bin = re.sub('_\wj', '', lep_bin)
+                lep_bin = re.sub(r'_\wj', '', lep_bin)
                 if 'offZ' in lep_bin:
                     lep_bin = re.sub('_offZ', '', lep_bin)
                     lep_bin = lep_bin.split('_')
@@ -211,7 +211,7 @@ if __name__ == '__main__':
                 if 'onZ' in lep_bin:
                     lep_bin = re.sub('onZ', 'sfz', lep_bin)
                 offset = -4 if '3l' not in fname else -2
-                jet_bin = int(re.findall('\dj', fname_with_var)[0][:-1])
+                jet_bin = int(re.findall(r'\dj', fname_with_var)[0][:-1])
                 parton = np.array(fout[lep_bin]['tllq'].array())[jet_bin + offset] * total_private
             sign = np.ones_like(parton)
             err_low  = total_private - np.sqrt(np.square(err[0]) + np.square(parton))

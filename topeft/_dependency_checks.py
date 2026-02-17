@@ -69,7 +69,9 @@ def ensure_topcoffea_branch(expected_refs: Optional[Sequence[str]] = None) -> No
     except Exception as exc:  # pragma: no cover - environment issue
         raise RuntimeError(
             "topcoffea is not installed. Clone https://github.com/TopEFT/topcoffea, "
-            "switch to the ch_update_calcoffea branch, and install it with 'pip install -e .'"
+            "install it with 'pip install -e .', and ensure the installed ref matches "
+            "the coordinated ref for this topeft checkout. See "
+            "topcoffea/docs/topeft_integration.md for compatibility policy."
         ) from exc
 
     repo_root = _topcoffea_repo_root(topcoffea)
@@ -90,8 +92,9 @@ def ensure_topcoffea_branch(expected_refs: Optional[Sequence[str]] = None) -> No
 
     message = (
         "topcoffea checkout at {repo} is on '{branch}' but the workflow expects one of "
-        "{expected}. Run 'git -C {repo} switch ch_update_calcoffea' (or checkout the "
-        "matching tag) before running topeft, or export TOPCOFFEA_BRANCH to override.".format(
+        "{expected}. Ensure the installed topcoffea ref matches the coordinated ref for "
+        "this topeft checkout; see topcoffea/docs/topeft_integration.md for compatibility "
+        "policy. You can export TOPCOFFEA_BRANCH to override.".format(
             repo=repo_root,
             branch=branch,
             expected=", ".join(expected),

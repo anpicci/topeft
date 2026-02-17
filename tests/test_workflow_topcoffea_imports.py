@@ -50,7 +50,7 @@ def test_workflow_imports_missing_paths(monkeypatch: pytest.MonkeyPatch) -> None
 
     with warnings.catch_warnings():
         warnings.filterwarnings("ignore", category=RuntimeWarning)
-        with pytest.raises(ImportError, match="ch_update_calcoffea"):
+        with pytest.raises(ImportError, match="coordinated ref"):
             runpy.run_module(
                 "analysis.topeft_run2.workflow", run_name="analysis.topeft_run2.workflow"
             )
