@@ -22,7 +22,7 @@ Canonical project documentation lives in [docs/index.md](../../docs/index.md).
     ```
     - Run the run script over a json that points to the root file you downloaded: 
     ```
-    python simple_run.py ../../topcoffea/json/test_samples/UL17_private_ttH_for_CI.json
+    python simple_run.py ../../input_samples/sample_jsons/test_samples/UL17_private_ttH_for_CI.json
     ```
 
 * `intro_hist.py` and `intro_hist.ipynb`: A basic introduction to the supported histogram stack (`hist` + `mplhep`), including modern filling, slicing, and 2D plotting.

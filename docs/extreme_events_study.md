@@ -48,7 +48,7 @@ df_pt_j = output["pt_j"].value
 Example command pattern from historical notes:
 
 ```bash
-python run_extreme_events.py ../../topcoffea/cfg/mc_signal_samples_NDSkim.cfg --skip-cr --do-np --executor taskvine
+python run_extreme_events.py ../../input_samples/cfgs/mc_signal_samples_NDSkim.cfg --skip-cr --do-np --executor taskvine
 ```
 
 ### 2. Dataframe-driven yields
