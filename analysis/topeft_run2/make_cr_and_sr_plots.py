@@ -853,7 +853,7 @@ def _hist_is_empty(histogram):
     try:
         return bool(empty_fn())
     except Exception:
-        return False
+        return True
 
 
 def _integrate_nominal_axis(histogram):
