@@ -41,9 +41,10 @@ def _load_hist_eft():  # pragma: no cover - import shim exercised in dedicated t
     except Exception as exc:
         raise ImportError(
             "topcoffea is installed but does not provide a HistEFT class in "
-            "topcoffea.modules.histEFT. Update the dependency (for example by "
-            "checking out the ch_update_calcoffea branch) and reinstall to "
-            "restore tuple-keyed histogram support."
+            "topcoffea.modules.histEFT. Update the dependency so the installed "
+            "topcoffea ref matches the coordinated ref for this topeft checkout, "
+            "then reinstall to restore tuple-keyed histogram support. See "
+            "topcoffea/docs/topeft_integration.md for compatibility policy."
         ) from exc
 
     candidate = getattr(module, "HistEFT", None)
@@ -52,9 +53,10 @@ def _load_hist_eft():  # pragma: no cover - import shim exercised in dedicated t
 
     raise ImportError(
         "topcoffea is installed but does not provide a HistEFT class in "
-        "topcoffea.modules.histEFT. Update the dependency (for example by "
-        "checking out the ch_update_calcoffea branch) and reinstall to "
-        "restore tuple-keyed histogram support."
+        "topcoffea.modules.histEFT. Update the dependency so the installed "
+        "topcoffea ref matches the coordinated ref for this topeft checkout, "
+        "then reinstall to restore tuple-keyed histogram support. See "
+        "topcoffea/docs/topeft_integration.md for compatibility policy."
     )
 
 
