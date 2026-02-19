@@ -4,6 +4,7 @@ import types
 
 import awkward as ak
 import numpy as np
+import pytest
 
 from coffea.nanoevents import BaseSchema, NanoEventsFactory
 
@@ -26,6 +27,18 @@ sys.modules["topcoffea.modules.histEFT"] = _hist_eft_stub
 sys.modules["topcoffea.modules.histEFT"] = _hist_eft_stub
 
 import analysis.topeft_run2.analysis_processor as ap
+
+pytestmark = [
+    pytest.mark.filterwarnings(
+        "ignore:Skipping Jet as it is not interpretable by NanoEvents:UserWarning:coffea\\.nanoevents\\.mapping\\.preloaded"
+    ),
+    pytest.mark.filterwarnings(
+        "ignore:Skipping MET as it is not interpretable by NanoEvents:UserWarning:coffea\\.nanoevents\\.mapping\\.preloaded"
+    ),
+    pytest.mark.filterwarnings(
+        "ignore:__array__ implementation doesn't accept a copy keyword.*:DeprecationWarning:coffea\\.nanoevents\\.mapping\\.base"
+    ),
+]
 
 
 class _DummyMapping(dict):
