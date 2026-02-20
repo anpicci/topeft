@@ -91,13 +91,13 @@ def ensure_topcoffea_branch(expected_refs: Optional[Sequence[str]] = None) -> No
         return
 
     message = (
-        "topcoffea checkout at {repo} is on '{branch}' but the workflow expects one of "
-        "{expected}. Ensure the installed topcoffea ref matches the coordinated ref for "
-        "this topeft checkout; see topcoffea/docs/topeft_integration.md for compatibility "
-        "policy. You can export TOPCOFFEA_BRANCH to override.".format(
+        "topcoffea checkout at {repo} is on '{branch}' and does not match the coordinated "
+        "ref policy for this topeft checkout. Ensure the installed topcoffea ref matches "
+        "the coordinated ref; see topcoffea/docs/topeft_integration.md for compatibility "
+        "policy. You can export TOPCOFFEA_BRANCH to override the detected ref and "
+        "TOPEFT_TOPCOFFEA_EXPECTED to define the allowed coordinated refs.".format(
             repo=repo_root,
             branch=branch,
-            expected=", ".join(expected),
         )
     )
     raise RuntimeError(message)
