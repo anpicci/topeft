@@ -4,6 +4,7 @@ import types
 import uuid
 
 import awkward as ak
+import pytest
 from coffea.nanoevents import BaseSchema, NanoEventsFactory
 from analysis.topeft_run2.nanoevents_helpers import ensure_factory_mode
 
@@ -27,6 +28,12 @@ sys.modules["topcoffea.modules.histEFT"] = _hist_eft_stub
 sys.modules["topcoffea.modules.histEFT"] = _hist_eft_stub
 
 import analysis.topeft_run2.analysis_processor as ap
+
+pytestmark = [
+    pytest.mark.filterwarnings(
+        "ignore:__array__ implementation doesn't accept a copy keyword.*:DeprecationWarning:coffea\\.nanoevents\\.mapping\\.base"
+    )
+]
 
 
 class _DummyMapping(dict):
