@@ -59,6 +59,107 @@ def _make_met_histogram_for_channels(channel_names):
     return hist_obj
 
 
+def _make_simple_stacked_inputs():
+    process_axis = hist.axis.StrCategory([], name="process", growth=True)
+    value_axis = hist.axis.Regular(2, 0.0, 2.0, name="lj0pt")
+    h_mc = hist.Hist(process_axis, value_axis, storage=hist.storage.Double())
+    h_data = hist.Hist(process_axis, value_axis, storage=hist.storage.Double())
+
+    for bin_idx, weight in enumerate((10.0, 5.0)):
+        h_mc.fill(process="ttbarSL", lj0pt=[bin_idx + 0.25], weight=[weight])
+    for bin_idx, weight in enumerate((8.0, 6.0)):
+        h_data.fill(process="data", lj0pt=[bin_idx + 0.25], weight=[weight])
+
+    group_map = {"Top": ["ttbarSL"]}
+    return h_mc, h_data, group_map
+
+
+def test_blind_mode_does_not_draw_data_or_ratio_markers_and_omits_ratio_panel(monkeypatch):
+    plotted_calls = []
+
+    def _fake_histplot(*args, **kwargs):
+        plotted_calls.append({"args": args, "kwargs": kwargs})
+        return None
+
+    monkeypatch.setattr(make_cr_and_sr_plots.hep, "histplot", _fake_histplot)
+    monkeypatch.setattr(
+        make_cr_and_sr_plots.hist.Hist,
+        "as_hist",
+        lambda self, mapping=None: self,
+        raising=False,
+    )
+
+    h_mc, h_data, group_map = _make_simple_stacked_inputs()
+    fig = make_cr_and_sr_plots.make_region_stacked_ratio_fig(
+        h_mc=h_mc,
+        h_data=h_data,
+        unit_norm_bool=False,
+        var="lj0pt",
+        group=group_map,
+        unblind=False,
+    )
+
+    try:
+        errorbar_calls = [
+            call for call in plotted_calls if call["kwargs"].get("histtype") == "errorbar"
+        ]
+        assert not errorbar_calls
+        assert len(fig.axes) == 1
+    finally:
+        make_cr_and_sr_plots.plt.close(fig)
+
+
+def test_unblind_mode_still_draws_data_and_ratio_panels(monkeypatch):
+    plotted_calls = []
+
+    def _fake_histplot(*args, **kwargs):
+        plotted_calls.append({"args": args, "kwargs": kwargs})
+        return None
+
+    monkeypatch.setattr(make_cr_and_sr_plots.hep, "histplot", _fake_histplot)
+    monkeypatch.setattr(
+        make_cr_and_sr_plots.hist.Hist,
+        "as_hist",
+        lambda self, mapping=None: self,
+        raising=False,
+    )
+
+    h_mc, h_data, group_map = _make_simple_stacked_inputs()
+    fig = make_cr_and_sr_plots.make_region_stacked_ratio_fig(
+        h_mc=h_mc,
+        h_data=h_data,
+        unit_norm_bool=False,
+        var="lj0pt",
+        group=group_map,
+        unblind=True,
+    )
+
+    try:
+        assert len(fig.axes) == 2
+        assert any(
+            call["kwargs"].get("histtype") == "errorbar"
+            and call["kwargs"].get("label") == "Data"
+            for call in plotted_calls
+        )
+        ratio_ax = fig.axes[1]
+        assert any(
+            call["kwargs"].get("histtype") == "errorbar"
+            and call["kwargs"].get("ax") is ratio_ax
+            for call in plotted_calls
+        )
+    finally:
+        make_cr_and_sr_plots.plt.close(fig)
+
+
+def test_region_context_no_longer_exposes_use_mc_as_data_when_blinded():
+    hist_inputs = {"met": _make_met_histogram_for_channels(["2lss_ee_CR_1j"])}
+    region_ctx = make_cr_and_sr_plots.build_region_context(
+        "CR", hist_inputs, years=["2022"], unblind=True
+    )
+
+    assert not hasattr(region_ctx, "use_mc_as_data_when_blinded")
+
+
 def test_unit_normalization_skips_empty_histograms(monkeypatch):
     dummy_mc = _DummyHist()
     dummy_data = _DummyHist()
@@ -657,7 +758,7 @@ def test_cr_zero_yield_skips_unmatched_processes(monkeypatch):
     assert not unmatched_present
 
 
-def test_sr_aggregate_blinded_uses_mc_when_data_empty(tmp_path):
+def test_sr_aggregate_blinded_renders_when_data_empty(tmp_path):
     process_axis = hist.axis.StrCategory([], name="process", growth=True)
     channel_axis = hist.axis.StrCategory([], name="channel", growth=True)
     syst_axis = hist.axis.StrCategory([], name="systematic", growth=True)
@@ -694,10 +795,8 @@ def test_sr_aggregate_blinded_uses_mc_when_data_empty(tmp_path):
         unblind=False,
     )
 
-    plot_dir = tmp_path / "2lss_SR"
-    assert plot_dir.exists()
-    plot_paths = list(plot_dir.glob("*_njets.png"))
-    assert plot_paths, "Expected SR aggregate plot when MC is non-zero and data is empty"
+    plot_paths = list(tmp_path.rglob("*_njets.png"))
+    assert plot_paths, "Expected SR blinded plot when MC is non-zero and data is empty"
 
 
 def test_data_driven_samples_preserved_for_1tau_cr():
