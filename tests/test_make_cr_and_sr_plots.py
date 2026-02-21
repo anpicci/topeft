@@ -7,6 +7,7 @@ import hist
 import numpy as np
 import pytest
 from collections import defaultdict
+from matplotlib.transforms import Bbox
 
 from analysis.topeft_run2 import make_cr_and_sr_plots
 
@@ -97,6 +98,26 @@ def _make_multigroup_stacked_inputs(num_groups=8):
     return h_mc, h_data, group_map
 
 
+def _get_cms_text_union_bbox(fig, ax, renderer):
+    def _cms_matches(text_artist):
+        text = text_artist.get_text() or ""
+        return ("CMS" in text) or ("Simulation" in text)
+
+    cms_texts = [text for text in fig.texts if _cms_matches(text)]
+    if not cms_texts:
+        cms_texts = [text for text in ax.texts if _cms_matches(text)]
+    assert cms_texts, (
+        "Could not find CMS label text in fig.texts or ax.texts; "
+        "expected at least one text containing 'CMS' or 'Simulation'."
+    )
+
+    cms_bboxes = [
+        text.get_window_extent(renderer).transformed(fig.transFigure.inverted())
+        for text in cms_texts
+    ]
+    return Bbox.union(cms_bboxes)
+
+
 def test_blind_mode_does_not_draw_data_or_ratio_markers_and_omits_ratio_panel(monkeypatch):
     plotted_calls = []
 
@@ -151,15 +172,27 @@ def test_blind_mode_figure_legend_stays_above_axes():
     try:
         fig.canvas.draw()
         ax = fig.axes[0]
+        assert len(fig.axes) == 1
         assert len(fig.legends) == 1
         legend = fig.legends[0]
         renderer = fig.canvas.get_renderer()
         legend_box = legend.get_window_extent(renderer).transformed(
             fig.transFigure.inverted()
         )
+        cms_box = _get_cms_text_union_bbox(fig, ax, renderer)
         ax_box = ax.get_position()
+        overlaps = (
+            cms_box.x0 < legend_box.x1
+            and cms_box.x1 > legend_box.x0
+            and cms_box.y0 < legend_box.y1
+            and cms_box.y1 > legend_box.y0
+        )
 
         assert legend_box.y0 >= ax_box.y1 - 1e-3
+        assert not overlaps, (
+            f"CMS label overlaps legend in blind mode: cms={cms_box.bounds}, "
+            f"legend={legend_box.bounds}"
+        )
         assert ax.get_legend() is None or ax.get_legend().get_visible() is False
     finally:
         make_cr_and_sr_plots.plt.close(fig)

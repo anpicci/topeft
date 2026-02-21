@@ -3727,6 +3727,9 @@ def _finalize_layout(
 ):
     """Align legends and axis annotations after all plotting calls."""
 
+    axis_objects = [ax]
+    if rax is not None:
+        axis_objects.append(rax)
     legend_anchor_local = list(legend_anchor) if legend_anchor is not None else None
     style = {} if style is None else style
     legend_style = _style_get(style, ("legend",), {})
@@ -3827,16 +3830,22 @@ def _finalize_layout(
             if vertical_overlap:
                 shift = cms_box.y1 - legend_box.y0 + legend_overlap_margin
                 if shift > 0:
-                    ax_box = ax.get_position()
-                    rax_box = rax.get_position()
-                    ax.set_position([ax_box.x0, ax_box.y0 - shift, ax_box.width, ax_box.height])
-                    rax.set_position([rax_box.x0, rax_box.y0 - shift, rax_box.width, rax_box.height])
+                    for axis_obj in axis_objects:
+                        axis_box = axis_obj.get_position()
+                        axis_obj.set_position(
+                            [
+                                axis_box.x0,
+                                axis_box.y0 - shift,
+                                axis_box.width,
+                                axis_box.height,
+                            ]
+                        )
                     renderer = _draw_and_get_renderer()
                     legend_bbox = legend.get_window_extent(renderer=renderer)
                     legend_box = legend_bbox.transformed(fig.transFigure.inverted())
 
     axis_bboxes = []
-    for axis_obj in (ax, rax):
+    for axis_obj in axis_objects:
         try:
             bbox = axis_obj.get_tightbbox(renderer)
         except Exception:
@@ -3847,12 +3856,12 @@ def _finalize_layout(
     if axis_bboxes:
         rightmost_extent = max(bbox.x1 for bbox in axis_bboxes)
     else:
-        rightmost_extent = max(ax.get_position().x1, rax.get_position().x1)
+        rightmost_extent = max(axis_obj.get_position().x1 for axis_obj in axis_objects)
 
     subplot_params = fig.subplotpars
     effective_right = min(np.nextafter(1.0, 0.0), rightmost_extent + 0.003)
     if not np.isclose(effective_right, subplot_params.right):
-        stored_positions = [ax.get_position().frozen(), rax.get_position().frozen()]
+        stored_positions = [axis_obj.get_position().frozen() for axis_obj in axis_objects]
         plt.subplots_adjust(
             bottom=subplot_params.bottom,
             top=subplot_params.top,
@@ -3862,7 +3871,7 @@ def _finalize_layout(
             wspace=subplot_params.wspace,
         )
         renderer = _draw_and_get_renderer()
-        for axis_obj, original in zip((ax, rax), stored_positions):
+        for axis_obj, original in zip(axis_objects, stored_positions):
             updated = axis_obj.get_position()
             delta_y = original.y0 - updated.y0
             if not np.isclose(delta_y, 0.0):
@@ -3871,9 +3880,11 @@ def _finalize_layout(
                 )
         renderer = _draw_and_get_renderer()
 
-    def _ratio_axis_min_y(current_renderer):
+    axis_for_bottom = rax if rax is not None else ax
+
+    def _label_axis_min_y(current_renderer):
         bboxes = []
-        for tick_label in rax.get_xticklabels():
+        for tick_label in axis_for_bottom.get_xticklabels():
             if not tick_label.get_visible():
                 continue
             text = tick_label.get_text()
@@ -3881,17 +3892,18 @@ def _finalize_layout(
                 continue
             bbox = tick_label.get_window_extent(renderer=current_renderer)
             bboxes.append(bbox.transformed(fig.transFigure.inverted()))
-        axis_label = rax.xaxis.label
+        axis_label = axis_for_bottom.xaxis.label
         if axis_label and axis_label.get_visible():
             axis_bbox = axis_label.get_window_extent(renderer=current_renderer)
             bboxes.append(axis_bbox.transformed(fig.transFigure.inverted()))
         if bboxes:
             return min(b.y0 for b in bboxes)
-        return rax.get_position().y0
+        return axis_for_bottom.get_position().y0
 
+    reference_label = axis_for_bottom.yaxis.label
     default_label_size = (
-        rax.yaxis.label.get_size()
-        if rax.yaxis.label
+        reference_label.get_size()
+        if reference_label
         else plt.rcParams.get("axes.labelsize", 18)
     )
     label_fontsize = axes_style.get("label_fontsize", default_label_size)
@@ -3900,7 +3912,7 @@ def _finalize_layout(
     temp_bbox = temp.get_window_extent(renderer=renderer)
     temp.remove()
     measured_height = temp_bbox.transformed(fig.transFigure.inverted()).height
-    label_y = _ratio_axis_min_y(renderer) - measured_height - ratio_label_margin
+    label_y = _label_axis_min_y(renderer) - measured_height - ratio_label_margin
 
     subplot_params = fig.subplotpars
     new_bottom = np.clip(max(0.0, label_y - ratio_label_margin), 0.0, 1.0)
@@ -3914,14 +3926,14 @@ def _finalize_layout(
             wspace=subplot_params.wspace,
         )
         renderer = _draw_and_get_renderer()
-        label_y = _ratio_axis_min_y(renderer) - measured_height - ratio_label_margin
+        label_y = _label_axis_min_y(renderer) - measured_height - ratio_label_margin
 
     renderer = _draw_and_get_renderer()
     ax_box = ax.get_position()
-    rax_box = rax.get_position()
+    _axes_bbox_for_labeling = rax.get_position() if rax is not None else ax.get_position()
 
     ratio_label_fig = None
-    ratio_label = rax.yaxis.label
+    ratio_label = rax.yaxis.label if rax is not None else None
     if ratio_label is not None:
         try:
             ratio_pos = np.asarray(ratio_label.get_position(), dtype=float)
@@ -3938,12 +3950,12 @@ def _finalize_layout(
     if ratio_label_fig is not None:
         events_x = ratio_label_fig[0]
     if events_x is None:
-        events_x = rax_box.x0 + rax_box.width
+        events_x = _axes_bbox_for_labeling.x0 + _axes_bbox_for_labeling.width
     current_events_y = ax_box.y0 + ax_box.height
     if current_events_y is not None:
         events_y = current_events_y
     elif events_y is None:
-        events_y = rax_box.y0 + rax_box.height
+        events_y = _axes_bbox_for_labeling.y0 + _axes_bbox_for_labeling.height
 
     if events_artist is None or not isinstance(events_artist, mpl.text.Text):
         events_artist = fig.text(
@@ -3965,7 +3977,7 @@ def _finalize_layout(
 
     if label_artist is None or not isinstance(label_artist, mpl.text.Text):
         label_artist = fig.text(
-            rax_box.x0 + rax_box.width,
+            _axes_bbox_for_labeling.x0 + _axes_bbox_for_labeling.width,
             label_y,
             display_label,
             ha="right",
@@ -3973,7 +3985,9 @@ def _finalize_layout(
             fontsize=label_fontsize,
         )
     else:
-        label_artist.set_position((rax_box.x0 + rax_box.width, label_y))
+        label_artist.set_position(
+            (_axes_bbox_for_labeling.x0 + _axes_bbox_for_labeling.width, label_y)
+        )
         label_artist.set_text(display_label)
         label_artist.set_fontsize(label_fontsize)
         label_artist.set_ha("right")
@@ -6385,8 +6399,6 @@ def make_region_stacked_ratio_fig(
 
         initial_events_anchor = (rax_box.x0 + rax_box.width, ax_box.y0 + ax_box.height)
     else:
-        ax.set_xlabel(display_label, fontsize=axis_label_fontsize)
-        ax.set_ylabel("Events", fontsize=axis_label_fontsize)
         fig.canvas.draw()
         xticks = ax.get_xticks()
         xtick_labels = [tick.get_text() for tick in ax.get_xticklabels()]
@@ -6486,26 +6498,25 @@ def make_region_stacked_ratio_fig(
     top_adjusted = legend_layout["top_adjusted"]
     legend_anchor = legend_layout["legend_anchor"]
 
-    if has_ratio_axis:
-        label_artist = None
-        events_artist = None
-        iterations = 3 if top_adjusted else 2
-        for _ in range(iterations):
-            label_artist, events_artist, legend_anchor = _finalize_layout(
-                fig,
-                ax,
-                rax,
-                legend,
-                cms_label,
-                display_label,
-                label_artist=label_artist,
-                events_artist=events_artist,
-                ratio_anchor=ratio_label_fig,
-                events_anchor=initial_events_anchor,
-                legend_anchor=legend_anchor,
-                legend_is_figure=legend_is_figure_anchored,
-                style=style,
-            )
+    label_artist = None
+    events_artist = None
+    iterations = 3 if top_adjusted else 2
+    for _ in range(iterations):
+        label_artist, events_artist, legend_anchor = _finalize_layout(
+            fig,
+            ax,
+            rax,
+            legend,
+            cms_label,
+            display_label,
+            label_artist=label_artist,
+            events_artist=events_artist,
+            ratio_anchor=ratio_label_fig,
+            events_anchor=initial_events_anchor,
+            legend_anchor=legend_anchor,
+            legend_is_figure=legend_is_figure_anchored,
+            style=style,
+        )
 
     return fig
 
