@@ -39,10 +39,29 @@ def _short_examples(values, max_items=8):
 def _categorical_axis_names(h):
     cat_axes = getattr(h, "categorical_axes", None)
     if cat_axes is not None:
-        return tuple(cat_axes.name)
+        try:
+            return tuple(ax.name for ax in cat_axes)
+        except Exception:
+            cat_names = getattr(cat_axes, "name", None)
+            if cat_names is None:
+                raise
+            if isinstance(cat_names, str):
+                return (cat_names,)
+            return tuple(cat_names)
+
+    str_category_type = getattr(hist.axis, "StrCategory", None)
+    int_category_type = getattr(hist.axis, "IntCategory", None)
+    categorical_types = tuple(
+        ax_type
+        for ax_type in (str_category_type, int_category_type)
+        if ax_type is not None
+    )
+
     names = []
     for ax in h.axes:
-        if "Category" in type(ax).__name__:
+        if categorical_types and isinstance(ax, categorical_types):
+            names.append(ax.name)
+        elif type(ax).__name__ in {"StrCategory", "IntCategory"}:
             names.append(ax.name)
     return tuple(names)
 
@@ -53,12 +72,23 @@ def _dense_axes(h):
 
 
 def _axis_edges(ax):
-    if hasattr(ax, "edges"):
-        try:
-            return np.asarray(ax.edges(), dtype=float)
-        except Exception:
-            return None
-    return None
+    if not hasattr(ax, "edges"):
+        return None
+
+    edges_obj = getattr(ax, "edges")
+    try:
+        edges = edges_obj() if callable(edges_obj) else edges_obj
+    except Exception:
+        return None
+
+    try:
+        arr = np.asarray(edges, dtype=float)
+    except Exception:
+        return None
+
+    if arr.ndim != 1:
+        return None
+    return arr
 
 
 def _validate_hist_compatibility(key, existing_hist, incoming_hist, incoming_path):
@@ -242,7 +272,11 @@ def load_and_merge_histogram_pkls(
 
                     msg = (
                         f"Process-label overlap detected while merging key '{key}' from '{path}': "
-                        f"{len(overlap)} overlapping labels (examples: {collision['overlap_examples']})."
+                        f"{len(overlap)} overlapping labels (examples: {collision['overlap_examples']}). "
+                        "If this overlap is intentional (e.g. chunked outputs), rerun with "
+                        "`--on-process-collision allow`. "
+                        "If you just want diagnostics, use "
+                        "`--merge-only --on-process-collision warn`."
                     )
                     if on_process_collision == "error":
                         raise RuntimeError(msg)
