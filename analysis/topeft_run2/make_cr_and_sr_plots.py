@@ -3881,6 +3881,7 @@ def _finalize_layout(
         renderer = _draw_and_get_renderer()
 
     axis_for_bottom = rax if rax is not None else ax
+    single_panel = rax is None
 
     def _label_axis_min_y(current_renderer):
         bboxes = []
@@ -3956,6 +3957,7 @@ def _finalize_layout(
         events_y = current_events_y
     elif events_y is None:
         events_y = _axes_bbox_for_labeling.y0 + _axes_bbox_for_labeling.height
+    events_va = "top" if single_panel else "bottom"
 
     if events_artist is None or not isinstance(events_artist, mpl.text.Text):
         events_artist = fig.text(
@@ -3963,7 +3965,7 @@ def _finalize_layout(
             events_y,
             "Events",
             ha="right",
-            va="bottom",
+            va=events_va,
             fontsize=label_fontsize,
             rotation=90,
         )
@@ -3973,7 +3975,78 @@ def _finalize_layout(
         events_artist.set_fontsize(label_fontsize)
         events_artist.set_rotation(90)
         events_artist.set_ha("right")
-        events_artist.set_va("bottom")
+        events_artist.set_va(events_va)
+
+    if single_panel:
+        for _ in range(4):
+            renderer = _draw_and_get_renderer()
+            events_box = events_artist.get_window_extent(renderer).transformed(
+                fig.transFigure.inverted()
+            )
+
+            legend_box_local = None
+            if legend is not None:
+                legend_box_local = legend.get_window_extent(renderer).transformed(
+                    fig.transFigure.inverted()
+                )
+
+            cms_box_local = None
+            cms_bboxes_local = []
+            for artist in cms_artists:
+                if hasattr(artist, "get_window_extent"):
+                    cms_bboxes_local.append(
+                        artist.get_window_extent(renderer).transformed(
+                            fig.transFigure.inverted()
+                        )
+                    )
+            if cms_bboxes_local:
+                cms_box_local = Bbox.union(cms_bboxes_local)
+
+            shift_down = 0.0
+            if events_box.y1 > 1.0:
+                shift_down = max(shift_down, events_box.y1 - 1.0)
+            if legend_box_local is not None:
+                overlaps_legend = (
+                    events_box.x0 < legend_box_local.x1
+                    and events_box.x1 > legend_box_local.x0
+                    and events_box.y0 < legend_box_local.y1
+                    and events_box.y1 > legend_box_local.y0
+                )
+                if overlaps_legend:
+                    shift_down = max(
+                        shift_down,
+                        events_box.y1 - legend_box_local.y0 + legend_overlap_margin,
+                    )
+            if cms_box_local is not None:
+                overlaps_cms = (
+                    events_box.x0 < cms_box_local.x1
+                    and events_box.x1 > cms_box_local.x0
+                    and events_box.y0 < cms_box_local.y1
+                    and events_box.y1 > cms_box_local.y0
+                )
+                if overlaps_cms:
+                    shift_down = max(
+                        shift_down,
+                        events_box.y1 - cms_box_local.y0 + legend_overlap_margin,
+                    )
+
+            if shift_down > 0.0:
+                current_x, current_y = events_artist.get_position()
+                new_y = max(ax_box.y0, current_y - shift_down)
+                if np.isclose(new_y, current_y):
+                    break
+                events_artist.set_position((current_x, new_y))
+                continue
+
+            if events_box.y0 < 0.0:
+                current_x, current_y = events_artist.get_position()
+                new_y = min(ax_box.y1, current_y - events_box.y0)
+                if np.isclose(new_y, current_y):
+                    break
+                events_artist.set_position((current_x, new_y))
+                continue
+
+            break
 
     if label_artist is None or not isinstance(label_artist, mpl.text.Text):
         label_artist = fig.text(

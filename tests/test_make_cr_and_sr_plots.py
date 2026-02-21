@@ -181,17 +181,43 @@ def test_blind_mode_figure_legend_stays_above_axes():
         )
         cms_box = _get_cms_text_union_bbox(fig, ax, renderer)
         ax_box = ax.get_position()
+        events_artist = next(
+            (text for text in fig.texts if (text.get_text() or "") == "Events"),
+            None,
+        )
+        assert events_artist is not None, "Could not find figure-level 'Events' label."
+        events_box = events_artist.get_window_extent(renderer).transformed(
+            fig.transFigure.inverted()
+        )
         overlaps = (
             cms_box.x0 < legend_box.x1
             and cms_box.x1 > legend_box.x0
             and cms_box.y0 < legend_box.y1
             and cms_box.y1 > legend_box.y0
         )
+        events_overlap_legend = (
+            events_box.x0 < legend_box.x1
+            and events_box.x1 > legend_box.x0
+            and events_box.y0 < legend_box.y1
+            and events_box.y1 > legend_box.y0
+        )
 
         assert legend_box.y0 >= ax_box.y1 - 1e-3
         assert not overlaps, (
             f"CMS label overlaps legend in blind mode: cms={cms_box.bounds}, "
             f"legend={legend_box.bounds}"
+        )
+        assert events_box.x0 >= -1e-3
+        assert events_box.y0 >= -1e-3
+        assert events_box.x1 <= 1.0 + 1e-3
+        assert events_box.y1 <= 1.0 + 1e-3
+        assert not events_overlap_legend, (
+            f"'Events' overlaps legend in blind mode: events={events_box.bounds}, "
+            f"legend={legend_box.bounds}"
+        )
+        assert events_box.y1 <= ax_box.y1 + 1e-3, (
+            f"'Events' extends above main axis in blind mode: "
+            f"events={events_box.bounds}, ax={ax_box.bounds}"
         )
         assert ax.get_legend() is None or ax.get_legend().get_visible() is False
     finally:
