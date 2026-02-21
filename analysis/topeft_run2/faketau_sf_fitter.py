@@ -762,10 +762,10 @@ def _print_year_filter_summary(summary):
     removed_mc = summary.get("mc_removed") or []
     removed_data = summary.get("data_removed") or []
 
-    print("Retained MC processes   : " + (", ".join(retained_mc) if retained_mc else "<none>"))
-    print("Retained data processes : " + (", ".join(retained_data) if retained_data else "<none>"))
-    print("Removed MC processes    : " + (", ".join(removed_mc) if removed_mc else "<none>"))
-    print("Removed data processes  : " + (", ".join(removed_data) if removed_data else "<none>"))
+    # print("Retained MC processes   : " + (", ".join(retained_mc) if retained_mc else "<none>"))
+    # print("Retained data processes : " + (", ".join(retained_data) if retained_data else "<none>"))
+    # print("Removed MC processes    : " + (", ".join(removed_mc) if removed_mc else "<none>"))
+    # print("Removed data processes  : " + (", ".join(removed_data) if removed_data else "<none>"))
 
 
 def _print_yield_table(title, bin_labels, yields, errors):
@@ -987,7 +987,7 @@ def group_bins(histo, bin_map, axis_name="process", drop_unspecified=False):
 
     return histo.group(axis_name, normalized_map)
 
-TAU_PT_BIN_EDGES = [20, 30, 40, 50, 60, 80, 100, 200]
+TAU_PT_BIN_EDGES = [20, 30, 40, 50, 60, 200]
 
 
 def _extract_tau_pt_edges(axis):
