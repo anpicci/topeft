@@ -3653,6 +3653,61 @@ def _compute_uncertainty_bands(
     }
 
 
+def _anchor_figure_legend_above_axes(
+    fig,
+    legend,
+    *,
+    legend_top_margin_min,
+    legend_top_margin_scale,
+):
+    if legend is None:
+        return {
+            "legend_box": None,
+            "legend_anchor": None,
+            "required_headroom": None,
+            "top_adjusted": False,
+            "legend_is_figure_anchored": False,
+        }
+
+    fig.canvas.draw()
+    renderer = fig.canvas.get_renderer()
+    legend_bbox = legend.get_window_extent(renderer=renderer)
+    legend_box = legend_bbox.transformed(fig.transFigure.inverted())
+    measured_height = legend_box.height
+    buffer = max(legend_top_margin_min, legend_top_margin_scale * measured_height)
+    anchor_y = max(0.0, 1.0 - buffer)
+    legend_anchor = [0.5, anchor_y]
+    legend.set_bbox_to_anchor(tuple(legend_anchor), fig.transFigure)
+
+    fig.canvas.draw()
+    renderer = fig.canvas.get_renderer()
+    legend_bbox = legend.get_window_extent(renderer=renderer)
+    legend_box = legend_bbox.transformed(fig.transFigure.inverted())
+    legend_height = legend_box.height
+    buffer = max(buffer, legend_top_margin_min)
+    required_headroom = legend_height + buffer
+
+    subplot_params = fig.subplotpars
+    available_top = np.clip(1.0 - required_headroom, 0.0, 1.0)
+    available_top = np.clip(min(available_top, legend_box.y0), 0.0, 1.0)
+    top_adjusted = False
+    if subplot_params.top > available_top:
+        plt.subplots_adjust(top=available_top)
+        top_adjusted = True
+        fig.canvas.draw()
+        renderer = fig.canvas.get_renderer()
+        legend_bbox = legend.get_window_extent(renderer=renderer)
+        legend_box = legend_bbox.transformed(fig.transFigure.inverted())
+
+    return {
+        "legend_box": legend_box,
+        "legend_anchor": legend_anchor,
+        "required_headroom": required_headroom,
+        "top_adjusted": top_adjusted,
+        "legend_is_figure_anchored": True,
+    }
+
+
 
 def _finalize_layout(
     fig,
@@ -6420,38 +6475,16 @@ def make_region_stacked_ratio_fig(
             columnspacing=uncertainty_legend_style.get("columnspacing", 1.0),
         )
 
-    fig.canvas.draw()
-    required_headroom = None
-    legend_is_figure_anchored = False
-    top_adjusted = False
-    legend_anchor = None
-    if legend is not None:
-        renderer = fig.canvas.get_renderer()
-        legend_bbox = legend.get_window_extent(renderer=renderer)
-        legend_box = legend_bbox.transformed(fig.transFigure.inverted())
-        measured_height = legend_box.height
-        buffer = max(legend_top_margin_min, legend_top_margin_scale * measured_height)
-        anchor_y = max(0.0, 1.0 - buffer)
-        legend_anchor = [0.5, anchor_y]
-        legend.set_bbox_to_anchor(tuple(legend_anchor), fig.transFigure)
-        fig.canvas.draw()
-        renderer = fig.canvas.get_renderer()
-        legend_bbox = legend.get_window_extent(renderer=renderer)
-        legend_box = legend_bbox.transformed(fig.transFigure.inverted())
-        legend_height = legend_box.height
-        buffer = max(buffer, legend_top_margin_min)
-        required_headroom = legend_height + buffer
-        legend_is_figure_anchored = True
-        subplot_params = fig.subplotpars
-        available_top = 1.0 - required_headroom
-        available_top = np.clip(available_top, 0.0, 1.0)
-        if subplot_params.top > available_top:
-            plt.subplots_adjust(top=available_top)
-            top_adjusted = True
-            fig.canvas.draw()
-            renderer = fig.canvas.get_renderer()
-            legend_bbox = legend.get_window_extent(renderer=renderer)
-            legend_box = legend_bbox.transformed(fig.transFigure.inverted())
+    legend_layout = _anchor_figure_legend_above_axes(
+        fig,
+        legend,
+        legend_top_margin_min=legend_top_margin_min,
+        legend_top_margin_scale=legend_top_margin_scale,
+    )
+    required_headroom = legend_layout["required_headroom"]
+    legend_is_figure_anchored = legend_layout["legend_is_figure_anchored"]
+    top_adjusted = legend_layout["top_adjusted"]
+    legend_anchor = legend_layout["legend_anchor"]
 
     if has_ratio_axis:
         label_artist = None
@@ -6473,8 +6506,6 @@ def make_region_stacked_ratio_fig(
                 legend_is_figure=legend_is_figure_anchored,
                 style=style,
             )
-    else:
-        fig.tight_layout()
 
     return fig
 

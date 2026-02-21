@@ -74,6 +74,29 @@ def _make_simple_stacked_inputs():
     return h_mc, h_data, group_map
 
 
+def _make_multigroup_stacked_inputs(num_groups=8):
+    process_axis = hist.axis.StrCategory([], name="process", growth=True)
+    value_axis = hist.axis.Regular(2, 0.0, 2.0, name="lj0pt")
+    h_mc = hist.Hist(process_axis, value_axis, storage=hist.storage.Double())
+    h_data = hist.Hist(process_axis, value_axis, storage=hist.storage.Double())
+
+    group_map = {}
+    for proc_idx in range(num_groups):
+        proc_name = f"mc_proc_{proc_idx}"
+        group_map[f"Group {proc_idx}"] = [proc_name]
+        for bin_idx, base_weight in enumerate((1.0, 2.0)):
+            h_mc.fill(
+                process=proc_name,
+                lj0pt=[bin_idx + 0.25],
+                weight=[base_weight + proc_idx],
+            )
+
+    for bin_idx in range(2):
+        h_data.fill(process="data", lj0pt=[bin_idx + 0.25], weight=[1.0])
+
+    return h_mc, h_data, group_map
+
+
 def test_blind_mode_does_not_draw_data_or_ratio_markers_and_omits_ratio_panel(monkeypatch):
     plotted_calls = []
 
@@ -105,6 +128,39 @@ def test_blind_mode_does_not_draw_data_or_ratio_markers_and_omits_ratio_panel(mo
         ]
         assert not errorbar_calls
         assert len(fig.axes) == 1
+    finally:
+        make_cr_and_sr_plots.plt.close(fig)
+
+
+def test_blind_mode_figure_legend_stays_above_axes():
+    h_mc, h_data, group_map = _make_multigroup_stacked_inputs(num_groups=8)
+    mc_totals = h_mc[{"process": sum}].values(flow=True)[1:]
+
+    fig = make_cr_and_sr_plots.make_region_stacked_ratio_fig(
+        h_mc=h_mc,
+        h_data=h_data,
+        unit_norm_bool=False,
+        var="lj0pt",
+        group=group_map,
+        err_p_syst=mc_totals + 0.5,
+        err_m_syst=np.clip(mc_totals - 0.5, a_min=0.0, a_max=None),
+        syst_err="syst",
+        unblind=False,
+    )
+
+    try:
+        fig.canvas.draw()
+        ax = fig.axes[0]
+        assert len(fig.legends) == 1
+        legend = fig.legends[0]
+        renderer = fig.canvas.get_renderer()
+        legend_box = legend.get_window_extent(renderer).transformed(
+            fig.transFigure.inverted()
+        )
+        ax_box = ax.get_position()
+
+        assert legend_box.y0 >= ax_box.y1 - 1e-3
+        assert ax.get_legend() is None or ax.get_legend().get_visible() is False
     finally:
         make_cr_and_sr_plots.plt.close(fig)
 
