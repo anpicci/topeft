@@ -121,6 +121,13 @@ def test_make_cards_parser_accepts_multiple_pkls():
     assert args.merge_only is True
 
 
+def test_make_cards_parser_default_process_collision_policy_is_error():
+    parser = make_cards.build_arg_parser()
+    args = parser.parse_args(["a.pkl.gz"])
+
+    assert args.on_process_collision == "error"
+
+
 def test_resolve_pkl_paths_from_file(tmp_path):
     pkl_list = tmp_path / "pkls.txt"
     pkl_list.write_text(

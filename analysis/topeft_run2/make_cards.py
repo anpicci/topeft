@@ -91,7 +91,16 @@ def build_arg_parser():
     parser.add_argument("--use-AAC","-A",action="store_true",help="Include all EFT templates in datacards for AAC model")
     parser.add_argument("--wc-vals", default="",action="store", nargs="+", help="Specify the corresponding wc values to set for the wc list")
     parser.add_argument("--wc-scalings", default=[],action="extend",nargs="+",help="Specify a list of wc ordering for scalings.json")
-    parser.add_argument("--on-process-collision",choices=["error","warn","allow"],default="error",help="Policy for process label overlaps when merging multiple input pkl files")
+    parser.add_argument(
+        "--on-process-collision",
+        choices=["error","warn","allow"],
+        default="error",
+        help=(
+            "Policy for process-label overlaps when merging multiple input pkl files. "
+            "Default is strict `error`. Expert-only escape hatches: `warn`/`allow`, "
+            "to be used only when overlaps are intentional (e.g. chunked outputs)."
+        ),
+    )
     parser.add_argument("--merge-report",default="-",help="Path for merge diagnostic report JSON, or '-' for stdout")
     parser.add_argument("--merge-only",action="store_true",help="Only load+merge+validate input histograms and exit")
     parser.add_argument("--cache-merged-pkl",default="",help="Optional output path for merged histogram dictionary (.pkl.gz)")
