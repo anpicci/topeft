@@ -2988,6 +2988,8 @@ def _draw_stacked_panel(
     """Render stacked MC content, optionally with data and ratio subpanels."""
 
     style = {} if style is None else style
+    axes_style = _style_get(style, ("axes",), {})
+    axis_label_fontsize = axes_style.get("label_fontsize", 18)
     figure_style = _style_get(style, ("figure",), {})
     figsize = tuple(figure_style.get("figsize", (10, 8)))
     height_ratios = tuple(figure_style.get("height_ratios", (4, 1)))
@@ -3012,6 +3014,7 @@ def _draw_stacked_panel(
     cms_style = _style_get(style, ("cms",), {})
     cms_fontsize = cms_style.get("fontsize", 18.0)
     cms_label = hep.cms.label(lumi=lumitag, com=comtag, fontsize=cms_fontsize)
+    ax.set_ylabel("Events", fontsize=axis_label_fontsize)
 
     summed_mc = h_mc[{"process": sum}]
     summed_data = h_data[{"process": sum}] if h_data is not None else None
@@ -3718,9 +3721,6 @@ def _finalize_layout(
     display_label,
     *,
     label_artist=None,
-    events_artist=None,
-    ratio_anchor=None,
-    events_anchor=None,
     legend_anchor=None,
     legend_is_figure=False,
     style=None,
@@ -3881,7 +3881,6 @@ def _finalize_layout(
         renderer = _draw_and_get_renderer()
 
     axis_for_bottom = rax if rax is not None else ax
-    single_panel = rax is None
 
     def _label_axis_min_y(current_renderer):
         bboxes = []
@@ -3929,124 +3928,7 @@ def _finalize_layout(
         renderer = _draw_and_get_renderer()
         label_y = _label_axis_min_y(renderer) - measured_height - ratio_label_margin
 
-    renderer = _draw_and_get_renderer()
-    ax_box = ax.get_position()
     _axes_bbox_for_labeling = rax.get_position() if rax is not None else ax.get_position()
-
-    ratio_label_fig = None
-    ratio_label = rax.yaxis.label if rax is not None else None
-    if ratio_label is not None:
-        try:
-            ratio_pos = np.asarray(ratio_label.get_position(), dtype=float)
-            ratio_transform = ratio_label.get_transform()
-            if ratio_transform is not None:
-                ratio_display = ratio_transform.transform([ratio_pos])[0]
-                ratio_label_fig = fig.transFigure.inverted().transform(ratio_display)
-        except Exception:
-            ratio_label_fig = None
-    if ratio_label_fig is None and ratio_anchor is not None:
-        ratio_label_fig = ratio_anchor
-
-    events_x, events_y = events_anchor if events_anchor is not None else (None, None)
-    if ratio_label_fig is not None:
-        events_x = ratio_label_fig[0]
-    if events_x is None:
-        events_x = _axes_bbox_for_labeling.x0 + _axes_bbox_for_labeling.width
-    current_events_y = ax_box.y0 + ax_box.height
-    if current_events_y is not None:
-        events_y = current_events_y
-    elif events_y is None:
-        events_y = _axes_bbox_for_labeling.y0 + _axes_bbox_for_labeling.height
-    events_va = "top" if single_panel else "bottom"
-
-    if events_artist is None or not isinstance(events_artist, mpl.text.Text):
-        events_artist = fig.text(
-            events_x,
-            events_y,
-            "Events",
-            ha="right",
-            va=events_va,
-            fontsize=label_fontsize,
-            rotation=90,
-        )
-    else:
-        events_artist.set_position((events_x, events_y))
-        events_artist.set_text("Events")
-        events_artist.set_fontsize(label_fontsize)
-        events_artist.set_rotation(90)
-        events_artist.set_ha("right")
-        events_artist.set_va(events_va)
-
-    if single_panel:
-        for _ in range(4):
-            renderer = _draw_and_get_renderer()
-            events_box = events_artist.get_window_extent(renderer).transformed(
-                fig.transFigure.inverted()
-            )
-
-            legend_box_local = None
-            if legend is not None:
-                legend_box_local = legend.get_window_extent(renderer).transformed(
-                    fig.transFigure.inverted()
-                )
-
-            cms_box_local = None
-            cms_bboxes_local = []
-            for artist in cms_artists:
-                if hasattr(artist, "get_window_extent"):
-                    cms_bboxes_local.append(
-                        artist.get_window_extent(renderer).transformed(
-                            fig.transFigure.inverted()
-                        )
-                    )
-            if cms_bboxes_local:
-                cms_box_local = Bbox.union(cms_bboxes_local)
-
-            shift_down = 0.0
-            if events_box.y1 > 1.0:
-                shift_down = max(shift_down, events_box.y1 - 1.0)
-            if legend_box_local is not None:
-                overlaps_legend = (
-                    events_box.x0 < legend_box_local.x1
-                    and events_box.x1 > legend_box_local.x0
-                    and events_box.y0 < legend_box_local.y1
-                    and events_box.y1 > legend_box_local.y0
-                )
-                if overlaps_legend:
-                    shift_down = max(
-                        shift_down,
-                        events_box.y1 - legend_box_local.y0 + legend_overlap_margin,
-                    )
-            if cms_box_local is not None:
-                overlaps_cms = (
-                    events_box.x0 < cms_box_local.x1
-                    and events_box.x1 > cms_box_local.x0
-                    and events_box.y0 < cms_box_local.y1
-                    and events_box.y1 > cms_box_local.y0
-                )
-                if overlaps_cms:
-                    shift_down = max(
-                        shift_down,
-                        events_box.y1 - cms_box_local.y0 + legend_overlap_margin,
-                    )
-
-            if shift_down > 0.0:
-                current_x, current_y = events_artist.get_position()
-                new_y = max(ax_box.y0, current_y - shift_down)
-                if np.isclose(new_y, current_y):
-                    break
-                events_artist.set_position((current_x, new_y))
-                continue
-
-            if events_box.y0 < 0.0:
-                current_x, current_y = events_artist.get_position()
-                new_y = min(ax_box.y1, current_y - events_box.y0)
-                if np.isclose(new_y, current_y):
-                    break
-                events_artist.set_position((current_x, new_y))
-                continue
-
-            break
 
     if label_artist is None or not isinstance(label_artist, mpl.text.Text):
         label_artist = fig.text(
@@ -4066,7 +3948,7 @@ def _finalize_layout(
         label_artist.set_ha("right")
         label_artist.set_va("bottom")
 
-    return label_artist, events_artist, legend_anchor_local
+    return label_artist, legend_anchor_local
 
 
 def _sample_in_group(sample_name, candidates, canonical_sample=None):
@@ -6339,8 +6221,6 @@ def make_region_stacked_ratio_fig(
         ax.yaxis.offsetText.set_x(y_offset)
     ax.yaxis.offsetText.set_fontsize(offset_fontsize)
 
-    ratio_label_fig = None
-    initial_events_anchor = None
     apply_minor_x = bool(secondary_ticks_cfg.get("x", True))
     apply_minor_y = bool(secondary_ticks_cfg.get("y", True))
 
@@ -6457,20 +6337,6 @@ def make_region_stacked_ratio_fig(
             _apply_secondary_ticks(ax, axis="y")
             _apply_secondary_ticks(rax, axis="y")
 
-        ax_box = ax.get_position()
-        rax_box = rax.get_position()
-        ratio_label = rax.yaxis.label
-        if ratio_label is not None:
-            try:
-                ratio_label_pos = np.asarray(ratio_label.get_position(), dtype=float)
-                ratio_label_transform = ratio_label.get_transform()
-                if ratio_label_transform is not None:
-                    ratio_label_display = ratio_label_transform.transform([ratio_label_pos])[0]
-                    ratio_label_fig = fig.transFigure.inverted().transform(ratio_label_display)
-            except Exception:
-                ratio_label_fig = None
-
-        initial_events_anchor = (rax_box.x0 + rax_box.width, ax_box.y0 + ax_box.height)
     else:
         fig.canvas.draw()
         xticks = ax.get_xticks()
@@ -6572,10 +6438,9 @@ def make_region_stacked_ratio_fig(
     legend_anchor = legend_layout["legend_anchor"]
 
     label_artist = None
-    events_artist = None
     iterations = 3 if top_adjusted else 2
     for _ in range(iterations):
-        label_artist, events_artist, legend_anchor = _finalize_layout(
+        label_artist, legend_anchor = _finalize_layout(
             fig,
             ax,
             rax,
@@ -6583,9 +6448,6 @@ def make_region_stacked_ratio_fig(
             cms_label,
             display_label,
             label_artist=label_artist,
-            events_artist=events_artist,
-            ratio_anchor=ratio_label_fig,
-            events_anchor=initial_events_anchor,
             legend_anchor=legend_anchor,
             legend_is_figure=legend_is_figure_anchored,
             style=style,

@@ -181,25 +181,11 @@ def test_blind_mode_figure_legend_stays_above_axes():
         )
         cms_box = _get_cms_text_union_bbox(fig, ax, renderer)
         ax_box = ax.get_position()
-        events_artist = next(
-            (text for text in fig.texts if (text.get_text() or "") == "Events"),
-            None,
-        )
-        assert events_artist is not None, "Could not find figure-level 'Events' label."
-        events_box = events_artist.get_window_extent(renderer).transformed(
-            fig.transFigure.inverted()
-        )
         overlaps = (
             cms_box.x0 < legend_box.x1
             and cms_box.x1 > legend_box.x0
             and cms_box.y0 < legend_box.y1
             and cms_box.y1 > legend_box.y0
-        )
-        events_overlap_legend = (
-            events_box.x0 < legend_box.x1
-            and events_box.x1 > legend_box.x0
-            and events_box.y0 < legend_box.y1
-            and events_box.y1 > legend_box.y0
         )
 
         assert legend_box.y0 >= ax_box.y1 - 1e-3
@@ -207,21 +193,65 @@ def test_blind_mode_figure_legend_stays_above_axes():
             f"CMS label overlaps legend in blind mode: cms={cms_box.bounds}, "
             f"legend={legend_box.bounds}"
         )
-        assert events_box.x0 >= -1e-3
-        assert events_box.y0 >= -1e-3
-        assert events_box.x1 <= 1.0 + 1e-3
-        assert events_box.y1 <= 1.0 + 1e-3
-        assert not events_overlap_legend, (
-            f"'Events' overlaps legend in blind mode: events={events_box.bounds}, "
-            f"legend={legend_box.bounds}"
-        )
-        assert events_box.y1 <= ax_box.y1 + 1e-3, (
-            f"'Events' extends above main axis in blind mode: "
-            f"events={events_box.bounds}, ax={ax_box.bounds}"
-        )
+        assert ax.get_ylabel() == "Events"
+        assert ax.yaxis.label.get_visible()
+        assert not any((text.get_text() or "") == "Events" for text in fig.texts)
         assert ax.get_legend() is None or ax.get_legend().get_visible() is False
     finally:
         make_cr_and_sr_plots.plt.close(fig)
+
+
+def test_blind_and_unblind_share_events_axis_ylabel_geometry():
+    h_mc, h_data, group_map = _make_multigroup_stacked_inputs(num_groups=8)
+    mc_totals = h_mc[{"process": sum}].values(flow=True)[1:]
+
+    blind_fig = make_cr_and_sr_plots.make_region_stacked_ratio_fig(
+        h_mc=h_mc,
+        h_data=h_data,
+        unit_norm_bool=False,
+        var="lj0pt",
+        group=group_map,
+        err_p_syst=mc_totals + 0.5,
+        err_m_syst=np.clip(mc_totals - 0.5, a_min=0.0, a_max=None),
+        syst_err="syst",
+        unblind=False,
+    )
+    unblind_fig = make_cr_and_sr_plots.make_region_stacked_ratio_fig(
+        h_mc=h_mc,
+        h_data=h_data,
+        unit_norm_bool=False,
+        var="lj0pt",
+        group=group_map,
+        err_p_syst=mc_totals + 0.5,
+        err_m_syst=np.clip(mc_totals - 0.5, a_min=0.0, a_max=None),
+        syst_err="syst",
+        unblind=True,
+    )
+
+    try:
+        blind_fig.canvas.draw()
+        unblind_fig.canvas.draw()
+
+        blind_ax = blind_fig.axes[0]
+        unblind_ax = unblind_fig.axes[0]
+        assert blind_ax.get_ylabel() == "Events"
+        assert unblind_ax.get_ylabel() == "Events"
+
+        blind_renderer = blind_fig.canvas.get_renderer()
+        unblind_renderer = unblind_fig.canvas.get_renderer()
+
+        blind_box = blind_ax.yaxis.label.get_window_extent(blind_renderer).transformed(
+            blind_fig.transFigure.inverted()
+        )
+        unblind_box = unblind_ax.yaxis.label.get_window_extent(unblind_renderer).transformed(
+            unblind_fig.transFigure.inverted()
+        )
+
+        assert abs(blind_box.x0 - unblind_box.x0) <= 1e-3
+        assert abs(blind_box.x1 - unblind_box.x1) <= 1e-3
+    finally:
+        make_cr_and_sr_plots.plt.close(blind_fig)
+        make_cr_and_sr_plots.plt.close(unblind_fig)
 
 
 def test_unblind_mode_still_draws_data_and_ratio_panels(monkeypatch):
