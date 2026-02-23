@@ -162,8 +162,13 @@
     # - PileUpPtEC1
     # - PileUpPtEC2
     # - PileUpPtHF
+    # - PileUpPtRef
     # - RelativeFSR
     # - RelativeJERHF
+    # - RelativePtBB
+    # - RelativePtHF
+    # - RelativeBal
+    # - SinglePionECAL
     # - SinglePionHCAL
     # - AbsoluteStat
     # - RelativeJEREC1
