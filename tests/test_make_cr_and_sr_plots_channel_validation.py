@@ -77,3 +77,17 @@ def test_subgroup_validation_message_lists_only_subgroup_local_channels():
     assert "Subgroup '2lss_4t_p_5j'" in msg
     assert "2lss_4t_p_5j_alias" in msg
     assert "3l_p_offZ_1b_2j" not in msg
+
+
+def test_subgroup_validation_requires_explicit_available_channels():
+    histo = _make_channel_hist(["2lss_4t_p_5j"])
+
+    with pytest.raises(TypeError):
+        make_cr_and_sr_plots.validate_channel_group(
+            [histo],
+            ["2lss_4t_p_5j"],
+            [],
+            region="SR",
+            subgroup="2lss_4t_p_5j",
+            variable="lj0pt",
+        )

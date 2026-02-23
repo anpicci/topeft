@@ -2816,15 +2816,12 @@ def validate_channel_group(
     subgroup,
     variable,
     *,
-    available_channels=None,
+    available_channels,
 ):
     if not isinstance(histos, (list, tuple)):
         histos = [histos]
 
-    if available_channels is None:
-        available_channels = _collect_available_channels(histos)
-    else:
-        available_channels = {str(channel) for channel in available_channels}
+    available_channels = {str(channel) for channel in available_channels}
 
     if not available_channels:
         return
