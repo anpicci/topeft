@@ -3,9 +3,6 @@ import os
 import copy
 import datetime
 import argparse
-import json
-import gzip
-import pickle
 import re
 from collections import OrderedDict
 from collections.abc import Mapping
@@ -43,7 +40,6 @@ from topeft.modules.get_rate_systs import (
     get_syst as te_get_syst,
     get_syst_lst as te_get_syst_lst,
 )
-from topeft.modules.datacard_tools import load_and_merge_histogram_pkls
 
 
 _logger = logging.getLogger(__name__)
@@ -288,11 +284,6 @@ DD_ALIAS_MAP = {
     "2016apv": ("UL16APV",),
     "2017": ("UL17",),
     "2018": ("UL18",),
-}
-_DD_YEAR_TOKENS_BY_LENGTH = tuple(sorted(DD_YEAR_TOKENS, key=len, reverse=True))
-_DD_YEAR_TOKEN_PATTERNS = {
-    token: re.compile(rf"{re.escape(token)}(?=$|[_-])", re.IGNORECASE)
-    for token in _DD_YEAR_TOKENS_BY_LENGTH
 }
 
 _YEAR_SUFFIX_TOKENS = tuple(sorted(YEAR_TOKEN_RULES, key=len, reverse=True))
@@ -865,37 +856,6 @@ def _extract_dd_year_tokens_from_cli_years(year_tokens):
                     collected.append(mapped)
 
     return tuple(collected) if collected else None
-
-
-def _is_data_driven_process_label(label):
-    """Return ``True`` when *label* belongs to a data-driven process family."""
-
-    if not isinstance(label, str):
-        return False
-    return any(matcher.search(label) for matcher in DATA_DRIVEN_MATCHERS)
-
-
-def _detect_dd_year_token(label: str) -> "str | None":
-    """Return the canonical DD year token detected in *label*, if any."""
-
-    if not isinstance(label, str):
-        return None
-
-    for token in _DD_YEAR_TOKENS_BY_LENGTH:
-        if _DD_YEAR_TOKEN_PATTERNS[token].search(label):
-            return token
-    return None
-
-
-def _dd_label_matches_selected_years(label, dd_year_tokens):
-    """Return ``True`` when DD *label* matches the requested DD year tokens."""
-
-    if dd_year_tokens is None:
-        return True
-    detected_token = _detect_dd_year_token(label)
-    if detected_token is None:
-        return False
-    return detected_token in dd_year_tokens
 
 
 def _hist_has_content(histogram):
@@ -1879,12 +1839,6 @@ def _render_variable_from_worker(task_id, payload):
         )
         prepared_cache[var_name] = variable_payload
 
-    _ensure_variable_channel_coverage_validated(
-        var_name,
-        ctx["region_ctx"],
-        variable_payload,
-    )
-
     if category is None:
         stat_only, stat_and_syst, html_set = _render_variable(
             var_name,
@@ -2111,8 +2065,6 @@ def _render_variable(
     if not variable_payload:
         return 0, 0, set()
 
-    _ensure_variable_channel_coverage_validated(var_name, region_ctx, variable_payload)
-
     channel_dict = variable_payload["channel_dict"]
     channel_display_labels = variable_payload.get("channel_display_labels", {})
 
@@ -2185,6 +2137,15 @@ def _render_variable_category(
 ):
     """Render a single (variable, category) pair and return bookkeeping totals."""
 
+    validate_channel_group(
+        [hist_mc, hist_data],
+        channel_bins,
+        channel_transformations,
+        region=region_ctx.name,
+        subgroup=hist_cat,
+        variable=var_name,
+    )
+
     if available_channels is None:
         available_channels = _resolve_channel_axis_labels(hist_mc)
     else:
@@ -2206,16 +2167,6 @@ def _render_variable_category(
 
     if not filtered_bins:
         return 0, 0, set()
-
-    validate_channel_group(
-        [hist_mc, hist_data],
-        filtered_bins,
-        channel_transformations,
-        region=region_ctx.name,
-        subgroup=hist_cat,
-        variable=var_name,
-        available_channels=filtered_bins,
-    )
 
     channel_bins = filtered_bins
 
@@ -2718,118 +2669,36 @@ def _resolve_requested_variables(dict_of_hists, variables, context):
     return resolved
 
 
-def _collect_available_channels(histos):
+def validate_channel_group(histos, expected_labels, transformations, region, subgroup, variable):
     if not isinstance(histos, (list, tuple)):
         histos = [histos]
 
     available_channels = set()
     for histo in histos:
-        available_channels.update(_resolve_channel_axis_labels(histo))
-    return available_channels
-
-
-def validate_variable_channel_coverage(
-    histos,
-    region_known_channels,
-    transformations,
-    *,
-    region,
-    variable,
-    region_dict_name=None,
-):
-    available_channels = _collect_available_channels(histos)
-    if not available_channels:
-        return
-
-    known_channels = {str(channel) for channel in (region_known_channels or ())}
-    transformed_known_channels = {
-        _apply_channel_transforms(channel, transformations) for channel in known_channels
-    }
-
-    unknown_raw = []
-    unknown_transformed = []
-    seen_transformed = set()
-    for channel in sorted(str(chan) for chan in available_channels):
-        transformed = _apply_channel_transforms(channel, transformations)
-        if channel in known_channels or transformed in transformed_known_channels:
+        if not isinstance(histo, (tc_histEFT.HistEFT, tc_sparseHist.SparseHist)):
             continue
-        unknown_raw.append(channel)
-        if transformed not in seen_transformed:
-            unknown_transformed.append(transformed)
-            seen_transformed.add(transformed)
-
-    if not unknown_raw:
-        return
-
-    region_label = region or "plotting region"
-    dict_label = region_dict_name or f"{region_label}_CHAN_DICT"
-    msg = (
-        f"Global channel coverage mismatch for variable '{variable}' in region '{region_label}'. "
-        f"Unknown channels not present in {dict_label}: {unknown_raw}."
-    )
-    if transformations:
-        msg += (
-            " Unknown transformed channel names after applying configured channel transformations "
-            f"{transformations}: {unknown_transformed}."
-        )
-    msg += (
-        " Update the YAML channel dictionary or add a channel transformation/alias so the histogram "
-        "channel axis and metadata stay in sync."
-    )
-    raise ValueError(msg)
-
-
-def _resolve_region_known_channels(region):
-    region_upper = str(region).upper() if region is not None else None
-    if region_upper == "CR":
-        return CR_KNOWN_CHANNELS, "CR_CHAN_DICT"
-    if region_upper == "SR":
-        return SR_KNOWN_CHANNELS, "SR_CHAN_DICT"
-    return set(), "channel dictionary"
-
-
-def _ensure_variable_channel_coverage_validated(var_name, region_ctx, variable_payload):
-    if not variable_payload:
-        return
-    if variable_payload.get("_global_channel_coverage_validated"):
-        return
-
-    region_known_channels, region_dict_name = _resolve_region_known_channels(
-        region_ctx.name
-    )
-    validate_variable_channel_coverage(
-        [variable_payload.get("hist_mc"), variable_payload.get("hist_data")],
-        region_known_channels,
-        variable_payload.get("channel_transformations", []),
-        region=region_ctx.name,
-        variable=var_name,
-        region_dict_name=region_dict_name,
-    )
-    variable_payload["_global_channel_coverage_validated"] = True
-
-
-def validate_channel_group(
-    histos,
-    expected_labels,
-    transformations,
-    region,
-    subgroup,
-    variable,
-    *,
-    available_channels,
-):
-    if not isinstance(histos, (list, tuple)):
-        histos = [histos]
-
-    available_channels = {str(channel) for channel in available_channels}
+        if "channel" not in yt.get_axis_list(histo):
+            continue
+        available_channels.update(list(histo.axes["channel"]))
 
     if not available_channels:
         return
 
-    expected_set = {str(label) for label in expected_labels}
+    expected_set = set(expected_labels)
     expected_transformed = {
         _apply_channel_transforms(label, transformations) for label in expected_set
     }
+
+    region_known_channels = {
+        "CR": CR_KNOWN_CHANNELS,
+        "SR": SR_KNOWN_CHANNELS,
+    }.get(region)
+    transformed_known_channels = None
+    if region_known_channels is not None:
+        transformed_known_channels = {
+            _apply_channel_transforms(label, transformations)
+            for label in region_known_channels
+        }
 
     stray_channels = set()
 
@@ -2837,13 +2706,17 @@ def validate_channel_group(
         transformed = _apply_channel_transforms(channel, transformations)
         if transformed in expected_transformed:
             continue
+        if region_known_channels is not None and channel in region_known_channels:
+            continue
+        if transformed_known_channels is not None and transformed in transformed_known_channels:
+            continue
         stray_channels.add(channel)
 
     if stray_channels:
-        region_str = f" in region '{region}'" if region else ""
         var_str = f" for variable '{variable}'" if variable is not None else ""
+        region_str = f"{region} " if region else ""
         raise ValueError(
-            f"Subgroup '{subgroup}'{region_str}{var_str} references channels not found in the subgroup-local channel selection: {sorted(stray_channels)}."
+            f"Found channel bins {sorted(stray_channels)} in {region_str}subgroup '{subgroup}'{var_str} that are not defined in the YAML configuration."
         )
 
 def populate_group_map(samples, pattern_map):
@@ -4617,9 +4490,6 @@ def build_region_context(
         must_have_tokens = list(dict.fromkeys(must_have_tokens))
         optional_tokens = list(dict.fromkeys(optional_tokens))
         optional_token_set = set(optional_tokens)
-        dd_year_token_set = (
-            frozenset(dd_year_tokens) if dd_year_tokens is not None else None
-        )
 
         year_token_cache = {}
 
@@ -4667,12 +4537,6 @@ def build_region_context(
             if require_optional_tokens and optional_tokens:
                 if not present_tokens.intersection(optional_token_set):
                     return False
-            if (
-                dd_year_token_set is not None
-                and _is_data_driven_process_label(label)
-                and not _dd_label_matches_selected_years(label, dd_year_token_set)
-            ):
-                return False
             return True
 
         filtered = [
@@ -4686,13 +4550,15 @@ def build_region_context(
             for label in all_labels:
                 if label in filtered_set:
                     continue
-                if not _is_data_driven_process_label(label):
+                if not any(matcher.search(label) for matcher in DATA_DRIVEN_MATCHERS):
                     continue
                 if any(token in label for token in blacklist):
                     continue
                 if must_have_tokens and any(token not in label for token in must_have_tokens):
                     continue
-                if not _dd_label_matches_selected_years(label, dd_year_token_set):
+                if dd_year_tokens is not None and not any(
+                    token in label for token in dd_year_tokens
+                ):
                     continue
                 filtered.append(label)
                 filtered_set.add(label)
@@ -5101,9 +4967,6 @@ def produce_region_plots(
                 if not variable_payload:
                     stat_only, stat_and_syst, html_set = 0, 0, set()
                 else:
-                    _ensure_variable_channel_coverage_validated(
-                        var_name, region_ctx, variable_payload
-                    )
                     channel_bins = variable_payload["channel_dict"].get(hist_cat)
                     if channel_bins is None or (
                         region_ctx.apply_category_skips
@@ -6701,52 +6564,11 @@ def run_plots_for_region(
 
     return zero_yield_summary
 
-def _running_in_condor():
-    condor_env_vars = (
-        "_CONDOR_SCRATCH_DIR",
-        "_CONDOR_SLOT",
-        "CONDOR_JOB_AD",
-        "CONDOR_JOBID",
-    )
-    return any(os.environ.get(var) for var in condor_env_vars)
+def main():
 
-
-def _detect_region_from_path(path):
-    if not path:
-        return None, False
-    filename = os.path.basename(path)
-    uppercase = filename.upper()
-    matched_regions = []
-    for region in ("CR", "SR"):
-        # Accept filenames where the region token is directly followed by
-        # qualifiers such as a year (e.g. "SR2018") or run tag (e.g. "CRRun2").
-        # We only guard against being embedded within a longer alphanumeric
-        # token by ensuring the preceding character is not an uppercase
-        # letter or digit.
-        pattern = re.compile(rf"(?<![A-Z0-9]){region}")
-        if pattern.search(uppercase):
-            matched_regions.append(region)
-    if len(matched_regions) == 1:
-        return matched_regions[0], False
-    if len(matched_regions) > 1:
-        return None, True
-    return None, False
-
-
-def build_arg_parser():
+    # Set up the command line parser
     parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "-f",
-        "--pkl-file-path",
-        action="append",
-        default=[],
-        help="Path to an input pkl file. Repeat for multiple inputs.",
-    )
-    parser.add_argument(
-        "--pkl-list-file",
-        default="",
-        help="Optional text file with one pkl path per line (blank lines and # comments ignored).",
-    )
+    parser.add_argument("-f", "--pkl-file-path", default="histos/plotsTopEFT.pkl.gz", help = "The path to the pkl file")
     parser.add_argument("-o", "--output-path", default=".", help = "The path the output files should be saved to")
     parser.add_argument("-n", "--output-name", default="plots", help = "A name for the output directory")
     parser.add_argument("-t", "--include-timestamp-tag", action="store_true", help = "Append the timestamp to the out dir name")
@@ -6843,31 +6665,6 @@ def build_arg_parser():
             " after plotting."
         ),
     )
-    parser.add_argument(
-        "--on-process-collision",
-        choices=["error", "warn", "allow"],
-        default="error",
-        help=(
-            "Policy for process-label overlaps when merging multiple input pkl files. "
-            "Default is strict `error`. Expert-only escape hatches: `warn`/`allow`, "
-            "to be used only when overlaps are intentional (e.g. chunked outputs)."
-        ),
-    )
-    parser.add_argument(
-        "--merge-report",
-        default="-",
-        help="Path for merge diagnostic report JSON, or '-' for stdout.",
-    )
-    parser.add_argument(
-        "--merge-only",
-        action="store_true",
-        help="Only load+merge+validate input histograms and exit.",
-    )
-    parser.add_argument(
-        "--cache-merged-pkl",
-        default="",
-        help="Optional output path for merged histogram dictionary (.pkl.gz).",
-    )
     verbosity_group = parser.add_mutually_exclusive_group()
     verbosity_group.add_argument(
         "--verbose",
@@ -6882,60 +6679,7 @@ def build_arg_parser():
         help="Limit output to high-level progress messages (default).",
     )
     parser.set_defaults(unblind=None, verbose=False)
-    return parser
-
-
-def _resolve_pkl_paths(args, parser):
-    pkl_paths = list(args.pkl_file_path or [])
-    if args.pkl_list_file:
-        if pkl_paths:
-            parser.error("Specify either repeated -f/--pkl-file-path or --pkl-list-file, not both.")
-        with open(args.pkl_list_file) as f:
-            for line in f:
-                line = line.strip()
-                if not line or line.startswith("#"):
-                    continue
-                pkl_paths.append(line)
-    if not pkl_paths:
-        parser.error("No input pkl files were provided. Use -f/--pkl-file-path or --pkl-list-file.")
-    return pkl_paths
-
-
-def _emit_merge_report(report_obj, report_path, out_dir):
-    if report_path == "-":
-        print("Merge report:")
-        print(json.dumps(report_obj, indent=2, sort_keys=True))
-        return
-
-    report_fpath = report_path
-    if not os.path.isabs(report_fpath):
-        report_fpath = os.path.join(out_dir, report_fpath)
-    report_parent = os.path.dirname(report_fpath)
-    if report_parent:
-        os.makedirs(report_parent, exist_ok=True)
-    with open(report_fpath, "w") as f:
-        json.dump(report_obj, f, indent=2, sort_keys=True)
-    print(f"Wrote merge report: {report_fpath}")
-
-
-def _cache_merged_histograms(merged_hists, cache_path, out_dir):
-    out_fpath = cache_path
-    if not os.path.isabs(out_fpath):
-        out_fpath = os.path.join(out_dir, out_fpath)
-    if not out_fpath.endswith(".pkl.gz"):
-        out_fpath += ".pkl.gz"
-    out_parent = os.path.dirname(out_fpath)
-    if out_parent:
-        os.makedirs(out_parent, exist_ok=True)
-    print(f"Caching merged histograms to {out_fpath}")
-    with gzip.open(out_fpath, "wb") as fout:
-        pickle.dump(merged_hists, fout, protocol=pickle.HIGHEST_PROTOCOL)
-    return out_fpath
-
-
-def run_with_args(args, parser):
-    pkl_paths = _resolve_pkl_paths(args, parser)
-
+    args = parser.parse_args()
     normalized_years = _normalize_year_tokens(args.year)
     if args.year and not normalized_years:
         parser.error(
@@ -6945,7 +6689,37 @@ def run_with_args(args, parser):
         )
     selected_years = normalized_years
 
-    detected_region, ambiguous_region = _detect_region_from_path(pkl_paths[0])
+    def _running_in_condor():
+        condor_env_vars = (
+            "_CONDOR_SCRATCH_DIR",
+            "_CONDOR_SLOT",
+            "CONDOR_JOB_AD",
+            "CONDOR_JOBID",
+        )
+        return any(os.environ.get(var) for var in condor_env_vars)
+
+    def _detect_region_from_path(path):
+        if not path:
+            return None, False
+        filename = os.path.basename(path)
+        uppercase = filename.upper()
+        matched_regions = []
+        for region in ("CR", "SR"):
+            # Accept filenames where the region token is directly followed by
+            # qualifiers such as a year (e.g. "SR2018") or run tag (e.g. "CRRun2").
+            # We only guard against being embedded within a longer alphanumeric
+            # token by ensuring the preceding character is not an uppercase
+            # letter or digit.
+            pattern = re.compile(rf"(?<![A-Z0-9]){region}")
+            if pattern.search(uppercase):
+                matched_regions.append(region)
+        if len(matched_regions) == 1:
+            return matched_regions[0], False
+        if len(matched_regions) > 1:
+            return None, True
+        return None, False
+
+    detected_region, ambiguous_region = _detect_region_from_path(args.pkl_file_path)
     resolved_region = args.region_override or detected_region or "CR"
     if ambiguous_region and not args.region_override:
         print(
@@ -7008,35 +6782,24 @@ def run_with_args(args, parser):
     else:
         print(f"Created output directory: {save_dir_path}")
 
-    # Get and merge histograms from one or more input pkl files
+    # Get the histograms
     load_start_time = datetime.datetime.now()
     if args.verbose:
-        path_preview = pkl_paths[:3]
-        preview_msg = ", ".join(f"'{path}'" for path in path_preview)
-        if len(pkl_paths) > 3:
-            preview_msg += ", ..."
         print(
-            f"[{load_start_time:%H:%M:%S}] Loading histograms from {len(pkl_paths)} input file(s): {preview_msg}"
+            f"[{load_start_time:%H:%M:%S}] Loading histograms from '{args.pkl_file_path}'..."
         )
-    hin_dict, merge_report = load_and_merge_histogram_pkls(
-        pkl_paths,
-        on_process_collision=args.on_process_collision,
-        require_sumw2=True,
-    )
-    _emit_merge_report(merge_report, args.merge_report, save_dir_path)
-    if args.cache_merged_pkl:
-        _cache_merged_histograms(hin_dict, args.cache_merged_pkl, save_dir_path)
+    hin_dict = tc_utils.get_hist_from_pkl(args.pkl_file_path, allow_empty=False)
     if args.verbose:
         load_finish_time = datetime.datetime.now()
         print(
-            "[{}] Histogram load+merge completed in {:.2f}s".format(
+            "[{}] Histogram load completed in {:.2f}s".format(
                 load_finish_time.strftime("%H:%M:%S"),
                 (load_finish_time - load_start_time).total_seconds(),
             )
         )
-    if args.merge_only:
-        print("Merge-only mode enabled, stopping after successful merge validation.")
-        return 0
+    # Print info about histos
+    #yt.print_hist_info(args.pkl_file_path,"nbtagsl")
+    #exit()
 
     print("\nMaking plots for years:", selected_years if selected_years else "All")
     print("Output dir:",save_dir_path)
@@ -7060,14 +6823,5 @@ def run_with_args(args, parser):
         enable_category_skips=args.enable_category_skips,
         report_zero_yields=args.report_zero_yields,
     )
-    return 0
-
-
-def main():
-    parser = build_arg_parser()
-    args = parser.parse_args()
-    return run_with_args(args, parser)
-
-
 if __name__ == "__main__":
-    raise SystemExit(main())
+    main()
