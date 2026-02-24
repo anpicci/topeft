@@ -169,7 +169,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--chunksize",
         "-s",
         type=int,
-        default=100000,
+        default=500000,
         help="Number of events per chunk",
     )
     parser.add_argument(
@@ -248,6 +248,15 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--produce-sidecars",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "Enable sidecar payloads (variation summaries, region_yields). "
+            "Disabled by default."
+        ),
+    )
+    parser.add_argument(
         "--scenario",
         dest="scenarios",
         action="append",
@@ -310,6 +319,100 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "Disable automatic TaskVine port negotiation. When set the first value "
             "from --port is used directly and any allocation failure aborts the run."
+        ),
+    )
+    parser.add_argument(
+        "--ddr-processor-key-delim",
+        default="-",
+        help=(
+            "Delimiter used to build TaskVine DDR processor keys from "
+            "(channel, variable, application, systematic_label)."
+        ),
+    )
+    parser.add_argument(
+        "--ddr-preserve-sidecars",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "When flattening DDR output, keep non-hist sidecars under a reserved key. "
+            "Disabled by default."
+        ),
+    )
+    parser.add_argument(
+        "--ddr-sidecars-key",
+        default="__sidecars__",
+        help="Reserved top-level key used when --ddr-preserve-sidecars is enabled.",
+    )
+    parser.add_argument(
+        "--ddr-output-schema",
+        choices=("flat", "tuple"),
+        default="flat",
+        help=(
+            "Schema used when serializing TaskVine DDR output: "
+            "'flat' -> (sample, channel, var, application, systematic), "
+            "'tuple' -> (var, channel, application, sample, systematic)."
+        ),
+    )
+    parser.add_argument(
+        "--ddr-step-size",
+        type=int,
+        default=None,
+        help="Override DDR step size (events per task chunk). Defaults to --chunksize when unset.",
+    )
+    parser.add_argument(
+        "--ddr-max-task-retries",
+        type=int,
+        default=None,
+        help="Override DDR max task retries.",
+    )
+    parser.add_argument(
+        "--ddr-results-directory",
+        default=None,
+        help="Override the DDR results directory (defaults to taskvine staging logs path).",
+    )
+    parser.add_argument(
+        "--ddr-verbose",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Enable/disable verbose DDR logging at the CoffeaDynamicDataReduction layer.",
+    )
+    parser.add_argument(
+        "--ddr-x509-proxy",
+        default=None,
+        help=(
+            "Path to an x509 proxy file used by TaskVine DDR workers. "
+            "When set, run_analysis stages it as proxy.pem."
+        ),
+    )
+    parser.add_argument(
+        "--ddr-preprocessed-data",
+        default=None,
+        help=(
+            "Path to preprocessed DDR mapping (JSON or cloudpickle). "
+            "When set, preprocess() is skipped."
+        ),
+    )
+    parser.add_argument(
+        "--ddr-save-preprocess",
+        default=None,
+        help=(
+            "Path where run_analysis writes the DDR preprocess payload after preprocess()."
+        ),
+    )
+    parser.add_argument(
+        "--ddr-auto-save-preprocess",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "Automatically save DDR preprocess payload to a deterministic artifact path "
+            "when --ddr-preprocessed-data is not provided."
+        ),
+    )
+    parser.add_argument(
+        "--ddr-preprocess-artifact",
+        default=None,
+        help=(
+            "Override the deterministic default path used by --ddr-auto-save-preprocess."
         ),
     )
     parser.add_argument(

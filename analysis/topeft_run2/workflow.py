@@ -23,15 +23,18 @@ task.
 
 from __future__ import annotations
 
+from collections import OrderedDict
 import getpass
 import gzip
 import importlib
 import json
 import logging
 import os
+import shutil
 import tempfile
 import time
 import warnings
+from collections import OrderedDict
 from dataclasses import asdict, dataclass, field
 from functools import partial
 from pathlib import Path
@@ -103,6 +106,256 @@ def _merge_region_yields(
             target[key] = arr
         else:
             target[key] = np.asarray(current, dtype=float) + arr
+
+
+def _normalise_systematic_label(systematic: Any) -> str:
+    """Return a stable string representation for systematic labels."""
+
+    if isinstance(systematic, (tuple, list)):
+        return ":".join(str(component) for component in systematic)
+    return str(systematic)
+
+
+def build_ddr_processor_key(
+    channel: Any,
+    variable: Any,
+    application: Any,
+    systematic_label: Any,
+    *,
+    delim: str = "-",
+) -> str:
+    """Build a delimiter-safe DDR processor key.
+
+    The key layout is:
+    ``<channel><DELIM><var><DELIM><application><DELIM><systematic_label>``.
+    """
+
+    delimiter = str(delim)
+    if delimiter == "":
+        raise ValueError("DDR processor key delimiter cannot be empty.")
+
+    components = {
+        "channel": str(channel),
+        "var": str(variable),
+        "application": str(application),
+        "systematic_label": str(systematic_label),
+    }
+    for field_name, field_value in components.items():
+        if delimiter in field_value:
+            raise ValueError(
+                "Cannot build DDR processor key with delimiter collision: "
+                f"{field_name}={field_value!r} contains delimiter {delimiter!r}."
+            )
+
+    return delimiter.join(
+        (
+            components["channel"],
+            components["var"],
+            components["application"],
+            components["systematic_label"],
+        )
+    )
+
+
+def _parse_ddr_processor_key(
+    key: str,
+    *,
+    delim: str = "-",
+) -> Tuple[str, str, str, str]:
+    """Parse a DDR processor key built by :func:`build_ddr_processor_key`."""
+
+    delimiter = str(delim)
+    if delimiter == "":
+        raise ValueError("DDR processor key delimiter cannot be empty.")
+
+    parts = str(key).split(delimiter)
+    if len(parts) != 4:
+        raise ValueError(
+            "Malformed DDR processor key "
+            f"{key!r}: expected 4 fields split by {delimiter!r}, found {len(parts)}."
+        )
+    return parts[0], parts[1], parts[2], parts[3]
+
+
+def _tuple_sort_key(key: Tuple[str, str, str, str, str]) -> Tuple[str, str, str, str, str]:
+    """Return a deterministic tuple sort key."""
+
+    return tuple(str(piece) for piece in key)
+
+
+def flatten_ddr_output(
+    ddr_payload: Mapping[str, Any],
+    *,
+    delim: str = "-",
+    output_schema: str = "flat",
+    preserve_sidecars: bool = False,
+    sidecars_key: str = "__sidecars__",
+) -> "OrderedDict[Any, Any]":
+    """Flatten DDR nested output into canonical 5-tuple histogram mappings."""
+
+    if not isinstance(ddr_payload, Mapping):
+        raise TypeError(
+            "DDR output must be a mapping of processor_key -> dataset payload."
+        )
+
+    schema_name = str(output_schema).strip().lower()
+    if schema_name not in {"flat", "tuple"}:
+        raise ValueError("output_schema must be 'flat' or 'tuple'.")
+
+    flattened: Dict[Tuple[str, str, str, str, str], Any] = {}
+    flattened_origins: Dict[Tuple[str, str, str, str, str], Tuple[str, str, Tuple[Any, ...]]] = {}
+    sidecars: Dict[Tuple[str, str], "OrderedDict[str, Any]"] = {}
+
+    for processor_key, dataset_payload in ddr_payload.items():
+        if not isinstance(dataset_payload, Mapping):
+            raise TypeError(
+                f"DDR output for processor {processor_key!r} must be a mapping, got {type(dataset_payload)!r}."
+            )
+
+        key_channel, key_var, key_application, key_systematic = _parse_ddr_processor_key(
+            str(processor_key),
+            delim=delim,
+        )
+
+        for dataset_name, leaf_output in dataset_payload.items():
+            if not isinstance(leaf_output, Mapping):
+                raise TypeError(
+                    "DDR dataset payload must be a mapping of histogram keys; "
+                    f"processor={processor_key!r} dataset={dataset_name!r} type={type(leaf_output)!r}."
+                )
+
+            for leaf_key, leaf_value in leaf_output.items():
+                if not isinstance(leaf_key, tuple):
+                    if preserve_sidecars:
+                        bucket = sidecars.setdefault(
+                            (str(processor_key), str(dataset_name)),
+                            OrderedDict(),
+                        )
+                        bucket[str(leaf_key)] = leaf_value
+                    continue
+
+                if len(leaf_key) != 5:
+                    raise ValueError(
+                        "DDR leaf histogram keys must be 5-tuples "
+                        "(var, channel, application, sample, systematic). "
+                        f"Found key {leaf_key!r} under processor {processor_key!r}."
+                    )
+
+                tuple_var, tuple_channel, tuple_application, tuple_sample, tuple_systematic = leaf_key
+                tuple_systematic_label = _normalise_systematic_label(tuple_systematic)
+                if (
+                    str(tuple_channel) != key_channel
+                    or str(tuple_var) != key_var
+                    or str(tuple_application) != key_application
+                    or tuple_systematic_label != key_systematic
+                ):
+                    raise ValueError(
+                        "DDR schema mismatch between processor key and histogram key: "
+                        f"processor={processor_key!r}, histogram_key={leaf_key!r}."
+                    )
+
+                sample_label = str(tuple_sample)
+                if schema_name == "flat":
+                    target_key = (
+                        sample_label,
+                        str(tuple_channel),
+                        str(tuple_var),
+                        str(tuple_application),
+                        tuple_systematic_label,
+                    )
+                else:
+                    target_key = (
+                        str(tuple_var),
+                        str(tuple_channel),
+                        str(tuple_application),
+                        sample_label,
+                        tuple_systematic_label,
+                    )
+
+                if target_key not in flattened:
+                    flattened[target_key] = leaf_value
+                    flattened_origins[target_key] = (
+                        str(processor_key),
+                        str(dataset_name),
+                        tuple(leaf_key),
+                    )
+                    continue
+
+                first_processor, first_dataset, first_leaf_key = flattened_origins[target_key]
+                raise ValueError(
+                    "Duplicate flattened DDR key collision detected: "
+                    f"key={target_key!r}, "
+                    f"first_origin=(processor={first_processor!r}, dataset={first_dataset!r}, "
+                    f"histogram_key={first_leaf_key!r}), "
+                    f"second_origin=(processor={processor_key!r}, dataset={dataset_name!r}, "
+                    f"histogram_key={leaf_key!r}). "
+                    "Duplicate key indicates unexpected DDR duplication; check processor grouping "
+                    "or systematic labeling."
+                )
+
+    ordered_output: "OrderedDict[Any, Any]" = OrderedDict()
+    for key in sorted(flattened.keys(), key=_tuple_sort_key):
+        ordered_output[key] = flattened[key]
+
+    if preserve_sidecars and sidecars:
+        reserved_key = str(sidecars_key or "__sidecars__")
+        if reserved_key in ordered_output:
+            raise ValueError(
+                f"Cannot store preserved sidecars because reserved key {reserved_key!r} collides with histogram keys."
+            )
+        ordered_sidecars: "OrderedDict[Tuple[str, str], OrderedDict[str, Any]]" = OrderedDict()
+        for sidecar_bucket_key in sorted(sidecars.keys()):
+            ordered_sidecars[sidecar_bucket_key] = sidecars[sidecar_bucket_key]
+        ordered_output[reserved_key] = ordered_sidecars
+
+    return ordered_output
+
+
+def _resolve_ddr_preprocess_paths(
+    config: RunConfig,
+    *,
+    results_dir: Path,
+) -> Tuple[Optional[str], Optional[str]]:
+    """Resolve preprocess input/output artifact paths for DDR execution."""
+
+    preprocessed_data_path = getattr(config, "ddr_preprocessed_data", None)
+    explicit_save_path = getattr(config, "ddr_save_preprocess", None)
+    auto_save = bool(getattr(config, "ddr_auto_save_preprocess", True))
+    artifact_override = getattr(config, "ddr_preprocess_artifact", None)
+
+    save_path: Optional[str] = None
+    if preprocessed_data_path:
+        # Reuse mode skips preprocess() unless the user explicitly asks for a save.
+        if explicit_save_path:
+            save_path = str(Path(explicit_save_path).expanduser())
+    elif explicit_save_path:
+        save_path = str(Path(explicit_save_path).expanduser())
+    elif auto_save:
+        if artifact_override:
+            save_path = str(Path(artifact_override).expanduser())
+        else:
+            save_path = str((results_dir / "ddr_preprocessed_data.json").resolve())
+
+    if preprocessed_data_path:
+        preprocessed_data_path = str(Path(preprocessed_data_path).expanduser())
+    return preprocessed_data_path, save_path
+
+
+def stage_ddr_proxy(proxy_path: str, *, staging_dir: Path) -> Path:
+    """Copy a user proxy to ``staging_dir/proxy.pem`` and validate readability."""
+
+    source_path = Path(proxy_path).expanduser()
+    if not source_path.exists():
+        raise FileNotFoundError(f"DDR proxy file does not exist: {source_path}")
+    if not source_path.is_file():
+        raise FileNotFoundError(f"DDR proxy path is not a file: {source_path}")
+    if not os.access(source_path, os.R_OK):
+        raise PermissionError(f"DDR proxy file is not readable: {source_path}")
+
+    staging_dir.mkdir(parents=True, exist_ok=True)
+    staged_proxy = staging_dir / "proxy.pem"
+    shutil.copyfile(source_path, staged_proxy)
+    return staged_proxy
 
 
 topcoffea_utils = _import_topcoffea_submodule("utils")
@@ -401,7 +654,7 @@ class HistogramTask:
     variations: Tuple[Any, ...]
     hist_keys: Mapping[str, Tuple[Tuple[Any, ...], ...]]
     variable_info: Mapping[str, Any]
-    available_systematics: Sequence[str]
+    available_systematics: Mapping[str, Sequence[str]]
     channel_metadata: Mapping[str, Any]
 
 
@@ -981,23 +1234,42 @@ class RunWorkflow:
         coffea_processor_module: Any,
         golden_jsons: Mapping[str, str],
         ecut_threshold: Optional[float],
+        hist_keys: Optional[Mapping[str, Tuple[Tuple[Any, ...], ...]]] = None,
+        systematic_variations: Optional[Sequence[Any]] = None,
+        available_systematics: Optional[Mapping[str, Sequence[str]]] = None,
+        golden_json_paths: Optional[Mapping[str, str]] = None,
     ) -> Any:
-        golden_json_path = self._resolve_golden_json(sample_dict, golden_jsons)
+        if hist_keys is None:
+            hist_keys = task.hist_keys
+        if systematic_variations is None:
+            systematic_variations = task.variations
+        if available_systematics is None:
+            available_systematics = {
+                key: tuple(values)
+                for key, values in (task.available_systematics or {}).items()
+            }
+
+        golden_json_path = None
+        if "isData" in sample_dict:
+            golden_json_path = self._resolve_golden_json(sample_dict, golden_jsons)
+
         processor_instance = analysis_processor_module.AnalysisProcessor(
             sample_dict,
             self._config.wc_list,
-            hist_keys=task.hist_keys,
+            hist_keys=hist_keys,
             var_info=task.variable_info,
             ecut_threshold=ecut_threshold,
             do_errors=self._config.do_errors,
             split_by_lepton_flavor=self._config.split_lep_flavor,
             channel_dict=channel_dict,
             golden_json_path=golden_json_path,
-            systematic_variations=task.variations,
-            available_systematics=task.available_systematics,
+            golden_json_paths=golden_json_paths,
+            systematic_variations=systematic_variations,
+            available_systematics=available_systematics,
             metadata_path=self._metadata_path,
             executor_mode=self._config.executor,
             debug_logging=_DEV_DEBUG,
+            produce_sidecars=bool(getattr(self._config, "produce_sidecars", False)),
         )
         if not isinstance(processor_instance, coffea_processor_module.ProcessorABC):
             raise TypeError(
@@ -1096,22 +1368,106 @@ class RunWorkflow:
 
         results_dir = context.logs_dir.parent / "taskvine-results"
         results_dir.mkdir(parents=True, exist_ok=True)
-        ddr_kwargs = {
-            "results_directory": str(results_dir),
-            "resources_processing": {"cores": max(1, int(self._config.nworkers or 1))},
-        }
+        preprocessed_data_path, save_preprocess_path = _resolve_ddr_preprocess_paths(
+            self._config,
+            results_dir=results_dir,
+        )
+        resources_processing = (
+            dict(self._config.ddr_resources_processing)
+            if getattr(self._config, "ddr_resources_processing", None)
+            else {"cores": max(1, int(self._config.nworkers or 1))}
+        )
+        resources_accumulating = (
+            dict(self._config.ddr_resources_accumulating)
+            if getattr(self._config, "ddr_resources_accumulating", None)
+            else None
+        )
+        step_size = (
+            int(self._config.ddr_step_size)
+            if getattr(self._config, "ddr_step_size", None) is not None
+            else int(self._config.chunksize)
+        )
+        step_size = max(step_size, 1)
+        max_task_retries = (
+            int(self._config.ddr_max_task_retries)
+            if getattr(self._config, "ddr_max_task_retries", None) is not None
+            else None
+        )
+        ddr_verbose = (
+            bool(self._config.ddr_verbose)
+            if getattr(self._config, "ddr_verbose", None) is not None
+            else None
+        )
+        ddr_environment_variables = dict(
+            getattr(self._config, "ddr_environment_variables", {}) or {}
+        )
+        extra_files = list(context.extra_input_files)
+        staged_proxy_path: Optional[str] = None
+        if self._config.ddr_x509_proxy:
+            staged_proxy = stage_ddr_proxy(
+                self._config.ddr_x509_proxy,
+                staging_dir=context.staging_dir,
+            )
+            staged_proxy_path = str(staged_proxy)
+            extra_files.append(staged_proxy_path)
+            if "X509_USER_PROXY" not in ddr_environment_variables:
+                ddr_environment_variables["X509_USER_PROXY"] = "proxy.pem"
+
+        preprocess_kwargs = dict(
+            getattr(self._config, "ddr_preprocess_kwargs", {}) or {}
+        )
+        if getattr(self._config, "ddr_preprocess_timeout", None) is not None:
+            preprocess_kwargs["timeout"] = int(self._config.ddr_preprocess_timeout)
+        if getattr(self._config, "ddr_preprocess_max_retries", None) is not None:
+            preprocess_kwargs["max_retries"] = int(
+                self._config.ddr_preprocess_max_retries
+            )
+        if getattr(self._config, "ddr_preprocess_batch_size", None) is not None:
+            preprocess_kwargs["batch_size"] = int(self._config.ddr_preprocess_batch_size)
+        if getattr(self._config, "ddr_preprocess_show_progress", None) is not None:
+            preprocess_kwargs["show_progress"] = bool(
+                self._config.ddr_preprocess_show_progress
+            )
+        if staged_proxy_path:
+            preprocess_kwargs.setdefault("x509_proxy", staged_proxy_path)
+            if ddr_environment_variables:
+                preprocess_kwargs.setdefault(
+                    "environment_variables",
+                    dict(ddr_environment_variables),
+                )
+
+        ddr_kwargs = dict(getattr(self._config, "ddr_kwargs", {}) or {})
+        ddr_kwargs.setdefault(
+            "results_directory",
+            str(getattr(self._config, "ddr_results_directory") or results_dir),
+        )
+        ddr_kwargs.setdefault("resources_processing", resources_processing)
+        if resources_accumulating is not None:
+            ddr_kwargs.setdefault("resources_accumulating", resources_accumulating)
+        ddr_kwargs.setdefault("step_size", step_size)
+        if max_task_retries is not None:
+            ddr_kwargs.setdefault("max_task_retries", max_task_retries)
+        if ddr_verbose is not None:
+            ddr_kwargs.setdefault("verbose", ddr_verbose)
+        if ddr_environment_variables:
+            ddr_kwargs.setdefault("environment_variables", ddr_environment_variables)
+        if staged_proxy_path:
+            ddr_kwargs.setdefault("x509_proxy", staged_proxy_path)
 
         try:
-            return ddr_helpers.run_ddr(
+            raw_output = ddr_helpers.run_ddr(
                 manager=manager,
                 data=data,
                 processors=processors,
-                accumulator=analysis_processor_module.AnalysisProcessor,
                 schema=NanoAODSchema,
-                extra_files=list(context.extra_input_files),
+                extra_files=extra_files,
                 tree_name=self._config.treename or "Events",
+                preprocessed_data_path=preprocessed_data_path,
+                save_preprocess_path=save_preprocess_path,
+                preprocess_kwargs=preprocess_kwargs or None,
                 ddr_kwargs=ddr_kwargs,
             )
+            return raw_output
         finally:
             try:
                 manager.shutdown()
@@ -1129,6 +1485,8 @@ class RunWorkflow:
         ecut_threshold: Optional[float],
     ) -> Dict[str, Any]:
         processors: Dict[str, Any] = {}
+        grouped_processors: Dict[str, Dict[str, Any]] = {}
+        processor_key_delim = getattr(self._config, "ddr_processor_key_delim", "-")
         total_tasks = len(histogram_plan.tasks)
         for idx, task in enumerate(histogram_plan.tasks):
             channel_dict = task.channel_metadata
@@ -1150,24 +1508,122 @@ class RunWorkflow:
                     task.clean_channel,
                 )
                 continue
+
+            if not isinstance(task.available_systematics, Mapping):
+                raise TypeError(
+                    "HistogramTask.available_systematics must be a mapping of systematic categories to names."
+                )
+
+            variations_by_name = {
+                getattr(variation, "name", None): variation for variation in task.variations
+            }
+            if not variations_by_name:
+                raise ValueError(
+                    f"Task {idx} ({task.sample}/{task.clean_channel}) has no systematic variations."
+                )
+
+            for variation_label, hist_entries in task.hist_keys.items():
+                if variation_label not in variations_by_name:
+                    raise KeyError(
+                        f"Variation label '{variation_label}' is missing from task variations for "
+                        f"sample={task.sample} channel={task.clean_channel} var={task.variable} app={task.application}."
+                    )
+                if not hist_entries:
+                    continue
+
+                systematic_label = _normalise_systematic_label(hist_entries[0][4])
+                processor_key = build_ddr_processor_key(
+                    task.clean_channel,
+                    task.variable,
+                    task.application,
+                    systematic_label,
+                    delim=processor_key_delim,
+                )
+
+                grouped_entry = grouped_processors.get(processor_key)
+                if grouped_entry is None:
+                    grouped_entry = {
+                        "task_template": task,
+                        "channel_dict": channel_dict,
+                        "variation_label": variation_label,
+                        "variation": variations_by_name[variation_label],
+                        "sample_dict": OrderedDict(),
+                        "hist_entries": [],
+                        "hist_entries_set": set(),
+                        "available_systematics": {
+                            key: set(value)
+                            for key, value in task.available_systematics.items()
+                        },
+                        "golden_json_paths": {},
+                    }
+                    grouped_processors[processor_key] = grouped_entry
+                else:
+                    if grouped_entry["variation_label"] != variation_label:
+                        raise ValueError(
+                            "Conflicting variations mapped to the same DDR processor key "
+                            f"{processor_key!r}: {grouped_entry['variation_label']!r} vs {variation_label!r}."
+                        )
+                    for key, value in task.available_systematics.items():
+                        grouped_entry["available_systematics"].setdefault(key, set()).update(value)
+
+                grouped_entry["sample_dict"][sample_name] = sample_info
+                if sample_info.get("isData"):
+                    golden_json_path = self._resolve_golden_json(sample_info, golden_jsons)
+                    grouped_entry["golden_json_paths"][sample_name] = golden_json_path
+
+                for hist_entry in hist_entries:
+                    normalized_entry = tuple(hist_entry)
+                    if len(normalized_entry) != 5:
+                        raise ValueError(
+                            "DDR histogram entries must be 5-tuples "
+                            f"(found {normalized_entry!r} for processor key {processor_key!r})."
+                        )
+                    entry_systematic = _normalise_systematic_label(normalized_entry[4])
+                    if entry_systematic != systematic_label:
+                        raise ValueError(
+                            "DDR histogram entry systematic does not match processor grouping key: "
+                            f"processor_key={processor_key!r}, entry={normalized_entry!r}."
+                        )
+                    if normalized_entry in grouped_entry["hist_entries_set"]:
+                        continue
+                    grouped_entry["hist_entries_set"].add(normalized_entry)
+                    grouped_entry["hist_entries"].append(normalized_entry)
+
+        for processor_key in sorted(grouped_processors.keys()):
+            grouped_entry = grouped_processors[processor_key]
+            task_template = grouped_entry["task_template"]
+            hist_entries = tuple(grouped_entry["hist_entries"])
+            if not hist_entries:
+                continue
+            variation_label = grouped_entry["variation_label"]
+            hist_keys = {variation_label: hist_entries}
+            available_systematics = {
+                key: tuple(sorted(values))
+                for key, values in grouped_entry["available_systematics"].items()
+            }
+
             processor_instance = self._build_processor_instance(
-                task=task,
-                sample_dict=sample_info,
-                channel_dict=channel_dict,
+                task=task_template,
+                sample_dict=grouped_entry["sample_dict"],
+                channel_dict=grouped_entry["channel_dict"],
                 analysis_processor_module=analysis_processor_module,
                 coffea_processor_module=coffea_processor_module,
                 golden_jsons=golden_jsons,
                 ecut_threshold=ecut_threshold,
+                hist_keys=hist_keys,
+                systematic_variations=(grouped_entry["variation"],),
+                available_systematics=available_systematics,
+                golden_json_paths=grouped_entry["golden_json_paths"] or None,
             )
-            processor_key = self._ddr_processor_key(idx, task)
             processors[processor_key] = processor_instance
             logger.debug(
-                "[taskvine] Added processor %s for sample=%s channel=%s variable=%s application=%s",
+                "[taskvine] Added processor %s for %d samples (channel=%s variable=%s application=%s variation=%s)",
                 processor_key,
-                task.sample,
-                task.clean_channel,
-                task.variable,
-                task.application,
+                len(grouped_entry["sample_dict"]),
+                task_template.clean_channel,
+                task_template.variable,
+                task_template.application,
+                variation_label,
             )
         logger.info(
             "[taskvine] Constructed %d processors from %d histogram tasks",
@@ -1175,10 +1631,6 @@ class RunWorkflow:
             total_tasks,
         )
         return processors
-
-    @staticmethod
-    def _ddr_processor_key(index: int, task: HistogramTask) -> str:
-        return f"{index:05d}:{task.sample}:{task.clean_channel}:{task.variable}:{task.application}"
 
     def _create_ddr_manager(self, context: TaskVineContext) -> Any:
         import ndcctools.taskvine as vine
@@ -1296,7 +1748,7 @@ class RunWorkflow:
         self._config.executor = executor_mode
 
         if executor_mode == "taskvine":
-            output = self._execute_ddr(
+            ddr_output = self._execute_ddr(
                 histogram_plan=histogram_plan,
                 samplesdict=samplesdict,
                 flist=flist,
@@ -1305,6 +1757,27 @@ class RunWorkflow:
                 analysis_processor_module=analysis_processor,
                 coffea_processor_module=coffea_processor,
             )
+            output_schema = getattr(self._config, "ddr_output_schema", "flat")
+            if output_schema == "flat":
+                output = flatten_ddr_output(
+                    ddr_output,
+                    delim=getattr(self._config, "ddr_processor_key_delim", "-"),
+                    output_schema="flat",
+                    preserve_sidecars=bool(getattr(self._config, "ddr_preserve_sidecars", False)),
+                    sidecars_key=str(getattr(self._config, "ddr_sidecars_key", "__sidecars__")),
+                )
+            elif output_schema == "tuple":
+                output = flatten_ddr_output(
+                    ddr_output,
+                    delim=getattr(self._config, "ddr_processor_key_delim", "-"),
+                    output_schema="tuple",
+                    preserve_sidecars=bool(getattr(self._config, "ddr_preserve_sidecars", False)),
+                    sidecars_key=str(getattr(self._config, "ddr_sidecars_key", "__sidecars__")),
+                )
+            else:
+                raise ValueError(
+                    f"Unsupported ddr_output_schema '{output_schema}'. Expected 'flat' or 'tuple'."
+                )
             dt = time.time() - tstart
             if nevts_total:
                 logger.info(

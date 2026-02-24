@@ -113,6 +113,8 @@ def _patch_common(monkeypatch):
 
 def _make_dataset_context(**overrides):
     defaults = dict(
+        sample_name="sample",
+        sample_metadata={"histAxisName": "sample"},
         dataset="sample",
         trigger_dataset="sample",
         hist_axis_name="sample",

@@ -131,6 +131,8 @@ def test_jets_and_masks_have_flat_counts(monkeypatch):
     )
 
     dataset = ap.DatasetContext(
+        sample_name="sample",
+        sample_metadata={"histAxisName": "sample"},
         dataset="sample",
         trigger_dataset="sample",
         hist_axis_name="sample",

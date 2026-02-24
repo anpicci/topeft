@@ -166,6 +166,8 @@ def construct_cat_name(chan_str, njet_str=None, flav_str=None):
 
 @dataclass(frozen=True)
 class DatasetContext:
+    sample_name: str
+    sample_metadata: Mapping[str, Any]
     dataset: str
     trigger_dataset: str
     hist_axis_name: str
@@ -468,6 +470,49 @@ class AnalysisProcessor(processor.ProcessorABC):
     # Internal accumulator slot for per-task variation recaps; RunWorkflow pops
     # this key before serialized outputs are returned to users or saved.
     VARIATION_SUMMARY_KEY = "__topeft_variation_summary__"
+    REGION_YIELDS_KEY = "region_yields"
+
+    @staticmethod
+    def _looks_like_sample_metadata(candidate: Any) -> bool:
+        if not isinstance(candidate, Mapping):
+            return False
+        required_keys = {"histAxisName", "isData", "year", "xsec", "nSumOfWeights"}
+        return required_keys.issubset(set(candidate.keys()))
+
+    @classmethod
+    def _normalise_sample_mapping(
+        cls,
+        sample: Any,
+    ) -> Tuple["OrderedDict[str, Mapping[str, Any]]", Dict[str, str]]:
+        """Return deterministic sample lookups for dataset dispatch."""
+
+        if not isinstance(sample, Mapping):
+            raise TypeError("sample must be a mapping")
+
+        by_name: "OrderedDict[str, Mapping[str, Any]]" = OrderedDict()
+
+        if cls._looks_like_sample_metadata(sample):
+            sample_name = str(sample.get("histAxisName") or "sample")
+            by_name[sample_name] = sample
+        else:
+            for sample_name, sample_info in sample.items():
+                if not cls._looks_like_sample_metadata(sample_info):
+                    continue
+                by_name[str(sample_name)] = sample_info
+
+        if not by_name:
+            raise ValueError(
+                "sample must be a sample metadata mapping or a mapping of sample_name -> sample metadata"
+            )
+
+        aliases: Dict[str, str] = {}
+        for sample_name, sample_info in by_name.items():
+            aliases[sample_name] = sample_name
+            hist_axis_name = sample_info.get("histAxisName")
+            if hist_axis_name is not None:
+                aliases.setdefault(str(hist_axis_name), sample_name)
+
+        return by_name, aliases
 
     def __init__(
         self,
@@ -483,15 +528,19 @@ class AnalysisProcessor(processor.ProcessorABC):
         rebin=False,
         channel_dict=None,
         golden_json_path=None,
+        golden_json_paths: Optional[Mapping[str, str]] = None,
         systematic_variations=None,
         available_systematics=None,
         metadata_path: Optional[str] = None,
         debug_logging: bool = False,
         executor_mode: Optional[str] = None,
         suppress_debug_prints: Optional[bool] = None,
+        produce_sidecars: bool = False,
     ):
 
-        self._sample = sample
+        self._samples_by_name, self._sample_aliases = self._normalise_sample_mapping(sample)
+        # Keep ``_sample`` for backward-compatible call sites and test fixtures.
+        self._sample = next(iter(self._samples_by_name.values()))
         self._wc_names_lst = wc_names_lst
         self._dtype = dtype
         if channel_dict is None:
@@ -542,10 +591,26 @@ class AnalysisProcessor(processor.ProcessorABC):
                 os.environ.get("TOPEFT_SUPPRESS_DEBUG_STDOUT")
             )
         self._suppress_debug_prints = bool(suppress_debug_prints)
+        self._produce_sidecars = bool(produce_sidecars)
         self._executed_variations: List[Dict[str, Any]] = []
+        self._produce_sidecars = bool(produce_sidecars)
         self._golden_json_path = golden_json_path
-        if self._sample.get("isData") and not self._golden_json_path:
-            raise ValueError("golden_json_path must be provided for data samples")
+        self._golden_json_paths: Dict[str, str] = {}
+        if golden_json_path:
+            for sample_name in self._samples_by_name:
+                self._golden_json_paths[sample_name] = str(golden_json_path)
+        if golden_json_paths:
+            for sample_name, path in golden_json_paths.items():
+                resolved_sample_name = self._sample_aliases.get(
+                    str(sample_name), str(sample_name)
+                )
+                self._golden_json_paths[resolved_sample_name] = str(path)
+
+        for sample_name, sample_info in self._samples_by_name.items():
+            if sample_info.get("isData") and sample_name not in self._golden_json_paths:
+                raise ValueError(
+                    f"golden_json_path must be provided for data sample '{sample_name}'"
+                )
 
         if var_info is None:
             raise ValueError("var_info must be provided and cannot be None")
@@ -599,7 +664,7 @@ class AnalysisProcessor(processor.ProcessorABC):
         first_label, first_hist_keys = next(iter(histogram_key_map.items()))
         first_hist_key = first_hist_keys[0]
 
-        var, ch, appl, sample_name, _ = first_hist_key
+        var, ch, appl, _, _ = first_hist_key
 
         self._var = var
         self._channel = ch
@@ -614,17 +679,27 @@ class AnalysisProcessor(processor.ProcessorABC):
         for variation_label, hist_key_entries in histogram_key_map.items():
             base_syst_label = hist_key_entries[0][4]
             self._histogram_label_lookup[variation_label] = base_syst_label
+            sumw2_samples_seen: Set[str] = set()
 
-            for idx, hist_key_entry in enumerate(hist_key_entries):
+            for hist_key_entry in hist_key_entries:
                 key_var, key_ch, key_appl, key_sample, syst_label = hist_key_entry
                 if key_var != self._var or key_appl != self._appregion:
                     raise ValueError(
                         "All histogram keys must refer to the same variable and application"
                     )
-                if key_sample != sample_name:
-                    raise ValueError(
-                        "Histogram keys must refer to the configured sample"
-                    )
+                histogram_sample_name = str(key_sample)
+                canonical_sample_name = self._sample_aliases.get(
+                    histogram_sample_name, histogram_sample_name
+                )
+                if canonical_sample_name not in self._samples_by_name:
+                    if len(self._samples_by_name) == 1:
+                        canonical_sample_name = next(iter(self._samples_by_name.keys()))
+                    else:
+                        raise ValueError(
+                            "Histogram key sample "
+                            f"{key_sample!r} is not present in configured samples "
+                            f"{tuple(self._samples_by_name.keys())!r}"
+                        )
 
                 if key_ch != self._channel:
                     mapped_channel = self._flavored_channel_lookup.get(key_ch)
@@ -647,7 +722,7 @@ class AnalysisProcessor(processor.ProcessorABC):
                 hist_key = self._build_histogram_key(
                     key_var,
                     key_ch,
-                    key_sample,
+                    histogram_sample_name,
                     syst_label,
                     application=key_appl,
                 )
@@ -660,7 +735,7 @@ class AnalysisProcessor(processor.ProcessorABC):
 
                 self._hist_keys_to_fill.append(hist_key)
 
-                if idx == 0:
+                if histogram_sample_name not in sumw2_samples_seen:
                     if not rebin and "variable" in info:
                         sumw2_axis = hist.axis.Variable(
                             info["variable"],
@@ -677,7 +752,7 @@ class AnalysisProcessor(processor.ProcessorABC):
                     sumw2_key = self._build_histogram_key(
                         f"{self._var}_sumw2",
                         self._channel,
-                        key_sample,
+                        histogram_sample_name,
                         syst_label,
                         application=self._appregion,
                     )
@@ -688,11 +763,13 @@ class AnalysisProcessor(processor.ProcessorABC):
                         label=r"Events",
                     )
                     self._hist_keys_to_fill.append(sumw2_key)
+                    sumw2_samples_seen.add(histogram_sample_name)
 
         self._histogram_key_map = histogram_key_map
 
-        histogram[self.VARIATION_SUMMARY_KEY] = []
-        histogram["region_yields"] = processor.dict_accumulator()
+        if self._produce_sidecars:
+            histogram[self.VARIATION_SUMMARY_KEY] = []
+            histogram[self.REGION_YIELDS_KEY] = processor.dict_accumulator()
         self._accumulator = histogram
 
         # Set the energy threshold to cut on
@@ -719,7 +796,10 @@ class AnalysisProcessor(processor.ProcessorABC):
                 "systematic_variations must contain at least one entry when provided"
             )
 
-        is_mc_sample = not bool(self._sample.get("isData"))
+        is_mc_sample = any(
+            not bool(sample_info.get("isData"))
+            for sample_info in self._samples_by_name.values()
+        )
         self._allowed_jerc_variations = _build_jerc_allowed_variations(
             self._systematic_variations,
             is_mc=is_mc_sample,
@@ -728,7 +808,7 @@ class AnalysisProcessor(processor.ProcessorABC):
         # Central jet/MET corrections always run regardless of this payload.
         logger.info(
             "Resolved allowed JERC variations for %s: %s",
-            self._sample.get("histAxisName"),
+            ",".join(sorted(self._samples_by_name.keys())),
             self._allowed_jerc_variations,
         )
 
@@ -739,6 +819,8 @@ class AnalysisProcessor(processor.ProcessorABC):
             self._executed_variations = []
         if not hasattr(self, "_debug_logging"):
             self._debug_logging = False
+        if not hasattr(self, "_produce_sidecars"):
+            self._produce_sidecars = False
         if not hasattr(self, "_suppress_debug_prints"):
             self._suppress_debug_prints = bool(
                 os.environ.get("TOPEFT_SUPPRESS_DEBUG_STDOUT")
@@ -748,15 +830,39 @@ class AnalysisProcessor(processor.ProcessorABC):
             or self._systematic_variations is None
         ):
             self._systematic_variations = ()
+        if not hasattr(self, "_produce_sidecars"):
+            self._produce_sidecars = False
         if not hasattr(self, "_sample") or self._sample is None:
             self._sample = {}
+        if (
+            not hasattr(self, "_samples_by_name")
+            or self._samples_by_name is None
+            or not self._samples_by_name
+        ):
+            if self._looks_like_sample_metadata(self._sample):
+                sample_name = str(self._sample.get("histAxisName") or "sample")
+                self._samples_by_name = OrderedDict({sample_name: self._sample})
+            else:
+                self._samples_by_name = OrderedDict()
+        if not hasattr(self, "_sample_aliases") or self._sample_aliases is None:
+            self._sample_aliases = {}
+            for sample_name, sample_info in self._samples_by_name.items():
+                self._sample_aliases[str(sample_name)] = str(sample_name)
+                hist_axis_name = sample_info.get("histAxisName")
+                if hist_axis_name is not None:
+                    self._sample_aliases.setdefault(str(hist_axis_name), str(sample_name))
+        if not hasattr(self, "_golden_json_paths") or self._golden_json_paths is None:
+            self._golden_json_paths = {}
         if not hasattr(self, "_accumulator") or self._accumulator is None:
             self._accumulator = {}
         if (
             not hasattr(self, "_allowed_jerc_variations")
             or self._allowed_jerc_variations is None
         ):
-            is_mc_sample = not bool(self._sample.get("isData"))
+            is_mc_sample = any(
+                not bool(sample_info.get("isData"))
+                for sample_info in self._samples_by_name.values()
+            )
             self._allowed_jerc_variations = _build_jerc_allowed_variations(
                 self._systematic_variations,
                 is_mc=is_mc_sample,
@@ -1153,29 +1259,84 @@ class AnalysisProcessor(processor.ProcessorABC):
             systematic,
         )
 
+    def _resolve_sample_for_dataset(
+        self,
+        dataset_name: str,
+    ) -> Tuple[str, Mapping[str, Any]]:
+        """Resolve the configured sample metadata for a dataset label."""
+
+        resolved_name = self._sample_aliases.get(dataset_name, dataset_name)
+        sample_info = self._samples_by_name.get(resolved_name)
+        if sample_info is not None:
+            return resolved_name, sample_info
+
+        if len(self._samples_by_name) == 1:
+            fallback_name, fallback_info = next(iter(self._samples_by_name.items()))
+            logger.warning(
+                "Dataset '%s' was not found in configured sample map; falling back to '%s'.",
+                dataset_name,
+                fallback_name,
+            )
+            return fallback_name, fallback_info
+
+        raise KeyError(
+            "Dataset '%s' is not present in configured samples %s"
+            % (dataset_name, tuple(self._samples_by_name.keys()))
+        )
+
+    def _resolve_golden_json_path_for_sample(
+        self,
+        sample_name: str,
+        sample_info: Mapping[str, Any],
+    ) -> Optional[str]:
+        """Return the golden JSON path for data samples."""
+
+        if not sample_info.get("isData"):
+            return None
+
+        path = self._golden_json_paths.get(sample_name)
+        if path is None:
+            hist_axis_name = sample_info.get("histAxisName")
+            if hist_axis_name is not None:
+                hist_axis_key = str(hist_axis_name)
+                mapped_name = self._sample_aliases.get(hist_axis_key, hist_axis_key)
+                path = self._golden_json_paths.get(mapped_name)
+
+        if path is None:
+            raise ValueError(
+                f"No golden JSON path configured for data sample '{sample_name}'."
+            )
+        return path
+
     def _build_dataset_context(self, events) -> DatasetContext:
         events_metadata = self._metadata_to_mapping(getattr(events, "metadata", None))
         raw_dataset_name = events_metadata.get("dataset")
         if raw_dataset_name is None:
-            raw_dataset_name = self._sample.get("histAxisName")
+            if len(self._samples_by_name) == 1:
+                raw_dataset_name = next(iter(self._samples_by_name.keys()))
+            else:
+                raise KeyError(
+                    "Events metadata is missing a 'dataset' entry and multiple samples are configured."
+                )
         if raw_dataset_name is None:
             raise KeyError("Events metadata is missing a 'dataset' entry")
         raw_dataset_name = str(raw_dataset_name)
+        sample_name, sample_info = self._resolve_sample_for_dataset(raw_dataset_name)
         dataset, trigger_dataset = self._resolve_dataset_names(raw_dataset_name)
 
-        hist_axis_name = self._sample["histAxisName"]
-        is_data = self._sample["isData"]
-        year = self._sample["year"]
-        xsec = self._sample["xsec"]
-        sow = self._sample["nSumOfWeights"]
+        hist_axis_name = sample_info["histAxisName"]
+        is_data = sample_info["isData"]
+        year = sample_info["year"]
+        xsec = sample_info["xsec"]
+        sow = sample_info["nSumOfWeights"]
 
-        is_eft = self._sample["WCnames"] != []
+        is_eft = sample_info["WCnames"] != []
         is_run3 = year.startswith("202")
         is_run2 = not is_run3
 
         run_era = None
         if is_data:
-            run_era = self._sample["path"].split("/")[2].split("-")[0][-1]
+            run_era = sample_info["path"].split("/")[2].split("-")[0][-1]
 
         is_lo_sample = hist_axis_name in get_te_param("lo_xsec_samples")
 
@@ -1189,7 +1350,10 @@ class AnalysisProcessor(processor.ProcessorABC):
 
         lumi_mask = ak.ones_like(events["run"], dtype=bool)
         if is_data:
-            lumi_mask = LumiMask(self._golden_json_path)(
+            golden_json_path = self._resolve_golden_json_path_for_sample(
+                sample_name, sample_info
+            )
+            lumi_mask = LumiMask(golden_json_path)(
                 events["run"], events["luminosityBlock"]
             )
 
@@ -1198,9 +1362,9 @@ class AnalysisProcessor(processor.ProcessorABC):
             if "EFTfitCoefficients" in events.fields
             else None
         )
-        if eft_coeffs is not None and self._sample["WCnames"] != self._wc_names_lst:
+        if eft_coeffs is not None and sample_info["WCnames"] != self._wc_names_lst:
             eft_coeffs = efth.remap_coeffs(
-                self._sample["WCnames"], self._wc_names_lst, eft_coeffs
+                sample_info["WCnames"], self._wc_names_lst, eft_coeffs
             )
         eft_w2_coeffs = (
             efth.calc_w2_coeffs(eft_coeffs, self._dtype)
@@ -1211,6 +1375,8 @@ class AnalysisProcessor(processor.ProcessorABC):
         lumi = 1000.0 * get_tc_param(f"lumi_{year}")
 
         context = DatasetContext(
+            sample_name=sample_name,
+            sample_metadata=sample_info,
             dataset=dataset,
             trigger_dataset=trigger_dataset,
             hist_axis_name=hist_axis_name,
@@ -1527,8 +1693,8 @@ class AnalysisProcessor(processor.ProcessorABC):
                     sow_variations[sow_label] = dataset.sow
                 else:
                     key = sow_variation_key_map.get(sow_label)
-                    if key is not None and key in self._sample:
-                        sow_variations[sow_label] = self._sample[key]
+                    if key is not None and key in dataset.sample_metadata:
+                        sow_variations[sow_label] = dataset.sample_metadata[key]
 
         if variation_type == "object":
             if variation_name not in object_systematics:
@@ -2099,7 +2265,7 @@ class AnalysisProcessor(processor.ProcessorABC):
                 sow_variation_key_map=variation_state.sow_variation_key_map,
                 is_lo_sample=dataset.is_lo_sample,
                 hist_axis_name=histAxisName,
-                sample=self._sample,
+                sample=dataset.sample_metadata,
             )
             for label, args in theory_weight_arguments.items():
                 weights_object.add(label, *args)
@@ -2890,7 +3056,7 @@ class AnalysisProcessor(processor.ProcessorABC):
             channel_entries.append((ch_name, base_channel_label, all_cuts_mask, mask_numpy))
 
         if is_nominal_variation and channel_entries:
-            region_store = self._accumulator.get("region_yields")
+            region_store = self._accumulator.get(self.REGION_YIELDS_KEY)
             for ch_name, base_ch_name, all_cuts_mask, mask_numpy in channel_entries:
                 region_channel_label = ch_name
                 _log_region_yields(
