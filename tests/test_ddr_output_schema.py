@@ -96,7 +96,7 @@ def test_flatten_ddr_output_uses_canonical_schema_and_drops_sidecars_by_default(
                 "region_yields": {"ignored": True},
             },
             "dataset_B": {
-                ("njets", "2lss", "isSR_2lSS", "sampleA", "nominal"): _DummyAccumulator(
+                ("njets", "2lss", "isSR_2lSS", "sampleB", "nominal"): _DummyAccumulator(
                     5
                 )
             },
@@ -104,9 +104,11 @@ def test_flatten_ddr_output_uses_canonical_schema_and_drops_sidecars_by_default(
     }
 
     flattened = workflow.flatten_ddr_output(payload, delim="-", output_schema="flat")
-    expected_key = ("sampleA", "2lss", "njets", "isSR_2lSS", "nominal")
-    assert list(flattened.keys()) == [expected_key]
-    assert flattened[expected_key].value == 7
+    expected_key_a = ("sampleA", "2lss", "njets", "isSR_2lSS", "nominal")
+    expected_key_b = ("sampleB", "2lss", "njets", "isSR_2lSS", "nominal")
+    assert list(flattened.keys()) == [expected_key_a, expected_key_b]
+    assert flattened[expected_key_a].value == 2
+    assert flattened[expected_key_b].value == 5
     assert "__sidecars__" not in flattened
 
     flattened_with_sidecars = workflow.flatten_ddr_output(
@@ -117,6 +119,35 @@ def test_flatten_ddr_output_uses_canonical_schema_and_drops_sidecars_by_default(
         sidecars_key="__sidecars__",
     )
     assert "__sidecars__" in flattened_with_sidecars
+
+
+def test_flatten_ddr_output_raises_on_duplicate_collision():
+    processor_key = workflow.build_ddr_processor_key(
+        "2lss",
+        "njets",
+        "isSR_2lSS",
+        "nominal",
+        delim="-",
+    )
+    duplicate_key = ("sampleA", "2lss", "njets", "isSR_2lSS", "nominal")
+    payload = {
+        processor_key: {
+            "dataset_A": {
+                ("njets", "2lss", "isSR_2lSS", "sampleA", "nominal"): _DummyAccumulator(2),
+            },
+            "dataset_B": {
+                ("njets", "2lss", "isSR_2lSS", "sampleA", "nominal"): _DummyAccumulator(5),
+            },
+        }
+    }
+
+    with pytest.raises(ValueError) as exc:
+        workflow.flatten_ddr_output(payload, delim="-", output_schema="flat")
+    message = str(exc.value)
+    assert "Duplicate flattened DDR key collision detected" in message
+    assert str(duplicate_key) in message
+    assert "dataset_A" in message
+    assert "dataset_B" in message
 
 
 def test_flatten_ddr_output_raises_on_processor_key_mismatch():

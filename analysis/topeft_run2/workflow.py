@@ -203,6 +203,7 @@ def flatten_ddr_output(
         raise ValueError("output_schema must be 'flat' or 'tuple'.")
 
     flattened: Dict[Tuple[str, str, str, str, str], Any] = {}
+    flattened_origins: Dict[Tuple[str, str, str, str, str], Tuple[str, str, Tuple[Any, ...]]] = {}
     sidecars: Dict[Tuple[str, str], "OrderedDict[str, Any]"] = {}
 
     for processor_key, dataset_payload in ddr_payload.items():
@@ -271,23 +272,26 @@ def flatten_ddr_output(
                         tuple_systematic_label,
                     )
 
-                existing = flattened.get(target_key)
-                if existing is None:
+                if target_key not in flattened:
                     flattened[target_key] = leaf_value
+                    flattened_origins[target_key] = (
+                        str(processor_key),
+                        str(dataset_name),
+                        tuple(leaf_key),
+                    )
                     continue
 
-                if not hasattr(existing, "__iadd__"):
-                    raise TypeError(
-                        "Collision detected for flattened DDR key "
-                        f"{target_key!r} but value type {type(existing)!r} "
-                        "does not support in-place accumulation."
-                    )
-                try:
-                    existing += leaf_value
-                except Exception as exc:
-                    raise TypeError(
-                        f"Failed to merge duplicate flattened DDR key {target_key!r}."
-                    ) from exc
+                first_processor, first_dataset, first_leaf_key = flattened_origins[target_key]
+                raise ValueError(
+                    "Duplicate flattened DDR key collision detected: "
+                    f"key={target_key!r}, "
+                    f"first_origin=(processor={first_processor!r}, dataset={first_dataset!r}, "
+                    f"histogram_key={first_leaf_key!r}), "
+                    f"second_origin=(processor={processor_key!r}, dataset={dataset_name!r}, "
+                    f"histogram_key={leaf_key!r}). "
+                    "Duplicate key indicates unexpected DDR duplication; check processor grouping "
+                    "or systematic labeling."
+                )
 
     ordered_output: "OrderedDict[Any, Any]" = OrderedDict()
     for key in sorted(flattened.keys(), key=_tuple_sort_key):
