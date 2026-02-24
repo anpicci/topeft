@@ -48,6 +48,9 @@ def test_branch_guard_rejects_mismatched_branch(monkeypatch, tmp_path):
     message = str(excinfo.value)
     assert "coordinated ref" in message
     assert "topcoffea/docs/topeft_integration.md" in message
+    assert "TOPCOFFEA_BRANCH" in message
+    assert "TOPEFT_TOPCOFFEA_EXPECTED" in message
+    assert "ch_update_calcoffea" not in message
 
 
 def test_branch_guard_accepts_env_override(monkeypatch, tmp_path):
