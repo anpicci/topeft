@@ -32,7 +32,6 @@ Keys marked with `*` are accepted aliases for backward compatibility in YAML.
 | `--test`, `-t` | `test` | bool | `false` | Fast smoke mode; only local executors support this path. |
 | `--pretend` | `pretend` | bool | `false` | Validates configuration and histogram plan, then exits before execution/output write. |
 | `--nworkers`, `-n` | `nworkers` | int | `8` | Worker count used by workflow execution paths. |
-| `--futures-workers` | n/a | int | `8` | Parsed by shared executor helper but currently not consumed by `run_analysis.py`; use `nworkers`. |
 | `--chunksize`, `-s` | `chunksize` | int | `500000` | Events per chunk. |
 | `--nchunks`, `-c` | `nchunks` | optional int | `None` | Maximum number of chunks to process. |
 | `--outname`, `-o` | `outname` | string | `plotsTopEFT` | Output filename stem. |
