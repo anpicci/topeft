@@ -599,6 +599,10 @@ def _resolve_output_category_name(region_ctx, category_name):
     base_label = _strip_njet_suffix(raw_label)
     suffix = _extract_njet_suffix(raw_label)
     output_base = region_ctx.channel_output_names.get(base_label, base_label)
+    if _uses_merged_njets_output_mode(
+        getattr(region_ctx, "channel_output_mode", None)
+    ):
+        output_base = _append_merged_njets_folder_suffix(output_base)
     if suffix and output_base != raw_label:
         return _append_njet_suffix(output_base, suffix)
     return output_base
@@ -624,6 +628,23 @@ def _append_njet_suffix(label, suffix):
     if label.lower().endswith(f"_{normalized_suffix}"):
         return label
     return f"{label}_{normalized_suffix}"
+
+
+def _append_merged_njets_folder_suffix(label):
+    """Return *label* with the deterministic merged-njets ``_Nj`` marker."""
+
+    if not isinstance(label, str):
+        label = str(label)
+    if label.endswith("_Nj"):
+        return label
+    return f"{label}_Nj"
+
+
+def _uses_merged_njets_output_mode(channel_output_mode):
+    """Return ``True`` when *channel_output_mode* requires merged-njets naming."""
+
+    normalized = str(channel_output_mode or "").strip().lower()
+    return normalized in {"merged-njets", "both-njets"}
 
 
 def _strip_njet_suffix(label):
@@ -3032,6 +3053,7 @@ def _resolve_region_known_channels(
     channel_map=None,
     channel_aliases=None,
     region_dict_name=None,
+    namespace_kind=None,
 ):
     del channel_transformations  # deterministic namespace selection does not widen by observations
 
@@ -3042,9 +3064,73 @@ def _resolve_region_known_channels(
         channel_aliases=channel_aliases,
         region_dict_name=region_dict_name,
     )
-    if region_upper == "SR" and variable == "njets":
+    if namespace_kind is None:
+        if region_upper == "SR" and variable == "njets":
+            namespace_kind = "base"
+        else:
+            namespace_kind = "leaf"
+
+    if namespace_kind == "base":
         return set(namespace["base_to_leaves"].keys()), dict_name
-    return set(namespace["leaf_to_base"].keys()), dict_name
+    if namespace_kind == "leaf":
+        return set(namespace["leaf_to_base"].keys()), dict_name
+
+    raise ValueError(
+        "Unsupported namespace_kind '{}'. Expected 'base' or 'leaf'.".format(
+            namespace_kind
+        )
+    )
+
+
+def _expected_channel_namespace_kind(region_ctx, var_name):
+    """Return deterministic namespace selection for global channel validation."""
+
+    if var_name != "njets":
+        return "leaf"
+
+    region_upper = str(region_ctx.name).upper()
+    if region_upper == "SR":
+        return "base"
+
+    # CR njets in merged-njets style is validated against producer-style base
+    # labels obtained by deterministic transforms of leaf metadata.
+    if region_upper == "CR" and _uses_merged_njets_output_mode(
+        getattr(region_ctx, "channel_output_mode", None)
+    ):
+        return "leaf"
+
+    return "leaf"
+
+
+def _resolve_validation_channel_transformations(
+    region_ctx,
+    var_name,
+    channel_transformations,
+):
+    """Return deterministic transforms used for global channel validation."""
+
+    ordered = []
+    seen = set()
+    for transform in channel_transformations or ():
+        if transform in seen:
+            continue
+        ordered.append(transform)
+        seen.add(transform)
+
+    if (
+        var_name == "njets"
+        and str(region_ctx.name).upper() == "CR"
+        and _uses_merged_njets_output_mode(
+            getattr(region_ctx, "channel_output_mode", None)
+        )
+        and "njets" not in seen
+    ):
+        # CR merged-njets njets histograms may expose producer base labels on
+        # the channel axis; include the deterministic njets transform for global
+        # validation while preserving plotting payload behaviour.
+        ordered.append("njets")
+
+    return ordered
 
 
 def _ensure_variable_channel_coverage_validated(var_name, region_ctx, variable_payload):
@@ -3055,18 +3141,25 @@ def _ensure_variable_channel_coverage_validated(var_name, region_ctx, variable_p
 
     histos = [variable_payload.get("hist_mc"), variable_payload.get("hist_data")]
     channel_transformations = variable_payload.get("channel_transformations", [])
+    validation_transformations = _resolve_validation_channel_transformations(
+        region_ctx,
+        var_name,
+        channel_transformations,
+    )
+    namespace_kind = _expected_channel_namespace_kind(region_ctx, var_name)
     region_known_channels, region_dict_name = _resolve_region_known_channels(
         region_ctx.name,
         variable=var_name,
-        channel_transformations=channel_transformations,
+        channel_transformations=validation_transformations,
         channel_map=region_ctx.channel_map,
         channel_aliases=region_ctx.channel_base_to_alias,
         region_dict_name=region_ctx.channel_dict_name,
+        namespace_kind=namespace_kind,
     )
     validate_variable_channel_coverage(
         histos,
         region_known_channels,
-        channel_transformations,
+        validation_transformations,
         region=region_ctx.name,
         variable=var_name,
         region_dict_name=region_dict_name,
@@ -4658,6 +4751,7 @@ class RegionContext(object):
         sumw2_remove_signal_when_blinded=False,
         rate_syst_by_sample=None,
         preserve_njets_bins=False,
+        channel_output_mode="merged",
         channel_aliases=None,
         channel_dict_name=None,
     ):
@@ -4734,6 +4828,7 @@ class RegionContext(object):
         )
         self.rate_syst_by_sample = rate_syst_by_sample
         self.preserve_njets_bins = bool(preserve_njets_bins)
+        self.channel_output_mode = str(channel_output_mode or "merged")
 
 
 def _format_decimal_string(value):
@@ -4791,6 +4886,7 @@ def build_region_context(
     *,
     channel_mode_override=None,
     preserve_njets_bins=False,
+    channel_output_mode="merged",
     enable_category_skips=False,
 ):
     region_upper = region.upper()
@@ -5145,6 +5241,7 @@ def build_region_context(
         sumw2_remove_signal_when_blinded=sumw2_remove_signal_when_blinded,
         rate_syst_by_sample=rate_syst_by_sample,
         preserve_njets_bins=preserve_njets_bins,
+        channel_output_mode=channel_output_mode,
         channel_aliases=channel_aliases,
         channel_dict_name=channel_dict_name,
     )
@@ -6946,6 +7043,7 @@ def run_plots_for_region(
             unblind=unblind,
             channel_mode_override=channel_mode,
             preserve_njets_bins=preserve_njets_bins,
+            channel_output_mode=channel_output,
             enable_category_skips=enable_category_skips,
         )
         if summary_region_ctx is None:

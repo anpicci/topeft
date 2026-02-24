@@ -91,6 +91,7 @@ def _make_region_context(
     channel_map,
     channel_mode,
     preserve_njets_bins=False,
+    channel_output_mode="merged",
 ):
     sumw2_suffix = "_sumw2"
     sumw2_hists = {}
@@ -128,6 +129,7 @@ def _make_region_context(
         sumw2_remove_signal_when_blinded=False,
         rate_syst_by_sample=None,
         preserve_njets_bins=preserve_njets_bins,
+        channel_output_mode=channel_output_mode,
     )
 
 
@@ -188,6 +190,22 @@ def test_output_category_name_uses_alias_mapping():
     assert plots._resolve_output_category_name(region_ctx, "cat_b") == "merged_cat"
     assert plots._resolve_output_category_name(region_ctx, "cat_a_2j") == "merged_cat_2j"
 
+    region_ctx_njets = _make_region_context(
+        histograms,
+        channel_map=channel_map,
+        channel_mode="aggregate",
+        preserve_njets_bins=True,
+        channel_output_mode="merged-njets",
+    )
+    assert (
+        plots._resolve_output_category_name(region_ctx_njets, "cat_a")
+        == "merged_cat_Nj"
+    )
+    assert (
+        plots._resolve_output_category_name(region_ctx_njets, "cat_a_2j")
+        == "merged_cat_Nj_2j"
+    )
+
 
 def test_unsplit_channel_output_prunes_flavour_categories():
     variable = "observable"
@@ -225,6 +243,7 @@ def test_split_mode_skips_when_hist_not_flavour_split(monkeypatch, tmp_path):
         unblind=None,
         channel_mode_override=None,
         preserve_njets_bins=False,
+        channel_output_mode="merged",
         enable_category_skips=False,
     ):
         channel_mode = channel_mode_override or "aggregate"
@@ -233,6 +252,7 @@ def test_split_mode_skips_when_hist_not_flavour_split(monkeypatch, tmp_path):
             channel_map=channel_map,
             channel_mode=channel_mode,
             preserve_njets_bins=preserve_njets_bins,
+            channel_output_mode=channel_output_mode,
         )
 
     monkeypatch.setattr(plots, "build_region_context", fake_build_region_context)
@@ -882,6 +902,7 @@ def test_both_njets_channel_output_writes_pngs_and_uncertainties(monkeypatch, tm
         unblind=None,
         channel_mode_override=None,
         preserve_njets_bins=False,
+        channel_output_mode="merged",
         enable_category_skips=False,
     ):
         mode = channel_mode_override or "aggregate"
@@ -890,6 +911,7 @@ def test_both_njets_channel_output_writes_pngs_and_uncertainties(monkeypatch, tm
             channel_map=channel_map,
             channel_mode=mode,
             preserve_njets_bins=preserve_njets_bins,
+            channel_output_mode=channel_output_mode,
         )
 
     monkeypatch.setattr(plots, "build_region_context", fake_build_region_context)
@@ -938,12 +960,12 @@ def test_both_njets_channel_output_writes_pngs_and_uncertainties(monkeypatch, tm
     for path in all_paths:
         assert path.exists()
 
-    aggregated_expected = {"cr_all_2j", "cr_all_3j"}
-    per_expected = {
-        "cr_all_em_2j_em",
-        "cr_all_em_3j_em",
-        "cr_all_mm_2j_mm",
-        "cr_all_mm_3j_mm",
+    aggregated_expected_dirs = {"cr_all_Nj_2j", "cr_all_Nj_3j"}
+    per_expected_dirs = {
+        "cr_all_em_2j_em_Nj",
+        "cr_all_em_3j_em_Nj",
+        "cr_all_mm_2j_mm_Nj",
+        "cr_all_mm_3j_mm_Nj",
     }
 
     def _stem_to_hist_cat(path):
@@ -951,18 +973,29 @@ def test_both_njets_channel_output_writes_pngs_and_uncertainties(monkeypatch, tm
         suffix = f"_{variable}"
         return stem[: -len(suffix)] if stem.endswith(suffix) else stem
 
-    aggregated_seen = set()
-    per_seen = set()
+    aggregated_seen_dirs = set()
+    per_seen_dirs = set()
+    aggregated_seen_plots = set()
+    per_seen_plots = set()
     for path in all_paths:
         hist_cat = _stem_to_hist_cat(path)
         parent = path.parent.name
-        if parent in aggregated_expected:
-            aggregated_seen.add(hist_cat)
+        if parent in aggregated_expected_dirs:
+            aggregated_seen_dirs.add(parent)
+            aggregated_seen_plots.add(hist_cat)
         else:
-            per_seen.add(hist_cat)
+            per_seen_dirs.add(parent)
+            per_seen_plots.add(hist_cat)
 
-    assert aggregated_seen == aggregated_expected
-    assert per_seen == per_expected
+    assert aggregated_seen_dirs == aggregated_expected_dirs
+    assert per_seen_dirs == per_expected_dirs
+    assert aggregated_seen_plots == {"cr_all_2j", "cr_all_3j"}
+    assert per_seen_plots == {
+        "cr_all_em_2j_em",
+        "cr_all_em_3j_em",
+        "cr_all_mm_2j_mm",
+        "cr_all_mm_3j_mm",
+    }
 
     syst_payloads = {
         (

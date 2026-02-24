@@ -16,7 +16,12 @@ def _make_channel_hist(channels):
     return histogram
 
 
-def _region_ctx(region):
+def _region_ctx(
+    region,
+    *,
+    preserve_njets_bins=False,
+    channel_output_mode="merged",
+):
     region_upper = str(region).upper()
     if region_upper == "CR":
         return SimpleNamespace(
@@ -24,12 +29,16 @@ def _region_ctx(region):
             channel_map=make_cr_and_sr_plots.CR_CHAN_DICT,
             channel_base_to_alias=make_cr_and_sr_plots.CR_CHAN_ALIASES,
             channel_dict_name="CR_CHAN_DICT",
+            preserve_njets_bins=preserve_njets_bins,
+            channel_output_mode=channel_output_mode,
         )
     return SimpleNamespace(
         name="SR",
         channel_map=make_cr_and_sr_plots.SR_CHAN_DICT,
         channel_base_to_alias=make_cr_and_sr_plots.SR_CHAN_ALIASES,
         channel_dict_name="SR_CHAN_DICT",
+        preserve_njets_bins=preserve_njets_bins,
+        channel_output_mode=channel_output_mode,
     )
 
 
@@ -180,6 +189,36 @@ def test_global_validation_rejects_unknown_cr_transformed_channels():
     msg = str(exc_info.value)
     assert "variable 'njets'" in msg
     assert "unknown_cr_channel" in msg
+
+
+def test_global_validation_accepts_cr_merged_njets_base_channels():
+    histo = _make_channel_hist(
+        [
+            "1l_1tau_CR",
+            "1l_dy_tautau_CR",
+            "2los_1tau_Ftau",
+            "2los_1tau_Ttau",
+            "2los_CRZ",
+            "2los_CRtt",
+            "2lss_CR",
+            "2lss_CRflip",
+            "3l_CR",
+        ]
+    )
+    region_ctx = _region_ctx(
+        "CR",
+        preserve_njets_bins=True,
+        channel_output_mode="merged-njets",
+    )
+    variable_payload = {
+        "hist_mc": histo,
+        "hist_data": None,
+        "channel_transformations": ["njets", "lepflav"],
+    }
+
+    make_cr_and_sr_plots._ensure_variable_channel_coverage_validated(
+        "njets", region_ctx, variable_payload
+    )
 
 
 def test_channel_namespace_accepts_legacy_and_object_entries():

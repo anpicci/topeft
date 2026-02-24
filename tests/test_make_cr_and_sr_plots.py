@@ -495,7 +495,7 @@ def test_both_njets_preserves_variables_for_merged_output(tmp_path):
         verbose=False,
     )
 
-    merged_dir = tmp_path / "cr_2lss_1j"
+    merged_dir = tmp_path / "cr_2lss_Nj_1j"
     assert merged_dir.exists()
 
     plot_names = sorted(path.name for path in merged_dir.glob("*.png"))
@@ -1313,18 +1313,28 @@ def test_all_variables_render_for_merged_and_split_categories(
             verbose=False,
         )
 
-    merged_dir_name = "cr_2los_Z_0j" if channel_output.endswith("njets") else "cr_2los_Z"
+    merged_dir_name = (
+        "cr_2los_Z_Nj_0j" if channel_output.endswith("njets") else "cr_2los_Z"
+    )
     merged_dir = tmp_path / merged_dir_name
     assert merged_dir.exists()
 
     merged_plots = {path.name for path in merged_dir.glob("*.png")}
-    expected_merged = {f"{merged_dir_name}_j0pt.png", f"{merged_dir_name}_met.png"}
+    merged_plot_stem = (
+        merged_dir_name.replace("_Nj_", "_", 1)
+        if channel_output.endswith("njets")
+        else merged_dir_name
+    )
+    expected_merged = {
+        f"{merged_plot_stem}_j0pt.png",
+        f"{merged_plot_stem}_met.png",
+    }
     assert expected_merged.issubset(merged_plots)
 
     if channel_output.endswith("njets"):
         split_dirs = [
-            tmp_path / "cr_2los_Z_ee_0j_ee",
-            tmp_path / "cr_2los_Z_mm_0j_mm",
+            tmp_path / "cr_2los_Z_ee_0j_ee_Nj",
+            tmp_path / "cr_2los_Z_mm_0j_mm_Nj",
         ]
     else:
         split_dirs = [tmp_path / "cr_2los_Z_ee", tmp_path / "cr_2los_Z_mm"]
@@ -1332,7 +1342,7 @@ def test_all_variables_render_for_merged_and_split_categories(
         assert split_dir.exists()
         split_plots = {path.name for path in split_dir.glob("*.png")}
         base_split_name = (
-            split_dir.name
+            split_dir.name.replace("_Nj", "")
             if channel_output.endswith("njets")
             else re.sub(r"_0j(?=_)", "", split_dir.name)
         )
