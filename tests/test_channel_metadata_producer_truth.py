@@ -1,5 +1,7 @@
 import json
 
+import pytest
+
 from analysis.topeft_run2 import make_cr_and_sr_plots as plots
 from analysis.topeft_run2.analysis_processor import (
     construct_cat_name,
@@ -57,6 +59,7 @@ def test_cr_tau_mode_metadata_covers_producer_truth_after_declared_transforms():
     producer_base, producer_leaves = _expand_producer_channel_sets(channel_json[cr_dict_name])
 
     namespace, _ = plots._resolve_region_channel_namespace("CR")
+    metadata_base = set(namespace["base_to_leaves"].keys())
     metadata_leaves = set(namespace["leaf_to_base"].keys())
 
     transformed_leaves = {
@@ -70,3 +73,26 @@ def test_cr_tau_mode_metadata_covers_producer_truth_after_declared_transforms():
 
     assert producer_leaves <= transformed_leaves
     assert producer_base <= transformed_bases
+    assert producer_base <= metadata_base
+
+
+def test_region_channel_config_sets_cr_and_sr_lepflav_flags():
+    cr_cfg = plots._resolve_region_channel_config("CR")
+    sr_cfg = plots._resolve_region_channel_config("SR")
+
+    assert cr_cfg["is_lepton_flavor_in_pkl"] is True
+    assert sr_cfg["is_lepton_flavor_in_pkl"] is False
+
+
+def test_strict_leaf_overlap_policy_remains_enforced():
+    with pytest.raises(ValueError, match="leaf overlap"):
+        plots._build_channel_namespace(
+            {
+                "2los_CRZ": {"leaves": ["2los_ee_CRZ_0j"], "alias": "cr_2los_Z"},
+                "2los_CRZ_duplicate": {
+                    "leaves": ["2los_ee_CRZ_0j"],
+                    "alias": "cr_2los_Z_dup",
+                },
+            },
+            region_label="CR_CHAN_DICT",
+        )

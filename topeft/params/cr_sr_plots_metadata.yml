@@ -17,20 +17,22 @@ MC_ERROR_OPS:
 DATA_DRIVEN_PREFIXES:
 - nonprompt
 - flips
+REGION_CHANNEL_CONFIG:
+  CR:
+    is_lepton_flavor_in_pkl: true
+  SR:
+    is_lepton_flavor_in_pkl: false
 CR_CHAN_DICT:
-  cr_2los_Z_ee:
+  2los_CRZ:
     leaves:
     - 2los_ee_CRZ_0j
-    alias: cr_2los_Z
-  cr_2los_Z_mm:
-    leaves:
     - 2los_mm_CRZ_0j
     alias: cr_2los_Z
-  cr_2los_tt:
+  2los_CRtt:
     leaves:
     - 2los_em_CRtt_2j
-    alias: null
-  cr_2lss:
+    alias: cr_2los_tt
+  2lss_CR:
     leaves:
     - 2lss_ee_CR_1j
     - 2lss_em_CR_1j
@@ -41,12 +43,12 @@ CR_CHAN_DICT:
     - 2lss_ee_CR_3j
     - 2lss_em_CR_3j
     - 2lss_mm_CR_3j
-    alias: null
-  cr_2lss_flip:
+    alias: cr_2lss
+  2lss_CRflip:
     leaves:
     - 2lss_ee_CRflip_3j
-    alias: null
-  cr_3l:
+    alias: cr_2lss_flip
+  3l_CR:
     leaves:
     - 3l_eee_CR_0j
     - 3l_eem_CR_0j
@@ -56,8 +58,8 @@ CR_CHAN_DICT:
     - 3l_eem_CR_1j
     - 3l_emm_CR_1j
     - 3l_mmm_CR_1j
-    alias: null
-  cr_2los_1tau_Ftau:
+    alias: cr_3l
+  2los_1tau_Ftau:
     leaves:
     - 2los_ee_1tau_Ftau_2j
     - 2los_ee_1tau_Ftau_3j
@@ -68,8 +70,8 @@ CR_CHAN_DICT:
     - 2los_mm_1tau_Ftau_2j
     - 2los_mm_1tau_Ftau_3j
     - 2los_mm_1tau_Ftau_4j
-    alias: null
-  cr_2los_1tau_Ttau:
+    alias: cr_2los_1tau_Ftau
+  2los_1tau_Ttau:
     leaves:
     - 2los_ee_1tau_Ttau_2j
     - 2los_ee_1tau_Ttau_3j
@@ -80,8 +82,8 @@ CR_CHAN_DICT:
     - 2los_mm_1tau_Ttau_2j
     - 2los_mm_1tau_Ttau_3j
     - 2los_mm_1tau_Ttau_4j
-    alias: null
-  cr_1l_1tau:
+    alias: cr_2los_1tau_Ttau
+  1l_1tau_CR:
     leaves:
     - 1l_e_1tau_CR_2j
     - 1l_e_1tau_CR_3j
@@ -89,15 +91,12 @@ CR_CHAN_DICT:
     - 1l_m_1tau_CR_2j
     - 1l_m_1tau_CR_3j
     - 1l_m_1tau_CR_4j
-    alias: null
-  cr_dy_tautau_e:
+    alias: cr_1l_1tau
+  1l_dy_tautau_CR:
     leaves:
     - 1l_e_dy_tautau_CR_2j
     - 1l_e_dy_tautau_CR_3j
     - 1l_e_dy_tautau_CR_4j
-    alias: cr_dy_tautau
-  cr_dy_tautau_m:
-    leaves:
     - 1l_m_dy_tautau_CR_2j
     - 1l_m_dy_tautau_CR_3j
     - 1l_m_dy_tautau_CR_4j
@@ -629,21 +628,21 @@ REGION_PLOTTING:
     sample_removals:
     - categories:
         prefixes:
-        - cr_2los_tt
-        - cr_2los_Z
+        - 2los_CRtt
+        - 2los_CRZ
       groups:
       - Nonprompt
     category_skips:
     - categories:
         equals:
-        - cr_2los_Z
+        - 2los_CRZ
       variable_includes:
       - j0
       variable_excludes:
       - lj0pt
     - categories:
         equals:
-        - cr_2lss_flip
+        - 2lss_CRflip
       variable_includes:
       - j0
       variable_excludes:

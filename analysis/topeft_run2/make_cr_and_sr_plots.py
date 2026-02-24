@@ -119,6 +119,55 @@ import yaml
 with open(te_topeft_path("params/cr_sr_plots_metadata.yml")) as f:
     _META = yaml.safe_load(f)
 
+REGION_CHANNEL_CONFIG = _META.get("REGION_CHANNEL_CONFIG", {})
+_REGION_CHANNEL_CONFIG_DEFAULTS = {
+    "CR": {"is_lepton_flavor_in_pkl": True},
+    "SR": {"is_lepton_flavor_in_pkl": False},
+}
+
+
+def _resolve_region_channel_config(region_name):
+    """Return normalized region-specific channel metadata settings."""
+
+    region_upper = str(region_name or "").upper()
+    defaults = dict(_REGION_CHANNEL_CONFIG_DEFAULTS.get(region_upper, {}))
+
+    raw_cfg = REGION_CHANNEL_CONFIG
+    if raw_cfg is None:
+        raw_cfg = {}
+    if not isinstance(raw_cfg, Mapping):
+        raise TypeError(
+            "REGION_CHANNEL_CONFIG must be a mapping, got '{}'.".format(
+                type(raw_cfg).__name__
+            )
+        )
+
+    region_cfg = raw_cfg.get(region_upper, {})
+    if region_cfg is None:
+        region_cfg = {}
+    if not isinstance(region_cfg, Mapping):
+        raise TypeError(
+            "REGION_CHANNEL_CONFIG['{}'] must be a mapping, got '{}'.".format(
+                region_upper, type(region_cfg).__name__
+            )
+        )
+
+    unsupported = sorted(
+        key for key in region_cfg.keys() if key not in {"is_lepton_flavor_in_pkl"}
+    )
+    if unsupported:
+        raise ValueError(
+            "Unsupported REGION_CHANNEL_CONFIG keys for '{}': {}. Allowed keys: "
+            "'is_lepton_flavor_in_pkl'.".format(region_upper, unsupported)
+        )
+
+    if "is_lepton_flavor_in_pkl" in region_cfg:
+        defaults["is_lepton_flavor_in_pkl"] = bool(
+            region_cfg["is_lepton_flavor_in_pkl"]
+        )
+
+    return defaults
+
 
 def _coerce_channel_alias(alias_value, *, region_label, base_key):
     """Return a normalized alias string or ``None`` for *alias_value*."""
@@ -535,51 +584,107 @@ def _strip_year_token(value):
     return value
 
 
+def _token_has_lepflav_component(token):
+    """Return ``True`` when *token* contains a lepton-flavour marker."""
+
+    if not isinstance(token, str):
+        return False
+
+    lowered = token.strip().lower()
+    if not lowered:
+        return False
+    return ("e" in lowered) or ("m" in lowered)
+
+
+def _parse_lepflav_token_for_region(
+    channel_name,
+    *,
+    region_name,
+    is_lepton_flavor_in_pkl,
+):
+    """Return the strict lepton-flavour token for *channel_name* when required."""
+
+    if not is_lepton_flavor_in_pkl:
+        return None
+
+    if not isinstance(channel_name, str):
+        raise ValueError(
+            "Invalid channel '{}' for region '{}': expected a string channel name "
+            "because REGION_CHANNEL_CONFIG.{}.is_lepton_flavor_in_pkl=true.".format(
+                channel_name, region_name, region_name
+            )
+        )
+
+    components = channel_name.split("_")
+    if len(components) < 2:
+        raise ValueError(
+            "Invalid channel '{}' for region '{}': expected an underscore-separated "
+            "lepton-flavour token at position #2 because "
+            "REGION_CHANNEL_CONFIG.{}.is_lepton_flavor_in_pkl=true.".format(
+                channel_name, region_name, region_name
+            )
+        )
+
+    token = components[1].strip().lower()
+    if not _token_has_lepflav_component(token):
+        raise ValueError(
+            "Invalid lepton-flavour token '{}' in channel '{}' for region '{}': "
+            "expected the second token to include 'e' or 'm' because "
+            "REGION_CHANNEL_CONFIG.{}.is_lepton_flavor_in_pkl=true.".format(
+                components[1], channel_name, region_name, region_name
+            )
+        )
+    return token
+
+
 def _extract_lepflav_token(channel_name):
-    """Return the lepton-flavour token detected in *channel_name*, if any."""
+    """Return a best-effort lepton-flavour token detected in *channel_name*."""
 
     if not isinstance(channel_name, str):
         return None
 
     components = channel_name.split("_")
     for component in reversed(components):
-        if component in _LEPFLAV_TOKENS:
-            return component
+        normalized = component.strip().lower()
+        if normalized in _LEPFLAV_TOKENS:
+            return normalized
     return None
 
 
-def _derive_channel_display_label(base_label, bin_names):
-    """Return the output label to use for *base_label* and *bin_names*."""
+def _resolve_output_components(region_ctx, category_name):
+    """Return ``(output_base, njet_suffix)`` for the requested category label."""
 
-    if not bin_names or len(bin_names) != 1:
-        return base_label
+    raw_label = str(category_name)
+    njet_suffix = _extract_njet_suffix(raw_label)
+    label_without_njet = _strip_njet_suffix(raw_label) if njet_suffix else raw_label
 
-    flavour_token = _extract_lepflav_token(bin_names[0])
-    if not flavour_token:
-        return base_label
+    base_label = label_without_njet
+    lepflav_token = None
+    if getattr(region_ctx, "is_lepton_flavor_in_pkl", False):
+        if "_" in label_without_njet:
+            maybe_base, maybe_token = label_without_njet.rsplit("_", 1)
+            if (
+                maybe_base in getattr(region_ctx, "channel_output_names", {})
+                and _token_has_lepflav_component(maybe_token)
+            ):
+                base_label = maybe_base
+                lepflav_token = maybe_token.strip().lower()
 
-    if not base_label:
-        return flavour_token
-
-    base_parts = base_label.split("_")
-    if base_parts and base_parts[-1] == flavour_token:
-        return base_label
-
-    return f"{base_label}_{flavour_token}"
+    output_base = region_ctx.channel_output_names.get(base_label, base_label)
+    if lepflav_token:
+        output_base = f"{output_base}_{lepflav_token}"
+    return output_base, njet_suffix
 
 
 def _resolve_output_category_name(region_ctx, category_name):
     """Return the output-folder category label for *category_name*."""
 
-    raw_label = str(category_name)
-    base_label = _strip_njet_suffix(raw_label)
-    suffix = _extract_njet_suffix(raw_label)
-    output_base = region_ctx.channel_output_names.get(base_label, base_label)
+    output_base, suffix = _resolve_output_components(region_ctx, category_name)
     if _uses_merged_njets_output_mode(
         getattr(region_ctx, "channel_output_mode", None)
     ):
         output_base = _append_merged_njets_folder_suffix(output_base)
-    if suffix and output_base != raw_label:
+    if suffix:
         return _append_njet_suffix(output_base, suffix)
     return output_base
 
@@ -781,22 +886,29 @@ def _warn_missing_split_channels(
     reference_channel_map=None,
     *,
     region_name=None,
+    is_lepton_flavor_in_pkl=True,
     expected_preview_limit=_SPLIT_WARNING_EXPECTED_PREVIEW_LIMIT,
 ):
     """Emit a diagnostic when lepton-flavour split channels are unavailable."""
+
+    if not is_lepton_flavor_in_pkl:
+        return
 
     reference_channel_map = reference_channel_map or {}
     available_channels = _preview_channel_axis_labels(histogram_mapping)
     region_label = str(region_name or "<unknown>").upper()
 
-    expected_split = sorted(
-        {
-            channel_name
-            for channel_bins in reference_channel_map.values()
-            for channel_name in channel_bins or ()
-            if _extract_lepflav_token(channel_name)
-        }
-    )
+    expected_split = []
+    for channel_bins in reference_channel_map.values():
+        for channel_name in channel_bins or ():
+            token = _parse_lepflav_token_for_region(
+                channel_name,
+                region_name=region_label,
+                is_lepton_flavor_in_pkl=is_lepton_flavor_in_pkl,
+            )
+            if token:
+                expected_split.append(channel_name)
+    expected_split = sorted(dict.fromkeys(expected_split))
 
     available_summary = (
         ", ".join(sorted(map(str, available_channels))) if available_channels else "<none>"
@@ -917,12 +1029,15 @@ def _augment_split_channel_entries(
     available_channels=None,
     reference_channel_map=None,
     channel_mode=None,
+    region_name=None,
+    is_lepton_flavor_in_pkl=False,
 ):
     """Inject split-lepton categories from the reference map when available."""
 
-    if channel_mode != "per-channel":
+    if channel_mode != "per-channel" or not is_lepton_flavor_in_pkl:
         return channel_dict
 
+    region_label = str(region_name or "<unknown>").upper()
     available_set = {str(label) for label in available_channels or ()}
     if not available_set:
         return channel_dict
@@ -936,11 +1051,30 @@ def _augment_split_channel_entries(
         filtered_bins = [name for name in bin_names if name in available_set]
         if not filtered_bins:
             continue
-        if not any(_extract_lepflav_token(name) for name in filtered_bins):
-            continue
+        for bin_name in filtered_bins:
+            _parse_lepflav_token_for_region(
+                bin_name,
+                region_name=region_label,
+                is_lepton_flavor_in_pkl=is_lepton_flavor_in_pkl,
+            )
         augmented[key] = filtered_bins
 
     return augmented
+
+
+def _build_split_channel_key(base_key, lepflav_token):
+    """Return a deterministic split-channel label keeping any jet suffix at the end."""
+
+    njet_suffix = _extract_njet_suffix(base_key)
+    core_label = _strip_njet_suffix(base_key) if njet_suffix else base_key
+    normalized_token = str(lepflav_token).strip().lower()
+
+    if not core_label.endswith(f"_{normalized_token}"):
+        core_label = f"{core_label}_{normalized_token}"
+
+    if njet_suffix:
+        return _append_njet_suffix(core_label, njet_suffix)
+    return core_label
 
 
 def _group_channels_by_yearless_label(
@@ -948,11 +1082,16 @@ def _group_channels_by_yearless_label(
     *,
     preserve_njets=False,
     available_channels=None,
+    region_name=None,
+    is_lepton_flavor_in_pkl=False,
 ):
     """Return grouped channel entries and their display labels."""
 
+    del preserve_njets
+
     grouped = OrderedDict()
     available_channels = tuple(available_channels or ())
+    region_label = str(region_name or "<unknown>").upper()
 
     for key, channel_bins in channel_dict.items():
         normalized_key = _strip_year_token(key)
@@ -985,33 +1124,24 @@ def _group_channels_by_yearless_label(
         bin_names = list(bucket.keys())
         if not bin_names:
             continue
-        token_groups = OrderedDict()
-        for bin_name in bin_names:
-            token = _extract_lepflav_token(bin_name)
-            token_groups.setdefault(token, []).append(bin_name)
-
-        recognised_tokens = [token for token in token_groups if token]
-
-        if len(recognised_tokens) > 1:
-            for token in recognised_tokens:
-                new_key = (
-                    key
-                    if key.endswith(f"_{token}")
-                    else f"{key}_{token}"
-                )
-                normalized[new_key] = token_groups[token]
-                display_labels[new_key] = _derive_channel_display_label(
-                    new_key, token_groups[token]
-                )
-            if None in token_groups:
-                normalized[key] = token_groups[None]
-                display_labels[key] = _derive_channel_display_label(
-                    key, token_groups[None]
-                )
+        if not is_lepton_flavor_in_pkl:
+            normalized[key] = bin_names
+            display_labels[key] = key
             continue
 
-        normalized[key] = bin_names
-        display_labels[key] = _derive_channel_display_label(key, bin_names)
+        token_groups = OrderedDict()
+        for bin_name in bin_names:
+            token = _parse_lepflav_token_for_region(
+                bin_name,
+                region_name=region_label,
+                is_lepton_flavor_in_pkl=is_lepton_flavor_in_pkl,
+            )
+            token_groups.setdefault(token, []).append(bin_name)
+
+        for token, grouped_bins in token_groups.items():
+            new_key = _build_split_channel_key(key, token)
+            normalized[new_key] = grouped_bins
+            display_labels[new_key] = new_key
 
     return normalized, display_labels
 
@@ -2236,6 +2366,8 @@ def _prepare_variable_payload(
         available_channels=available_channels,
         reference_channel_map=region_ctx.channel_map,
         channel_mode=region_ctx.channel_mode,
+        region_name=region_ctx.name,
+        is_lepton_flavor_in_pkl=region_ctx.is_lepton_flavor_in_pkl,
     )
 
     channel_dict = _maybe_preserve_njet_bins(
@@ -2253,6 +2385,8 @@ def _prepare_variable_payload(
             channel_dict,
             preserve_njets=region_ctx.preserve_njets_bins,
             available_channels=available_channels,
+            region_name=region_ctx.name,
+            is_lepton_flavor_in_pkl=region_ctx.is_lepton_flavor_in_pkl,
         )
     else:
         channel_display_labels = {key: key for key in channel_dict.keys()}
@@ -2702,7 +2836,7 @@ def _render_variable_category(
                     data_empty=data_empty,
                 )
                 return 0, 0, html_dirs
-        title = hist_cat + "_" + var_name
+        title = output_category_name + "_" + var_name
         if unit_norm_bool:
             title = title + "_unitnorm"
         has_syst_inputs = any(
@@ -2863,7 +2997,7 @@ def _render_variable_category(
                 data_empty=data_empty,
             )
             return 0, 0, html_dirs
-        title = f"{display_label}_{var_name}"
+        title = f"{output_category_name}_{var_name}"
         if not region_ctx.preserve_njets_bins:
             title = re.sub(r"_(\d+)j(?=_)", "", title, flags=re.IGNORECASE)
         if unit_norm_bool:
@@ -4730,6 +4864,7 @@ class RegionContext(object):
         channel_output_mode="merged",
         channel_aliases=None,
         channel_dict_name=None,
+        is_lepton_flavor_in_pkl=False,
     ):
         self.name = name
         self.dict_of_hists = dict_of_hists
@@ -4755,6 +4890,7 @@ class RegionContext(object):
         self.channel_base_to_alias = channel_namespace["base_to_alias"]
         self.channel_alias_to_bases = channel_namespace["alias_to_bases"]
         self.channel_output_names = channel_namespace["output_name_by_base"]
+        self.is_lepton_flavor_in_pkl = bool(is_lepton_flavor_in_pkl)
         self.group_patterns = group_patterns
         self.group_map = group_map
         self.all_samples = all_samples
@@ -4766,7 +4902,8 @@ class RegionContext(object):
         self.unblind_default = unblind_default
         self.lumi_pair = lumi_pair
         self.channels_split_by_lepflav = bool(
-            yt.is_split_by_lepflav(
+            self.is_lepton_flavor_in_pkl
+            and yt.is_split_by_lepflav(
                 dict_of_hists, reference_channel_map=self.channel_map
             )
         )
@@ -4868,6 +5005,10 @@ def build_region_context(
     region_upper = region.upper()
     if region_upper not in ["CR","SR"]:
         raise ValueError(f"Unsupported region '{region}'.")
+    region_channel_cfg = _resolve_region_channel_config(region_upper)
+    is_lepton_flavor_in_pkl = bool(
+        region_channel_cfg.get("is_lepton_flavor_in_pkl", False)
+    )
 
     mc_wl = []
     mc_bl = ["data"]
@@ -5220,6 +5361,7 @@ def build_region_context(
         channel_output_mode=channel_output_mode,
         channel_aliases=channel_aliases,
         channel_dict_name=channel_dict_name,
+        is_lepton_flavor_in_pkl=is_lepton_flavor_in_pkl,
     )
 
 
@@ -6987,15 +7129,25 @@ def run_plots_for_region(
     requested_channel_modes = channel_output_cfg["modes"]
     preserve_njets_bins = channel_output_cfg.get("preserve_njets", False)
     warning_reference_channel_map = _resolve_split_warning_reference_map(region_name)
+    region_channel_cfg = _resolve_region_channel_config(region_name)
+    is_lepton_flavor_in_pkl = bool(
+        region_channel_cfg.get("is_lepton_flavor_in_pkl", False)
+    )
 
     multi_mode = len(requested_channel_modes) > 1
-    split_channels_available = yt.is_split_by_lepflav(
-        dict_of_hists, reference_channel_map=CHANNEL_REFERENCE_MAP
-    )
+    split_channels_available = True
+    if is_lepton_flavor_in_pkl:
+        split_channels_available = yt.is_split_by_lepflav(
+            dict_of_hists, reference_channel_map=CHANNEL_REFERENCE_MAP
+        )
     restored_channel_labels = False
     summary_region_ctx = None
 
-    if not split_channels_available and "per-channel" in requested_channel_modes:
+    if (
+        is_lepton_flavor_in_pkl
+        and not split_channels_available
+        and "per-channel" in requested_channel_modes
+    ):
         restored_channel_labels = yt.restore_split_channel_labels(
             dict_of_hists, reference_channel_map=CHANNEL_REFERENCE_MAP
         )
@@ -7009,6 +7161,7 @@ def run_plots_for_region(
                 dict_of_hists,
                 reference_channel_map=warning_reference_channel_map,
                 region_name=region_name,
+                is_lepton_flavor_in_pkl=is_lepton_flavor_in_pkl,
             )
 
     for channel_mode in requested_channel_modes:

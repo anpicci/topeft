@@ -92,6 +92,7 @@ def _make_region_context(
     channel_mode,
     preserve_njets_bins=False,
     channel_output_mode="merged",
+    is_lepton_flavor_in_pkl=True,
 ):
     sumw2_suffix = "_sumw2"
     sumw2_hists = {}
@@ -130,14 +131,17 @@ def _make_region_context(
         rate_syst_by_sample=None,
         preserve_njets_bins=preserve_njets_bins,
         channel_output_mode=channel_output_mode,
+        is_lepton_flavor_in_pkl=is_lepton_flavor_in_pkl,
     )
 
 
 def _test_channel_map():
     return OrderedDict(
         [
-            ("cr_all_em", {"leaves": ["category_em"], "alias": "cr_all"}),
-            ("cr_all_mm", {"leaves": ["category_mm"], "alias": "cr_all"}),
+            (
+                "cr_all",
+                {"leaves": ["category_em", "category_mm"], "alias": "cr_all"},
+            ),
         ]
     )
 
@@ -206,6 +210,46 @@ def test_output_category_name_uses_alias_mapping():
     )
 
 
+def test_output_category_name_split_lepflav_is_deterministic():
+    variable = "observable"
+    histograms = {
+        variable: _build_histogram(
+            variable,
+            ["2lss_em_CR_2j", "2lss_mm_CR_2j"],
+            hist_type="HistEFT",
+        ),
+        f"{variable}_sumw2": _build_sumw2_histogram(
+            variable,
+            ["2lss_em_CR_2j", "2lss_mm_CR_2j"],
+        ),
+    }
+    channel_map = OrderedDict(
+        [("2lss_CR", {"leaves": ["2lss_em_CR_2j", "2lss_mm_CR_2j"], "alias": "cr_all"})]
+    )
+
+    region_ctx = _make_region_context(
+        histograms,
+        channel_map=channel_map,
+        channel_mode="per-channel",
+    )
+    assert (
+        plots._resolve_output_category_name(region_ctx, "2lss_CR_em_2j")
+        == "cr_all_em_2j"
+    )
+
+    region_ctx_njets = _make_region_context(
+        histograms,
+        channel_map=channel_map,
+        channel_mode="per-channel",
+        preserve_njets_bins=True,
+        channel_output_mode="merged-njets",
+    )
+    assert (
+        plots._resolve_output_category_name(region_ctx_njets, "2lss_CR_em_2j")
+        == "cr_all_em_Nj_2j"
+    )
+
+
 def test_unsplit_channel_output_prunes_flavour_categories():
     variable = "observable"
     histograms = {
@@ -263,6 +307,20 @@ def test_split_mode_skips_when_hist_not_flavour_split(monkeypatch, tmp_path):
         calls.append(region_ctx.channel_mode)
 
     monkeypatch.setattr(plots, "produce_region_plots", fake_produce)
+    monkeypatch.setattr(
+        plots,
+        "_summarize_zero_yield_processes",
+        lambda *args, **kwargs: {
+            "region": "CR",
+            "channels_scanned": 0,
+            "channel_entries": [],
+            "zero_process_total": 0,
+            "data_driven_zero_total": 0,
+            "missing_data_driven_prefixes": set(),
+            "errors": [],
+        },
+    )
+    monkeypatch.setattr(plots, "_emit_zero_yield_summary", lambda *args, **kwargs: None)
 
     with pytest.warns(RuntimeWarning, match="Skipping split channel output"):
         plots.run_plots_for_region(
@@ -521,13 +579,13 @@ def test_split_mode_groups_year_suffixed_channels(monkeypatch, tmp_path):
 
 def test_split_mode_uses_flavour_label_for_single_bin(monkeypatch, tmp_path):
     variable = "observable"
-    channel_bins = ["cr_all_2018_em"]
+    channel_bins = ["category_em_2018"]
     histograms = {
         variable: _build_histogram(variable, channel_bins, hist_type="HistEFT"),
         f"{variable}_sumw2": _build_sumw2_histogram(variable, channel_bins),
     }
 
-    channel_map = OrderedDict([("cr_all_2018", list(channel_bins))])
+    channel_map = OrderedDict([("category_2018", list(channel_bins))])
 
     aggregate_ctx = _make_region_context(
         histograms,
@@ -579,7 +637,7 @@ def test_split_mode_uses_flavour_label_for_single_bin(monkeypatch, tmp_path):
     aggregate_calls = list(render_calls)
     assert aggregate_calls and aggregate_calls[0]["paths"]
     aggregate_dirs = {Path(path).parent.name for path in aggregate_calls[0]["paths"]}
-    assert aggregate_dirs == {"cr_all_2018"}
+    assert aggregate_dirs == {"category_2018"}
 
     plots.produce_region_plots(
         split_ctx,
@@ -597,7 +655,7 @@ def test_split_mode_uses_flavour_label_for_single_bin(monkeypatch, tmp_path):
     per_paths = per_channel_calls[0]["paths"]
     assert per_paths
     per_dirs = {Path(path).parent.name for path in per_paths}
-    assert per_dirs == {"cr_all_em"}
+    assert per_dirs == {"category_em"}
     for saved in per_paths:
         filename = Path(saved)
         assert "2018" not in filename.parent.name
@@ -744,11 +802,13 @@ def test_legacy_channel_modes_merge_njet_bins():
         histograms,
         channel_map=_njets_channel_map(),
         channel_mode="aggregate",
+        is_lepton_flavor_in_pkl=False,
     )
     split_ctx = _make_region_context(
         histograms,
         channel_map=_njets_channel_map(),
         channel_mode="per-channel",
+        is_lepton_flavor_in_pkl=False,
     )
 
     aggregate_payload = plots._prepare_variable_payload(variable, aggregate_ctx)
@@ -767,12 +827,14 @@ def test_njets_modes_preserve_bins_for_all_outputs():
         channel_map=_njets_channel_map(),
         channel_mode="aggregate",
         preserve_njets_bins=True,
+        is_lepton_flavor_in_pkl=False,
     )
     split_ctx = _make_region_context(
         histograms,
         channel_map=_njets_channel_map(),
         channel_mode="per-channel",
         preserve_njets_bins=True,
+        is_lepton_flavor_in_pkl=False,
     )
 
     aggregate_payload = plots._prepare_variable_payload(variable, aggregate_ctx)
@@ -791,6 +853,7 @@ def test_njets_modes_reuse_uncertainty_arrays():
         histograms,
         channel_map=_njets_channel_map(),
         channel_mode="aggregate",
+        is_lepton_flavor_in_pkl=False,
     )
     legacy_payload = plots._prepare_variable_payload(variable, legacy_ctx)
 
@@ -799,6 +862,7 @@ def test_njets_modes_reuse_uncertainty_arrays():
         channel_map=_njets_channel_map(),
         channel_mode="aggregate",
         preserve_njets_bins=True,
+        is_lepton_flavor_in_pkl=False,
     )
     preserve_payload = plots._prepare_variable_payload(variable, preserve_ctx)
 
@@ -839,6 +903,7 @@ def test_preserved_njets_missing_bins_log_and_skip(monkeypatch, caplog, tmp_path
         channel_map=_njets_channel_map(),
         channel_mode="aggregate",
         preserve_njets_bins=True,
+        is_lepton_flavor_in_pkl=False,
     )
 
     payload = plots._prepare_variable_payload(variable, region_ctx)
@@ -974,10 +1039,10 @@ def test_both_njets_channel_output_writes_pngs_and_uncertainties(monkeypatch, tm
         "cr_all_Nj_3j",
     }
     expected_split_dirs = {
-        "cr_all_2j_em_Nj",
-        "cr_all_2j_mm_Nj",
-        "cr_all_3j_em_Nj",
-        "cr_all_3j_mm_Nj",
+        "cr_all_em_Nj_2j",
+        "cr_all_mm_Nj_2j",
+        "cr_all_em_Nj_3j",
+        "cr_all_mm_Nj_3j",
     }
 
     def _stem_to_hist_cat(path):
@@ -992,20 +1057,17 @@ def test_both_njets_channel_output_writes_pngs_and_uncertainties(monkeypatch, tm
         parent = path.parent.name
         seen_dirs.add(parent)
         seen_plots.add(hist_cat)
-        if parent in expected_aggregate_dirs:
-            assert hist_cat in {"cr_all_2j", "cr_all_3j"}
-        else:
-            assert parent in expected_split_dirs
-            assert hist_cat == parent.replace("_Nj", "")
+        assert parent in (expected_aggregate_dirs | expected_split_dirs)
+        assert hist_cat == parent
 
     assert seen_dirs == (expected_aggregate_dirs | expected_split_dirs)
     assert seen_plots == {
-        "cr_all_2j",
-        "cr_all_3j",
-        "cr_all_2j_em",
-        "cr_all_2j_mm",
-        "cr_all_3j_em",
-        "cr_all_3j_mm",
+        "cr_all_Nj_2j",
+        "cr_all_Nj_3j",
+        "cr_all_em_Nj_2j",
+        "cr_all_mm_Nj_2j",
+        "cr_all_em_Nj_3j",
+        "cr_all_mm_Nj_3j",
     }
 
     syst_payloads = {

@@ -500,8 +500,8 @@ def test_both_njets_preserves_variables_for_merged_output(tmp_path):
 
     plot_names = sorted(path.name for path in merged_dir.glob("*.png"))
     assert {
-        "cr_2lss_1j_met.png",
-        "cr_2lss_1j_njets.png",
+        "cr_2lss_Nj_1j_met.png",
+        "cr_2lss_Nj_1j_njets.png",
     }.issubset(set(plot_names)), plot_names
 
 
@@ -783,7 +783,7 @@ def test_cr_zero_yield_summary_reports_variable_and_missing_bins():
         variables=["met"],
     )
 
-    entry = _find_zero_yield_entry(summary, label="cr_2lss", variable="met")
+    entry = _find_zero_yield_entry(summary, label="2lss_CR", variable="met")
     assert entry is not None
     assert "2lss_mm_CR_2j" in entry["missing_bins"]
 
@@ -1025,7 +1025,17 @@ def test_both_includes_split_channels_when_available(tmp_path):
     merged_dir = tmp_path / "cr_2los_Z"
     assert merged_dir.exists()
     merged_plots = {path.name for path in merged_dir.glob("*.png")}
-    assert {"cr_2los_Z_ee_met.png", "cr_2los_Z_mm_met.png"}.issubset(merged_plots)
+    assert {"cr_2los_Z_met.png"}.issubset(merged_plots)
+    split_ee = tmp_path / "cr_2los_Z_ee"
+    split_mm = tmp_path / "cr_2los_Z_mm"
+    assert split_ee.exists()
+    assert split_mm.exists()
+    assert {"cr_2los_Z_ee_met.png"}.issubset(
+        {path.name for path in split_ee.glob("*.png")}
+    )
+    assert {"cr_2los_Z_mm_met.png"}.issubset(
+        {path.name for path in split_mm.glob("*.png")}
+    )
 
 
 def test_split_warning_uses_cr_reference_bins_for_cr_region(monkeypatch, tmp_path):
@@ -1047,7 +1057,7 @@ def test_split_warning_uses_cr_reference_bins_for_cr_region(monkeypatch, tmp_pat
         m.setattr(
             make_cr_and_sr_plots,
             "CR_CHAN_DICT",
-            {"cr_ref": ["cr_only_mm_2j"]},
+            {"cr_ref": ["cr_mm_only_2j"]},
         )
         m.setattr(
             make_cr_and_sr_plots,
@@ -1107,7 +1117,7 @@ def test_split_warning_uses_cr_reference_bins_for_cr_region(monkeypatch, tmp_pat
     warning_text = warning_messages[-1]
     assert "region=CR" in warning_text
     assert "Expected flavour-split bins (from configuration): 1 total; showing first 1:" in warning_text
-    assert "cr_only_mm_2j" in warning_text
+    assert "cr_mm_only_2j" in warning_text
     assert "sr_only_ee_2j" not in warning_text
 
 
@@ -1117,7 +1127,7 @@ def test_split_warning_uses_cr_reference_bins_for_cr_region(monkeypatch, tmp_pat
         (
             "CR",
             "CR_CHAN_DICT",
-            "cr_dy_tautau_m",
+            "1l_dy_tautau_CR",
             (
                 "1l_m_dy_tautau_CR_2j",
                 "1l_m_dy_tautau_CR_3j",
@@ -1215,15 +1225,29 @@ def test_njets_channel_output_modes_accept_base_channel_keys(
 
     assert set(captured_channel_maps.keys()) == set(expected_modes)
 
-    expected_keys = {}
-    for bin_name in channel_bins:
-        suffix = make_cr_and_sr_plots._extract_njet_suffix(bin_name)
-        assert suffix is not None
-        expected_keys[f"{base_key}_{suffix}"] = [bin_name]
+    expected_keys_by_mode = {}
+    for mode_name in expected_modes:
+        expected_keys = {}
+        for bin_name in channel_bins:
+            suffix = make_cr_and_sr_plots._extract_njet_suffix(bin_name)
+            assert suffix is not None
+            expected_key = f"{base_key}_{suffix}"
+            if region_name == "CR" and mode_name == "per-channel":
+                token = make_cr_and_sr_plots._parse_lepflav_token_for_region(
+                    bin_name,
+                    region_name="CR",
+                    is_lepton_flavor_in_pkl=True,
+                )
+                expected_key = make_cr_and_sr_plots._build_split_channel_key(
+                    expected_key, token
+                )
+            expected_keys[expected_key] = [bin_name]
+        expected_keys_by_mode[mode_name] = expected_keys
 
     for mode_name in expected_modes:
         transformed_map = captured_channel_maps[mode_name]
         assert base_key not in transformed_map
+        expected_keys = expected_keys_by_mode[mode_name]
         for expected_key, expected_bins in expected_keys.items():
             assert expected_key in transformed_map
             assert transformed_map[expected_key] == expected_bins
@@ -1317,29 +1341,25 @@ def test_all_variables_render_for_merged_and_split_categories(
     merged_plots = {path.name for path in merged_dir.glob("*.png")}
     if channel_output.endswith("njets"):
         expected_merged = {
-            "cr_2los_Z_ee_0j_j0pt.png",
-            "cr_2los_Z_ee_0j_met.png",
-            "cr_2los_Z_mm_0j_j0pt.png",
-            "cr_2los_Z_mm_0j_met.png",
+            "cr_2los_Z_Nj_0j_j0pt.png",
+            "cr_2los_Z_Nj_0j_met.png",
         }
     else:
         expected_merged = {
-            "cr_2los_Z_ee_j0pt.png",
-            "cr_2los_Z_ee_met.png",
-            "cr_2los_Z_mm_j0pt.png",
-            "cr_2los_Z_mm_met.png",
+            "cr_2los_Z_j0pt.png",
+            "cr_2los_Z_met.png",
         }
     assert expected_merged.issubset(merged_plots)
 
     if channel_output.endswith("njets"):
         split_expectations = {
-            "cr_2los_Z_ee_0j_ee_Nj": {
-                "cr_2los_Z_ee_0j_ee_j0pt.png",
-                "cr_2los_Z_ee_0j_ee_met.png",
+            "cr_2los_Z_ee_Nj_0j": {
+                "cr_2los_Z_ee_Nj_0j_j0pt.png",
+                "cr_2los_Z_ee_Nj_0j_met.png",
             },
-            "cr_2los_Z_mm_0j_mm_Nj": {
-                "cr_2los_Z_mm_0j_mm_j0pt.png",
-                "cr_2los_Z_mm_0j_mm_met.png",
+            "cr_2los_Z_mm_Nj_0j": {
+                "cr_2los_Z_mm_Nj_0j_j0pt.png",
+                "cr_2los_Z_mm_Nj_0j_met.png",
             },
         }
         for dir_name, expected_plots in split_expectations.items():
@@ -1348,9 +1368,21 @@ def test_all_variables_render_for_merged_and_split_categories(
             split_plots = {path.name for path in split_dir.glob("*.png")}
             assert expected_plots.issubset(split_plots)
     else:
-        # Alias routing keeps split outputs in the merged folder for non-njets modes.
-        assert not (tmp_path / "cr_2los_Z_ee").exists()
-        assert not (tmp_path / "cr_2los_Z_mm").exists()
+        split_expectations = {
+            "cr_2los_Z_ee": {
+                "cr_2los_Z_ee_j0pt.png",
+                "cr_2los_Z_ee_met.png",
+            },
+            "cr_2los_Z_mm": {
+                "cr_2los_Z_mm_j0pt.png",
+                "cr_2los_Z_mm_met.png",
+            },
+        }
+        for dir_name, expected_plots in split_expectations.items():
+            split_dir = tmp_path / dir_name
+            assert split_dir.exists()
+            split_plots = {path.name for path in split_dir.glob("*.png")}
+            assert expected_plots.issubset(split_plots)
 
 
 def test_data_driven_reinsertion_respects_year_tokens():

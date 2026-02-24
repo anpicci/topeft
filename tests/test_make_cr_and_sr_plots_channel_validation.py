@@ -31,6 +31,7 @@ def _region_ctx(
             channel_dict_name="CR_CHAN_DICT",
             preserve_njets_bins=preserve_njets_bins,
             channel_output_mode=channel_output_mode,
+            is_lepton_flavor_in_pkl=True,
         )
     return SimpleNamespace(
         name="SR",
@@ -39,6 +40,7 @@ def _region_ctx(
         channel_dict_name="SR_CHAN_DICT",
         preserve_njets_bins=preserve_njets_bins,
         channel_output_mode=channel_output_mode,
+        is_lepton_flavor_in_pkl=False,
     )
 
 
@@ -281,3 +283,30 @@ def test_channel_namespace_allows_shared_alias():
     assert namespace["alias_to_bases"]["merged"] == ("cat_a", "cat_b")
     assert namespace["output_name_by_base"]["cat_a"] == "merged"
     assert namespace["output_name_by_base"]["cat_b"] == "merged"
+
+
+def test_parse_lepflav_token_requires_second_token_when_region_uses_lepflav_in_pkl():
+    token = make_cr_and_sr_plots._parse_lepflav_token_for_region(
+        "2los_em_CRtt_2j",
+        region_name="CR",
+        is_lepton_flavor_in_pkl=True,
+    )
+    assert token == "em"
+
+
+def test_parse_lepflav_token_rejects_missing_or_invalid_token_when_required():
+    with pytest.raises(ValueError, match="REGION_CHANNEL_CONFIG.CR.is_lepton_flavor_in_pkl=true"):
+        make_cr_and_sr_plots._parse_lepflav_token_for_region(
+            "2lss_CR_1j",
+            region_name="CR",
+            is_lepton_flavor_in_pkl=True,
+        )
+
+
+def test_parse_lepflav_token_is_disabled_for_regions_without_lepflav_in_pkl():
+    token = make_cr_and_sr_plots._parse_lepflav_token_for_region(
+        "2lss_p_4j",
+        region_name="SR",
+        is_lepton_flavor_in_pkl=False,
+    )
+    assert token is None
