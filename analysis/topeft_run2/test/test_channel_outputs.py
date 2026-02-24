@@ -202,11 +202,11 @@ def test_output_category_name_uses_alias_mapping():
     )
     assert (
         plots._resolve_output_category_name(region_ctx_njets, "cat_a")
-        == "merged_cat_Nj"
+        == "merged_cat"
     )
     assert (
         plots._resolve_output_category_name(region_ctx_njets, "cat_a_2j")
-        == "merged_cat_Nj_2j"
+        == "merged_cat_2j"
     )
 
 
@@ -246,7 +246,7 @@ def test_output_category_name_split_lepflav_is_deterministic():
     )
     assert (
         plots._resolve_output_category_name(region_ctx_njets, "2lss_CR_em_2j")
-        == "cr_all_em_Nj_2j"
+        == "cr_all_em_2j"
     )
 
 
@@ -1035,14 +1035,14 @@ def test_both_njets_channel_output_writes_pngs_and_uncertainties(monkeypatch, tm
         assert path.exists()
 
     expected_aggregate_dirs = {
-        "cr_all_Nj_2j",
-        "cr_all_Nj_3j",
+        "cr_all_2j",
+        "cr_all_3j",
     }
     expected_split_dirs = {
-        "cr_all_em_Nj_2j",
-        "cr_all_mm_Nj_2j",
-        "cr_all_em_Nj_3j",
-        "cr_all_mm_Nj_3j",
+        "cr_all_em_2j",
+        "cr_all_mm_2j",
+        "cr_all_em_3j",
+        "cr_all_mm_3j",
     }
 
     def _stem_to_hist_cat(path):
@@ -1062,12 +1062,12 @@ def test_both_njets_channel_output_writes_pngs_and_uncertainties(monkeypatch, tm
 
     assert seen_dirs == (expected_aggregate_dirs | expected_split_dirs)
     assert seen_plots == {
-        "cr_all_Nj_2j",
-        "cr_all_Nj_3j",
-        "cr_all_em_Nj_2j",
-        "cr_all_mm_Nj_2j",
-        "cr_all_em_Nj_3j",
-        "cr_all_mm_Nj_3j",
+        "cr_all_2j",
+        "cr_all_3j",
+        "cr_all_em_2j",
+        "cr_all_mm_2j",
+        "cr_all_em_3j",
+        "cr_all_mm_3j",
     }
 
     syst_payloads = {

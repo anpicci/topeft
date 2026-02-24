@@ -495,13 +495,13 @@ def test_both_njets_preserves_variables_for_merged_output(tmp_path):
         verbose=False,
     )
 
-    merged_dir = tmp_path / "cr_2lss_Nj_1j"
+    merged_dir = tmp_path / "cr_2lss_1j"
     assert merged_dir.exists()
 
     plot_names = sorted(path.name for path in merged_dir.glob("*.png"))
     assert {
-        "cr_2lss_Nj_1j_met.png",
-        "cr_2lss_Nj_1j_njets.png",
+        "2lss_CR_1j_met.png",
+        "2lss_CR_1j_njets.png",
     }.issubset(set(plot_names)), plot_names
 
 
@@ -1025,17 +1025,128 @@ def test_both_includes_split_channels_when_available(tmp_path):
     merged_dir = tmp_path / "cr_2los_Z"
     assert merged_dir.exists()
     merged_plots = {path.name for path in merged_dir.glob("*.png")}
-    assert {"cr_2los_Z_met.png"}.issubset(merged_plots)
+    assert {"2los_CRZ_met.png"}.issubset(merged_plots)
     split_ee = tmp_path / "cr_2los_Z_ee"
     split_mm = tmp_path / "cr_2los_Z_mm"
     assert split_ee.exists()
     assert split_mm.exists()
-    assert {"cr_2los_Z_ee_met.png"}.issubset(
+    assert {"2los_CRZ_ee_met.png"}.issubset(
         {path.name for path in split_ee.glob("*.png")}
     )
-    assert {"cr_2los_Z_mm_met.png"}.issubset(
+    assert {"2los_CRZ_mm_met.png"}.issubset(
         {path.name for path in split_mm.glob("*.png")}
     )
+
+
+@pytest.mark.parametrize(
+    "channel_output,required_dirs,forbidden_dirs",
+    [
+        (
+            "merged",
+            {"cr_2lss"},
+            {"cr_2lss_ee", "cr_2lss_mm"},
+        ),
+        (
+            "split",
+            {"cr_2lss_ee", "cr_2lss_mm"},
+            {"cr_2lss"},
+        ),
+        (
+            "both",
+            {"cr_2lss", "cr_2lss_ee", "cr_2lss_mm"},
+            set(),
+        ),
+        (
+            "merged-njets",
+            {"cr_2lss_1j", "cr_2lss_2j"},
+            {
+                "cr_2lss_ee_1j",
+                "cr_2lss_mm_1j",
+                "cr_2lss_ee_2j",
+                "cr_2lss_mm_2j",
+            },
+        ),
+        (
+            "both-njets",
+            {
+                "cr_2lss_1j",
+                "cr_2lss_2j",
+                "cr_2lss_ee_1j",
+                "cr_2lss_mm_1j",
+                "cr_2lss_ee_2j",
+                "cr_2lss_mm_2j",
+            },
+            set(),
+        ),
+    ],
+)
+def test_cr_channel_output_folder_routing_semantics(
+    tmp_path, channel_output, required_dirs, forbidden_dirs
+):
+    h_met = _make_met_histogram_for_channels(
+        (
+            "2lss_ee_CR_1j",
+            "2lss_mm_CR_1j",
+            "2lss_ee_CR_2j",
+            "2lss_mm_CR_2j",
+        )
+    )
+
+    make_cr_and_sr_plots.run_plots_for_region(
+        "CR",
+        {"met": h_met},
+        years=["2022"],
+        save_dir_path=str(tmp_path),
+        channel_output=channel_output,
+        skip_syst_errs=True,
+        workers=1,
+        verbose=False,
+    )
+
+    produced_dirs = {path.name for path in tmp_path.iterdir() if path.is_dir()}
+    assert required_dirs.issubset(produced_dirs)
+    assert produced_dirs.isdisjoint(forbidden_dirs)
+    assert all("_Nj" not in path for path in produced_dirs)
+
+
+@pytest.mark.parametrize(
+    "channel_output,folder_name,expected_filename",
+    [
+        ("merged", "cr_2lss", "2lss_CR_met.png"),
+        ("split", "cr_2lss_ee", "2lss_CR_ee_met.png"),
+        ("both", "cr_2lss", "2lss_CR_met.png"),
+        ("merged-njets", "cr_2lss_1j", "2lss_CR_1j_met.png"),
+        ("both-njets", "cr_2lss_ee_1j", "2lss_CR_ee_1j_met.png"),
+    ],
+)
+def test_png_stems_use_category_labels_not_folder_aliases(
+    tmp_path, channel_output, folder_name, expected_filename
+):
+    h_met = _make_met_histogram_for_channels(
+        (
+            "2lss_ee_CR_1j",
+            "2lss_mm_CR_1j",
+            "2lss_ee_CR_2j",
+            "2lss_mm_CR_2j",
+        )
+    )
+
+    make_cr_and_sr_plots.run_plots_for_region(
+        "CR",
+        {"met": h_met},
+        years=["2022"],
+        save_dir_path=str(tmp_path),
+        channel_output=channel_output,
+        skip_syst_errs=True,
+        workers=1,
+        verbose=False,
+    )
+
+    folder = tmp_path / folder_name
+    assert folder.exists()
+    plot_names = {path.name for path in folder.glob("*.png")}
+    assert expected_filename in plot_names
+    assert f"{folder_name}_met.png" not in plot_names
 
 
 def test_split_warning_uses_cr_reference_bins_for_cr_region(monkeypatch, tmp_path):
@@ -1333,7 +1444,7 @@ def test_all_variables_render_for_merged_and_split_categories(
         )
 
     merged_dir_name = (
-        "cr_2los_Z_Nj_0j" if channel_output.endswith("njets") else "cr_2los_Z"
+        "cr_2los_Z_0j" if channel_output.endswith("njets") else "cr_2los_Z"
     )
     merged_dir = tmp_path / merged_dir_name
     assert merged_dir.exists()
@@ -1341,25 +1452,25 @@ def test_all_variables_render_for_merged_and_split_categories(
     merged_plots = {path.name for path in merged_dir.glob("*.png")}
     if channel_output.endswith("njets"):
         expected_merged = {
-            "cr_2los_Z_Nj_0j_j0pt.png",
-            "cr_2los_Z_Nj_0j_met.png",
+            "2los_CRZ_0j_j0pt.png",
+            "2los_CRZ_0j_met.png",
         }
     else:
         expected_merged = {
-            "cr_2los_Z_j0pt.png",
-            "cr_2los_Z_met.png",
+            "2los_CRZ_j0pt.png",
+            "2los_CRZ_met.png",
         }
     assert expected_merged.issubset(merged_plots)
 
     if channel_output.endswith("njets"):
         split_expectations = {
-            "cr_2los_Z_ee_Nj_0j": {
-                "cr_2los_Z_ee_Nj_0j_j0pt.png",
-                "cr_2los_Z_ee_Nj_0j_met.png",
+            "cr_2los_Z_ee_0j": {
+                "2los_CRZ_ee_0j_j0pt.png",
+                "2los_CRZ_ee_0j_met.png",
             },
-            "cr_2los_Z_mm_Nj_0j": {
-                "cr_2los_Z_mm_Nj_0j_j0pt.png",
-                "cr_2los_Z_mm_Nj_0j_met.png",
+            "cr_2los_Z_mm_0j": {
+                "2los_CRZ_mm_0j_j0pt.png",
+                "2los_CRZ_mm_0j_met.png",
             },
         }
         for dir_name, expected_plots in split_expectations.items():
@@ -1370,12 +1481,12 @@ def test_all_variables_render_for_merged_and_split_categories(
     else:
         split_expectations = {
             "cr_2los_Z_ee": {
-                "cr_2los_Z_ee_j0pt.png",
-                "cr_2los_Z_ee_met.png",
+                "2los_CRZ_ee_j0pt.png",
+                "2los_CRZ_ee_met.png",
             },
             "cr_2los_Z_mm": {
-                "cr_2los_Z_mm_j0pt.png",
-                "cr_2los_Z_mm_met.png",
+                "2los_CRZ_mm_j0pt.png",
+                "2los_CRZ_mm_met.png",
             },
         }
         for dir_name, expected_plots in split_expectations.items():

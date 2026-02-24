@@ -680,10 +680,6 @@ def _resolve_output_category_name(region_ctx, category_name):
     """Return the output-folder category label for *category_name*."""
 
     output_base, suffix = _resolve_output_components(region_ctx, category_name)
-    if _uses_merged_njets_output_mode(
-        getattr(region_ctx, "channel_output_mode", None)
-    ):
-        output_base = _append_merged_njets_folder_suffix(output_base)
     if suffix:
         return _append_njet_suffix(output_base, suffix)
     return output_base
@@ -709,16 +705,6 @@ def _append_njet_suffix(label, suffix):
     if label.lower().endswith(f"_{normalized_suffix}"):
         return label
     return f"{label}_{normalized_suffix}"
-
-
-def _append_merged_njets_folder_suffix(label):
-    """Return *label* with the deterministic merged-njets ``_Nj`` marker."""
-
-    if not isinstance(label, str):
-        label = str(label)
-    if label.endswith("_Nj"):
-        return label
-    return f"{label}_Nj"
 
 
 def _uses_merged_njets_output_mode(channel_output_mode):
@@ -2601,6 +2587,7 @@ def _render_variable_category(
         if region_ctx.preserve_njets_bins
         else re.sub(r"_(\d+)j$", "", raw_display_label, flags=re.IGNORECASE)
     )
+    category_label = str(raw_display_label)
     output_category_name = _resolve_output_category_name(region_ctx, raw_display_label)
     save_dir_path_tmp = os.path.join(base_dir, output_category_name)
     os.makedirs(save_dir_path_tmp, exist_ok=True)
@@ -2836,7 +2823,7 @@ def _render_variable_category(
                     data_empty=data_empty,
                 )
                 return 0, 0, html_dirs
-        title = output_category_name + "_" + var_name
+        title = category_label + "_" + var_name
         if unit_norm_bool:
             title = title + "_unitnorm"
         has_syst_inputs = any(
@@ -2997,9 +2984,7 @@ def _render_variable_category(
                 data_empty=data_empty,
             )
             return 0, 0, html_dirs
-        title = f"{output_category_name}_{var_name}"
-        if not region_ctx.preserve_njets_bins:
-            title = re.sub(r"_(\d+)j(?=_)", "", title, flags=re.IGNORECASE)
+        title = f"{category_label}_{var_name}"
         if unit_norm_bool:
             title = f"{title}_unitnorm"
         bins_override = region_ctx.analysis_bins.get(var_name)
@@ -3041,12 +3026,6 @@ def _render_variable_category(
             return 0, 0, html_dirs
         save_path = os.path.join(save_dir_path_tmp, f"{title}.png")
         fig.savefig(save_path, bbox_inches="tight", pad_inches=0.05)
-        if not region_ctx.preserve_njets_bins:
-            clean_save_path = re.sub(
-                r"_(\d+)j(?=_[^/]+$)", "", save_path, flags=re.IGNORECASE
-            )
-            if clean_save_path != save_path:
-                os.replace(save_path, clean_save_path)
         _close_figure_payload(fig)
         has_syst_inputs = any(
             err is not None

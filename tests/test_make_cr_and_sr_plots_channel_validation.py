@@ -310,3 +310,23 @@ def test_parse_lepflav_token_is_disabled_for_regions_without_lepflav_in_pkl():
         is_lepton_flavor_in_pkl=False,
     )
     assert token is None
+
+
+def test_output_folder_njets_suffix_uses_real_bin_without_literal_marker():
+    region_ctx = SimpleNamespace(
+        is_lepton_flavor_in_pkl=True,
+        channel_output_names={"2los_CRZ": "cr_2los_Z"},
+        channel_output_mode="merged-njets",
+    )
+
+    merged_label = make_cr_and_sr_plots._resolve_output_category_name(
+        region_ctx, "2los_CRZ_0j"
+    )
+    split_label = make_cr_and_sr_plots._resolve_output_category_name(
+        region_ctx, "2los_CRZ_ee_0j"
+    )
+
+    assert merged_label == "cr_2los_Z_0j"
+    assert split_label == "cr_2los_Z_ee_0j"
+    assert "_Nj" not in merged_label
+    assert "_Nj" not in split_label
