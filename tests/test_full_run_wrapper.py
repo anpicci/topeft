@@ -50,6 +50,8 @@ def test_full_run_sh_rejects_unknown_flags() -> None:
 
 def test_full_run_sh_runs_with_options_only(tmp_path: Path) -> None:
     repo_root, script_path = _wrapper_path()
+    output_dir = tmp_path / "pretend_output"
+    outname = "test_wrapper_pretend"
     options_file = tmp_path / "wrapper_options.yml"
     options_file.write_text(
         "\n".join(
@@ -58,6 +60,8 @@ def test_full_run_sh_runs_with_options_only(tmp_path: Path) -> None:
                 "  executor: futures",
                 "  pretend: true",
                 "  summary_verbosity: none",
+                f"  outpath: {output_dir.as_posix()}",
+                f"  outname: {outname}",
                 "  jsonFiles:",
                 "    - ../../input_samples/sample_jsons/test_samples/UL17_private_ttH_for_CI.json",
                 "profiles:",
@@ -73,11 +77,26 @@ def test_full_run_sh_runs_with_options_only(tmp_path: Path) -> None:
 
     completed = subprocess.run(
         [str(script_path), "--options", f"{options_file}:sr"],
-        check=True,
+        check=False,
         capture_output=True,
         text=True,
         cwd=repo_root / "analysis" / "topeft_run2",
     )
 
-    combined_output = completed.stdout + completed.stderr
-    assert "Pretend mode active" in combined_output
+    assert completed.returncode == 0
+    output_file = output_dir / f"{outname}.pkl.gz"
+    assert not output_file.exists()
+    if output_dir.exists():
+        assert list(output_dir.iterdir()) == []
+
+    combined_output = (completed.stdout + completed.stderr).lower()
+    forbidden_markers = (
+        "submitting histogram task",
+        "starting histogram task",
+        "completed histogram task",
+        "launching coffeadynamicdatareduction",
+        "saving output in",
+        "finished writing",
+    )
+    for marker in forbidden_markers:
+        assert marker not in combined_output

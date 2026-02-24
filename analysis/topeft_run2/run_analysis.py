@@ -667,7 +667,7 @@ def main(argv: Sequence[str] | None = None) -> None:
         metadata_provenance,
     )
     logger.info(
-        "Resolved equivalent CLI without --options:\n  %s",
+        "Informational (best-effort): resolved equivalent CLI without --options:\n  %s",
         _build_equivalent_cli_call(
             config,
             scenario_name=scenario_name,
