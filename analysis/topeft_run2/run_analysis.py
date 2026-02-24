@@ -161,13 +161,6 @@ def build_parser() -> argparse.ArgumentParser:
     )
     EXECUTOR_CLI.configure_parser(parser)
     parser.add_argument(
-        "--nworkers",
-        "-n",
-        type=int,
-        default=8,
-        help="Number of workers",
-    )
-    parser.add_argument(
         "--chunksize",
         "-s",
         type=int,

@@ -182,6 +182,16 @@ class ExecutorCLIHelper:
     def configure_parser(self, parser: argparse.ArgumentParser) -> None:
         """Add executor-related options to ``parser``."""
 
+        option_actions = parser._option_string_actions
+        if "--nworkers" not in option_actions and "-n" not in option_actions:
+            parser.add_argument(
+                "--nworkers",
+                "-n",
+                type=int,
+                default=self._futures_spec.workers_default,
+                help="Number of workers",
+            )
+
         parser.add_argument(
             "--executor",
             "-x",

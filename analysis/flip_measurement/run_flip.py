@@ -92,13 +92,6 @@ parser.add_argument(
     help="Number of events per chunk",
 )
 parser.add_argument(
-    "--nworkers",
-    "-n",
-    default=8,
-    type=int,
-    help="Number of workers",
-)
-parser.add_argument(
     "--max-files",
     "-N",
     default=0,

@@ -60,7 +60,6 @@ parser = argparse.ArgumentParser(
 )
 parser.add_argument('inputFiles'            , nargs='?', default='', help = 'JSON or CFG file(s) containing sample metadata')
 parser.add_argument('--chunksize','-s'      , default=100000, type=int, help = 'Number of events per chunk')
-parser.add_argument('--nworkers','-n'       , default=8, type=int, help = 'Number of workers')
 parser.add_argument('--max-files','-N'      , default=0, type=int, help = 'Limit the number of ROOT files per sample (useful for testing)')
 parser.add_argument('--nchunks','-c'        , default=0, type=int, help = 'Limit the number of chunks processed')
 parser.add_argument('--outname','-o'        , default='flipTopEFT', help = 'Base name for the output histogram file')
