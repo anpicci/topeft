@@ -1,15 +1,38 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
+from analysis.topeft_run2 import workflow as workflow_module
 from analysis.topeft_run2.run_analysis_helpers import RunConfig
 from analysis.topeft_run2.workflow import (
+    RunWorkflow,
+    TaskVineContext,
     _resolve_ddr_preprocess_paths,
-    flatten_ddr_result_payload,
     stage_ddr_proxy,
 )
+
+
+class _DummyExecutorFactory:
+    def __init__(self, context: TaskVineContext) -> None:
+        self._context = context
+
+    def taskvine_context(self, executor: str) -> TaskVineContext:
+        assert executor == "taskvine"
+        return self._context
+
+
+class _DummyManager:
+    def enable_monitoring(self, watchdog: bool = False) -> None:
+        _ = watchdog
+
+    def tune(self, *_args, **_kwargs) -> None:
+        return
+
+    def shutdown(self) -> None:
+        return
 
 
 def test_stage_ddr_proxy_copies_to_proxy_pem(tmp_path: Path) -> None:
@@ -84,33 +107,97 @@ def test_preprocess_paths_reuse_mode_keeps_explicit_save(tmp_path: Path) -> None
     assert save_path == str(explicit_save)
 
 
-def test_flatten_ddr_result_payload_uses_canonical_key_order() -> None:
-    payload = {
-        "proc_a": {
-            "dataset_a": {
-                ("ptbl", "2lss", "isSR_2l", "TTW", "nominal"): 1,
-                ("ptbl", "2lss", "isSR_2l", "TTW", ("JES", "Up")): 2,
-                "region_yields": {"ignored": True},
-            }
-        }
-    }
+def test_execute_ddr_sets_proxy_env_var_to_proxy_pem_basename(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source_proxy = tmp_path / "user_proxy.pem"
+    source_proxy.write_text("proxy-data", encoding="utf-8")
+    staging_dir = tmp_path / "staging"
+    logs_dir = tmp_path / "logs" / "taskvine"
+    logs_dir.mkdir(parents=True, exist_ok=True)
 
-    flattened = flatten_ddr_result_payload(payload)
+    context = TaskVineContext(
+        executor="taskvine",
+        port_range=(9123, 9123),
+        staging_dir=staging_dir,
+        logs_dir=logs_dir,
+        manager_name="test-manager",
+        manager_template="test-manager-{pid}",
+        environment_file=None,
+        extra_input_files=(),
+    )
+    config = RunConfig(
+        executor="taskvine",
+        ddr_x509_proxy=str(source_proxy),
+        nworkers=1,
+    )
 
-    assert list(flattened.keys()) == [
-        ("TTW", "2lss", "ptbl", "isSR_2l", "JES:Up"),
-        ("TTW", "2lss", "ptbl", "isSR_2l", "nominal"),
-    ]
-    assert flattened[("TTW", "2lss", "ptbl", "isSR_2l", "nominal")] == 1
-    assert flattened[("TTW", "2lss", "ptbl", "isSR_2l", "JES:Up")] == 2
+    workflow = RunWorkflow(
+        config=config,
+        metadata={},
+        sample_loader=SimpleNamespace(),
+        channel_planner=SimpleNamespace(),
+        histogram_planner=SimpleNamespace(),
+        executor_factory=_DummyExecutorFactory(context),
+        weight_variations=(),
+        metadata_path="metadata.yml",
+    )
+    monkeypatch.setattr(
+        workflow,
+        "_build_ddr_processors",
+        lambda **_kwargs: {"proc": object()},
+    )
+    monkeypatch.setattr(
+        workflow,
+        "_create_ddr_manager",
+        lambda _context: _DummyManager(),
+    )
+    monkeypatch.setattr(
+        workflow_module,
+        "taskvine_log_configurator",
+        lambda _logs_dir: (lambda _manager: None),
+    )
 
+    captured: dict[str, object] = {}
 
-def test_flatten_ddr_result_payload_merges_duplicates() -> None:
-    payload = {
-        "proc_a": {"dataset": {("ptbl", "2lss", "isSR_2l", "TTW", "nominal"): 1}},
-        "proc_b": {"dataset": {("ptbl", "2lss", "isSR_2l", "TTW", "nominal"): 2}},
-    }
+    def _fake_build_ddr_data(_flist, *, object_path: str = "Events"):
+        _ = object_path
+        return {"sampleA": {"files": {"/tmp/input.root": {"object_path": "Events"}}}}
 
-    flattened = flatten_ddr_result_payload(payload)
+    def _fake_run_ddr(**kwargs):
+        captured.update(kwargs)
+        return {}
 
-    assert flattened[("TTW", "2lss", "ptbl", "isSR_2l", "nominal")] == 3
+    monkeypatch.setattr(
+        workflow_module.topcoffea.modules.dynamic_data_reduction,
+        "build_ddr_data_from_flist",
+        _fake_build_ddr_data,
+    )
+    monkeypatch.setattr(
+        workflow_module.topcoffea.modules.dynamic_data_reduction,
+        "run_ddr",
+        _fake_run_ddr,
+    )
+
+    workflow._execute_ddr(
+        histogram_plan=SimpleNamespace(tasks=()),
+        samplesdict={},
+        flist={},
+        golden_jsons={},
+        ecut_threshold=None,
+        analysis_processor_module=SimpleNamespace(),
+        coffea_processor_module=SimpleNamespace(),
+    )
+
+    ddr_kwargs = captured["ddr_kwargs"]
+    preprocess_kwargs = captured["preprocess_kwargs"]
+    extra_files = captured["extra_files"]
+    assert isinstance(ddr_kwargs, dict)
+    assert isinstance(preprocess_kwargs, dict)
+    assert isinstance(extra_files, list)
+
+    assert ddr_kwargs["environment_variables"]["X509_USER_PROXY"] == "proxy.pem"
+    assert preprocess_kwargs["environment_variables"]["X509_USER_PROXY"] == "proxy.pem"
+    assert str(ddr_kwargs["x509_proxy"]).endswith("proxy.pem")
+    assert any(str(path).endswith("proxy.pem") for path in extra_files)

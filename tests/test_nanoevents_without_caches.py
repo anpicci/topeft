@@ -88,6 +88,8 @@ def _build_minimal_processor(monkeypatch):
 
     variation_objects = ap.VariationObjects.from_base(base_objects)
     dataset = ap.DatasetContext(
+        sample_name="sample",
+        sample_metadata={"histAxisName": "sample"},
         dataset="sample",
         trigger_dataset="sample",
         hist_axis_name="sample",
