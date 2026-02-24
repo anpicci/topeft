@@ -50,6 +50,7 @@ def test_executor_cli_taskvine_configuration(tmp_path):
 
     parser = argparse.ArgumentParser()
     helper.configure_parser(parser)
+    parser.add_argument("--nworkers", type=int, default=8)
 
     scratch_dir = tmp_path / "staging"
     args = parser.parse_args(
@@ -69,7 +70,7 @@ def test_executor_cli_taskvine_configuration(tmp_path):
             "--resources-mode",
             "manual",
             "--no-taskvine-print-stdout",
-            "--futures-workers",
+            "--nworkers",
             "4",
             "--futures-status",
             "--futures-tail-timeout",

@@ -92,6 +92,13 @@ parser.add_argument(
     help="Number of events per chunk",
 )
 parser.add_argument(
+    "--nworkers",
+    "-n",
+    default=8,
+    type=int,
+    help="Number of workers",
+)
+parser.add_argument(
     "--max-files",
     "-N",
     default=0,
@@ -242,14 +249,14 @@ def _run_executor(
     processor_instance,
     extra_input_files_lst,
 ):
-    futures_workers = executor_config.futures.workers
+    nworkers = executor_config.futures.workers
     futures_status = executor_config.futures.status
     futures_tail_timeout = executor_config.futures.tailtimeout
 
     if executor_name == "futures":
         exec_instance = build_futures_executor(
             processor,
-            workers=futures_workers,
+            workers=nworkers,
             status=futures_status,
             tailtimeout=futures_tail_timeout,
         )

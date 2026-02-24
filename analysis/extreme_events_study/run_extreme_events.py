@@ -60,6 +60,7 @@ parser = argparse.ArgumentParser(
 )
 parser.add_argument('inputFiles'            , nargs='?', default='', help = 'JSON or CFG file(s) containing sample metadata')
 parser.add_argument('--chunksize','-s'      , default=100000, type=int, help = 'Number of events per chunk')
+parser.add_argument('--nworkers','-n'       , default=8, type=int, help = 'Number of workers')
 parser.add_argument('--max-files','-N'      , default=0, type=int, help = 'Limit the number of ROOT files per sample (useful for testing)')
 parser.add_argument('--nchunks','-c'        , default=0, type=int, help = 'Limit the number of chunks processed')
 parser.add_argument('--outname','-o'        , default='flipTopEFT', help = 'Base name for the output histogram file')
@@ -100,7 +101,7 @@ outpath    = args.outpath
 treename   = args.treename
 xrd        = args.xrd
 max_files  = args.max_files
-futures_workers = executor_config.futures.workers
+nworkers = executor_config.futures.workers
 futures_status = executor_config.futures.status
 futures_tail_timeout = executor_config.futures.tailtimeout
 
@@ -146,7 +147,7 @@ tstart = time.time()
 if executor == "futures":
     exec_instance = build_futures_executor(
         processor,
-        workers=futures_workers,
+        workers=nworkers,
         status=futures_status,
         tailtimeout=futures_tail_timeout,
     )

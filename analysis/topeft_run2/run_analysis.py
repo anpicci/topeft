@@ -97,7 +97,6 @@ EXECUTOR_CLI = ExecutorCLIHelper(
     remote_environment=remote_environment,
     futures_spec=FuturesArgumentSpec(
         workers_default=8,
-        include_workers=False,
         include_status=True,
         include_tail_timeout=True,
         include_memory=True,

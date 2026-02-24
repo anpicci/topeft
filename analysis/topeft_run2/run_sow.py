@@ -61,6 +61,7 @@ parser = argparse.ArgumentParser(
 )
 parser.add_argument('inputFiles'       , nargs='?', default='', help = 'JSON or CFG file(s) containing sample metadata')
 parser.add_argument('--chunksize','-s' , default=100000, type=int, help = 'Number of events per chunk')
+parser.add_argument('--nworkers','-n'  , default=8, type=int, help = 'Number of workers')
 parser.add_argument('--max-files','-N' , default=0, type=int, help = 'Limit the number of ROOT files per sample (useful for tests)')
 parser.add_argument('--nchunks','-c'   , default=0, type=int, help = 'Limit the number of chunks processed')
 parser.add_argument('--outname','-o'   , default='sowTopEFT', help = 'Base name for the output histogram file')
@@ -100,6 +101,7 @@ executor_config = EXECUTOR_CLI.parse_args(args)
 inputFiles = args.inputFiles.replace(' ','').split(',')  # Remove whitespace and split by commas
 executor   = executor_config.executor
 chunksize  = args.chunksize
+nworkers   = executor_config.futures.workers
 nchunks    = args.nchunks if args.nchunks else None
 outname    = args.outname
 outpath    = args.outpath
@@ -108,7 +110,6 @@ xrd        = args.xrd
 max_files  = args.max_files
 wc_lst     = args.wc_list if args.wc_list is not None else []
 debug_mode = args.debug
-futures_workers = executor_config.futures.workers
 futures_status = executor_config.futures.status
 futures_tail_timeout = executor_config.futures.tailtimeout
 futures_memory = executor_config.futures.memory
@@ -171,7 +172,7 @@ tstart = time.time()
 if executor == "futures":
     exec_instance = build_futures_executor(
         processor,
-        workers=futures_workers,
+        workers=nworkers,
         status=futures_status,
         tailtimeout=futures_tail_timeout,
     )

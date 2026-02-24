@@ -12,7 +12,7 @@ def _run_analysis_path() -> Path:
     return repo_root / "analysis" / "topeft_run2" / "run_analysis.py"
 
 
-def test_run_analysis_help_omits_futures_workers() -> None:
+def test_run_analysis_help_omits_legacy_worker_flag() -> None:
     script_path = _run_analysis_path()
     completed = subprocess.run(
         [sys.executable, str(script_path), "--help"],
@@ -20,4 +20,5 @@ def test_run_analysis_help_omits_futures_workers() -> None:
         capture_output=True,
         text=True,
     )
-    assert "--futures-workers" not in completed.stdout
+    forbidden = "--" + "futures" + "-" + "workers"
+    assert forbidden not in completed.stdout

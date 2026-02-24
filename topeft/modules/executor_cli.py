@@ -24,7 +24,6 @@ class FuturesArgumentSpec:
     """Configuration describing which futures options to expose on the CLI."""
 
     workers_default: int = 8
-    include_workers: bool = True
     include_status: bool = True
     include_tail_timeout: bool = True
     include_memory: bool = False
@@ -252,14 +251,6 @@ class ExecutorCLIHelper:
                 help="Forward TaskVine worker stdout to the manager logs.",
             )
 
-        if self._futures_spec.include_workers:
-            parser.add_argument(
-                "--futures-workers",
-                type=int,
-                default=self._futures_spec.workers_default,
-                help="Maximum number of local processes for the futures executor.",
-            )
-
         if self._futures_spec.include_status:
             parser.add_argument(
                 "--futures-status",
@@ -343,10 +334,7 @@ class ExecutorCLIHelper:
         )
 
     def _parse_futures(self, args: argparse.Namespace) -> FuturesConfig:
-        if self._futures_spec.include_workers:
-            workers_value = getattr(args, "futures_workers", None)
-        else:
-            workers_value = getattr(args, "nworkers", None)
+        workers_value = getattr(args, "nworkers", None)
         if workers_value is None:
             workers_value = self._futures_spec.workers_default
         workers = max(int(workers_value or 1), 1)
