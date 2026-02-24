@@ -16,6 +16,23 @@ def _make_channel_hist(channels):
     return histogram
 
 
+def _region_ctx(region):
+    region_upper = str(region).upper()
+    if region_upper == "CR":
+        return SimpleNamespace(
+            name="CR",
+            channel_map=make_cr_and_sr_plots.CR_CHAN_DICT,
+            channel_base_to_alias=make_cr_and_sr_plots.CR_CHAN_ALIASES,
+            channel_dict_name="CR_CHAN_DICT",
+        )
+    return SimpleNamespace(
+        name="SR",
+        channel_map=make_cr_and_sr_plots.SR_CHAN_DICT,
+        channel_base_to_alias=make_cr_and_sr_plots.SR_CHAN_ALIASES,
+        channel_dict_name="SR_CHAN_DICT",
+    )
+
+
 def test_global_channel_coverage_reports_variable_level_mismatch():
     histo = _make_channel_hist(["2lss_p_4j", "3l_p_offZ_1b_2j"])
 
@@ -96,7 +113,7 @@ def test_subgroup_validation_requires_explicit_available_channels():
 
 def test_global_validation_allows_sr_aggregated_channels_for_njets():
     histo = _make_channel_hist(["3l_p_offZ_1b", "3l_p_offZ_2b"])
-    region_ctx = SimpleNamespace(name="SR")
+    region_ctx = _region_ctx("SR")
     variable_payload = {
         "hist_mc": histo,
         "hist_data": None,
@@ -110,7 +127,7 @@ def test_global_validation_allows_sr_aggregated_channels_for_njets():
 
 def test_global_validation_remains_strict_for_non_njets_variables():
     histo = _make_channel_hist(["definitely_missing_channel_1j"])
-    region_ctx = SimpleNamespace(name="SR")
+    region_ctx = _region_ctx("SR")
     variable_payload = {
         "hist_mc": histo,
         "hist_data": None,
@@ -125,3 +142,92 @@ def test_global_validation_remains_strict_for_non_njets_variables():
     msg = str(exc_info.value)
     assert "variable 'lj0pt'" in msg
     assert "definitely_missing_channel_1j" in msg
+
+
+def test_global_validation_rejects_unknown_sr_njets_base_without_widening():
+    histo = _make_channel_hist(["unknown_sr_base_channel"])
+    region_ctx = _region_ctx("SR")
+    variable_payload = {
+        "hist_mc": histo,
+        "hist_data": None,
+        "channel_transformations": ["njets"],
+    }
+
+    with pytest.raises(ValueError) as exc_info:
+        make_cr_and_sr_plots._ensure_variable_channel_coverage_validated(
+            "njets", region_ctx, variable_payload
+        )
+
+    msg = str(exc_info.value)
+    assert "variable 'njets'" in msg
+    assert "unknown_sr_base_channel" in msg
+
+
+def test_global_validation_rejects_unknown_cr_transformed_channels():
+    histo = _make_channel_hist(["unknown_cr_channel"])
+    region_ctx = _region_ctx("CR")
+    variable_payload = {
+        "hist_mc": histo,
+        "hist_data": None,
+        "channel_transformations": ["lepflav", "njets"],
+    }
+
+    with pytest.raises(ValueError) as exc_info:
+        make_cr_and_sr_plots._ensure_variable_channel_coverage_validated(
+            "njets", region_ctx, variable_payload
+        )
+
+    msg = str(exc_info.value)
+    assert "variable 'njets'" in msg
+    assert "unknown_cr_channel" in msg
+
+
+def test_channel_namespace_accepts_legacy_and_object_entries():
+    namespace = make_cr_and_sr_plots._build_channel_namespace(
+        {
+            "cat_legacy": ["cat_legacy_2j"],
+            "cat_object": {"leaves": ["cat_object_2j"], "alias": "shared_alias"},
+        },
+        region_label="TEST_CHAN_DICT",
+    )
+
+    assert namespace["base_to_leaves"]["cat_legacy"] == ["cat_legacy_2j"]
+    assert namespace["base_to_leaves"]["cat_object"] == ["cat_object_2j"]
+    assert namespace["base_to_alias"]["cat_legacy"] is None
+    assert namespace["base_to_alias"]["cat_object"] == "shared_alias"
+
+
+def test_channel_namespace_rejects_leaf_overlap():
+    with pytest.raises(ValueError, match="leaf overlap"):
+        make_cr_and_sr_plots._build_channel_namespace(
+            {
+                "cat_a": ["shared_2j"],
+                "cat_b": ["shared_2j"],
+            },
+            region_label="TEST_CHAN_DICT",
+        )
+
+
+def test_channel_namespace_rejects_alias_base_collision():
+    with pytest.raises(ValueError, match="Alias/base collision"):
+        make_cr_and_sr_plots._build_channel_namespace(
+            {
+                "cat_a": {"leaves": ["cat_a_2j"], "alias": "cat_b"},
+                "cat_b": ["cat_b_2j"],
+            },
+            region_label="TEST_CHAN_DICT",
+        )
+
+
+def test_channel_namespace_allows_shared_alias():
+    namespace = make_cr_and_sr_plots._build_channel_namespace(
+        {
+            "cat_a": {"leaves": ["cat_a_2j"], "alias": "merged"},
+            "cat_b": {"leaves": ["cat_b_2j"], "alias": "merged"},
+        },
+        region_label="TEST_CHAN_DICT",
+    )
+
+    assert namespace["alias_to_bases"]["merged"] == ("cat_a", "cat_b")
+    assert namespace["output_name_by_base"]["cat_a"] == "merged"
+    assert namespace["output_name_by_base"]["cat_b"] == "merged"

@@ -107,6 +107,8 @@ def _fast_sparsehist_from_reduce(cls, cat_axes, dense_axes, init_args, dense_his
 
 
 tc_sparseHist.SparseHist._read_from_reduce = classmethod(_fast_sparsehist_from_reduce)
+# Backward-compatible export used by existing tests/helpers.
+SparseHist = tc_sparseHist.SparseHist
 
 from topcoffea.modules.paths import topcoffea_path as tc_topcoffea_path
 from topeft.modules.paths import topeft_path as te_topeft_path
@@ -116,6 +118,226 @@ import yaml
 
 with open(te_topeft_path("params/cr_sr_plots_metadata.yml")) as f:
     _META = yaml.safe_load(f)
+
+
+def _coerce_channel_alias(alias_value, *, region_label, base_key):
+    """Return a normalized alias string or ``None`` for *alias_value*."""
+
+    if alias_value is None:
+        return None
+    if not isinstance(alias_value, str):
+        raise TypeError(
+            "Invalid alias for base '{}' in {}: expected string or null, got '{}'.".format(
+                base_key, region_label, type(alias_value).__name__
+            )
+        )
+    normalized = alias_value.strip()
+    if not normalized:
+        return None
+    return normalized
+
+
+def _normalize_channel_map_entries(raw_channel_map, *, region_label):
+    """Normalize raw channel metadata to ``{base: {'leaves': [...], 'alias': ...}}``."""
+
+    if raw_channel_map is None:
+        return OrderedDict()
+    if not isinstance(raw_channel_map, Mapping):
+        raise TypeError(
+            "Channel dictionary for {} must be a mapping, got '{}'.".format(
+                region_label, type(raw_channel_map).__name__
+            )
+        )
+
+    normalized = OrderedDict()
+    for base_key, raw_entry in raw_channel_map.items():
+        base_name = str(base_key)
+
+        if isinstance(raw_entry, Mapping):
+            unsupported = sorted(
+                key for key in raw_entry.keys() if key not in {"leaves", "alias"}
+            )
+            if unsupported:
+                raise ValueError(
+                    "Unsupported keys {} in channel entry '{}' for {}. "
+                    "Allowed keys: 'leaves', 'alias'.".format(
+                        unsupported, base_name, region_label
+                    )
+                )
+            raw_leaves = raw_entry.get("leaves", [])
+            alias_value = _coerce_channel_alias(
+                raw_entry.get("alias"), region_label=region_label, base_key=base_name
+            )
+        elif isinstance(raw_entry, (list, tuple)):
+            raw_leaves = raw_entry
+            alias_value = None
+        else:
+            raise TypeError(
+                "Invalid channel entry type for '{}' in {}: expected list/tuple or "
+                "mapping, got '{}'.".format(
+                    base_name, region_label, type(raw_entry).__name__
+                )
+            )
+
+        if raw_leaves is None:
+            raw_leaves = []
+        if not isinstance(raw_leaves, (list, tuple)):
+            raise TypeError(
+                "Invalid leaves payload for '{}' in {}: expected list/tuple, got '{}'.".format(
+                    base_name, region_label, type(raw_leaves).__name__
+                )
+            )
+
+        deduped_leaves = []
+        seen_leaves = set()
+        for leaf_value in raw_leaves:
+            if isinstance(leaf_value, Mapping):
+                raise TypeError(
+                    "Ambiguous list entry for '{}' in {}: nested mapping entries are not "
+                    "allowed inside 'leaves'.".format(base_name, region_label)
+                )
+            leaf_name = str(leaf_value).strip()
+            if not leaf_name:
+                raise ValueError(
+                    "Encountered an empty channel leaf under '{}' in {}.".format(
+                        base_name, region_label
+                    )
+                )
+            if leaf_name in seen_leaves:
+                continue
+            seen_leaves.add(leaf_name)
+            deduped_leaves.append(leaf_name)
+
+        normalized[base_name] = {"leaves": deduped_leaves, "alias": alias_value}
+
+    return normalized
+
+
+def _build_channel_namespace(raw_channel_map, *, region_label, alias_overrides=None):
+    """Return canonical channel namespace maps derived from *raw_channel_map*."""
+
+    normalized_entries = _normalize_channel_map_entries(
+        raw_channel_map, region_label=region_label
+    )
+
+    base_to_leaves = OrderedDict()
+    base_to_alias = OrderedDict()
+    leaf_to_base = {}
+    leaf_to_bases = {}
+    alias_to_bases = OrderedDict()
+
+    alias_overrides = alias_overrides or {}
+
+    for base_name, entry in normalized_entries.items():
+        leaves = list(entry.get("leaves", []))
+        alias_value = entry.get("alias")
+        if base_name in alias_overrides:
+            alias_value = _coerce_channel_alias(
+                alias_overrides[base_name], region_label=region_label, base_key=base_name
+            )
+
+        base_to_leaves[base_name] = leaves
+        base_to_alias[base_name] = alias_value
+
+        for leaf_name in leaves:
+            owners = leaf_to_bases.setdefault(leaf_name, [])
+            if base_name not in owners:
+                owners.append(base_name)
+
+        if alias_value:
+            alias_to_bases.setdefault(alias_value, []).append(base_name)
+
+    base_to_leaf_set = {base_name: set(leaves) for base_name, leaves in base_to_leaves.items()}
+    for leaf_name, owners in leaf_to_bases.items():
+        if len(owners) == 1:
+            leaf_to_base[leaf_name] = owners[0]
+            continue
+
+        for idx, owner in enumerate(owners):
+            owner_set = base_to_leaf_set[owner]
+            for other in owners[idx + 1 :]:
+                other_set = base_to_leaf_set[other]
+                if owner_set <= other_set or other_set <= owner_set:
+                    continue
+                raise ValueError(
+                    "Conflicting leaf overlap detected in {} for '{}': '{}' and '{}' "
+                    "partially overlap without a strict subset relation.".format(
+                        region_label, leaf_name, owner, other
+                    )
+                )
+
+        ranked_owners = sorted(owners, key=lambda base_name: (len(base_to_leaf_set[base_name]), base_name))
+        best_owner = ranked_owners[0]
+        best_size = len(base_to_leaf_set[best_owner])
+        tied_owners = [
+            base_name
+            for base_name in ranked_owners
+            if len(base_to_leaf_set[base_name]) == best_size
+        ]
+        if len(tied_owners) > 1:
+            raise ValueError(
+                "Ambiguous leaf overlap detected in {} for '{}': candidate bases {} have "
+                "the same specificity. Use aliases or disjoint leaves.".format(
+                    region_label, leaf_name, tied_owners
+                )
+            )
+        leaf_to_base[leaf_name] = best_owner
+
+    for alias_name, bases in alias_to_bases.items():
+        if alias_name in base_to_leaves and any(base != alias_name for base in bases):
+            raise ValueError(
+                "Alias/base collision in {}: alias '{}' is also a base key and cannot "
+                "refer to unrelated base categories {}.".format(
+                    region_label, alias_name, sorted(bases)
+                )
+            )
+
+    output_name_by_base = OrderedDict(
+        (base_name, base_to_alias.get(base_name) or base_name)
+        for base_name in base_to_leaves
+    )
+
+    return {
+        "entries": normalized_entries,
+        "base_to_leaves": base_to_leaves,
+        "leaf_to_base": leaf_to_base,
+        "base_to_alias": base_to_alias,
+        "alias_to_bases": OrderedDict(
+            (alias_name, tuple(bases)) for alias_name, bases in alias_to_bases.items()
+        ),
+        "output_name_by_base": output_name_by_base,
+    }
+
+
+def _resolve_region_channel_namespace(
+    region,
+    *,
+    channel_map=None,
+    channel_aliases=None,
+    region_dict_name=None,
+):
+    region_upper = str(region).upper() if region is not None else ""
+    if region_upper == "CR":
+        default_map = CR_CHAN_DICT
+        default_aliases = CR_CHAN_ALIASES
+        default_name = "CR_CHAN_DICT"
+    elif region_upper == "SR":
+        default_map = SR_CHAN_DICT
+        default_aliases = SR_CHAN_ALIASES
+        default_name = "SR_CHAN_DICT"
+    else:
+        default_map = channel_map or {}
+        default_aliases = channel_aliases or {}
+        default_name = "channel dictionary"
+
+    active_map = default_map if channel_map is None else channel_map
+    active_aliases = default_aliases if channel_aliases is None else channel_aliases
+    dict_name = region_dict_name or default_name
+
+    namespace = _build_channel_namespace(
+        active_map, region_label=dict_name, alias_overrides=active_aliases
+    )
+    return namespace, dict_name
 
 
 def _compile_data_driven_prefixes(raw_specs):
@@ -151,8 +373,16 @@ DATA_ERR_OPS = _META["DATA_ERR_OPS"]
 MC_ERROR_OPS = _META["MC_ERROR_OPS"]
 if isinstance(MC_ERROR_OPS.get("edgecolor"), list):
     MC_ERROR_OPS["edgecolor"] = tuple(MC_ERROR_OPS["edgecolor"])
-CR_CHAN_DICT = _META["CR_CHAN_DICT"]
-SR_CHAN_DICT = _META["SR_CHAN_DICT"]
+_CR_CHANNEL_NAMESPACE = _build_channel_namespace(
+    _META["CR_CHAN_DICT"], region_label="CR_CHAN_DICT"
+)
+_SR_CHANNEL_NAMESPACE = _build_channel_namespace(
+    _META["SR_CHAN_DICT"], region_label="SR_CHAN_DICT"
+)
+CR_CHAN_DICT = _CR_CHANNEL_NAMESPACE["base_to_leaves"]
+SR_CHAN_DICT = _SR_CHANNEL_NAMESPACE["base_to_leaves"]
+CR_CHAN_ALIASES = _CR_CHANNEL_NAMESPACE["base_to_alias"]
+SR_CHAN_ALIASES = _SR_CHANNEL_NAMESPACE["base_to_alias"]
 CHANNEL_REFERENCE_MAP = {**CR_CHAN_DICT, **SR_CHAN_DICT}
 CR_GROUP_INFO = _META.get("CR_GRP_MAP", {})
 SR_GROUP_INFO = _META.get("SR_GRP_MAP", {})
@@ -162,8 +392,8 @@ CR_GRP_MAP = {k: [] for k in CR_GRP_PATTERNS.keys()}
 SR_GRP_MAP = {k: [] for k in SR_GRP_PATTERNS.keys()}
 SR_SIGNAL_GROUP_KEYS = {"ttH", "ttlnu", "ttll", "tXq", "tttt"}
 SIGNAL_WC_MATCHES = ("ttH", "tllq", "ttlnu", "ttll", "tHq", "tttt")
-CR_KNOWN_CHANNELS = {chan for chans in CR_CHAN_DICT.values() for chan in chans}
-SR_KNOWN_CHANNELS = {chan for chans in SR_CHAN_DICT.values() for chan in chans}
+CR_KNOWN_CHANNELS = set(_CR_CHANNEL_NAMESPACE["leaf_to_base"].keys())
+SR_KNOWN_CHANNELS = set(_SR_CHANNEL_NAMESPACE["leaf_to_base"].keys())
 FILL_COLORS = {k: v.get("color") for k, v in {**CR_GROUP_INFO, **SR_GROUP_INFO}.items()}
 DEFAULT_STACK_COLORS = (
     "tab:blue",
@@ -360,6 +590,18 @@ def _derive_channel_display_label(base_label, bin_names):
         return base_label
 
     return f"{base_label}_{flavour_token}"
+
+
+def _resolve_output_category_name(region_ctx, category_name):
+    """Return the output-folder category label for *category_name*."""
+
+    raw_label = str(category_name)
+    base_label = _strip_njet_suffix(raw_label)
+    suffix = _extract_njet_suffix(raw_label)
+    output_base = region_ctx.channel_output_names.get(base_label, base_label)
+    if suffix and output_base != raw_label:
+        return _append_njet_suffix(output_base, suffix)
+    return output_base
 
 
 def _extract_njet_suffix(value):
@@ -1309,6 +1551,8 @@ yt = te_YieldTools()
 def get_dict_with_stripped_bin_names(in_chan_dict,type_of_info_to_strip):
     out_chan_dict = {}
     for cat,bin_names in in_chan_dict.items():
+        if isinstance(bin_names, Mapping):
+            bin_names = bin_names.get("leaves", [])
         out_chan_dict[cat] = []
         for bin_name in bin_names:
             if type_of_info_to_strip == "njets":
@@ -2226,7 +2470,8 @@ def _render_variable_category(
         if region_ctx.preserve_njets_bins
         else re.sub(r"_(\d+)j$", "", raw_display_label, flags=re.IGNORECASE)
     )
-    save_dir_path_tmp = os.path.join(base_dir, raw_display_label)
+    output_category_name = _resolve_output_category_name(region_ctx, raw_display_label)
+    save_dir_path_tmp = os.path.join(base_dir, output_category_name)
     os.makedirs(save_dir_path_tmp, exist_ok=True)
 
     stat_only_plots = 0
@@ -2783,25 +3028,23 @@ def _resolve_region_known_channels(
     region,
     *,
     variable=None,
-    observed_channels=None,
     channel_transformations=None,
+    channel_map=None,
+    channel_aliases=None,
+    region_dict_name=None,
 ):
-    region_upper = str(region).upper() if region is not None else None
-    if region_upper == "CR":
-        return CR_KNOWN_CHANNELS, "CR_CHAN_DICT"
-    if region_upper == "SR":
-        if variable == "njets":
-            known_channels = set(SR_KNOWN_CHANNELS).union(SR_CHAN_DICT.keys())
-            # The njets histogram uses category-defining SR channel names (base keys)
-            # rather than per-njet leaf bins on the channel axis.
-            transformed_observed = {
-                _apply_channel_transforms(str(channel), channel_transformations or [])
-                for channel in (observed_channels or ())
-            }
-            known_channels.update(transformed_observed)
-            return known_channels, "SR_CHAN_DICT"
-        return SR_KNOWN_CHANNELS, "SR_CHAN_DICT"
-    return set(), "channel dictionary"
+    del channel_transformations  # deterministic namespace selection does not widen by observations
+
+    region_upper = str(region).upper() if region is not None else ""
+    namespace, dict_name = _resolve_region_channel_namespace(
+        region_upper,
+        channel_map=channel_map,
+        channel_aliases=channel_aliases,
+        region_dict_name=region_dict_name,
+    )
+    if region_upper == "SR" and variable == "njets":
+        return set(namespace["base_to_leaves"].keys()), dict_name
+    return set(namespace["leaf_to_base"].keys()), dict_name
 
 
 def _ensure_variable_channel_coverage_validated(var_name, region_ctx, variable_payload):
@@ -2812,12 +3055,13 @@ def _ensure_variable_channel_coverage_validated(var_name, region_ctx, variable_p
 
     histos = [variable_payload.get("hist_mc"), variable_payload.get("hist_data")]
     channel_transformations = variable_payload.get("channel_transformations", [])
-    observed_channels = _collect_available_channels(histos)
     region_known_channels, region_dict_name = _resolve_region_known_channels(
         region_ctx.name,
         variable=var_name,
-        observed_channels=observed_channels,
         channel_transformations=channel_transformations,
+        channel_map=region_ctx.channel_map,
+        channel_aliases=region_ctx.channel_base_to_alias,
+        region_dict_name=region_ctx.channel_dict_name,
     )
     validate_variable_channel_coverage(
         histos,
@@ -4414,6 +4658,8 @@ class RegionContext(object):
         sumw2_remove_signal_when_blinded=False,
         rate_syst_by_sample=None,
         preserve_njets_bins=False,
+        channel_aliases=None,
+        channel_dict_name=None,
     ):
         self.name = name
         self.dict_of_hists = dict_of_hists
@@ -4424,7 +4670,21 @@ class RegionContext(object):
             self.year = self.years[0]
         else:
             self.year = self.years
-        self.channel_map = channel_map
+        self.channel_dict_name = (
+            channel_dict_name
+            if channel_dict_name is not None
+            else "{}_CHAN_DICT".format(str(name).upper())
+        )
+        channel_namespace = _build_channel_namespace(
+            channel_map,
+            region_label=self.channel_dict_name,
+            alias_overrides=channel_aliases,
+        )
+        self.channel_namespace = channel_namespace
+        self.channel_map = channel_namespace["base_to_leaves"]
+        self.channel_base_to_alias = channel_namespace["base_to_alias"]
+        self.channel_alias_to_bases = channel_namespace["alias_to_bases"]
+        self.channel_output_names = channel_namespace["output_name_by_base"]
         self.group_patterns = group_patterns
         self.group_map = group_map
         self.all_samples = all_samples
@@ -4824,6 +5084,8 @@ def build_region_context(
     if region_upper == "CR":
         group_patterns = CR_GRP_PATTERNS
         channel_map = CR_CHAN_DICT
+        channel_aliases = CR_CHAN_ALIASES
+        channel_dict_name = "CR_CHAN_DICT"
         group_map = populate_group_map(filtered_group_samples, group_patterns)
         signal_samples = sorted(set(group_map.get("Signal", [])))
         unblind_default = resolved_unblind
@@ -4832,6 +5094,8 @@ def build_region_context(
     else:
         group_patterns = SR_GRP_PATTERNS
         channel_map = SR_CHAN_DICT
+        channel_aliases = SR_CHAN_ALIASES
+        channel_dict_name = "SR_CHAN_DICT"
         group_map = populate_group_map(mc_samples + data_samples, group_patterns)
         signal_samples = sorted(
             {
@@ -4881,6 +5145,8 @@ def build_region_context(
         sumw2_remove_signal_when_blinded=sumw2_remove_signal_when_blinded,
         rate_syst_by_sample=rate_syst_by_sample,
         preserve_njets_bins=preserve_njets_bins,
+        channel_aliases=channel_aliases,
+        channel_dict_name=channel_dict_name,
     )
 
 
@@ -4969,7 +5235,10 @@ def produce_region_plots(
         ]
         variable_categories[var_name] = categories
         if save_dir_path:
-            category_dirs.update(categories)
+            category_dirs.update(
+                _resolve_output_category_name(region_ctx, category)
+                for category in categories
+            )
 
     stat_only_plots = 0
     stat_and_syst_plots = 0

@@ -535,17 +535,19 @@ def test_sr_njets_channel_transform_matches_cr_behavior():
 
     assert "njets" in payload["channel_transformations"]
 
-    channel_bins = payload["channel_dict"].get("3l_offZ_SR")
-    assert channel_bins, "Expected SR channel bins for 3l_offZ_SR"
+    for subgroup in ("3l_m_offZ_1b", "3l_p_offZ_2b"):
+        channel_bins = payload["channel_dict"].get(subgroup)
+        assert channel_bins == [subgroup]
 
-    make_cr_and_sr_plots.validate_channel_group(
-        [hist_obj],
-        channel_bins,
-        payload["channel_transformations"],
-        region=region_ctx.name,
-        subgroup="3l_offZ_SR",
-        variable="njets",
-    )
+        make_cr_and_sr_plots.validate_channel_group(
+            [hist_obj],
+            channel_bins,
+            payload["channel_transformations"],
+            region=region_ctx.name,
+            subgroup=subgroup,
+            variable="njets",
+            available_channels=channel_bins,
+        )
 
 
 def test_sr_zero_yield_summary_respects_njets_aggregation(monkeypatch):
@@ -604,7 +606,7 @@ def test_sr_zero_yield_summary_respects_njets_aggregation(monkeypatch):
             variables=["njets"],
         )
 
-    entry = _find_zero_yield_entry(summary, label="2lss_SR", variable="njets")
+    entry = _find_zero_yield_entry(summary, label="2lss_4t_m", variable="njets")
     assert entry is not None
     assert not entry["missing_bins"]
 
@@ -657,7 +659,7 @@ def test_sr_zero_yield_summary_flags_missing_channels_for_lj0pt():
         variables=["lj0pt"],
     )
 
-    entry = _find_zero_yield_entry(summary, label="2lss_SR", variable="lj0pt")
+    entry = _find_zero_yield_entry(summary, label="2lss_4t_m", variable="lj0pt")
     assert entry is not None
     assert "2lss_4t_m_6j" in entry["missing_bins"]
     assert "2lss_4t_m_5j" not in entry["missing_bins"]

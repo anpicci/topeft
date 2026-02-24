@@ -126,7 +126,6 @@ def _make_region_context(
         debug_channel_lists=False,
         sumw2_remove_signal=False,
         sumw2_remove_signal_when_blinded=False,
-        use_mc_as_data_when_blinded=False,
         rate_syst_by_sample=None,
         preserve_njets_bins=preserve_njets_bins,
     )
@@ -158,6 +157,36 @@ def _build_njets_histograms(variable_name):
         ),
     }
     return histograms, channel_bins
+
+
+def test_output_category_name_uses_alias_mapping():
+    variable = "observable"
+    histograms = {
+        variable: _build_histogram(
+            variable,
+            ["chan_a_2j", "chan_b_2j"],
+            hist_type="HistEFT",
+        ),
+        f"{variable}_sumw2": _build_sumw2_histogram(
+            variable,
+            ["chan_a_2j", "chan_b_2j"],
+        ),
+    }
+    channel_map = OrderedDict(
+        [
+            ("cat_a", {"leaves": ["chan_a_2j"], "alias": "merged_cat"}),
+            ("cat_b", {"leaves": ["chan_b_2j"], "alias": "merged_cat"}),
+        ]
+    )
+    region_ctx = _make_region_context(
+        histograms,
+        channel_map=channel_map,
+        channel_mode="aggregate",
+    )
+
+    assert plots._resolve_output_category_name(region_ctx, "cat_a") == "merged_cat"
+    assert plots._resolve_output_category_name(region_ctx, "cat_b") == "merged_cat"
+    assert plots._resolve_output_category_name(region_ctx, "cat_a_2j") == "merged_cat_2j"
 
 
 def test_unsplit_channel_output_prunes_flavour_categories():
@@ -196,6 +225,7 @@ def test_split_mode_skips_when_hist_not_flavour_split(monkeypatch, tmp_path):
         unblind=None,
         channel_mode_override=None,
         preserve_njets_bins=False,
+        enable_category_skips=False,
     ):
         channel_mode = channel_mode_override or "aggregate"
         return _make_region_context(
@@ -852,6 +882,7 @@ def test_both_njets_channel_output_writes_pngs_and_uncertainties(monkeypatch, tm
         unblind=None,
         channel_mode_override=None,
         preserve_njets_bins=False,
+        enable_category_skips=False,
     ):
         mode = channel_mode_override or "aggregate"
         return _make_region_context(
@@ -909,10 +940,10 @@ def test_both_njets_channel_output_writes_pngs_and_uncertainties(monkeypatch, tm
 
     aggregated_expected = {"cr_all_2j", "cr_all_3j"}
     per_expected = {
-        "cr_all_em_2j",
-        "cr_all_em_3j",
-        "cr_all_mm_2j",
-        "cr_all_mm_3j",
+        "cr_all_em_2j_em",
+        "cr_all_em_3j_em",
+        "cr_all_mm_2j_mm",
+        "cr_all_mm_3j_mm",
     }
 
     def _stem_to_hist_cat(path):
