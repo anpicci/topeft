@@ -247,41 +247,17 @@ def _build_channel_namespace(raw_channel_map, *, region_label, alias_overrides=N
         if alias_value:
             alias_to_bases.setdefault(alias_value, []).append(base_name)
 
-    base_to_leaf_set = {base_name: set(leaves) for base_name, leaves in base_to_leaves.items()}
     for leaf_name, owners in leaf_to_bases.items():
         if len(owners) == 1:
             leaf_to_base[leaf_name] = owners[0]
             continue
 
-        for idx, owner in enumerate(owners):
-            owner_set = base_to_leaf_set[owner]
-            for other in owners[idx + 1 :]:
-                other_set = base_to_leaf_set[other]
-                if owner_set <= other_set or other_set <= owner_set:
-                    continue
-                raise ValueError(
-                    "Conflicting leaf overlap detected in {} for '{}': '{}' and '{}' "
-                    "partially overlap without a strict subset relation.".format(
-                        region_label, leaf_name, owner, other
-                    )
-                )
-
-        ranked_owners = sorted(owners, key=lambda base_name: (len(base_to_leaf_set[base_name]), base_name))
-        best_owner = ranked_owners[0]
-        best_size = len(base_to_leaf_set[best_owner])
-        tied_owners = [
-            base_name
-            for base_name in ranked_owners
-            if len(base_to_leaf_set[base_name]) == best_size
-        ]
-        if len(tied_owners) > 1:
-            raise ValueError(
-                "Ambiguous leaf overlap detected in {} for '{}': candidate bases {} have "
-                "the same specificity. Use aliases or disjoint leaves.".format(
-                    region_label, leaf_name, tied_owners
-                )
+        raise ValueError(
+            "leaf overlap detected in {} for '{}': bases {} all reference the same leaf. "
+            "Channel leaves must have exactly one owner; use aliases for output grouping instead.".format(
+                region_label, leaf_name, sorted(owners)
             )
-        leaf_to_base[leaf_name] = best_owner
+        )
 
     for alias_name, bases in alias_to_bases.items():
         if alias_name in base_to_leaves and any(base != alias_name for base in bases):

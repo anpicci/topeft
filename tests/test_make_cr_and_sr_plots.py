@@ -1024,13 +1024,8 @@ def test_both_includes_split_channels_when_available(tmp_path):
 
     merged_dir = tmp_path / "cr_2los_Z"
     assert merged_dir.exists()
-
-    split_dirs = [
-        tmp_path / "cr_2los_Z_ee",
-        tmp_path / "cr_2los_Z_mm",
-    ]
-    for split_dir in split_dirs:
-        assert split_dir.exists()
+    merged_plots = {path.name for path in merged_dir.glob("*.png")}
+    assert {"cr_2los_Z_ee_met.png", "cr_2los_Z_mm_met.png"}.issubset(merged_plots)
 
 
 def test_split_warning_uses_cr_reference_bins_for_cr_region(monkeypatch, tmp_path):
@@ -1320,37 +1315,42 @@ def test_all_variables_render_for_merged_and_split_categories(
     assert merged_dir.exists()
 
     merged_plots = {path.name for path in merged_dir.glob("*.png")}
-    merged_plot_stem = (
-        merged_dir_name.replace("_Nj_", "_", 1)
-        if channel_output.endswith("njets")
-        else merged_dir_name
-    )
-    expected_merged = {
-        f"{merged_plot_stem}_j0pt.png",
-        f"{merged_plot_stem}_met.png",
-    }
+    if channel_output.endswith("njets"):
+        expected_merged = {
+            "cr_2los_Z_ee_0j_j0pt.png",
+            "cr_2los_Z_ee_0j_met.png",
+            "cr_2los_Z_mm_0j_j0pt.png",
+            "cr_2los_Z_mm_0j_met.png",
+        }
+    else:
+        expected_merged = {
+            "cr_2los_Z_ee_j0pt.png",
+            "cr_2los_Z_ee_met.png",
+            "cr_2los_Z_mm_j0pt.png",
+            "cr_2los_Z_mm_met.png",
+        }
     assert expected_merged.issubset(merged_plots)
 
     if channel_output.endswith("njets"):
-        split_dirs = [
-            tmp_path / "cr_2los_Z_ee_0j_ee_Nj",
-            tmp_path / "cr_2los_Z_mm_0j_mm_Nj",
-        ]
-    else:
-        split_dirs = [tmp_path / "cr_2los_Z_ee", tmp_path / "cr_2los_Z_mm"]
-    for split_dir in split_dirs:
-        assert split_dir.exists()
-        split_plots = {path.name for path in split_dir.glob("*.png")}
-        base_split_name = (
-            split_dir.name.replace("_Nj", "")
-            if channel_output.endswith("njets")
-            else re.sub(r"_0j(?=_)", "", split_dir.name)
-        )
-        expected_plots = {
-            f"{base_split_name}_j0pt.png",
-            f"{base_split_name}_met.png",
+        split_expectations = {
+            "cr_2los_Z_ee_0j_ee_Nj": {
+                "cr_2los_Z_ee_0j_ee_j0pt.png",
+                "cr_2los_Z_ee_0j_ee_met.png",
+            },
+            "cr_2los_Z_mm_0j_mm_Nj": {
+                "cr_2los_Z_mm_0j_mm_j0pt.png",
+                "cr_2los_Z_mm_0j_mm_met.png",
+            },
         }
-        assert expected_plots.issubset(split_plots)
+        for dir_name, expected_plots in split_expectations.items():
+            split_dir = tmp_path / dir_name
+            assert split_dir.exists()
+            split_plots = {path.name for path in split_dir.glob("*.png")}
+            assert expected_plots.issubset(split_plots)
+    else:
+        # Alias routing keeps split outputs in the merged folder for non-njets modes.
+        assert not (tmp_path / "cr_2los_Z_ee").exists()
+        assert not (tmp_path / "cr_2los_Z_mm").exists()
 
 
 def test_data_driven_reinsertion_respects_year_tokens():

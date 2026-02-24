@@ -136,9 +136,8 @@ def _make_region_context(
 def _test_channel_map():
     return OrderedDict(
         [
-            ("cr_all", ["category_em", "category_mm"]),
-            ("cr_all_em", ["category_em"]),
-            ("cr_all_mm", ["category_mm"]),
+            ("cr_all_em", {"leaves": ["category_em"], "alias": "cr_all"}),
+            ("cr_all_mm", {"leaves": ["category_mm"], "alias": "cr_all"}),
         ]
     )
 
@@ -222,8 +221,9 @@ def test_unsplit_channel_output_prunes_flavour_categories():
     assert region_ctx.channels_split_by_lepflav is False
 
     payload = plots._prepare_variable_payload(variable, region_ctx)
-    assert list(payload["channel_dict"].keys()) == ["cr_all"]
-    assert payload["channel_dict"]["cr_all"] == ["category"]
+    assert len(payload["channel_dict"]) == 1
+    remaining_bins = list(payload["channel_dict"].values())[0]
+    assert remaining_bins == ["category"]
 
 
 def test_split_mode_skips_when_hist_not_flavour_split(monkeypatch, tmp_path):
@@ -311,11 +311,11 @@ def test_sumw2_histogram_passed_to_stacked_plot(monkeypatch, tmp_path):
 
     monkeypatch.setattr(plots, "make_region_stacked_ratio_fig", fake_make_region_stacked_ratio_fig)
 
-    channel_bins = payload["channel_dict"]["cr_all"]
+    category_name, channel_bins = next(iter(payload["channel_dict"].items()))
 
     plots._render_variable_category(
         variable,
-        "cr_all",
+        category_name,
         channel_bins,
         region_ctx=region_ctx,
         channel_transformations=payload["channel_transformations"],
@@ -397,9 +397,13 @@ def test_split_mode_groups_year_suffixed_channels(monkeypatch, tmp_path):
         f"{variable}_sumw2": _build_sumw2_histogram(variable, year_bins),
     }
 
-    channel_map = OrderedDict(
+    aggregate_map = OrderedDict(
         [
             ("combined", list(year_bins)),
+        ]
+    )
+    split_map = OrderedDict(
+        [
             ("category_em_2016", ["category_em_2016"]),
             ("category_em_2017", ["category_em_2017"]),
         ]
@@ -407,12 +411,12 @@ def test_split_mode_groups_year_suffixed_channels(monkeypatch, tmp_path):
 
     aggregate_ctx = _make_region_context(
         histograms,
-        channel_map=channel_map,
+        channel_map=aggregate_map,
         channel_mode="aggregate",
     )
     split_ctx = _make_region_context(
         histograms,
-        channel_map=channel_map,
+        channel_map=split_map,
         channel_mode="per-channel",
     )
 
@@ -888,9 +892,14 @@ def test_both_njets_channel_output_writes_pngs_and_uncertainties(monkeypatch, tm
 
     channel_map = OrderedDict(
         [
-            ("cr_all", list(channel_bins)),
-            ("cr_all_em", ["category_em_2j", "category_em_3j"]),
-            ("cr_all_mm", ["category_mm_2j", "category_mm_3j"]),
+            (
+                "cr_all_2j",
+                {"leaves": ["category_em_2j", "category_mm_2j"], "alias": "cr_all"},
+            ),
+            (
+                "cr_all_3j",
+                {"leaves": ["category_em_3j", "category_mm_3j"], "alias": "cr_all"},
+            ),
         ]
     )
 
@@ -960,12 +969,15 @@ def test_both_njets_channel_output_writes_pngs_and_uncertainties(monkeypatch, tm
     for path in all_paths:
         assert path.exists()
 
-    aggregated_expected_dirs = {"cr_all_Nj_2j", "cr_all_Nj_3j"}
-    per_expected_dirs = {
-        "cr_all_em_2j_em_Nj",
-        "cr_all_em_3j_em_Nj",
-        "cr_all_mm_2j_mm_Nj",
-        "cr_all_mm_3j_mm_Nj",
+    expected_aggregate_dirs = {
+        "cr_all_Nj_2j",
+        "cr_all_Nj_3j",
+    }
+    expected_split_dirs = {
+        "cr_all_2j_em_Nj",
+        "cr_all_2j_mm_Nj",
+        "cr_all_3j_em_Nj",
+        "cr_all_3j_mm_Nj",
     }
 
     def _stem_to_hist_cat(path):
@@ -973,28 +985,27 @@ def test_both_njets_channel_output_writes_pngs_and_uncertainties(monkeypatch, tm
         suffix = f"_{variable}"
         return stem[: -len(suffix)] if stem.endswith(suffix) else stem
 
-    aggregated_seen_dirs = set()
-    per_seen_dirs = set()
-    aggregated_seen_plots = set()
-    per_seen_plots = set()
+    seen_dirs = set()
+    seen_plots = set()
     for path in all_paths:
         hist_cat = _stem_to_hist_cat(path)
         parent = path.parent.name
-        if parent in aggregated_expected_dirs:
-            aggregated_seen_dirs.add(parent)
-            aggregated_seen_plots.add(hist_cat)
+        seen_dirs.add(parent)
+        seen_plots.add(hist_cat)
+        if parent in expected_aggregate_dirs:
+            assert hist_cat in {"cr_all_2j", "cr_all_3j"}
         else:
-            per_seen_dirs.add(parent)
-            per_seen_plots.add(hist_cat)
+            assert parent in expected_split_dirs
+            assert hist_cat == parent.replace("_Nj", "")
 
-    assert aggregated_seen_dirs == aggregated_expected_dirs
-    assert per_seen_dirs == per_expected_dirs
-    assert aggregated_seen_plots == {"cr_all_2j", "cr_all_3j"}
-    assert per_seen_plots == {
-        "cr_all_em_2j_em",
-        "cr_all_em_3j_em",
-        "cr_all_mm_2j_mm",
-        "cr_all_mm_3j_mm",
+    assert seen_dirs == (expected_aggregate_dirs | expected_split_dirs)
+    assert seen_plots == {
+        "cr_all_2j",
+        "cr_all_3j",
+        "cr_all_2j_em",
+        "cr_all_2j_mm",
+        "cr_all_3j_em",
+        "cr_all_3j_mm",
     }
 
     syst_payloads = {

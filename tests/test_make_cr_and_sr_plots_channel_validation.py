@@ -247,6 +247,17 @@ def test_channel_namespace_rejects_leaf_overlap():
         )
 
 
+def test_channel_namespace_rejects_subset_leaf_overlap():
+    with pytest.raises(ValueError, match="leaf overlap"):
+        make_cr_and_sr_plots._build_channel_namespace(
+            {
+                "cat_a": ["shared_2j", "unique_3j"],
+                "cat_b": ["shared_2j"],
+            },
+            region_label="TEST_CHAN_DICT",
+        )
+
+
 def test_channel_namespace_rejects_alias_base_collision():
     with pytest.raises(ValueError, match="Alias/base collision"):
         make_cr_and_sr_plots._build_channel_namespace(

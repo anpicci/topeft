@@ -18,19 +18,14 @@ DATA_DRIVEN_PREFIXES:
 - nonprompt
 - flips
 CR_CHAN_DICT:
-  cr_2los_Z:
-    leaves:
-    - 2los_ee_CRZ_0j
-    - 2los_mm_CRZ_0j
-    alias: null
   cr_2los_Z_ee:
     leaves:
     - 2los_ee_CRZ_0j
-    alias: null
+    alias: cr_2los_Z
   cr_2los_Z_mm:
     leaves:
     - 2los_mm_CRZ_0j
-    alias: null
+    alias: cr_2los_Z
   cr_2los_tt:
     leaves:
     - 2los_em_CRtt_2j
@@ -95,27 +90,18 @@ CR_CHAN_DICT:
     - 1l_m_1tau_CR_3j
     - 1l_m_1tau_CR_4j
     alias: null
-  cr_dy_tautau:
-    leaves:
-    - 1l_e_dy_tautau_CR_2j
-    - 1l_e_dy_tautau_CR_3j
-    - 1l_e_dy_tautau_CR_4j
-    - 1l_m_dy_tautau_CR_2j
-    - 1l_m_dy_tautau_CR_3j
-    - 1l_m_dy_tautau_CR_4j
-    alias: null
   cr_dy_tautau_e:
     leaves:
     - 1l_e_dy_tautau_CR_2j
     - 1l_e_dy_tautau_CR_3j
     - 1l_e_dy_tautau_CR_4j
-    alias: null
+    alias: cr_dy_tautau
   cr_dy_tautau_m:
     leaves:
     - 1l_m_dy_tautau_CR_2j
     - 1l_m_dy_tautau_CR_3j
     - 1l_m_dy_tautau_CR_4j
-    alias: null
+    alias: cr_dy_tautau
 SR_CHAN_DICT:
   2lss_4t_m:
     leaves:
@@ -247,28 +233,6 @@ SR_CHAN_DICT:
     - 4l_3j
     - 4l_4j
     alias: null
-  2lss_1tau_onZ:
-    leaves:
-    - 2lss_m_1tau_onZ_3j
-    - 2lss_m_1tau_onZ_4j
-    - 2lss_m_1tau_onZ_5j
-    - 2lss_m_1tau_onZ_6j
-    - 2lss_p_1tau_onZ_3j
-    - 2lss_p_1tau_onZ_4j
-    - 2lss_p_1tau_onZ_5j
-    - 2lss_p_1tau_onZ_6j
-    alias: null
-  2lss_1tau_offZ:
-    leaves:
-    - 2lss_m_1tau_offZ_3j
-    - 2lss_m_1tau_offZ_4j
-    - 2lss_m_1tau_offZ_5j
-    - 2lss_m_1tau_offZ_6j
-    - 2lss_p_1tau_offZ_3j
-    - 2lss_p_1tau_offZ_4j
-    - 2lss_p_1tau_offZ_5j
-    - 2lss_p_1tau_offZ_6j
-    alias: null
   2los_onZ_1tau:
     leaves:
     - 2los_onZ_1tau_5j
@@ -279,28 +243,28 @@ SR_CHAN_DICT:
     - 2lss_m_1tau_onZ_4j
     - 2lss_m_1tau_onZ_5j
     - 2lss_m_1tau_onZ_6j
-    alias: null
+    alias: 2lss_1tau_onZ
   2lss_p_1tau_onZ:
     leaves:
     - 2lss_p_1tau_onZ_3j
     - 2lss_p_1tau_onZ_4j
     - 2lss_p_1tau_onZ_5j
     - 2lss_p_1tau_onZ_6j
-    alias: null
+    alias: 2lss_1tau_onZ
   2lss_m_1tau_offZ:
     leaves:
     - 2lss_m_1tau_offZ_3j
     - 2lss_m_1tau_offZ_4j
     - 2lss_m_1tau_offZ_5j
     - 2lss_m_1tau_offZ_6j
-    alias: null
+    alias: 2lss_1tau_offZ
   2lss_p_1tau_offZ:
     leaves:
     - 2lss_p_1tau_offZ_3j
     - 2lss_p_1tau_offZ_4j
     - 2lss_p_1tau_offZ_5j
     - 2lss_p_1tau_offZ_6j
-    alias: null
+    alias: 2lss_1tau_offZ
   3l_m_offZ_1b_fwd:
     leaves:
     - 3l_m_offZ_1b_fwd_1j
