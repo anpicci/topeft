@@ -290,6 +290,55 @@ def coerce_summary_verbosity(value: Any) -> str:
     )
 
 
+def coerce_ddr_output_schema(value: Any) -> str:
+    """Normalize DDR output schema names."""
+
+    if value is None:
+        return "flat"
+    normalized = str(value).strip().lower()
+    if normalized in {"flat", "tuple"}:
+        return normalized
+    raise ValueError("ddr_output_schema must be one of: flat, tuple")
+
+
+def coerce_mapping(value: Any) -> Optional[Dict[str, Any]]:
+    """Return ``value`` as a dictionary, accepting JSON strings."""
+
+    if value is None:
+        return None
+    if isinstance(value, Mapping):
+        return {str(key): mapped_value for key, mapped_value in value.items()}
+    if isinstance(value, str):
+        stripped = value.strip()
+        if not stripped:
+            return None
+        loaded = json.loads(stripped)
+        if not isinstance(loaded, Mapping):
+            raise ValueError("Expected a JSON object for mapping configuration")
+        return {str(key): mapped_value for key, mapped_value in loaded.items()}
+    raise TypeError(f"Expected a mapping-compatible value, got {type(value)!r}")
+
+
+def coerce_str_mapping(value: Any) -> Dict[str, str]:
+    """Return ``value`` as a ``str -> str`` mapping."""
+
+    mapped = coerce_mapping(value)
+    if not mapped:
+        return {}
+    return {str(key): str(mapped_value) for key, mapped_value in mapped.items()}
+
+
+def coerce_delimiter(value: Any) -> str:
+    """Return a non-empty delimiter string."""
+
+    if value is None:
+        return "-"
+    delimiter = str(value)
+    if delimiter == "":
+        raise ValueError("ddr_processor_key_delim cannot be empty")
+    return delimiter
+
+
 def coerce_log_level(value: Any) -> Optional[str]:
     """Normalize logging level names to a known uppercase identifier."""
 
@@ -483,6 +532,25 @@ class RunConfig:
     resource_monitor: Optional[str] = "measure"
     resources_mode: Optional[str] = "auto"
     taskvine_print_stdout: bool = True
+    ddr_processor_key_delim: str = "-"
+    produce_sidecars: bool = False
+    ddr_preserve_sidecars: bool = False
+    ddr_sidecars_key: str = "__sidecars__"
+    ddr_output_schema: str = "flat"
+    ddr_step_size: Optional[int] = None
+    ddr_max_task_retries: Optional[int] = None
+    ddr_resources_processing: Optional[Dict[str, Any]] = None
+    ddr_resources_accumulating: Optional[Dict[str, Any]] = None
+    ddr_results_directory: Optional[str] = None
+    ddr_verbose: Optional[bool] = None
+    ddr_x509_proxy: Optional[str] = None
+    ddr_environment_variables: Dict[str, str] = field(default_factory=dict)
+    ddr_preprocess_timeout: Optional[int] = None
+    ddr_preprocess_max_retries: Optional[int] = None
+    ddr_preprocess_batch_size: Optional[int] = None
+    ddr_preprocess_show_progress: Optional[bool] = None
+    ddr_preprocess_kwargs: Optional[Dict[str, Any]] = None
+    ddr_kwargs: Optional[Dict[str, Any]] = None
     ecut: Optional[float] = None
     summary_verbosity: str = "brief"
     log_level: Optional[str] = None
@@ -567,6 +635,61 @@ class RunConfigBuilder:
             "resource_monitor": ("resource_monitor", _coerce_optional_string),
             "resources_mode": ("resources_mode", _coerce_optional_string),
             "taskvine_print_stdout": ("taskvine_print_stdout", coerce_bool),
+            "ddr_processor_key_delim": ("ddr_processor_key_delim", coerce_delimiter),
+            "produce_sidecars": ("produce_sidecars", coerce_bool),
+            "ddr_preserve_sidecars": ("ddr_preserve_sidecars", coerce_bool),
+            "ddr_sidecars_key": (
+                "ddr_sidecars_key",
+                lambda v: "__sidecars__" if v in (None, "") else str(v),
+            ),
+            "ddr_output_schema": ("ddr_output_schema", coerce_ddr_output_schema),
+            "ddr_step_size": (
+                "ddr_step_size",
+                lambda v: coerce_int(v, allow_none=True),
+            ),
+            "ddr_max_task_retries": (
+                "ddr_max_task_retries",
+                lambda v: coerce_int(v, allow_none=True),
+            ),
+            "ddr_resources_processing": (
+                "ddr_resources_processing",
+                coerce_mapping,
+            ),
+            "ddr_resources_accumulating": (
+                "ddr_resources_accumulating",
+                coerce_mapping,
+            ),
+            "ddr_results_directory": (
+                "ddr_results_directory",
+                _coerce_optional_string,
+            ),
+            "ddr_verbose": ("ddr_verbose", coerce_bool),
+            "ddr_x509_proxy": ("ddr_x509_proxy", _coerce_optional_string),
+            "ddr_environment_variables": (
+                "ddr_environment_variables",
+                coerce_str_mapping,
+            ),
+            "ddr_preprocess_timeout": (
+                "ddr_preprocess_timeout",
+                lambda v: coerce_int(v, allow_none=True),
+            ),
+            "ddr_preprocess_max_retries": (
+                "ddr_preprocess_max_retries",
+                lambda v: coerce_int(v, allow_none=True),
+            ),
+            "ddr_preprocess_batch_size": (
+                "ddr_preprocess_batch_size",
+                lambda v: coerce_int(v, allow_none=True),
+            ),
+            "ddr_preprocess_show_progress": (
+                "ddr_preprocess_show_progress",
+                coerce_bool,
+            ),
+            "ddr_preprocess_kwargs": (
+                "ddr_preprocess_kwargs",
+                coerce_mapping,
+            ),
+            "ddr_kwargs": ("ddr_kwargs", coerce_mapping),
             "summary_verbosity": ("summary_verbosity", coerce_summary_verbosity),
             "log_tasks": ("log_tasks", coerce_bool),
             "environment_file": ("environment_file", coerce_environment_file),
@@ -708,6 +831,16 @@ class RunConfigBuilder:
                 "resource_monitor": "resource_monitor",
                 "resources_mode": "resources_mode",
                 "taskvine_print_stdout": "taskvine_print_stdout",
+                "ddr_processor_key_delim": "ddr_processor_key_delim",
+                "produce_sidecars": "produce_sidecars",
+                "ddr_preserve_sidecars": "ddr_preserve_sidecars",
+                "ddr_sidecars_key": "ddr_sidecars_key",
+                "ddr_output_schema": "ddr_output_schema",
+                "ddr_step_size": "ddr_step_size",
+                "ddr_max_task_retries": "ddr_max_task_retries",
+                "ddr_results_directory": "ddr_results_directory",
+                "ddr_verbose": "ddr_verbose",
+                "ddr_x509_proxy": "ddr_x509_proxy",
                 "environment_file": "environment_file",
                 "log_level": "log_level",
                 "futures_status": "futures_status",

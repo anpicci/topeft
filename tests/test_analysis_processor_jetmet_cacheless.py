@@ -147,6 +147,8 @@ def _build_processor():
     )
 
     dataset = ap.DatasetContext(
+        sample_name="sample",
+        sample_metadata={"histAxisName": "sample"},
         dataset="sample",
         trigger_dataset="sample",
         hist_axis_name="sample",

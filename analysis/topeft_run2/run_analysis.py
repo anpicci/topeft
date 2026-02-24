@@ -313,6 +313,75 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--ddr-processor-key-delim",
+        default="-",
+        help=(
+            "Delimiter used to build TaskVine DDR processor keys from "
+            "(channel, variable, application, systematic_label)."
+        ),
+    )
+    parser.add_argument(
+        "--produce-sidecars",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "Enable sidecar payloads (variation summaries and region yields) in processor output. "
+            "Disabled by default."
+        ),
+    )
+    parser.add_argument(
+        "--ddr-preserve-sidecars",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "When flattening DDR output, keep non-hist sidecars under a reserved key. "
+            "Disabled by default."
+        ),
+    )
+    parser.add_argument(
+        "--ddr-sidecars-key",
+        default="__sidecars__",
+        help="Reserved top-level key used when --ddr-preserve-sidecars is enabled.",
+    )
+    parser.add_argument(
+        "--ddr-output-schema",
+        choices=("flat", "tuple"),
+        default="flat",
+        help=(
+            "Schema used when serializing TaskVine DDR output: "
+            "'flat' -> (sample, channel, var, application, systematic), "
+            "'tuple' -> (var, channel, application, sample, systematic)."
+        ),
+    )
+    parser.add_argument(
+        "--ddr-step-size",
+        type=int,
+        default=None,
+        help="Override DDR step size (events per task chunk). Defaults to --chunksize when unset.",
+    )
+    parser.add_argument(
+        "--ddr-max-task-retries",
+        type=int,
+        default=None,
+        help="Override DDR max task retries.",
+    )
+    parser.add_argument(
+        "--ddr-results-directory",
+        default=None,
+        help="Override the DDR results directory (defaults to taskvine staging logs path).",
+    )
+    parser.add_argument(
+        "--ddr-verbose",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Enable/disable verbose DDR logging at the CoffeaDynamicDataReduction layer.",
+    )
+    parser.add_argument(
+        "--ddr-x509-proxy",
+        default=None,
+        help="Path to an X509 proxy passed to DDR preprocess/compute when provided.",
+    )
+    parser.add_argument(
         "--options",
         default=None,
         help=(
