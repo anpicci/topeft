@@ -2779,11 +2779,27 @@ def validate_variable_channel_coverage(
     raise ValueError(msg)
 
 
-def _resolve_region_known_channels(region):
+def _resolve_region_known_channels(
+    region,
+    *,
+    variable=None,
+    observed_channels=None,
+    channel_transformations=None,
+):
     region_upper = str(region).upper() if region is not None else None
     if region_upper == "CR":
         return CR_KNOWN_CHANNELS, "CR_CHAN_DICT"
     if region_upper == "SR":
+        if variable == "njets":
+            known_channels = set(SR_KNOWN_CHANNELS).union(SR_CHAN_DICT.keys())
+            # The njets histogram uses category-defining SR channel names (base keys)
+            # rather than per-njet leaf bins on the channel axis.
+            transformed_observed = {
+                _apply_channel_transforms(str(channel), channel_transformations or [])
+                for channel in (observed_channels or ())
+            }
+            known_channels.update(transformed_observed)
+            return known_channels, "SR_CHAN_DICT"
         return SR_KNOWN_CHANNELS, "SR_CHAN_DICT"
     return set(), "channel dictionary"
 
@@ -2794,13 +2810,19 @@ def _ensure_variable_channel_coverage_validated(var_name, region_ctx, variable_p
     if variable_payload.get("_global_channel_coverage_validated"):
         return
 
+    histos = [variable_payload.get("hist_mc"), variable_payload.get("hist_data")]
+    channel_transformations = variable_payload.get("channel_transformations", [])
+    observed_channels = _collect_available_channels(histos)
     region_known_channels, region_dict_name = _resolve_region_known_channels(
-        region_ctx.name
+        region_ctx.name,
+        variable=var_name,
+        observed_channels=observed_channels,
+        channel_transformations=channel_transformations,
     )
     validate_variable_channel_coverage(
-        [variable_payload.get("hist_mc"), variable_payload.get("hist_data")],
+        histos,
         region_known_channels,
-        variable_payload.get("channel_transformations", []),
+        channel_transformations,
         region=region_ctx.name,
         variable=var_name,
         region_dict_name=region_dict_name,

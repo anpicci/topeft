@@ -1,3 +1,4 @@
+from types import SimpleNamespace
 import hist
 import pytest
 
@@ -91,3 +92,36 @@ def test_subgroup_validation_requires_explicit_available_channels():
             subgroup="2lss_4t_p_5j",
             variable="lj0pt",
         )
+
+
+def test_global_validation_allows_sr_aggregated_channels_for_njets():
+    histo = _make_channel_hist(["3l_p_offZ_1b", "3l_p_offZ_2b"])
+    region_ctx = SimpleNamespace(name="SR")
+    variable_payload = {
+        "hist_mc": histo,
+        "hist_data": None,
+        "channel_transformations": ["njets"],
+    }
+
+    make_cr_and_sr_plots._ensure_variable_channel_coverage_validated(
+        "njets", region_ctx, variable_payload
+    )
+
+
+def test_global_validation_remains_strict_for_non_njets_variables():
+    histo = _make_channel_hist(["definitely_missing_channel_1j"])
+    region_ctx = SimpleNamespace(name="SR")
+    variable_payload = {
+        "hist_mc": histo,
+        "hist_data": None,
+        "channel_transformations": [],
+    }
+
+    with pytest.raises(ValueError) as exc_info:
+        make_cr_and_sr_plots._ensure_variable_channel_coverage_validated(
+            "lj0pt", region_ctx, variable_payload
+        )
+
+    msg = str(exc_info.value)
+    assert "variable 'lj0pt'" in msg
+    assert "definitely_missing_channel_1j" in msg
