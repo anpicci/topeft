@@ -460,7 +460,7 @@ class RunConfig:
     test: bool = False
     pretend: bool = False
     nworkers: int = 8
-    chunksize: int = 100000
+    chunksize: int = 500000
     nchunks: Optional[int] = None
     outname: str = "plotsTopEFT"
     outpath: str = "histos"
@@ -483,10 +483,17 @@ class RunConfig:
     resource_monitor: Optional[str] = "measure"
     resources_mode: Optional[str] = "auto"
     taskvine_print_stdout: bool = True
+    ddr_step_size: Optional[int] = None
+    ddr_x509_proxy: Optional[str] = None
+    ddr_preprocessed_data: Optional[str] = None
+    ddr_save_preprocess: Optional[str] = None
+    ddr_auto_save_preprocess: bool = True
+    ddr_preprocess_artifact: Optional[str] = None
     ecut: Optional[float] = None
     summary_verbosity: str = "brief"
     log_level: Optional[str] = None
     log_tasks: bool = False
+    produce_sidecars: bool = False
     environment_file: Optional[str] = "cached"
     futures_status: Optional[bool] = None
     futures_tail_timeout: Optional[int] = None
@@ -567,8 +574,24 @@ class RunConfigBuilder:
             "resource_monitor": ("resource_monitor", _coerce_optional_string),
             "resources_mode": ("resources_mode", _coerce_optional_string),
             "taskvine_print_stdout": ("taskvine_print_stdout", coerce_bool),
+            "ddr_step_size": (
+                "ddr_step_size",
+                lambda v: coerce_int(v, allow_none=True),
+            ),
+            "ddr_x509_proxy": ("ddr_x509_proxy", _coerce_optional_string),
+            "ddr_preprocessed_data": ("ddr_preprocessed_data", _coerce_optional_string),
+            "ddr_save_preprocess": ("ddr_save_preprocess", _coerce_optional_string),
+            "ddr_auto_save_preprocess": (
+                "ddr_auto_save_preprocess",
+                lambda v: True if coerce_bool(v) is None else bool(coerce_bool(v)),
+            ),
+            "ddr_preprocess_artifact": (
+                "ddr_preprocess_artifact",
+                _coerce_optional_string,
+            ),
             "summary_verbosity": ("summary_verbosity", coerce_summary_verbosity),
             "log_tasks": ("log_tasks", coerce_bool),
+            "produce_sidecars": ("produce_sidecars", coerce_bool),
             "environment_file": ("environment_file", coerce_environment_file),
             "futures_status": ("futures_status", coerce_bool),
             "futures_tail_timeout": (
@@ -708,8 +731,15 @@ class RunConfigBuilder:
                 "resource_monitor": "resource_monitor",
                 "resources_mode": "resources_mode",
                 "taskvine_print_stdout": "taskvine_print_stdout",
+                "ddr_step_size": "ddr_step_size",
+                "ddr_x509_proxy": "ddr_x509_proxy",
+                "ddr_preprocessed_data": "ddr_preprocessed_data",
+                "ddr_save_preprocess": "ddr_save_preprocess",
+                "ddr_auto_save_preprocess": "ddr_auto_save_preprocess",
+                "ddr_preprocess_artifact": "ddr_preprocess_artifact",
                 "environment_file": "environment_file",
                 "log_level": "log_level",
+                "produce_sidecars": "produce_sidecars",
                 "futures_status": "futures_status",
                 "futures_tail_timeout": "futures_tail_timeout",
                 "futures_memory": "futures_memory",

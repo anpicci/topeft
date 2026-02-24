@@ -489,6 +489,7 @@ class AnalysisProcessor(processor.ProcessorABC):
         debug_logging: bool = False,
         executor_mode: Optional[str] = None,
         suppress_debug_prints: Optional[bool] = None,
+        produce_sidecars: bool = False,
     ):
 
         self._sample = sample
@@ -543,6 +544,7 @@ class AnalysisProcessor(processor.ProcessorABC):
             )
         self._suppress_debug_prints = bool(suppress_debug_prints)
         self._executed_variations: List[Dict[str, Any]] = []
+        self._produce_sidecars = bool(produce_sidecars)
         self._golden_json_path = golden_json_path
         if self._sample.get("isData") and not self._golden_json_path:
             raise ValueError("golden_json_path must be provided for data samples")
@@ -691,8 +693,9 @@ class AnalysisProcessor(processor.ProcessorABC):
 
         self._histogram_key_map = histogram_key_map
 
-        histogram[self.VARIATION_SUMMARY_KEY] = []
-        histogram["region_yields"] = processor.dict_accumulator()
+        if self._produce_sidecars:
+            histogram[self.VARIATION_SUMMARY_KEY] = []
+            histogram["region_yields"] = processor.dict_accumulator()
         self._accumulator = histogram
 
         # Set the energy threshold to cut on
@@ -739,6 +742,8 @@ class AnalysisProcessor(processor.ProcessorABC):
             self._executed_variations = []
         if not hasattr(self, "_debug_logging"):
             self._debug_logging = False
+        if not hasattr(self, "_produce_sidecars"):
+            self._produce_sidecars = False
         if not hasattr(self, "_suppress_debug_prints"):
             self._suppress_debug_prints = bool(
                 os.environ.get("TOPEFT_SUPPRESS_DEBUG_STDOUT")

@@ -29,9 +29,11 @@ import importlib
 import json
 import logging
 import os
+import shutil
 import tempfile
 import time
 import warnings
+from collections import OrderedDict
 from dataclasses import asdict, dataclass, field
 from functools import partial
 from pathlib import Path
@@ -103,6 +105,116 @@ def _merge_region_yields(
             target[key] = arr
         else:
             target[key] = np.asarray(current, dtype=float) + arr
+
+
+def _normalize_systematic_label(systematic: Any) -> str:
+    """Return a stable string label for systematic identifiers."""
+
+    if isinstance(systematic, (tuple, list)):
+        return ":".join(str(component) for component in systematic)
+    return str(systematic)
+
+
+def _merge_ddr_histograms(
+    target: Dict[Tuple[str, str, str, str, str], Any],
+    key: Tuple[str, str, str, str, str],
+    histogram: Any,
+) -> None:
+    """Merge histogram payloads for duplicate flattened DDR keys."""
+
+    if key not in target:
+        target[key] = histogram
+        return
+
+    current = target[key]
+    try:
+        current += histogram
+    except Exception as exc:
+        try:
+            target[key] = current + histogram
+        except Exception as add_exc:
+            raise TypeError(
+                f"Failed to merge duplicate DDR histogram key {key!r}."
+            ) from add_exc
+        else:
+            return
+    if current is None:
+        raise TypeError(f"Accumulator merge returned None for key {key!r}.")
+    target[key] = current
+
+
+def flatten_ddr_result_payload(
+    payload: Mapping[Any, Any],
+) -> "OrderedDict[Tuple[str, str, str, str, str], Any]":
+    """Convert nested DDR output to canonical (sample, channel, var, app, syst) keys."""
+
+    flat: Dict[Tuple[str, str, str, str, str], Any] = {}
+
+    def _walk(node: Mapping[Any, Any]) -> None:
+        for key, value in node.items():
+            if isinstance(key, tuple) and len(key) == 5:
+                var, channel, application, sample, systematic = key
+                canonical_key = (
+                    str(sample),
+                    str(channel),
+                    str(var),
+                    str(application),
+                    _normalize_systematic_label(systematic),
+                )
+                _merge_ddr_histograms(flat, canonical_key, value)
+                continue
+            if isinstance(value, Mapping):
+                _walk(value)
+
+    _walk(payload)
+    return OrderedDict(sorted(flat.items(), key=lambda item: item[0]))
+
+
+def _resolve_ddr_preprocess_paths(
+    config: RunConfig,
+    *,
+    results_dir: Path,
+) -> Tuple[Optional[str], Optional[str]]:
+    """Resolve preprocess input/output artifact paths for DDR execution."""
+
+    preprocessed_data_path = getattr(config, "ddr_preprocessed_data", None)
+    explicit_save_path = getattr(config, "ddr_save_preprocess", None)
+    auto_save = bool(getattr(config, "ddr_auto_save_preprocess", True))
+    artifact_override = getattr(config, "ddr_preprocess_artifact", None)
+
+    save_path: Optional[str] = None
+    if preprocessed_data_path:
+        # Reuse mode skips preprocess() unless the user explicitly asks for a save.
+        if explicit_save_path:
+            save_path = str(Path(explicit_save_path).expanduser())
+    elif explicit_save_path:
+        save_path = str(Path(explicit_save_path).expanduser())
+    elif auto_save:
+        if artifact_override:
+            save_path = str(Path(artifact_override).expanduser())
+        else:
+            save_path = str((results_dir / "ddr_preprocessed_data.json").resolve())
+
+    if preprocessed_data_path:
+        preprocessed_data_path = str(Path(preprocessed_data_path).expanduser())
+    return preprocessed_data_path, save_path
+
+
+def stage_ddr_proxy(proxy_path: str, *, staging_dir: Path) -> Path:
+    """Copy a user proxy to ``staging_dir/proxy.pem`` and validate readability."""
+
+    source_path = Path(proxy_path).expanduser()
+    if not source_path.exists():
+        raise FileNotFoundError(f"DDR proxy file does not exist: {source_path}")
+    if not source_path.is_file():
+        raise FileNotFoundError(f"DDR proxy path is not a file: {source_path}")
+    if not os.access(source_path, os.R_OK):
+        raise PermissionError(f"DDR proxy file is not readable: {source_path}")
+
+    staging_dir.mkdir(parents=True, exist_ok=True)
+    staged_proxy = staging_dir / "proxy.pem"
+    shutil.copyfile(source_path, staged_proxy)
+    return staged_proxy
 
 
 topcoffea_utils = _import_topcoffea_submodule("utils")
@@ -998,6 +1110,7 @@ class RunWorkflow:
             metadata_path=self._metadata_path,
             executor_mode=self._config.executor,
             debug_logging=_DEV_DEBUG,
+            produce_sidecars=bool(getattr(self._config, "produce_sidecars", False)),
         )
         if not isinstance(processor_instance, coffea_processor_module.ProcessorABC):
             raise TypeError(
@@ -1096,22 +1209,62 @@ class RunWorkflow:
 
         results_dir = context.logs_dir.parent / "taskvine-results"
         results_dir.mkdir(parents=True, exist_ok=True)
+        preprocessed_data_path, save_preprocess_path = _resolve_ddr_preprocess_paths(
+            self._config,
+            results_dir=results_dir,
+        )
+        extra_files = list(context.extra_input_files)
+        ddr_environment_variables: Dict[str, str] = {}
+        ddr_proxy_path: Optional[str] = None
+        if self._config.ddr_x509_proxy:
+            staged_proxy = stage_ddr_proxy(
+                self._config.ddr_x509_proxy,
+                staging_dir=context.staging_dir,
+            )
+            ddr_proxy_path = str(staged_proxy)
+            extra_files.append(ddr_proxy_path)
+            ddr_environment_variables.setdefault("X509_USER_PROXY", "proxy.pem")
+
+        ddr_step_size = self._config.ddr_step_size
+        if ddr_step_size is None:
+            ddr_step_size = self._config.chunksize
+        if ddr_step_size is None:
+            raise ValueError("DDR step size could not be resolved from config.")
+        ddr_step_size = max(int(ddr_step_size), 1)
+
         ddr_kwargs = {
             "results_directory": str(results_dir),
             "resources_processing": {"cores": max(1, int(self._config.nworkers or 1))},
+            "step_size": ddr_step_size,
         }
+        if ddr_environment_variables:
+            ddr_kwargs["environment_variables"] = ddr_environment_variables
+        if ddr_proxy_path:
+            ddr_kwargs["x509_proxy"] = ddr_proxy_path
+
+        preprocess_kwargs: Optional[Dict[str, Any]] = None
+        if ddr_proxy_path:
+            preprocess_kwargs = {
+                "x509_proxy": ddr_proxy_path,
+                "environment_variables": dict(ddr_environment_variables),
+            }
 
         try:
-            return ddr_helpers.run_ddr(
+            raw_output = ddr_helpers.run_ddr(
                 manager=manager,
                 data=data,
                 processors=processors,
-                accumulator=analysis_processor_module.AnalysisProcessor,
                 schema=NanoAODSchema,
-                extra_files=list(context.extra_input_files),
+                extra_files=extra_files,
                 tree_name=self._config.treename or "Events",
+                preprocessed_data_path=preprocessed_data_path,
+                save_preprocess_path=save_preprocess_path,
+                preprocess_kwargs=preprocess_kwargs,
                 ddr_kwargs=ddr_kwargs,
             )
+            if isinstance(raw_output, Mapping):
+                return flatten_ddr_result_payload(raw_output)
+            return raw_output
         finally:
             try:
                 manager.shutdown()
