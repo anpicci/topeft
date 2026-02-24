@@ -9,7 +9,7 @@ Top quark EFT analyses using the Coffea framework
 ## Start here
 
 New to the project? Start with the [workflow and YAML hub](docs/workflow_and_yaml_hub.md).  
-It walks through the shared `coffea2025` environment, the Run‑2/Run‑3 YAML presets, and how to choose between the TaskVine and futures executors before handing you off to the Run‑2 quickstart and plotting guides. Consult [docs/index.md](docs/index.md) for a full map of the documentation tracks.
+For day-to-day execution, use [How to run an analysis workflow](docs/how_to_run_analysis_workflow.md), which documents the options-only `full_run.sh` entrypoint and TaskVine DDR-first defaults. Consult [docs/index.md](docs/index.md) for the full documentation map.
 
 ## Repository contents
 
@@ -47,7 +47,9 @@ triggers.
 Explore the rest of the documentation via:
 
 - [Workflow & YAML hub](docs/workflow_and_yaml_hub.md) – start here.
+- [How to run an analysis workflow](docs/how_to_run_analysis_workflow.md) – options-first `full_run.sh` usage.
 - [Documentation index](docs/index.md) – curated doc tracks.
+- [Schema reference](docs/schemas.md) – canonical tuple/flat contracts and DDR flattening rules.
 - [TaskVine workflow quickstart](docs/taskvine_workflow.md) – distributed execution focus.
 - [Datacard fitting workflow](docs/fitting.md) – canonical datacard/fit handoff.
 - [Run 2 metadata scenarios](docs/run2_scenarios.md) – scenario definitions and validators.
@@ -196,10 +198,10 @@ The [v0.5 tag](https://github.com/TopEFT/topcoffea/releases/tag/v0.5) was used t
 
     ```bash
     cd analysis/topeft_run2
-    ./full_run.sh --cr -y run2 --options configs/fullR2_run.yml --outdir histos/run2_ref --tag top22006
+    ./full_run.sh --options configs/fullR2_run.yml:cr
     ```
 
-2. Run the datacard maker to obtain the cards and templates from SM (from the pickled histogram file produced in Step 1, be sure to use the version with the nonprompt estimation, i.e. the one with `_np` appended to the name you specified with the ``--tag``/``--outdir`` pair in ``full_run.sh``). This step would also produce scalings-preselect.json file which the later version is necessary for IM workspace making. Note that command option `--wc-scalings` is not mandatory but to enforce the ordering of wcs in scalings. Add command `-A` to include all EFT templates in datacards for previous AAC model. Add option `-C` to run on condor.
+2. Run the datacard maker to obtain the cards and templates from SM (from the pickled histogram file produced in Step 1, be sure to use the version with the nonprompt estimation, i.e. the one with `_np` appended to the configured output stem). This step would also produce scalings-preselect.json file which the later version is necessary for IM workspace making. Note that command option `--wc-scalings` is not mandatory but to enforce the ordering of wcs in scalings. Add command `-A` to include all EFT templates in datacards for previous AAC model. Add option `-C` to run on condor.
     ```
     time python make_cards.py /path/to/your/examplename_np.pkl.gz --do-nuisance --var-lst lj0pt ptz -d /scratch365/you/somedir --unblind --do-mc-stat --wc-scalings cQQ1 cQei cQl3i cQlMi cQq11 cQq13 cQq81 cQq83 cQt1 cQt8 cbW cpQ3 cpQM cpt cptb ctG ctW ctZ ctei ctlSi ctlTi ctli ctp ctq1 ctq8 ctt1
     ```

@@ -14,8 +14,8 @@ Two layers work together:
   resolve scenarios and metadata paths through `metadata_authority`, which is
   the single authority for `--scenario` and YAML profiles.
 
-When `run_analysis.py` or `full_run.sh` receives a `--scenario` value, the
-workflow:
+When `run_analysis.py` resolves a scenario (or when a wrapper-selected YAML
+profile provides `scenarios:`), the workflow:
 
 1. Resolves the scenario through `metadata_authority.py` to find the metadata
    document and scenario definition.
@@ -42,7 +42,7 @@ metadata bundle.
 
 ## Combining scenarios
 
-Scenarios can be combined on the CLI or inside YAML:
+Scenarios can be combined on the CLI (without `--options`) or inside YAML:
 
 ```bash
 python analysis/topeft_run2/run_analysis.py \
@@ -71,8 +71,8 @@ profiles:
 ```
 
 Remember that the CLI enforces a mutual exclusion rule: `--scenario` cannot be
-combined with `--options`. The wrapper (`full_run.sh`) surfaces the same guard
-for convenience.
+combined with `--options`. The wrapper is options-only, so scenario selection
+for wrapper launches must be encoded in YAML.
 
 ## Adding or modifying a scenario
 
@@ -99,6 +99,6 @@ for convenience.
    the validators also echo the SR-channel counts (43 / 68 / 48 / 121 / 148),
    providing a quick sanity check that your metadata has not drifted.
 
-By following these steps the CLI, quickstart helpers, and `full_run.sh` wrapper
-will all recognize the scenario automatically, keeping the Run‑2 documentation
-and workflow in sync with the metadata source of truth.
+By following these steps, CLI and options-driven wrapper launches will recognize
+the scenario automatically, keeping Run‑2 documentation and workflow behavior in
+sync with the metadata source of truth.

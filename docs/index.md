@@ -9,6 +9,8 @@ overlapping quickstarts.
 
 - [Workflow and YAML hub](workflow_and_yaml_hub.md) – **Start here** for
   prerequisites, YAML merging, and executor choices.
+- [How to run an analysis workflow](how_to_run_analysis_workflow.md) –
+  options-first operator guide for `full_run.sh`.
 - [Run 2 quickstart pipeline](quickstart_run2.md) – Primary end-to-end Run‑2
   walkthrough (environment → run → plot).
 - [Run and plot quickstart](run_and_plot_quickstart.md) – Legacy plotting
@@ -22,6 +24,10 @@ overlapping quickstarts.
   walkthrough of CLI/YAML merging and workflow helpers.
 - [`run_analysis.py` CLI and YAML reference](run_analysis_cli_reference.md) –
   Flag-by-flag lookup table.
+- [Schema reference](schemas.md) – Canonical internal/output schema contracts
+  and DDR flattening fail-fast rules.
+- [DDR preprocess + proxy policy](ddr_preprocess_proxy_policy.md) – TaskVine
+  operational defaults for proxy staging and preprocess artifacts.
 - [TaskVine workflow quickstart](taskvine_workflow.md) – Distributed executor
   focus, including environment packaging pointers.
 - [Datacard fitting workflow](fitting.md) – Canonical handoff from histogram
@@ -55,6 +61,8 @@ overlapping quickstarts.
 
 - [Workflow and processor reference](analysis_processing.md) – Processor ↔
   workflow architecture and execution flow.
+- [Analysis processor data flow](analysis_processor_data_flow.md) – Detailed
+  `AnalysisProcessor` runtime flow from dataset context to accumulator output.
 - [Tuple key audit](tuple_key_audit.md) – 5‑tuple conventions for histogram
   keys across the repository.
 - [Run 2 legacy notes](run2_legacy_notes.md) – Maintainer-focused legacy

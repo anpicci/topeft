@@ -58,3 +58,14 @@ def test_options_with_help_is_allowed() -> None:
     argv = ["--options", "opts.yml", "--help"]
     conflicts = find_options_conflicts(argv, parser, allowlist)
     assert conflicts == []
+
+
+def test_options_allowlist_help_only_without_version_flag() -> None:
+    parser = _build_parser()
+    assert options_allowlist(parser) == {"--help"}
+
+
+def test_options_allowlist_includes_version_when_present() -> None:
+    parser = _build_parser()
+    parser.add_argument("--version", action="store_true")
+    assert options_allowlist(parser) == {"--help", "--version"}
