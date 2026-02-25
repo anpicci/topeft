@@ -39,8 +39,10 @@ profiles:
     jsonFiles:
       - ../../input_samples/cfgs/mc_background_samples_cr_NDSkim.cfg
     skip_sr: true
-    split_lep_flavor: true
-    executor: futures
-    chunksize: 50
-    nchunks: 1
+    split_lep_flavor: false
+    executor: taskvine
+    # chunksize: 50
+    # nchunks: 1
     outname: refact_250901_c1_CRs
+    log_level: none
+    environment_file: auto
