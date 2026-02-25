@@ -62,8 +62,6 @@ def test_none_mutes_everything(monkeypatch, logging_state) -> None:
     assert project_logger.disabled is True
 
 
-def test_taskvine_policy_enforced(monkeypatch, logging_state) -> None:
+def test_taskvine_policy_warning_only(monkeypatch, logging_state) -> None:
     monkeypatch.delenv("TOPEFT_DEV_DEBUG", raising=False)
-
-    with pytest.raises(ValueError, match="TaskVine runs require"):
-        configure_topeft_logging("INFO", executor="taskvine")
+    assert configure_topeft_logging("INFO", executor="taskvine") == "INFO"
