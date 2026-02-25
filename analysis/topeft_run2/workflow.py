@@ -24,6 +24,7 @@ task.
 from __future__ import annotations
 
 from collections import OrderedDict
+from contextlib import contextmanager
 import getpass
 import gzip
 import importlib
@@ -34,10 +35,11 @@ import shutil
 import sys
 import tempfile
 import time
+import traceback
 import warnings
 from collections import OrderedDict
 from dataclasses import asdict, dataclass, field
-from functools import partial
+from functools import partial, wraps
 from pathlib import Path
 from typing import (
     TYPE_CHECKING,
@@ -131,6 +133,317 @@ def _emit_ddr_knob_message(message: str) -> None:
         _ddr_debug_emit(message)
     else:
         logger.info(message)
+
+
+@contextmanager
+def _ddr_debug_stage(stage: str, *, details: Optional[str] = None) -> Iterator[None]:
+    """Emit begin/end markers for debug-only DDR stages."""
+
+    debug_enabled = _topeft_ddr_debug_enabled()
+    started = time.monotonic()
+    if debug_enabled:
+        suffix = f" {details}" if details else ""
+        _ddr_debug_emit(f"stage={stage} begin{suffix}")
+
+    succeeded = False
+    try:
+        yield
+        succeeded = True
+    except Exception as exc:
+        if debug_enabled:
+            _ddr_debug_emit(
+                f"stage={stage} exception type={exc.__class__.__name__} message={exc}"
+            )
+            traceback.print_exc(file=sys.stderr)
+        raise
+    finally:
+        if debug_enabled:
+            elapsed_seconds = time.monotonic() - started
+            status = "end" if succeeded else "end_error"
+            _ddr_debug_emit(
+                f"stage={stage} {status} elapsed_seconds={elapsed_seconds:.3f}"
+            )
+
+
+def _parse_ddr_processor_slice(raw_slice: str) -> Optional[Tuple[Optional[int], Optional[int]]]:
+    """Parse ``TOPEFT_DDR_PROCESSOR_SLICE`` values of the form ``start:stop``."""
+
+    if ":" not in raw_slice:
+        _emit_ddr_knob_message(
+            "Ignoring TOPEFT_DDR_PROCESSOR_SLICE: expected 'start:stop' syntax, "
+            f"received {raw_slice!r}."
+        )
+        return None
+
+    start_text, stop_text = raw_slice.split(":", 1)
+    try:
+        start = int(start_text) if start_text.strip() else None
+        stop = int(stop_text) if stop_text.strip() else None
+    except ValueError:
+        _emit_ddr_knob_message(
+            "Ignoring TOPEFT_DDR_PROCESSOR_SLICE: non-integer bound in "
+            f"{raw_slice!r}."
+        )
+        return None
+
+    if start is not None and start < 0:
+        _emit_ddr_knob_message(
+            "Ignoring TOPEFT_DDR_PROCESSOR_SLICE: start must be >= 0, "
+            f"received {start}."
+        )
+        return None
+    if stop is not None and stop < 0:
+        _emit_ddr_knob_message(
+            "Ignoring TOPEFT_DDR_PROCESSOR_SLICE: stop must be >= 0, "
+            f"received {stop}."
+        )
+        return None
+
+    return start, stop
+
+
+def _apply_ddr_processor_subset(processors: Mapping[str, Any]) -> Dict[str, Any]:
+    """Apply deterministic prefix/slice filtering to processor mappings.
+
+    Precedence is fixed as:
+    1) ``TOPEFT_DDR_PROCESSOR_KEY_PREFIX``
+    2) ``TOPEFT_DDR_PROCESSOR_SLICE``
+    3) ``TOPEFT_DDR_MAX_PROCESSORS`` (applied later by caller)
+    """
+
+    processors_dict = dict(processors)
+    raw_prefix = os.environ.get("TOPEFT_DDR_PROCESSOR_KEY_PREFIX")
+    raw_slice = os.environ.get("TOPEFT_DDR_PROCESSOR_SLICE")
+    if raw_prefix is None and raw_slice is None:
+        return processors_dict
+
+    sorted_items = sorted(processors_dict.items(), key=lambda item: str(item[0]))
+    original_count = len(sorted_items)
+    filtered_items = sorted_items
+
+    prefix_value = raw_prefix if raw_prefix is not None else None
+    if prefix_value is not None:
+        filtered_items = [
+            (key, value)
+            for key, value in filtered_items
+            if str(key).startswith(prefix_value)
+        ]
+    after_prefix_count = len(filtered_items)
+
+    applied_slice = None
+    if raw_slice is not None:
+        slice_spec = str(raw_slice).strip()
+        parsed_bounds = _parse_ddr_processor_slice(slice_spec)
+        if parsed_bounds is not None:
+            start, stop = parsed_bounds
+            filtered_items = filtered_items[slice(start, stop)]
+            applied_slice = slice_spec
+        else:
+            applied_slice = f"invalid:{slice_spec!r}"
+
+    after_slice_count = len(filtered_items)
+    first_keys = (
+        ", ".join(str(key) for key, _ in filtered_items[:5])
+        if filtered_items
+        else "<none>"
+    )
+    _emit_ddr_knob_message(
+        "Applied TOPEFT_DDR_PROCESSOR_SUBSET "
+        f"order=prefix->slice->max "
+        f"original={original_count} "
+        f"after_prefix={after_prefix_count} "
+        f"after_slice={after_slice_count} "
+        f"prefix={prefix_value!r} "
+        f"slice={applied_slice!r} "
+        f"first_keys=[{first_keys}]"
+    )
+    return {key: value for key, value in filtered_items}
+
+
+def _format_ddr_task_label(task: Any) -> str:
+    if task is None:
+        return "<none>"
+    description = getattr(task, "description", None)
+    if callable(description):
+        try:
+            desc = str(description())
+        except Exception:
+            desc = "<description-failed>"
+    else:
+        desc = str(task)
+
+    task_dataset = getattr(getattr(task, "dataset", None), "name", None)
+    if task_dataset is not None:
+        desc = f"{desc} dataset={task_dataset}"
+    return desc
+
+
+def _wrap_ddr_stage_method(
+    original: Any,
+    *,
+    stage: str,
+    details_getter: Optional[Any] = None,
+) -> Any:
+    """Wrap a DDR instance method with stage begin/end markers."""
+
+    @wraps(original)
+    def wrapped(instance, *args, **kwargs):
+        details_text = None
+        if callable(details_getter):
+            try:
+                details_text = details_getter(instance, args, kwargs)
+            except Exception as exc:
+                details_text = f"details_error={exc.__class__.__name__}:{exc}"
+
+        with _ddr_debug_stage(stage, details=details_text):
+            return original(instance, *args, **kwargs)
+
+    return wrapped
+
+
+def _wrap_ddr_generate_processing_args(original: Any) -> Any:
+    """Wrap ``generate_processing_args`` to expose task materialization boundaries."""
+
+    @wraps(original)
+    def wrapped(instance, datasets, *args, **kwargs):
+        dataset_count = len(datasets) if isinstance(datasets, Mapping) else "<unknown>"
+        with _ddr_debug_stage(
+            "task_materialization",
+            details=f"datasets={dataset_count}",
+        ):
+            yielded = 0
+            try:
+                for item in original(instance, datasets, *args, **kwargs):
+                    yielded += 1
+                    if yielded <= 3 or yielded % 5000 == 0:
+                        if _topeft_ddr_debug_enabled():
+                            processor_name = "<unknown>"
+                            dataset_name = "<unknown>"
+                            if isinstance(item, tuple) and len(item) >= 2:
+                                processor_name = str(getattr(item[0], "name", "<unknown>"))
+                                dataset_name = str(getattr(item[1], "name", "<unknown>"))
+                            _ddr_debug_emit(
+                                "stage=task_materialization yielded "
+                                f"count={yielded} processor={processor_name} dataset={dataset_name}"
+                            )
+                    yield item
+            except Exception as exc:
+                if _topeft_ddr_debug_enabled():
+                    _ddr_debug_emit(
+                        "stage=task_materialization exception "
+                        f"type={exc.__class__.__name__} message={exc}"
+                    )
+                    traceback.print_exc(file=sys.stderr)
+                raise
+            finally:
+                if _topeft_ddr_debug_enabled():
+                    _ddr_debug_emit(
+                        f"stage=task_materialization summary yielded={yielded}"
+                    )
+
+    return wrapped
+
+
+def _wrap_ddr_submit_method(original: Any) -> Any:
+    """Wrap ``submit`` to expose task submission boundaries with light rate limiting."""
+
+    @wraps(original)
+    def wrapped(instance, task, *args, **kwargs):
+        submit_calls = int(getattr(instance, "_topeft_ddr_submit_calls", 0)) + 1
+        setattr(instance, "_topeft_ddr_submit_calls", submit_calls)
+        should_emit = submit_calls <= 10 or submit_calls % 100 == 0
+        label = _format_ddr_task_label(task)
+
+        if should_emit and _topeft_ddr_debug_enabled():
+            _ddr_debug_emit(
+                "stage=submission_to_manager begin "
+                f"submit_call={submit_calls} task={label}"
+            )
+
+        try:
+            task_id = original(instance, task, *args, **kwargs)
+        except Exception as exc:
+            if _topeft_ddr_debug_enabled():
+                _ddr_debug_emit(
+                    "stage=submission_to_manager exception "
+                    f"submit_call={submit_calls} task={label} "
+                    f"type={exc.__class__.__name__} message={exc}"
+                )
+                traceback.print_exc(file=sys.stderr)
+            raise
+
+        if should_emit and _topeft_ddr_debug_enabled():
+            _ddr_debug_emit(
+                "stage=submission_to_manager end "
+                f"submit_call={submit_calls} task_id={task_id}"
+            )
+        return task_id
+
+    return wrapped
+
+
+@contextmanager
+def _instrument_ddr_runtime_stages(ddr_helpers: Any) -> Iterator[None]:
+    """Temporarily instrument DDR internals for TOPEFT debug runs."""
+
+    if not _topeft_ddr_debug_enabled():
+        yield
+        return
+
+    ddr_cls = getattr(ddr_helpers, "CoffeaDynamicDataReduction", None)
+    if ddr_cls is None:
+        _ddr_debug_emit(
+            "stage=runtime_instrumentation skipped reason=missing_CoffeaDynamicDataReduction"
+        )
+        yield
+        return
+
+    patched_methods: List[Tuple[str, Any]] = []
+
+    def _patch(method_name: str, wrapper: Any) -> None:
+        original = getattr(ddr_cls, method_name, None)
+        if not callable(original):
+            _ddr_debug_emit(
+                f"stage=runtime_instrumentation missing_method={method_name}"
+            )
+            return
+        setattr(ddr_cls, method_name, wrapper(original))
+        patched_methods.append((method_name, original))
+
+    _patch(
+        "_set_resources",
+        lambda original: _wrap_ddr_stage_method(
+            original,
+            stage="category_creation",
+            details_getter=lambda instance, _args, _kwargs: (
+                f"datasets={len(instance.data.get('datasets', {}))}"
+            ),
+        ),
+    )
+    _patch("generate_processing_args", _wrap_ddr_generate_processing_args)
+    _patch("submit", _wrap_ddr_submit_method)
+    _patch(
+        "compute",
+        lambda original: _wrap_ddr_stage_method(
+            original,
+            stage="compute",
+            details_getter=lambda instance, _args, _kwargs: (
+                f"processors={len(getattr(instance, 'processors', {}))} "
+                f"datasets={len(getattr(instance, 'data', {}).get('datasets', {}))}"
+            ),
+        ),
+    )
+
+    patched_names = ", ".join(name for name, _ in patched_methods) or "<none>"
+    _ddr_debug_emit(
+        f"stage=runtime_instrumentation begin patched_methods={patched_names}"
+    )
+    try:
+        yield
+    finally:
+        for method_name, original in reversed(patched_methods):
+            setattr(ddr_cls, method_name, original)
+        _ddr_debug_emit("stage=runtime_instrumentation end")
 
 
 def _ddr_probe_processor(events, **_kwargs):
@@ -1495,17 +1808,27 @@ class RunWorkflow:
             flist,
             object_path=self._config.treename or "Events",
         )
-        processors = self._build_ddr_processors(
-            histogram_plan=histogram_plan,
-            samplesdict=samplesdict,
-            golden_jsons=golden_jsons,
-            analysis_processor_module=analysis_processor_module,
-            coffea_processor_module=coffea_processor_module,
-            ecut_threshold=ecut_threshold,
-        )
-        processors = _apply_ddr_processor_limit(processors)
-        if _env_flag_enabled("TOPEFT_DDR_USE_PROBE_PROCESSOR"):
-            processors = {"tensors": _build_ddr_probe_processor()}
+        with _ddr_debug_stage(
+            "processor_map_build",
+            details=f"histogram_tasks={len(histogram_plan.tasks)}",
+        ):
+            processors = self._build_ddr_processors(
+                histogram_plan=histogram_plan,
+                samplesdict=samplesdict,
+                golden_jsons=golden_jsons,
+                analysis_processor_module=analysis_processor_module,
+                coffea_processor_module=coffea_processor_module,
+                ecut_threshold=ecut_threshold,
+            )
+
+        with _ddr_debug_stage(
+            "processor_map_filter",
+            details="order=prefix->slice->max->probe",
+        ):
+            processors = _apply_ddr_processor_subset(processors)
+            processors = _apply_ddr_processor_limit(processors)
+            if _env_flag_enabled("TOPEFT_DDR_USE_PROBE_PROCESSOR"):
+                processors = {"tensors": _build_ddr_probe_processor()}
         if not processors:
             logger.warning(
                 "TaskVine executor selected but no histogram tasks were constructed; returning empty output."
@@ -1645,19 +1968,28 @@ class RunWorkflow:
             _emit_ddr_processor_key_sanity(processors)
 
         try:
-            raw_output = ddr_helpers.run_ddr(
-                manager=manager,
-                data=data,
-                processors=processors,
-                schema=NanoAODSchema,
-                extra_files=extra_files,
-                tree_name=self._config.treename or "Events",
-                preprocessed_data_path=preprocessed_data_path,
-                save_preprocess_path=save_preprocess_path,
-                preprocess_kwargs=preprocess_kwargs or None,
-                ddr_kwargs=ddr_kwargs,
-            )
-            return raw_output
+            with _instrument_ddr_runtime_stages(ddr_helpers):
+                with _ddr_debug_stage(
+                    "compute_handoff",
+                    details=(
+                        f"processors={len(processors)} "
+                        f"datasets={len(data)} "
+                        f"manager={context.manager_name}"
+                    ),
+                ):
+                    raw_output = ddr_helpers.run_ddr(
+                        manager=manager,
+                        data=data,
+                        processors=processors,
+                        schema=NanoAODSchema,
+                        extra_files=extra_files,
+                        tree_name=self._config.treename or "Events",
+                        preprocessed_data_path=preprocessed_data_path,
+                        save_preprocess_path=save_preprocess_path,
+                        preprocess_kwargs=preprocess_kwargs or None,
+                        ddr_kwargs=ddr_kwargs,
+                    )
+                    return raw_output
         finally:
             try:
                 manager.shutdown()
