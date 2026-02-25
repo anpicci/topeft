@@ -156,7 +156,13 @@ class ExecutorConfig:
 
 
 class ExecutorCLIHelper:
-    """Compose executor CLI options and translate them into runtime settings."""
+    """Compose executor CLI options and translate them into runtime settings.
+
+    Maintainer policy: ``--nworkers/-n`` is the single shared worker-count
+    knob across executors. Executor-specific worker-count flags are
+    intentionally not supported; futures workers are derived from
+    ``args.nworkers``.
+    """
 
     def __init__(
         self,
