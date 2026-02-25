@@ -130,7 +130,7 @@ def manager_name_base(executor: str, *, default_user: Optional[str] = None) -> s
             user = getpass.getuser()
         except Exception:  # pragma: no cover - best effort fallback
             user = "coffea"
-    return f"{user}-ddr-{executor}-coffea"
+    return f"{user}-testddr-{executor}-coffea"
 
 
 def distributed_logs_dir(staging_dir: Path, executor: str) -> Path:

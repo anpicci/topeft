@@ -1641,6 +1641,7 @@ class RunWorkflow:
         run_info_path.mkdir(parents=True, exist_ok=True)
 
         def _instantiate(port: int) -> Any:
+            print(f"\n\n\nAttempting to instantiate DDR manager with name {context.manager_name}, port {port}, staging_dir {staging_dir}, run_info_path {run_info_path}\n\n\n")
             return vine.Manager(
                 port=port,
                 name=context.manager_name,
