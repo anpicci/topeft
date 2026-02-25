@@ -89,6 +89,13 @@ def _ddr_debug_emit(message: str) -> None:
     print(f"[TOPEFT_DDR_DEBUG] {message}", file=sys.stderr, flush=True)
 
 
+def _env_flag_enabled(name: str) -> bool:
+    value = os.environ.get(name)
+    if value is None:
+        return False
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _safe_manager_call(manager: Any, attr: str) -> Any:
     value = getattr(manager, attr, None)
     if callable(value):
@@ -117,6 +124,114 @@ def _summarize_ddr_input(data: Mapping[str, Any]) -> Tuple[int, int, Optional[in
                 total_entries += int(num_entries)
                 saw_entries = True
     return dataset_count, total_files, total_entries if saw_entries else None
+
+
+def _emit_ddr_knob_message(message: str) -> None:
+    if _topeft_ddr_debug_enabled():
+        _ddr_debug_emit(message)
+    else:
+        logger.info(message)
+
+
+def _ddr_probe_processor(events, **_kwargs):
+    return {"n_events": int(len(events))}
+
+
+def _build_ddr_probe_processor():
+    try:
+        from analysis.topeft_run2.run_processor_vineReduce_light import (
+            _build_probe_processor as _light_probe_builder,
+        )
+    except Exception as exc:
+        _emit_ddr_knob_message(
+            "TOPEFT_DDR_USE_PROBE_PROCESSOR=1: using local probe processor "
+            f"(light-runner import failed: {exc.__class__.__name__}: {exc})"
+        )
+        return _ddr_probe_processor
+
+    try:
+        probe = _light_probe_builder()
+    except Exception as exc:
+        _emit_ddr_knob_message(
+            "TOPEFT_DDR_USE_PROBE_PROCESSOR=1: using local probe processor "
+            f"(light-runner builder failed: {exc.__class__.__name__}: {exc})"
+        )
+        return _ddr_probe_processor
+
+    if not callable(probe):
+        _emit_ddr_knob_message(
+            "TOPEFT_DDR_USE_PROBE_PROCESSOR=1: using local probe processor "
+            "(light-runner probe is not callable)"
+        )
+        return _ddr_probe_processor
+
+    _emit_ddr_knob_message(
+        "TOPEFT_DDR_USE_PROBE_PROCESSOR=1: using probe processor imported from light runner."
+    )
+    return probe
+
+
+def _apply_ddr_processor_limit(processors: Mapping[str, Any]) -> Dict[str, Any]:
+    raw_limit = os.environ.get("TOPEFT_DDR_MAX_PROCESSORS")
+    processors_dict = dict(processors)
+    if raw_limit is None:
+        return processors_dict
+
+    raw_limit = str(raw_limit).strip()
+    try:
+        max_processors = int(raw_limit)
+    except ValueError:
+        _emit_ddr_knob_message(
+            "Ignoring TOPEFT_DDR_MAX_PROCESSORS: expected integer > 0, "
+            f"received {raw_limit!r}."
+        )
+        return processors_dict
+
+    if max_processors <= 0:
+        _emit_ddr_knob_message(
+            "Ignoring TOPEFT_DDR_MAX_PROCESSORS: expected integer > 0, "
+            f"received {max_processors}."
+        )
+        return processors_dict
+
+    sorted_keys = sorted(processors_dict)
+    limited_keys = sorted_keys[:max_processors]
+    limited = {key: processors_dict[key] for key in limited_keys}
+    first_keys = ", ".join(str(key) for key in limited_keys[:5]) if limited_keys else "<none>"
+    max_key_len = max((len(str(key)) for key in limited_keys), default=0)
+    _emit_ddr_knob_message(
+        "Applied TOPEFT_DDR_MAX_PROCESSORS "
+        f"original={len(processors_dict)} limited={len(limited)} "
+        f"first_keys=[{first_keys}] max_key_len={max_key_len}"
+    )
+    return limited
+
+
+def _emit_ddr_processor_key_sanity(processors: Mapping[str, Any]) -> None:
+    if not _topeft_ddr_debug_enabled():
+        return
+
+    keys = [str(key) for key in processors]
+    hash_keys = [key for key in keys if "#" in key]
+    newline_keys = [key for key in keys if ("\n" in key or "\r" in key)]
+    max_key_len = max((len(key) for key in keys), default=0)
+    _ddr_debug_emit(
+        "processor_key_sanity "
+        f"total={len(keys)} "
+        f"keys_with_hash={len(hash_keys)} "
+        f"keys_with_newline={len(newline_keys)} "
+        f"max_key_len={max_key_len}"
+    )
+    if hash_keys:
+        _ddr_debug_emit(
+            "processor_key_sanity hash_examples="
+            + ", ".join(repr(key) for key in hash_keys[:3])
+        )
+    if newline_keys:
+        _ddr_debug_emit(
+            "processor_key_sanity newline_examples="
+            + ", ".join(repr(key) for key in newline_keys[:3])
+        )
 
 
 def _import_topcoffea_submodule(submodule: str):
@@ -1388,6 +1503,9 @@ class RunWorkflow:
             coffea_processor_module=coffea_processor_module,
             ecut_threshold=ecut_threshold,
         )
+        processors = _apply_ddr_processor_limit(processors)
+        if _env_flag_enabled("TOPEFT_DDR_USE_PROBE_PROCESSOR"):
+            processors = {"tensors": _build_ddr_probe_processor()}
         if not processors:
             logger.warning(
                 "TaskVine executor selected but no histogram tasks were constructed; returning empty output."
@@ -1524,6 +1642,7 @@ class RunWorkflow:
                 f"resources_processing={ddr_kwargs.get('resources_processing')} "
                 f"resources_accumulating={ddr_kwargs.get('resources_accumulating')}"
             )
+            _emit_ddr_processor_key_sanity(processors)
 
         try:
             raw_output = ddr_helpers.run_ddr(
