@@ -31,6 +31,7 @@ import json
 import logging
 import os
 import shutil
+import sys
 import tempfile
 import time
 import warnings
@@ -73,6 +74,49 @@ from topeft.modules.runner_output import normalise_runner_output, tuple_dict_sta
 
 logger = logging.getLogger(__name__)
 _DEV_DEBUG = dev_debug_enabled()
+
+
+def _topeft_ddr_debug_enabled() -> bool:
+    value = os.environ.get("TOPEFT_DDR_DEBUG")
+    if value is None:
+        return False
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _ddr_debug_emit(message: str) -> None:
+    if not _topeft_ddr_debug_enabled():
+        return
+    print(f"[TOPEFT_DDR_DEBUG] {message}", file=sys.stderr, flush=True)
+
+
+def _safe_manager_call(manager: Any, attr: str) -> Any:
+    value = getattr(manager, attr, None)
+    if callable(value):
+        try:
+            return value()
+        except Exception:
+            return "<call-failed>"
+    return value
+
+
+def _summarize_ddr_input(data: Mapping[str, Any]) -> Tuple[int, int, Optional[int]]:
+    dataset_count = len(data)
+    total_files = 0
+    total_entries = 0
+    saw_entries = False
+    for dataset_specs in data.values():
+        files = dataset_specs.get("files") if isinstance(dataset_specs, Mapping) else None
+        if not isinstance(files, Mapping):
+            continue
+        total_files += len(files)
+        for file_info in files.values():
+            if not isinstance(file_info, Mapping):
+                continue
+            num_entries = file_info.get("num_entries")
+            if isinstance(num_entries, (int, float)) and not isinstance(num_entries, bool):
+                total_entries += int(num_entries)
+                saw_entries = True
+    return dataset_count, total_files, total_entries if saw_entries else None
 
 
 def _import_topcoffea_submodule(submodule: str):
@@ -1352,6 +1396,22 @@ class RunWorkflow:
 
         logger.info("[taskvine] Launching CoffeaDynamicDataReduction with %d processors", len(processors))
         manager = self._create_ddr_manager(context)
+        if _topeft_ddr_debug_enabled():
+            datasets_count, total_files, total_entries = _summarize_ddr_input(data)
+            _ddr_debug_emit(
+                "handoff manager_name="
+                f"{context.manager_name} "
+                f"manager_port={_safe_manager_call(manager, 'port')} "
+                f"staging_dir={context.staging_dir} "
+                f"run_info_path={context.staging_dir / 'vine-run-info'} "
+                f"workers_connected={_safe_manager_call(manager, 'workers_connected')} "
+                f"hungry={_safe_manager_call(manager, 'hungry')} "
+                f"empty={_safe_manager_call(manager, 'empty')} "
+                f"processors={len(processors)} "
+                f"datasets={datasets_count} "
+                f"total_files={total_files} "
+                f"total_entries={total_entries}"
+            )
         log_configurator = taskvine_log_configurator(context.logs_dir)
         try:
             log_configurator(manager)
@@ -1453,6 +1513,17 @@ class RunWorkflow:
             ddr_kwargs.setdefault("environment_variables", ddr_environment_variables)
         if staged_proxy_path:
             ddr_kwargs.setdefault("x509_proxy", staged_proxy_path)
+        if _topeft_ddr_debug_enabled():
+            _ddr_debug_emit(
+                "handoff paths "
+                f"preprocessed_data_path={preprocessed_data_path} "
+                f"save_preprocess_path={save_preprocess_path} "
+                f"results_dir={results_dir} "
+                f"extra_files={len(extra_files)} "
+                f"has_staged_proxy={int(bool(staged_proxy_path))} "
+                f"resources_processing={ddr_kwargs.get('resources_processing')} "
+                f"resources_accumulating={ddr_kwargs.get('resources_accumulating')}"
+            )
 
         try:
             raw_output = ddr_helpers.run_ddr(
@@ -1641,7 +1712,13 @@ class RunWorkflow:
         run_info_path.mkdir(parents=True, exist_ok=True)
 
         def _instantiate(port: int) -> Any:
-            print(f"\n\n\nAttempting to instantiate DDR manager with name {context.manager_name}, port {port}, staging_dir {staging_dir}, run_info_path {run_info_path}\n\n\n")
+            _ddr_debug_emit(
+                "manager instantiate "
+                f"name={context.manager_name} "
+                f"port={port} "
+                f"staging_dir={staging_dir} "
+                f"run_info_path={run_info_path}"
+            )
             return vine.Manager(
                 port=port,
                 name=context.manager_name,
