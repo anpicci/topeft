@@ -13,6 +13,7 @@ from analysis.topeft_run2.run_analysis_helpers import (
 )
 
 logger = logging.getLogger(__name__)
+_TASKVINE_LOG_NOISE_WARNING_EMITTED = False
 
 
 def _is_truthy_env(value: Optional[str]) -> bool:
@@ -34,15 +35,20 @@ def _normalize_executor_name(value: Optional[str]) -> str:
     return (value or "").strip().lower()
 
 
-def _enforce_taskvine_logging_policy(executor: str, log_level: str) -> None:
+def _warn_taskvine_logging_noise(executor: str, log_level: str) -> None:
+    global _TASKVINE_LOG_NOISE_WARNING_EMITTED
     if executor != "taskvine":
         return
     normalized_level = (log_level or "").strip().upper()
-    if normalized_level != "NONE":
-        raise ValueError(
-            "TaskVine runs require '--log-level none' to avoid worker log spam. "
-            "Either set --log-level none or use a non-TaskVine executor."
-        )
+    if normalized_level == "NONE" or _TASKVINE_LOG_NOISE_WARNING_EMITTED:
+        return
+    logger.warning(
+        "TaskVine worker output can be noisy at --log-level %s. "
+        "Using '--log-level none' is optional; you can also use "
+        "'--no-taskvine-print-stdout' to suppress forwarded worker stdout.",
+        normalized_level.lower(),
+    )
+    _TASKVINE_LOG_NOISE_WARNING_EMITTED = True
 
 
 def dev_debug_enabled(*, allow_dev_debug: bool = True) -> bool:
@@ -64,7 +70,7 @@ def configure_topeft_logging(
     normalized_level = _normalize_log_level(log_level)
     normalized_executor = _normalize_executor_name(executor)
     if normalized_executor:
-        _enforce_taskvine_logging_policy(normalized_executor, normalized_level)
+        _warn_taskvine_logging_noise(normalized_executor, normalized_level)
     if normalized_executor == "taskvine":
         allow_dev_debug = False
 
