@@ -45,4 +45,4 @@ profiles:
     # nchunks: 1
     outname: refact_250901_c1_CRs
     log_level: none
-    environment_file: auto
+    environment_file: /users/apiccine/work/ChUpdate/topeft/analysis/topeft_run2/topeft-envs/env_spec_729160ab_edit_HEAD.tar.gz
