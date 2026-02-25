@@ -2,6 +2,8 @@ import importlib.util
 import sys
 from pathlib import Path
 
+import pytest
+
 from topeft.modules.logging_config import configure_topeft_logging
 
 _HELPERS_PATH = Path(__file__).resolve().parents[1] / "analysis" / "topeft_run2" / "run_analysis_helpers.py"
@@ -16,7 +18,11 @@ _HELPERS_SPEC.loader.exec_module(run_analysis_helpers)
 
 
 def test_taskvine_requires_silent_log_level():
-    assert configure_topeft_logging("INFO", executor="taskvine") == "INFO"
+    with pytest.raises(
+        ValueError,
+        match="TaskVine runs require '--log-level none'",
+    ):
+        configure_topeft_logging("INFO", executor="taskvine")
 
 
 def test_debug_log_level_allowed():
