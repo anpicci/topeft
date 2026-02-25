@@ -100,7 +100,7 @@ outpath    = args.outpath
 treename   = args.treename
 xrd        = args.xrd
 max_files  = args.max_files
-futures_workers = executor_config.futures.workers
+nworkers = executor_config.futures.workers
 futures_status = executor_config.futures.status
 futures_tail_timeout = executor_config.futures.tailtimeout
 
@@ -146,7 +146,7 @@ tstart = time.time()
 if executor == "futures":
     exec_instance = build_futures_executor(
         processor,
-        workers=futures_workers,
+        workers=nworkers,
         status=futures_status,
         tailtimeout=futures_tail_timeout,
     )

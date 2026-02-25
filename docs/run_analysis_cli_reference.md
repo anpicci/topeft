@@ -1,93 +1,100 @@
 # `run_analysis.py` CLI and YAML reference
 
-This page summarises every command-line flag and YAML key understood by
-[`analysis/topeft_run2/run_analysis.py`](../analysis/topeft_run2/run_analysis.py) via
-`RunConfigBuilder`.  Use it as a quick lookup when preparing reproducible
-profiles or translating ad-hoc commands into a shared configuration file.  The
-[Run analysis configuration flow](run_analysis_configuration.md) guide walks
-through the broader execution pipeline, including how the metadata and executor
-helpers consume these values.
+This page is the authoritative CLI and options-YAML mapping for
+`analysis/topeft_run2/run_analysis.py`.
 
-## How to read this reference
+The single metadata/scenario authority is
+`analysis/topeft_run2/metadata_authority.py`, with canonical scenario
+definitions in `analysis/metadata/run2_scenarios.yaml`.
 
-* **Precedence** – When `--options` is supplied, the selected YAML profile is the
-  single source of truth.  Every CLI flag listed below is ignored so the run
-  stays reproducible, and `--options` cannot be combined with `--metadata`.
-  Drop `--options` when you want to experiment with temporary command-line
-  overrides.  `RunConfigBuilder` performs this check before reading CLI
-  attributes.【F:analysis/topeft_run2/run_analysis_helpers.py†L347-L415】
-* **YAML profiles** – Options files support three top-level sections:
-  * `defaults`: a mapping applied unconditionally.
-  * `profiles`: a mapping of profile names to overrides.  Select one with
-    `path.yml:profile`.  When omitted the builder falls back to
-    `default_profile` or the only profile in the file.
-  * Additional keys outside these sections act as last-minute overrides.
+## Options exclusivity rule
 
-  These sections are merged in the order listed above so that profiles can
-  extend the shared defaults.  See the configuration flow guide for a narrative
-  walkthrough of profile usage and metadata integration.【F:analysis/topeft_run2/run_analysis_helpers.py†L347-L415】【F:docs/run_analysis_configuration.md†L1-L63】
-* **Types** – Values are normalised into the `RunConfig` dataclass.  YAML lists
-  and strings are accepted interchangeably for sequence-like fields such as
-  `scenarios` and `wc_list`.  Integers and booleans are coerced from strings when
-  needed.【F:analysis/topeft_run2/run_analysis_helpers.py†L103-L306】
-* **Metadata defaults** – CLI runs resolve the selected `--scenario` through
-  `analysis/topeft_run2/metadata_authority.py`, which owns scenario lookup and
-  metadata path selection. Options profiles can override the metadata path via
-  the `metadata`/`metadata_path` keys when backward compatibility is needed,
-  but CLI `--metadata` is rejected when `--options` is in use.【F:analysis/topeft_run2/run_analysis.py†L320-L412】【F:analysis/topeft_run2/metadata_authority.py†L1-L200】
+When `--options <path[:profile]>` is present, options YAML is the single source
+of truth.
 
-## Command-line flags and YAML keys
+- Allowed with `--options`: `--help` and `--version` (only if the parser
+  exposes `--version`).
+- Disallowed with `--options`: all other config flags, including `--metadata`,
+  `--executor`, `--chunksize`, `--scenario`, `--pretend`, etc.
+- Wrapper note: `analysis/topeft_run2/full_run.sh` is stricter and accepts only
+  `--options` and `--help`.
 
-The table below lists each CLI flag, the corresponding YAML key (where
-applicable), the accepted type after coercion, the default value embedded in the
-parser/dataclass, and extra notes.  Keys marked with * are synonyms provided for
-backwards compatibility when writing YAML.
+## CLI to YAML mapping
+
+Keys marked with `*` are accepted aliases for backward compatibility in YAML.
 
 | CLI flag(s) | YAML key(s) | Type after coercion | Default | Notes |
 | --- | --- | --- | --- | --- |
-| `jsonFiles` (positional) | `jsonFiles`, `json_files`* | list of strings | `[]` | Accepts a single path, a comma-separated string, or a list.  Combined with `prefix` during sample discovery.【F:analysis/topeft_run2/run_analysis.py†L32-L207】【F:analysis/topeft_run2/run_analysis_helpers.py†L103-L232】 |
-| `--prefix`, `-r` | `prefix` | string | `""` | Applied to every JSON entry unless the manifest overrides it.  See the configuration flow for redirector usage.【F:analysis/topeft_run2/run_analysis.py†L38-L64】【F:analysis/topeft_run2/run_analysis_helpers.py†L240-L318】【F:docs/run_analysis_configuration.md†L64-L134】 |
-| `--executor`, `-x` | `executor` | string | `"taskvine"` | Selects the backend created by `ExecutorFactory`.  The CLI defaults to the TaskVine executor and expects a cached remote-environment tarball; switch to `futures` for single-node testing, which ignores the missing-cache failure and runs without shipping an archive.  The `iterative` executor remains available for debugging on Coffea builds that expose it.【F:analysis/topeft_run2/run_analysis.py†L32-L222】【F:analysis/topeft_run2/run_analysis_helpers.py†L240-L338】【F:analysis/topeft_run2/workflow.py†L520-L682】【F:docs/run_analysis_configuration.md†L64-L134】【F:topeft/modules/executor_cli.py†L214-L284】 |
-| `--test`, `-t` | `test` | bool | `False` | Enables reduced-event smoke tests.  Distributed backends may reject this combination as described in the troubleshooting checklist.【F:analysis/topeft_run2/run_analysis.py†L38-L85】【F:analysis/topeft_run2/run_analysis_helpers.py†L240-L318】【F:docs/run_analysis_configuration.md†L214-L240】 |
-| `--pretend` | `pretend` | bool | `False` | Parses manifests without executing Coffea tasks.【F:analysis/topeft_run2/run_analysis.py†L38-L85】【F:analysis/topeft_run2/run_analysis_helpers.py†L240-L318】 |
-| `--nworkers`, `-n` | `nworkers` | int | `8` | Worker count for the selected executor.【F:analysis/topeft_run2/run_analysis.py†L38-L109】【F:analysis/topeft_run2/run_analysis_helpers.py†L240-L318】 |
-| `--chunksize`, `-s` | `chunksize` | int | `100000` | Events per task chunk.【F:analysis/topeft_run2/run_analysis.py†L38-L109】【F:analysis/topeft_run2/run_analysis_helpers.py†L240-L318】 |
-| `--nchunks`, `-c` | `nchunks` | optional int | `None` | Limits the number of chunks processed when set.【F:analysis/topeft_run2/run_analysis.py†L38-L109】【F:analysis/topeft_run2/run_analysis_helpers.py†L240-L318】 |
-| `--outname`, `-o` | `outname` | string | `"plotsTopEFT"` | Histogram filename stem.【F:analysis/topeft_run2/run_analysis.py†L38-L132】【F:analysis/topeft_run2/run_analysis_helpers.py†L240-L318】 |
-| `--outpath`, `-p` | `outpath` | string | `"histos"` | Output directory for results.【F:analysis/topeft_run2/run_analysis.py†L38-L132】【F:analysis/topeft_run2/run_analysis_helpers.py†L240-L318】 |
-| `--treename` | `treename` | string | `"Events"` | Input TTree name.【F:analysis/topeft_run2/run_analysis.py†L38-L132】【F:analysis/topeft_run2/run_analysis_helpers.py†L240-L318】 |
-| `--do-errors` | `do_errors` | bool | `False` | Persists quadratic weights (`w**2`) for uncertainty propagation.【F:analysis/topeft_run2/run_analysis.py†L64-L163】【F:analysis/topeft_run2/run_analysis_helpers.py†L240-L318】 |
-| `--do-systs` | `do_systs` | bool | `False` | Enables systematic planning based on metadata definitions.【F:analysis/topeft_run2/run_analysis.py†L64-L163】【F:analysis/topeft_run2/run_analysis_helpers.py†L240-L318】【F:docs/run_analysis_configuration.md†L136-L211】 |
-| `--split-lep-flavor` | `split_lep_flavor` | bool | `False` | Splits histogram categories by lepton flavour.  Mentioned in the summary verbosity description for awareness.【F:analysis/topeft_run2/run_analysis.py†L64-L163】【F:analysis/topeft_run2/run_analysis_helpers.py†L240-L318】 |
-| `--summary-verbosity` | `summary_verbosity` | string (`"none"`, `"brief"`, `"full"`) | `"brief"` | Controls the textual run summary printed before execution.【F:analysis/topeft_run2/run_analysis.py†L132-L173】【F:analysis/topeft_run2/run_analysis_helpers.py†L188-L238】【F:analysis/topeft_run2/workflow.py†L972-L1002】 |
-| `--log-tasks` | `log_tasks` | bool | `False` | Emits a one-line log for each submitted histogram task.【F:analysis/topeft_run2/run_analysis.py†L173-L206】【F:analysis/topeft_run2/run_analysis_helpers.py†L240-L318】 |
-| `--scenario` (repeatable) | `scenarios` | list of strings | `[]` (resolved to `['TOP_22_006']` when empty) | Scenarios map to channel groups via `metadata_authority`; invalid names trigger a friendly error that lists the supported values.【F:analysis/topeft_run2/run_analysis.py†L173-L420】【F:analysis/topeft_run2/run_analysis_helpers.py†L240-L338】【F:analysis/topeft_run2/metadata_authority.py†L1-L240】【F:analysis/topeft_run2/workflow.py†L934-L1016】 |
-| `--skip-sr` | `skip_sr` | bool | `False` | Drops all signal-region categories during planning.【F:analysis/topeft_run2/run_analysis.py†L173-L206】【F:analysis/topeft_run2/run_analysis_helpers.py†L240-L318】 |
-| `--skip-cr` | `skip_cr` | bool | `False` | Drops all control-region categories during planning.【F:analysis/topeft_run2/run_analysis.py†L173-L206】【F:analysis/topeft_run2/run_analysis_helpers.py†L240-L318】 |
-| `--do-np` | `do_np` | bool | `False` | Requests nonprompt estimation after histogram production.【F:analysis/topeft_run2/run_analysis.py†L173-L206】【F:analysis/topeft_run2/run_analysis_helpers.py†L240-L318】【F:analysis/topeft_run2/workflow.py†L906-L976】 |
-| `--do-renormfact-envelope` | `do_renormfact_envelope` | bool | `False` | Requires `do_np` and `do_systs` and applies the renormalisation/factorisation envelope post-processing.【F:analysis/topeft_run2/run_analysis.py†L173-L206】【F:analysis/topeft_run2/run_analysis_helpers.py†L240-L318】【F:analysis/topeft_run2/workflow.py†L918-L965】 |
-| `--wc-list` | `wc_list` | list of strings | `[]` | Wilson coefficients to evaluate; duplicates are removed while preserving order.【F:analysis/topeft_run2/run_analysis.py†L173-L206】【F:analysis/topeft_run2/run_analysis_helpers.py†L240-L336】 |
-| `--ecut` | `ecut` | optional float | `None` | Event-level energy cut in GeV.【F:analysis/topeft_run2/run_analysis.py†L173-L206】【F:analysis/topeft_run2/run_analysis_helpers.py†L240-L318】 |
-| `--port` | `port` | string | `"9123-9130"` | TaskVine manager port or range.  Strings are passed through verbatim while sequences are normalised to `min-max`.【F:analysis/topeft_run2/run_analysis.py†L173-L232】【F:analysis/topeft_run2/run_analysis_helpers.py†L140-L338】 |
-| `--no-port-negotiation` | `negotiate_manager_port` | bool | `False` (negation of the default `True`) | Disable automatic TaskVine port negotiation and use the first value from `--port` directly.  Failures to bind now abort instead of retrying other ports.【F:analysis/topeft_run2/run_analysis.py†L173-L236】【F:analysis/topeft_run2/run_analysis_helpers.py†L240-L338】【F:analysis/topeft_run2/workflow.py†L632-L682】 |
-| `--manager-name` | `manager_name` | optional string | `None` | Override the distributed executor manager identifier.  Defaults to `<user>-<executor>-coffea` when omitted.【F:analysis/topeft_run2/run_analysis.py†L236-L261】【F:analysis/topeft_run2/run_analysis_helpers.py†L240-L338】【F:analysis/topeft_run2/workflow.py†L604-L682】 |
-| `--manager-name-template` | `manager_name_template` | optional string | `None` | Template for TaskVine manager names when multiple processes run concurrently.  The default expands to `<manager-name>-{pid}` on compatible Coffea versions.【F:analysis/topeft_run2/run_analysis.py†L236-L261】【F:analysis/topeft_run2/run_analysis_helpers.py†L240-L338】【F:analysis/topeft_run2/workflow.py†L604-L682】 |
-| `--resource-monitor` | `resource_monitor` | optional string | `None` | TaskVine resource monitor setting (for example `measure`).  Use `none`/`null` to defer to the executor default.【F:analysis/topeft_run2/run_analysis.py†L236-L261】【F:analysis/topeft_run2/run_analysis_helpers.py†L103-L210】【F:analysis/topeft_run2/run_analysis_helpers.py†L240-L338】【F:analysis/topeft_run2/workflow.py†L604-L682】 |
-| `--resources-mode` | `resources_mode` | optional string | `None` | TaskVine resources-mode override passed directly to the executor when set.【F:analysis/topeft_run2/run_analysis.py†L236-L261】【F:analysis/topeft_run2/run_analysis_helpers.py†L240-L338】【F:analysis/topeft_run2/workflow.py†L604-L682】 |
-| `--environment-file` | `environment_file` | optional string | `"cached"` | Environment tarball shipped with distributed executors.  The default resolves the newest cached archive without rebuilding.  Use `auto` to trigger `remote_environment` packaging, provide a path explicitly, or disable shipping with keywords such as `none`/`false`.【F:analysis/topeft_run2/run_analysis.py†L188-L223】【F:analysis/topeft_run2/run_analysis_helpers.py†L124-L175】【F:analysis/topeft_run2/run_analysis_helpers.py†L240-L338】【F:analysis/topeft_run2/workflow.py†L586-L682】 |
-| `--options` | *(YAML only)* | string | `None` | Selects the YAML options file and optional profile.  When set, CLI flags are ignored; combining `--options` with config flags such as `--scenario` or `--metadata` raises an error to keep runs reproducible.【F:analysis/topeft_run2/run_analysis.py†L198-L420】【F:analysis/topeft_run2/run_analysis_helpers.py†L319-L415】 |
+| `jsonFiles` (positional) | `jsonFiles`, `json_files`* | list of strings | `[]` | Accepts one path, comma-separated string, or YAML list. |
+| `--options` | n/a (selector) | `path[:profile]` string | unset | Selects options file/profile. Not a `RunConfig` value by itself. |
+| `--prefix`, `-r` | `prefix` | string | `""` | Prefix/redirector applied during sample loading. |
+| `--executor`, `-x` | `executor` | string | `taskvine` | Supported: `taskvine`, `futures`, `iterative`. |
+| `--test`, `-t` | `test` | bool | `false` | Fast smoke mode; only local executors support this path. |
+| `--pretend` | `pretend` | bool | `false` | Validates configuration and histogram plan, then exits before execution/output write. |
+| `--nworkers`, `-n` | `nworkers` | int | `8` | Worker count used by workflow execution paths (registered by shared `ExecutorCLIHelper`). |
+| `--chunksize`, `-s` | `chunksize` | int | `500000` | Events per chunk. |
+| `--nchunks`, `-c` | `nchunks` | optional int | `None` | Maximum number of chunks to process. |
+| `--outname`, `-o` | `outname` | string | `plotsTopEFT` | Output filename stem. |
+| `--outpath`, `-p` | `outpath` | string | `histos` | Output directory. |
+| `--treename` | `treename` | string | `Events` | Input tree name. |
+| `--metadata` | `metadata`, `metadata_path`* | optional string | `None` | CLI metadata path. Forbidden when `--options` is supplied. |
+| `--scenario` (repeatable) | `scenarios` | list of strings | `TOP_22_006` when unset | Scenario names resolved through `metadata_authority`. |
+| `--allow-partial-channel-groups` | `allow_partial_channel_groups` | bool | `false` | When true, missing scenario channel groups do not fail run construction. |
+| `--skip-sr` | `skip_sr` | bool | `false` | Skip signal-region channels. |
+| `--skip-cr` | `skip_cr` | bool | `false` | Skip control-region channels. |
+| `--do-errors` | `do_errors` | bool | `false` | Save squared-weight coefficients. |
+| `--do-systs` | `do_systs` | bool | `false` | Enable systematic variations. |
+| `--split-lep-flavor` | `split_lep_flavor` | bool | `false` | Split channels by lepton flavor where configured. |
+| `--summary-verbosity` | `summary_verbosity` | enum (`none`, `brief`, `full`) | `brief` | Controls pre-execution histogram summary detail. |
+| `--log-level` | `log_level` | optional enum (`none`, `info`, `warning`, `error`, `debug`) | `None` (effective `INFO`) | Driver-process logging level. |
+| `--log-tasks` | `log_tasks` | bool | `false` | Emit one-line task submission logs (futures path). |
+| `--wc-list` | `wc_list` | list of strings | `[]` | Wilson coefficients to evaluate; duplicates removed preserving order. |
+| `--ecut` | `ecut` | optional float | `None` | Event-level energy cut (GeV). |
+| `--do-np` | `do_np` | bool | `false` | Run nonprompt estimation post-processing. |
+| `--do-renormfact-envelope` | `do_renormfact_envelope` | bool | `false` | Requires `do_np` and `do_systs`. |
+| `--port` | `port` | string | `9123-9130` | TaskVine manager port/range. |
+| `--no-port-negotiation` | `negotiate_manager_port` | bool | negotiation enabled (`true`) | Flag disables fallback port negotiation. |
+| `--manager-name` | `manager_name` | optional string | `None` | Explicit TaskVine manager name. |
+| `--manager-name-template` | `manager_name_template` | optional string | `None` | Template with `{pid}` support. |
+| `--scratch-dir` | `scratch_dir`, `scratch_path`* | optional string | `None` | Shared staging directory for distributed execution. |
+| `--resource-monitor` | `resource_monitor` | optional string | `measure` | TaskVine resource monitor mode. |
+| `--resources-mode` | `resources_mode` | optional string | `auto` | TaskVine resource mode. |
+| `--environment-file` | `environment_file` | optional string | `cached` | Remote environment tarball selection (`cached`, `auto`, `none`, or path). |
+| `--no-environment-file` | `environment_file` | optional string | n/a | Alias for `--environment-file none`. |
+| `--taskvine-print-stdout`, `--no-taskvine-print-stdout` | `taskvine_print_stdout` | bool | `true` | Forward worker stdout to manager logs. |
+| `--futures-status`, `--no-futures-status` | `futures_status` | optional bool | `None` | Toggle futures progress status output. |
+| `--futures-tail-timeout` | `futures_tail_timeout` | optional int | `None` | Timeout for stalled futures tasks. |
+| `--futures-memory` | `futures_memory` | optional int | `None` | Memory hint used by futures path. |
+| `--futures-prefetch` | `futures_prefetch` | optional int | `1` | Number of files prefetched by futures path (`0` disables). |
+| `--futures-retries` | `futures_retries` | int | `0` | Retries per futures task before abort. |
+| `--futures-retry-wait` | `futures_retry_wait` | float | `5.0` | Seconds between futures retries. |
+| `--produce-sidecars`, `--no-produce-sidecars` | `produce_sidecars` | bool | `false` | Include sidecar payloads in processor outputs. |
+| `--ddr-processor-key-delim` | `ddr_processor_key_delim` | string | `-` | Delimiter for DDR-generated key labels. |
+| `--ddr-output-schema` | `ddr_output_schema` | enum (`flat`, `tuple`) | `flat` | `flat` is canonical default for TaskVine DDR serialized output. |
+| `--ddr-preserve-sidecars`, `--no-ddr-preserve-sidecars` | `ddr_preserve_sidecars` | bool | `false` | Preserve sidecars when flattening DDR output. |
+| `--ddr-sidecars-key` | `ddr_sidecars_key` | string | `__sidecars__` | Reserved top-level key for preserved sidecars. |
+| `--ddr-step-size` | `ddr_step_size` | optional int | `None` | Defaults to `chunksize` when unset. |
+| `--ddr-max-task-retries` | `ddr_max_task_retries` | optional int | `None` | Maximum DDR task retries. |
+| `--ddr-results-directory` | `ddr_results_directory` | optional string | `None` | Override DDR results directory path. |
+| `--ddr-verbose`, `--no-ddr-verbose` | `ddr_verbose` | optional bool | `None` | DDR-layer verbose logging toggle. |
+| `--ddr-x509-proxy` | `ddr_x509_proxy` | optional string | `None` | Proxy source path; staged as `proxy.pem` for workers. |
+| `--ddr-preprocessed-data` | `ddr_preprocessed_data` | optional string | `None` | Reuse preprocess artifact and skip preprocess step. |
+| `--ddr-save-preprocess` | `ddr_save_preprocess` | optional string | `None` | Save preprocess artifact after preprocess step. |
+| `--ddr-auto-save-preprocess`, `--no-ddr-auto-save-preprocess` | `ddr_auto_save_preprocess` | bool | `true` | Auto-save preprocess artifact when reuse is not requested. |
+| `--ddr-preprocess-artifact` | `ddr_preprocess_artifact` | optional string | `None` | Override deterministic auto-save preprocess path. |
 
-### YAML-only helper keys
+## YAML-only helper keys
 
-These keys shape how the YAML profile is applied but do not map to explicit CLI
-flags.
+These keys control options-file composition and do not correspond to CLI flags.
 
 | YAML key | Type | Default | Notes |
 | --- | --- | --- | --- |
-| `defaults` | mapping | `{}` | Baseline values merged before profiles and ad-hoc overrides.【F:analysis/topeft_run2/run_analysis_helpers.py†L347-L392】 |
-| `profiles` | mapping of mappings | `{}` | Named overlays.  Combine with `default_profile` or `path.yml:profile` to choose one.【F:analysis/topeft_run2/run_analysis_helpers.py†L347-L392】 |
-| `default_profile` | string | `None` | Automatically selected when present and `path.yml:profile` is not supplied.【F:analysis/topeft_run2/run_analysis_helpers.py†L360-L383】 |
+| `defaults` | mapping | `{}` | Applied first. |
+| `profiles` | mapping of mappings | `{}` | Named overlays selected by `path.yml:profile`. |
+| `default_profile` | optional string | `None` | Used when profile suffix is omitted. |
 
-For executor-specific tuning, extend the builder with additional keys as
-outlined in the [Run analysis configuration flow](run_analysis_configuration.md#key-helpers-and-extension-points)
-reference section.【F:docs/run_analysis_configuration.md†L200-L276】
+Additional YAML-only advanced runtime keys are accepted by `RunConfigBuilder`
+for DDR internals (for example `ddr_resources_processing`,
+`ddr_environment_variables`, `ddr_preprocess_kwargs`, `ddr_kwargs`) when a
+profile needs settings that are intentionally not exposed as top-level CLI
+switches.

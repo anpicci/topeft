@@ -135,7 +135,8 @@ Use this checklist when introducing or modifying Run‑2 metadata:
 3. **Smoke-test the workflow**
    - Use the [Run 2 quickstart pipeline](quickstart_run2.md) or
      ``analysis/topeft_run2/full_run.sh`` with the updated YAML to confirm the
-     new metadata runs end to end (``--dry-run`` first, then a short futures pass).
+     new metadata runs end to end (for plan-only checks, set ``pretend: true`` in
+     the selected YAML profile before running the wrapper).
    - Keep scenario names consistent with ``run2_scenarios.yaml`` so CLI
      invocations and presets (like ``fullR2_run.yml:sr``) continue to work.
 4. **Share presets wisely**

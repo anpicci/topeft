@@ -156,7 +156,13 @@ class ExecutorConfig:
 
 
 class ExecutorCLIHelper:
-    """Compose executor CLI options and translate them into runtime settings."""
+    """Compose executor CLI options and translate them into runtime settings.
+
+    Maintainer policy: ``--nworkers/-n`` is the single shared worker-count
+    knob across executors. Executor-specific worker-count flags are
+    intentionally not supported; futures workers are derived from
+    ``args.nworkers``.
+    """
 
     def __init__(
         self,
@@ -181,6 +187,16 @@ class ExecutorCLIHelper:
 
     def configure_parser(self, parser: argparse.ArgumentParser) -> None:
         """Add executor-related options to ``parser``."""
+
+        option_actions = parser._option_string_actions
+        if "--nworkers" not in option_actions and "-n" not in option_actions:
+            parser.add_argument(
+                "--nworkers",
+                "-n",
+                type=int,
+                default=self._futures_spec.workers_default,
+                help="Number of workers",
+            )
 
         parser.add_argument(
             "--executor",
@@ -250,13 +266,6 @@ class ExecutorCLIHelper:
                 default=self._taskvine_spec.print_stdout_default,
                 help="Forward TaskVine worker stdout to the manager logs.",
             )
-
-        parser.add_argument(
-            "--futures-workers",
-            type=int,
-            default=self._futures_spec.workers_default,
-            help="Maximum number of local processes for the futures executor.",
-        )
 
         if self._futures_spec.include_status:
             parser.add_argument(
@@ -341,7 +350,10 @@ class ExecutorCLIHelper:
         )
 
     def _parse_futures(self, args: argparse.Namespace) -> FuturesConfig:
-        workers = max(int(getattr(args, "futures_workers", self._futures_spec.workers_default) or 1), 1)
+        workers_value = getattr(args, "nworkers", None)
+        if workers_value is None:
+            workers_value = self._futures_spec.workers_default
+        workers = max(int(workers_value or 1), 1)
         status = getattr(args, "futures_status", None) if self._futures_spec.include_status else None
 
         tailtimeout: Optional[int]

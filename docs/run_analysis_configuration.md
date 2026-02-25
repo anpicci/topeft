@@ -135,14 +135,13 @@ the parser rejects them to preserve reproducibility.
   `analysis/topeft_run2/configs/fullR2_run.yml:sr`. `RunConfigBuilder` merges
   `defaults`, the selected profile, then any top‑level overrides. When
   `--options` is provided, other CLI flags are rejected, so set workload controls
-  like `executor`, `chunksize`, and `nchunks` directly in the YAML. `full_run.sh`
-  automatically selects the Run‑2 SR/CR profiles when you request Run‑2 eras
-  without `--scenario/--options`; for Run‑3 runs you typically pass a dedicated
-  Run‑3 YAML.
+  like `executor`, `chunksize`, and `nchunks` directly in the YAML. The
+  `full_run.sh` wrapper is options-only, so wrapper launches always pass an
+  explicit `--options` spec and do not inject additional config flags.
 * **Executor choice** – `--executor taskvine|futures|iterative` selects the
   backend. TaskVine is recommended for distributed campaigns, `futures` for
-  local multi‑core runs, and `iterative` for tiny smoke tests. The wrapper
-  (`full_run.sh`) defaults to TaskVine but exposes the same flag.
+  local multi‑core runs, and `iterative` for tiny smoke tests. For wrapper
+  launches, set `executor` in YAML.
 * **Workload controls** – `--chunksize` (number of events per chunk),
   `--nchunks` (maximum chunks processed), and `--nworkers` (threads/processes)
   are the primary levers when tuning runtimes. Futures runs also accept
@@ -200,14 +199,13 @@ python analysis/topeft_run2/run_analysis.py \
 ```
 
 The first and third examples rely purely on CLI flags for quick debugging; the
-second mirrors a typical `full_run.sh` launch where the YAML preset controls
-scenarios, metadata, and SR/CR toggles without extra CLI overrides.
+second mirrors a typical options-driven wrapper launch where the YAML preset
+controls scenarios, metadata, and execution toggles.
 
 ### Common pitfalls
 
-* `--scenario` and `--options` are mutually exclusive on the CLI. When the
-  wrapper (`full_run.sh`) detects `--options` in the passthrough arguments it
-  aborts early so that the guard remains enforced.
+* `--scenario` and `--options` are mutually exclusive on the CLI. Wrapper runs
+  are options-only and must encode scenario selection in YAML.
 * If a YAML profile sets `executor: taskvine` but you want to run locally,
   edit the YAML (or run without `--options`) and set `executor: futures`.
 * `--chunksize` and `--nchunks` must be specified in the YAML when `--options`

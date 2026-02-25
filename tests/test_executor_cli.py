@@ -69,7 +69,7 @@ def test_executor_cli_taskvine_configuration(tmp_path):
             "--resources-mode",
             "manual",
             "--no-taskvine-print-stdout",
-            "--futures-workers",
+            "--nworkers",
             "4",
             "--futures-status",
             "--futures-tail-timeout",
@@ -211,3 +211,32 @@ def test_executor_cli_futures_allows_missing_cached(tmp_path):
     assert config.executor == "futures"
     assert config.environment_file is None
     assert config.taskvine.environment_file is None
+
+
+def test_executor_cli_futures_uses_central_nworkers(tmp_path):
+    helper = ExecutorCLIHelper(
+        remote_environment=SimpleNamespace(env_dir_cache=tmp_path / "envs"),
+        futures_spec=FuturesArgumentSpec(
+            workers_default=3,
+            include_status=False,
+            include_tail_timeout=False,
+        ),
+        taskvine_spec=TaskVineArgumentSpec(
+            include_manager_name=False,
+            include_manager_template=False,
+            include_scratch_dir=False,
+            include_resource_monitor=False,
+            include_resources_mode=False,
+        ),
+        default_environment="cached",
+        default_executor="taskvine",
+    )
+
+    parser = argparse.ArgumentParser()
+    helper.configure_parser(parser)
+
+    parsed = parser.parse_args(["--executor", "futures", "--nworkers", "6"])
+    config = helper.parse_args(parsed)
+
+    assert config.executor == "futures"
+    assert config.futures.workers == 6

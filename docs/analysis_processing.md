@@ -1,191 +1,66 @@
 # Workflow and processor reference
 
-This page documents how the ``analysis/topeft_run2`` helpers cooperate once the
-configuration is built.  It focuses on the execution phase that starts inside
-:func:`analysis.topeft_run2.workflow.run_workflow`, covers the systematic
-handshake with :class:`analysis.topeft_run2.analysis_processor.AnalysisProcessor`,
-and highlights the primary extension points.  For a primer on the dataclasses
-and metadata structures produced before this stage, see the
-[Run configuration dataclasses and metadata overview](dataclasses_and_metadata.md).
+This page summarizes workflow execution in `analysis/topeft_run2` at medium
+depth. It focuses on how configuration, metadata authority, planners, and
+executors connect. For processor internals and object-level runtime details,
+use [analysis_processor_data_flow.md](analysis_processor_data_flow.md).
 
-The high-level flow is:
+## Workflow execution overview
 
-1. :class:`analysis.topeft_run2.workflow.RunWorkflow` validates the
-   :class:`analysis.topeft_run2.run_analysis_helpers.RunConfig` generated during
-   the CLI/YAML merge.
-2. :class:`analysis.topeft_run2.run_analysis_helpers.SampleLoader` expands the
-   input manifests and returns a normalized ``samplesdict`` together with the
-   expanded file list per sample.
-3. :class:`analysis.topeft_run2.workflow.ChannelPlanner` resolves the metadata
-   scenarios declared in ``analysis/metadata/run2_scenarios.yaml`` (via
-   `analysis/topeft_run2/metadata_authority.py`) and attaches the resulting
-   channel dictionaries to each histogram task.
-4. :class:`analysis.topeft_run2.workflow.HistogramPlanner` enumerates histogram
-   combinations by crossing samples, channel metadata, Coffea applications, and
-   systematic toggles.  The result is a :class:`HistogramPlan` which records the
-  ``(variable, channel, application, sample, systematic)`` tuples described in
-  the shared [tuple-key reference](tuple_key_audit.md)
-  before the tasks are processed.
-5. An :class:`analysis.topeft_run2.workflow.ExecutorFactory` creates the
-   requested backend runner (``futures``, ``iterative`` or ``taskvine``).  Each
-   histogram task is turned into an :class:`AnalysisProcessor` instance with the
-   correct per-sample metadata and systematic configuration before being
-   submitted to the executor.
+1. `run_analysis.py` parses CLI arguments and enforces options-only behavior.
+When `--options <path[:profile]>` is provided, options YAML becomes the single
+configuration source and conflicting CLI flags are rejected.
 
-## Architecture overview
+2. `RunConfigBuilder` builds a normalized `RunConfig`.
+It merges YAML sections in this order: `defaults` -> selected `profiles`
+entry -> top-level passthrough keys. Without `--options`, explicit CLI values
+override parser defaults.
 
-At a high level, :mod:`analysis.topeft_run2.run_analysis` collects CLI flags and
-YAML options, then hands them to
-:class:`analysis.topeft_run2.run_analysis_helpers.RunConfigBuilder`. The builder
-merges the inputs into a single :class:`RunConfig`, honouring the CLI/YAML
-precedence rules described in
-[run_analysis_configuration.md](run_analysis_configuration.md). The Run‑2
-quickstart helpers return the same dataclass so notebook-driven runs can reuse
-it directly.
+3. Metadata and scenario are resolved through the single authority:
+`analysis/topeft_run2/metadata_authority.py`.
+`metadata_authority.load_metadata_bundle(...)` validates the selected scenario
+against canonical scenario definitions in
+`analysis/metadata/run2_scenarios.yaml`, resolves metadata source/provenance,
+and returns the bundle consumed by workflow planning.
 
-:class:`analysis.topeft_run2.workflow.RunWorkflow` consumes the ``RunConfig``:
-:class:`SampleLoader` expands JSON/CFG inputs,
-:class:`ChannelPlanner` resolves metadata scenarios, and
-:class:`HistogramPlanner` enumerates the histogram tasks fed to the Coffea
-executors. Each task carries the metadata required to instantiate
-:class:`AnalysisProcessor`, including channel features and systematic labels.
-When ``summary_verbosity`` is ``"brief"`` or ``"full"``, the workflow emits the
-list of unique samples, channels, applications, and variation labels before
-submitting any work so you can confirm the run contents.
+4. `SampleLoader` expands input specs into concrete samples:
+JSON files, CFG manifests, and directories are normalized into a `samplesdict`
+plus filesets. Numeric metadata fields are coerced early so planning/execution
+receive consistent types.
 
-Execution is delegated to :class:`analysis.topeft_run2.workflow.ExecutorFactory`.
-It builds either a local ``futures`` runner, the legacy ``iterative`` backend,
-or a distributed ``taskvine`` executor, forwarding the relevant knobs from the
-``RunConfig``. Each executor receives a fully configured ``AnalysisProcessor``
-instance together with the metadata bundle for that histogram task.
+5. Planning creates the executable histogram task graph:
+`ChannelPlanner` resolves scenario channel groups and feature tags from the
+metadata bundle, `SystematicsHelper` derives the variation matrix, and
+`HistogramPlanner` enumerates `(var, channel, application, sample, systematic)`
+combinations. `summary_verbosity` controls how much of this plan is logged.
 
-The processor produces tuple-keyed histograms labelled as
-``(variable, channel, application, sample, systematic)``. The tuple contract is
-documented in detail in [tuple_key_audit.md](tuple_key_audit.md). Pickled outputs
-preserve those tuples so downstream helpers—such as
-``analysis/topeft_run2/make_cr_and_sr_plots.py`` or custom plotting scripts—can
-select channels and systematics without relying on categorical histogram axes.
-The [Run 2 quickstart pipeline](quickstart_run2.md) walks through this entire
-architecture with concrete commands.
+6. `ExecutorFactory` dispatches the plan:
+`futures` and `iterative` execute local runner tasks; `taskvine` uses
+Coffea Dynamic Data Reduction (DDR) manager/worker execution. TaskVine-specific
+settings (ports, manager naming, staging, DDR preprocess artifacts, proxy
+staging) are read from the same `RunConfig`.
 
-## AnalysisProcessor responsibilities
+7. Output serialization depends on executor path:
+futures/iterative retain tuple-keyed processor outputs, while TaskVine DDR
+defaults to the canonical flat schema. Sidecars are off by default and can be
+preserved explicitly when flattening DDR output.
 
-The :class:`AnalysisProcessor` class is a Coffea processor responsible for
-building selections, applying corrections, and filling histograms.  A few key
-aspects are worth keeping in mind when extending it:
+8. Pretend-mode behavior is intentionally lightweight:
+with `pretend: true`, the workflow validates config + plan and exits before
+task submission and output writing.
 
-* **Channel metadata** – the processor expects the ``channel_dict`` passed by
-  the workflow to provide ``jet_selection``, ``chan_def_lst``, ``lep_flav_lst``,
-  ``appl_region`` and an optional ``features`` collection.  The flags are
-  derived from the active metadata scenarios (for example, the tau, forward, or
-  off-Z refinements) and inform specialised paths such as ``requires_tau`` or
-  ``offz_split``.
-* **Systematics** – the ``available_systematics`` mapping is produced by the
-  :class:`SystematicsHelper` inside the workflow.  It contains the full matrix of
-  weight variations, object shifts, and fake-factor toggles that the metadata
-  describes.  The processor caches both the tuple lists (for histogram
-  enumeration) and set views (for fast membership checks) so that custom
-  systematic categories can be added without rewriting the ``process`` method.
-  Newer Coffea releases no longer attach ``NanoEvents.caches`` objects, so the
-  Run 2 processor operates directly on the event record without relying on
-  cache-provided lazy arrays.
-* **Golden JSONs** – when processing data samples the workflow injects the
-  appropriate ``golden_json_path`` so that :class:`coffea.lumi_tools.LumiMask`
-  can be used directly inside the ``process`` method.  Missing entries raise a
-  ``ValueError`` before any event loop is started.
-* **Histogram keys** – the processor accepts either a single 5-tuple or a list
-  of tuples per systematic label.  The normalization in the constructor ensures
-  that the internal representation always uses ordered tuples, making it safe to
-  extend the histogram planning logic without breaking call sites.  The
-  pickled histograms keep the full ``(variable, channel, application, sample,
-  systematic)`` tuple so downstream data-driven estimation helpers (for
-  example :class:`topeft.modules.dataDrivenEstimation.DataDrivenProducer`)
-  receive the application tag without relying on categorical axes.
-* **Forward-jet bookkeeping** – forward-jet selections recompute the per-event
-  counts from their masks with ``ak.num`` and immediately cast them to numeric
-  arrays (filling missing entries with zeros) before histogramming so that
-  ``fwdjet_mask`` remains a flat boolean array even when events lack forward
-  jets.
-* **Jet multiplicities** – Run 2 histogram filling keeps the corrected jet
-  collection jagged and derives multiplicities with ``ak.num(cleaned_jets.pt,
-  axis=-1)`` immediately before applying jet-category selections.  The counts
-  are cast to 1D integer arrays with missing values filled as zeros so
-  comparisons such as ``exactly_4j`` or ``atmost_3j`` operate on per-event
-  scalars while retaining the jagged per-jet structure for other observables.
+## Output schema at a glance
 
-Because the constructor performs strict validation (checking for ``None``
-arguments, verifying tuple lengths, etc.), deviations are caught early.  The
-workflow reuses the same processor class for both quickstart and production runs,
-so new options should prefer optional keyword arguments with sensible defaults.
+- Processor/planner internal keys: `(var, channel, application, sample, systematic)`
+- TaskVine DDR default serialized keys:
+  `(sample, channel, var, application, systematic_label)`
+- Optional DDR tuple schema preserves tuple-style output for compatibility.
 
-## Systematic catalogue
+See [schemas.md](schemas.md) for the authoritative schema contract and failure
+policies.
 
-Systematic variations originate from two sources and meet inside the workflow:
+## Detailed references
 
-* **Weight variations** – collected via
-  :func:`analysis.topeft_run2.run_analysis_helpers.weight_variations_from_metadata`
-  and attached to each sample during ``SampleLoader.load``.  The workflow checks
-  that every MC sample declares the required ``nSumOfWeights`` entries.
-* **Application variations** – defined in ``analysis/metadata/metadata.yml`` under
-  the ``systematics`` block.  :class:`SystematicsHelper` projects them onto the
-  selected channel features and returns a dictionary with the variations grouped
-  by type.  The processor interprets those labels to register weight and object
-  shifts.
-
-The workflow always starts the summary with compact bullet lists describing the
-unique samples, channel/application pairs, variables, and systematic labels that
-will be processed when ``RunConfig.summary_verbosity`` is ``"brief"`` or
-``"full"``.  Selecting ``"full"`` retains the per-combination table and
-structured YAML (or JSON) payload printed previously.  When
-``split_lep_flavor`` is enabled, the detailed table also reminds readers that
-flavored channels reuse the processor task constructed for their base channel.
-These summaries are particularly useful when validating that the requested
-systematics match team expectations after editing metadata.
-
-## Extending the workflow
-
-The helpers were designed to be replaced piecemeal.  A few concrete patterns are
-listed below:
-
-* **Custom executor backends** – subclass :class:`ExecutorFactory` or supply an
-  object exposing a compatible ``create_runner`` method.  The runner only needs
-  ``submit`` and ``finish`` methods, making it straightforward to integrate
-  site-specific schedulers.
-* **Selective histogram planning** – provide an alternate
-  :class:`HistogramPlanner` that filters variables or channels based on the
-  :class:`RunConfig`.  Because the planner builds :class:`HistogramTask`
-  instances, new metadata (for example, systematic tags) can be attached without
-  touching the executor or processor code.
-* **Channel overrides** – wrap :class:`ChannelPlanner` to inject or filter
-  metadata-driven channel groups programmatically.  This is useful for dry runs
-  that focus on validation categories or to introduce new experimental regions
-  while metadata changes are still under review.
-
-## Reusing the workflow from Python
-
-While ``run_analysis.py`` remains the canonical entry point, the module-level
-API makes it easy to script runs from notebooks or CI tasks:
-
-```python
-from analysis.topeft_run2.run_analysis import build_parser
-from analysis.topeft_run2.run_analysis_helpers import RunConfigBuilder
-from analysis.topeft_run2.workflow import run_workflow
-
-parser = build_parser()
-args = parser.parse_args([
-    "input_samples/sample_jsons/test_samples/UL17_private_ttH_for_CI.json",
-    "--options", "analysis/topeft_run2/configs/fullR2_run.yml:sr",
-])
-
-builder = RunConfigBuilder()
-config = builder.build(args, options_spec=args.options)
-run_workflow(config=config)
-```
-
-The ``config`` returned here is the same structure used by the quickstart
-utilities.  Persisting it (for example via ``dataclasses.asdict``) provides a
-compact audit trail that complements the stored output pickle.
-
-When ``--options`` is present the YAML file becomes authoritative and other CLI
-flags are rejected so the captured configuration remains reproducible. Drop the
-argument entirely for ad-hoc runs driven purely from the command line.
+- [Analysis processor data flow](analysis_processor_data_flow.md)
+- [CLI and YAML reference](run_analysis_cli_reference.md)
+- [DDR preprocess and proxy policy](ddr_preprocess_proxy_policy.md)
