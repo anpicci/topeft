@@ -24,6 +24,7 @@ from __future__ import annotations
 import argparse
 import importlib
 import logging
+import os
 import shlex
 import sys
 from typing import Sequence
@@ -33,40 +34,59 @@ import topcoffea
 from analysis.topeft_run2 import metadata_authority
 
 
-def _verify_numpy_pandas_abi() -> None:
-    """Ensure pandas and NumPy load with matching binary interfaces.
+def _env_truthy(name: str) -> bool:
+    value = os.environ.get(name)
+    if value is None:
+        return False
+    return value.strip().lower() in {"1", "true", "yes", "on"}
 
-    When a pandas wheel compiled against an older NumPy ABI sneaks into the
-    environment, imports can fail deep inside the Run 2 workflow (for example
-    during ``topeft.modules.systematics`` initialization).  Catch the issue
-    early with a lightweight import and extension-module check so users see an
-    actionable hint instead of an opaque crash.
-    """
+
+def _verify_numpy_pandas_abi() -> None:
+    """Verify runtime imports, with pandas checks enabled only on demand."""
 
     try:
-        np = importlib.import_module("numpy")
-        pd = importlib.import_module("pandas")
+        importlib.import_module("numpy")
     except Exception as exc:  # pragma: no cover - environment guard
         raise RuntimeError(
-            "Failed to import numpy/pandas before launching the workflow. "
+            "Failed to import numpy before launching the workflow. "
             "Recreate the coffea2025 environment and rebuild the TaskVine "
             "tarball before rerunning: `conda env update -f environment.yml "
             "--prune` and `python -m topcoffea.modules.remote_environment`."
         ) from exc
 
+    if not _env_truthy("TOPEFT_IMPORT_CHECK_PANDAS"):
+        return
+
+    print(
+        "[topeft.run_analysis] Optional pandas ABI check enabled via "
+        "TOPEFT_IMPORT_CHECK_PANDAS=1",
+        file=sys.stderr,
+        flush=True,
+    )
     try:  # pragma: no cover - environment guard
+        pd = importlib.import_module("pandas")
         from pandas import _libs as _pd_libs
 
         # Touching a compiled extension exercises the linked NumPy ABI.
         _ = _pd_libs.hashtable.Int64HashTable
+        print(
+            f"[topeft.run_analysis] Optional pandas ABI check passed "
+            f"(pandas {pd.__version__})",
+            file=sys.stderr,
+            flush=True,
+        )
     except Exception as exc:
+        print(
+            "[topeft.run_analysis] Optional pandas ABI check failed while "
+            "TOPEFT_IMPORT_CHECK_PANDAS=1 is enabled.",
+            file=sys.stderr,
+            flush=True,
+        )
         raise RuntimeError(
-            "Detected a pandas/NumPy ABI mismatch (numpy "
-            f"{np.__version__}, pandas {pd.__version__}). Recreate the "
-            "coffea2025 environment and rebuild the TaskVine tarball: "
-            "`conda env update -f environment.yml --prune` followed by "
-            "`python -m topcoffea.modules.remote_environment`. Use the "
-            "refreshed environment for both futures and TaskVine runs."
+            "Optional pandas ABI check failed. Recreate the coffea2025 "
+            "environment and rebuild the TaskVine tarball: `conda env update -f "
+            "environment.yml --prune` followed by `python -m "
+            "topcoffea.modules.remote_environment`."
         ) from exc
 
 from analysis.topeft_run2.run_analysis_helpers import (
