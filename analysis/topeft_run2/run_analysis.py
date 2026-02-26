@@ -103,7 +103,6 @@ from topeft.modules.executor_cli import (
 )
 from topeft.modules.executor import resolve_environment_file
 
-from analysis.topeft_run2.workflow import run_workflow
 from topeft.modules.logging_config import configure_topeft_logging
 
 logger = logging.getLogger(__name__)
@@ -703,6 +702,10 @@ def main(argv: Sequence[str] | None = None) -> None:
             extra_pip_local={"topeft": ["topeft", "setup.py"]},
             extra_conda=["pyyaml"],
         )
+
+    # Import lazily so module import stays lightweight and avoids pulling
+    # optional runtime dependencies before execution is requested.
+    from analysis.topeft_run2.workflow import run_workflow
 
     run_workflow(config, metadata_bundle=metadata_bundle)
 
