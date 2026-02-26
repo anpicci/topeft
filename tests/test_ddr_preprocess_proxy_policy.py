@@ -130,7 +130,7 @@ def test_execute_ddr_sets_proxy_env_var_to_proxy_pem_basename(
     config = RunConfig(
         executor="taskvine",
         ddr_x509_proxy=str(source_proxy),
-        nworkers=1,
+        nworkers=8,
     )
 
     workflow = RunWorkflow(
@@ -197,6 +197,7 @@ def test_execute_ddr_sets_proxy_env_var_to_proxy_pem_basename(
     assert isinstance(preprocess_kwargs, dict)
     assert isinstance(extra_files, list)
 
+    assert ddr_kwargs["resources_processing"]["cores"] == 1
     assert ddr_kwargs["environment_variables"]["X509_USER_PROXY"] == "proxy.pem"
     assert preprocess_kwargs["environment_variables"]["X509_USER_PROXY"] == "proxy.pem"
     assert str(ddr_kwargs["x509_proxy"]).endswith("proxy.pem")

@@ -2026,7 +2026,9 @@ class RunWorkflow:
         resources_processing = (
             dict(self._config.ddr_resources_processing)
             if getattr(self._config, "ddr_resources_processing", None)
-            else {"cores": max(1, int(self._config.nworkers or 1))}
+            # Per-task TaskVine cores requests should stay small by default.
+            # Oversized defaults can make tasks unschedulable on many workers.
+            else {"cores": 1}
         )
         resources_accumulating = (
             dict(self._config.ddr_resources_accumulating)
