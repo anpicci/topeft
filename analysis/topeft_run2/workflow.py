@@ -76,6 +76,8 @@ from topeft.modules.runner_output import normalise_runner_output, tuple_dict_sta
 
 logger = logging.getLogger(__name__)
 _DEV_DEBUG = dev_debug_enabled()
+_DDR_DEBUG_T0: Optional[float] = None
+_DDR_DEBUG_RUN_INFO_PATH: Optional[Path] = None
 
 
 def _topeft_ddr_debug_enabled() -> bool:
@@ -85,10 +87,148 @@ def _topeft_ddr_debug_enabled() -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
-def _ddr_debug_emit(message: str) -> None:
+def _set_ddr_debug_context(
+    *,
+    t0: Optional[float] = None,
+    run_info_path: Optional[Path] = None,
+) -> None:
+    global _DDR_DEBUG_T0
+    global _DDR_DEBUG_RUN_INFO_PATH
+    if t0 is not None:
+        _DDR_DEBUG_T0 = float(t0)
+    if run_info_path is not None:
+        _DDR_DEBUG_RUN_INFO_PATH = Path(run_info_path)
+
+
+def _clear_ddr_debug_context() -> None:
+    global _DDR_DEBUG_T0
+    global _DDR_DEBUG_RUN_INFO_PATH
+    _DDR_DEBUG_T0 = None
+    _DDR_DEBUG_RUN_INFO_PATH = None
+
+
+def _resolve_run_info_paths(run_info_path: Path) -> Dict[str, str]:
+    run_info_root = Path(run_info_path)
+    most_recent_target: Optional[Path] = None
+    newest_run_info: Optional[Path] = None
+
+    most_recent_link = run_info_root / "most-recent"
+    try:
+        if most_recent_link.exists():
+            resolved = most_recent_link.resolve()
+            if resolved.is_dir():
+                most_recent_target = resolved
+    except Exception:
+        most_recent_target = None
+
+    if run_info_root.exists() and run_info_root.is_dir():
+        candidates: List[Path] = []
+        for entry in run_info_root.iterdir():
+            if not entry.is_dir():
+                continue
+            if entry.name in {"most-recent", "vine-cache"}:
+                continue
+            if entry.is_symlink():
+                continue
+            candidates.append(entry)
+        if candidates:
+            newest_run_info = max(candidates, key=lambda item: item.stat().st_mtime)
+
+    chosen_run_info = most_recent_target or newest_run_info
+    tx_most_recent = (
+        str(most_recent_target / "vine-logs" / "transactions")
+        if most_recent_target is not None
+        else "<none>"
+    )
+    tx_newest = (
+        str(newest_run_info / "vine-logs" / "transactions")
+        if newest_run_info is not None
+        else "<none>"
+    )
+    transactions_path = (
+        str(chosen_run_info / "vine-logs" / "transactions")
+        if chosen_run_info is not None
+        else "<none>"
+    )
+    return {
+        "run_info_path": str(run_info_root),
+        "most_recent": str(most_recent_target) if most_recent_target is not None else "<none>",
+        "tx_most_recent": tx_most_recent,
+        "newest_run_info": str(newest_run_info) if newest_run_info is not None else "<none>",
+        "tx_newest": tx_newest,
+        "transactions_path": transactions_path,
+    }
+
+
+def _count_transaction_tokens(transactions_path: Path) -> Tuple[int, int, int]:
+    if not transactions_path.exists() or not transactions_path.is_file():
+        return (0, 0, 0)
+
+    category_lines = 0
+    processing_tokens = 0
+    accumulating_tokens = 0
+    with transactions_path.open("r", encoding="utf-8", errors="replace") as handle:
+        for line in handle:
+            if "CATEGORY " in line:
+                category_lines += 1
+            processing_tokens += line.count("processing#")
+            accumulating_tokens += line.count("accumulating#")
+    return category_lines, processing_tokens, accumulating_tokens
+
+
+def _emit_transactions_snapshot(context: str) -> None:
     if not _topeft_ddr_debug_enabled():
         return
-    print(f"[TOPEFT_DDR_DEBUG] {message}", file=sys.stderr, flush=True)
+    if _DDR_DEBUG_RUN_INFO_PATH is None:
+        _ddr_debug_emit(
+            f"transactions_snapshot context={context} run_info_path=<none>",
+            include_paths=False,
+        )
+        return
+
+    resolved_paths = _resolve_run_info_paths(_DDR_DEBUG_RUN_INFO_PATH)
+    tx_path_str = resolved_paths.get("transactions_path", "<none>")
+    tx_path = Path(tx_path_str) if tx_path_str != "<none>" else None
+    category_lines = 0
+    processing_tokens = 0
+    accumulating_tokens = 0
+    if tx_path is not None:
+        category_lines, processing_tokens, accumulating_tokens = _count_transaction_tokens(
+            tx_path
+        )
+
+    _ddr_debug_emit(
+        "transactions_snapshot "
+        f"context={context} "
+        f"final_transactions_path={tx_path_str} "
+        f"category_lines={category_lines} "
+        f"processing_tokens={processing_tokens} "
+        f"accumulating_tokens={accumulating_tokens}",
+        include_paths=True,
+    )
+
+
+def _ddr_debug_emit(message: str, *, include_paths: bool = False) -> None:
+    if not _topeft_ddr_debug_enabled():
+        return
+    ts_unix = time.time()
+    if _DDR_DEBUG_T0 is None:
+        dt_text = "na"
+    else:
+        dt_text = f"{ts_unix - _DDR_DEBUG_T0:.3f}"
+    prefix = f"ts_unix={ts_unix:.3f} dt_since_ddr_start_s={dt_text}"
+    if _DDR_DEBUG_RUN_INFO_PATH is not None:
+        prefix += f" run_info_path={_DDR_DEBUG_RUN_INFO_PATH}"
+        if include_paths:
+            resolved_paths = _resolve_run_info_paths(_DDR_DEBUG_RUN_INFO_PATH)
+            prefix += (
+                f" most_recent={resolved_paths['most_recent']}"
+                f" tx_most_recent={resolved_paths['tx_most_recent']}"
+                f" newest_run_info={resolved_paths['newest_run_info']}"
+                f" tx_newest={resolved_paths['tx_newest']}"
+                f" transactions_path={resolved_paths['transactions_path']}"
+            )
+    print(f"[TOPEFT_DDR_DEBUG] {prefix} {message}", file=sys.stderr, flush=True)
 
 
 def _env_flag_enabled(name: str) -> bool:
@@ -143,7 +283,7 @@ def _ddr_debug_stage(stage: str, *, details: Optional[str] = None) -> Iterator[N
     started = time.monotonic()
     if debug_enabled:
         suffix = f" {details}" if details else ""
-        _ddr_debug_emit(f"stage={stage} begin{suffix}")
+        _ddr_debug_emit(f"stage={stage} begin{suffix}", include_paths=True)
 
     succeeded = False
     try:
@@ -152,7 +292,8 @@ def _ddr_debug_stage(stage: str, *, details: Optional[str] = None) -> Iterator[N
     except Exception as exc:
         if debug_enabled:
             _ddr_debug_emit(
-                f"stage={stage} exception type={exc.__class__.__name__} message={exc}"
+                f"stage={stage} exception type={exc.__class__.__name__} message={exc}",
+                include_paths=True,
             )
             traceback.print_exc(file=sys.stderr)
         raise
@@ -161,7 +302,8 @@ def _ddr_debug_stage(stage: str, *, details: Optional[str] = None) -> Iterator[N
             elapsed_seconds = time.monotonic() - started
             status = "end" if succeeded else "end_error"
             _ddr_debug_emit(
-                f"stage={stage} {status} elapsed_seconds={elapsed_seconds:.3f}"
+                f"stage={stage} {status} elapsed_seconds={elapsed_seconds:.3f}",
+                include_paths=True,
             )
 
 
@@ -1836,6 +1978,13 @@ class RunWorkflow:
             return {}
 
         logger.info("[taskvine] Launching CoffeaDynamicDataReduction with %d processors", len(processors))
+        run_info_path = context.staging_dir / "vine-run-info"
+        if _topeft_ddr_debug_enabled():
+            _set_ddr_debug_context(
+                t0=time.time(),
+                run_info_path=run_info_path,
+            )
+            _ddr_debug_emit("ddr_debug_context begin", include_paths=True)
         manager = self._create_ddr_manager(context)
         if _topeft_ddr_debug_enabled():
             datasets_count, total_files, total_entries = _summarize_ddr_input(data)
@@ -1844,14 +1993,15 @@ class RunWorkflow:
                 f"{context.manager_name} "
                 f"manager_port={_safe_manager_call(manager, 'port')} "
                 f"staging_dir={context.staging_dir} "
-                f"run_info_path={context.staging_dir / 'vine-run-info'} "
+                f"run_info_path={run_info_path} "
                 f"workers_connected={_safe_manager_call(manager, 'workers_connected')} "
                 f"hungry={_safe_manager_call(manager, 'hungry')} "
                 f"empty={_safe_manager_call(manager, 'empty')} "
                 f"processors={len(processors)} "
                 f"datasets={datasets_count} "
                 f"total_files={total_files} "
-                f"total_entries={total_entries}"
+                f"total_entries={total_entries}",
+                include_paths=True,
             )
         log_configurator = taskvine_log_configurator(context.logs_dir)
         try:
@@ -1963,7 +2113,8 @@ class RunWorkflow:
                 f"extra_files={len(extra_files)} "
                 f"has_staged_proxy={int(bool(staged_proxy_path))} "
                 f"resources_processing={ddr_kwargs.get('resources_processing')} "
-                f"resources_accumulating={ddr_kwargs.get('resources_accumulating')}"
+                f"resources_accumulating={ddr_kwargs.get('resources_accumulating')}",
+                include_paths=True,
             )
             _emit_ddr_processor_key_sanity(processors)
 
@@ -1977,24 +2128,29 @@ class RunWorkflow:
                         f"manager={context.manager_name}"
                     ),
                 ):
-                    raw_output = ddr_helpers.run_ddr(
-                        manager=manager,
-                        data=data,
-                        processors=processors,
-                        schema=NanoAODSchema,
+                        raw_output = ddr_helpers.run_ddr(
+                            manager=manager,
+                            data=data,
+                            processors=processors,
+                            schema=NanoAODSchema,
                         extra_files=extra_files,
                         tree_name=self._config.treename or "Events",
                         preprocessed_data_path=preprocessed_data_path,
                         save_preprocess_path=save_preprocess_path,
-                        preprocess_kwargs=preprocess_kwargs or None,
-                        ddr_kwargs=ddr_kwargs,
-                    )
-                    return raw_output
+                            preprocess_kwargs=preprocess_kwargs or None,
+                            ddr_kwargs=ddr_kwargs,
+                        )
+            return raw_output
         finally:
+            if _topeft_ddr_debug_enabled():
+                _emit_transactions_snapshot("finally_before_manager_shutdown")
             try:
                 manager.shutdown()
             except Exception:
                 logger.debug("DDR manager shutdown encountered an error", exc_info=True)
+            if _topeft_ddr_debug_enabled():
+                _ddr_debug_emit("ddr_debug_context end", include_paths=True)
+            _clear_ddr_debug_context()
 
     def _build_ddr_processors(
         self,
