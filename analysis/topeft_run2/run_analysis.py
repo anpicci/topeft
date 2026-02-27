@@ -101,7 +101,6 @@ from topeft.modules.executor_cli import (
     FuturesArgumentSpec,
     TaskVineArgumentSpec,
 )
-from topeft.modules.executor import resolve_environment_file
 
 from topeft.modules.logging_config import configure_topeft_logging
 
@@ -148,10 +147,9 @@ def build_parser() -> argparse.ArgumentParser:
             "TaskVine workers can be launched with:\n"
             "  vine_submit_workers --python-env \"$(python -m topcoffea.modules.remote_environment)\" \\\n"
             "    --cores 4 --memory 16000 --disk 16000 -M <manager-name>\n"
-            "run_analysis expects a cached remote environment tarball by default\n"
-            "(--environment-file=cached). Use --environment-file auto to rebuild\n"
-            "the archive on demand. Adjust the resources and manager name to\n"
-            "match your deployment."
+            "TaskVine DDR uses worker-provided --python-env tarballs and stages the\n"
+            "--processor module file to workers (Model S). Adjust resources and the\n"
+            "manager name to match your deployment."
         ),
     )
     parser.add_argument(
@@ -209,6 +207,14 @@ def build_parser() -> argparse.ArgumentParser:
         "--treename",
         default="Events",
         help="Name of the tree inside the files",
+    )
+    parser.add_argument(
+        "--processor",
+        default="analysis_processor.py",
+        help=(
+            "Path to the processor module file staged to TaskVine workers. "
+            "The module is imported by top-level filename stem (Model S)."
+        ),
     )
     parser.add_argument(
         "--metadata",
@@ -514,6 +520,7 @@ def _build_equivalent_cli_call(
     tokens.extend(["--outname", str(config.outname)])
     tokens.extend(["--outpath", str(config.outpath)])
     tokens.extend(["--treename", str(config.treename)])
+    tokens.extend(["--processor", str(config.processor)])
     tokens.extend(["--metadata", str(metadata_path)])
     tokens.extend(["--scenario", str(scenario_name)])
 
@@ -560,7 +567,7 @@ def _build_equivalent_cli_call(
         tokens.extend(["--resource-monitor", str(config.resource_monitor)])
     if config.resources_mode:
         tokens.extend(["--resources-mode", str(config.resources_mode)])
-    if config.environment_file:
+    if config.environment_file and config.executor != "taskvine":
         tokens.extend(["--environment-file", str(config.environment_file)])
     if not config.taskvine_print_stdout:
         tokens.append("--no-taskvine-print-stdout")
@@ -695,13 +702,12 @@ def main(argv: Sequence[str] | None = None) -> None:
         config.nchunks if config.nchunks is not None else "unbounded",
     )
 
-    if config.executor == "taskvine":
-        config.environment_file = resolve_environment_file(
-            config.environment_file,
-            remote_environment,
-            extra_pip_local={"topeft": ["topeft", "setup.py"]},
-            extra_conda=["pyyaml"],
+    if config.executor == "taskvine" and config.environment_file:
+        logger.info(
+            "Ignoring --environment-file for TaskVine DDR Model S. "
+            "Workers must be launched with vine_submit_workers --python-env <tarball>."
         )
+        config.environment_file = None
 
     # Import lazily so module import stays lightweight and avoids pulling
     # optional runtime dependencies before execution is requested.

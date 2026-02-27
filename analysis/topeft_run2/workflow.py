@@ -238,6 +238,133 @@ def _env_flag_enabled(name: str) -> bool:
     return str(value).strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _resolve_processor_file_path(processor: str | Path) -> Path:
+    """Resolve the configured processor module path to an existing ``.py`` file."""
+
+    raw_value = str(processor).strip() if processor is not None else ""
+    if not raw_value:
+        raise ValueError("Processor path is empty. Pass --processor <module.py>.")
+
+    candidate = Path(raw_value).expanduser()
+    if candidate.suffix.lower() != ".py":
+        raise ValueError(
+            f"Processor path must point to a .py file, received: {candidate}."
+        )
+
+    if candidate.is_absolute():
+        resolved = candidate.resolve()
+    else:
+        search_roots = (
+            Path.cwd(),
+            Path(__file__).resolve().parent,
+        )
+        resolved = None
+        for root in search_roots:
+            probe = (root / candidate).resolve()
+            if probe.exists():
+                resolved = probe
+                break
+        if resolved is None:
+            searched = ", ".join(str(root) for root in search_roots)
+            raise FileNotFoundError(
+                f"Processor file '{candidate}' was not found. Searched roots: {searched}."
+            )
+
+    if not resolved.exists() or not resolved.is_file():
+        raise FileNotFoundError(f"Processor file does not exist: {resolved}.")
+    return resolved
+
+
+def _load_processor_module_from_file(
+    processor_file: Path,
+    *,
+    required_symbol: str = "AnalysisProcessor",
+) -> Tuple[Any, str]:
+    """Import the processor module by filename stem and validate its symbol."""
+
+    module_name = processor_file.stem
+    module_dir = str(processor_file.parent)
+    if module_dir not in sys.path:
+        sys.path.insert(0, module_dir)
+
+    existing = sys.modules.get(module_name)
+    existing_file = getattr(existing, "__file__", None) if existing is not None else None
+    if existing_file:
+        try:
+            if Path(existing_file).resolve() != processor_file.resolve():
+                del sys.modules[module_name]
+        except Exception:
+            del sys.modules[module_name]
+
+    importlib.invalidate_caches()
+    try:
+        module = importlib.import_module(module_name)
+    except Exception as exc:
+        raise ImportError(
+            f"Failed to import processor module '{module_name}' from {processor_file}."
+        ) from exc
+
+    if not hasattr(module, required_symbol):
+        public_attrs = [name for name in dir(module) if not name.startswith("_")]
+        attr_preview = ", ".join(public_attrs[:20]) if public_attrs else "<none>"
+        raise AttributeError(
+            f"Processor module '{module_name}' from {processor_file} does not define "
+            f"'{required_symbol}'. Public attributes: {attr_preview}"
+        )
+
+    return module, module_name
+
+
+def _collect_processor_extra_files(processor_file: Path) -> List[str]:
+    """Collect processor-adjacent python files to stage with DDR tasks."""
+
+    processor_file = processor_file.resolve()
+    processor_dir = processor_file.parent
+    path_candidates: List[Path] = [processor_file]
+
+    for module_path in sorted(processor_dir.glob("analysis_processor*.py")):
+        if module_path.name == "__init__.py":
+            continue
+        path_candidates.append(module_path.resolve())
+
+    helpers_dir = processor_dir / "analysis_processor_helpers"
+    if helpers_dir.is_dir():
+        for helper_path in sorted(helpers_dir.rglob("*.py")):
+            if helper_path.name == "__init__.py":
+                continue
+            path_candidates.append(helper_path.resolve())
+
+    dedup_by_path: List[Path] = []
+    seen_paths: Set[Path] = set()
+    for path in path_candidates:
+        if path in seen_paths:
+            continue
+        seen_paths.add(path)
+        dedup_by_path.append(path)
+
+    # DDR extra files are staged by basename; avoid ambiguous collisions.
+    dedup_by_basename: Dict[str, Path] = {}
+    for path in dedup_by_path:
+        basename = path.name
+        if basename in dedup_by_basename and dedup_by_basename[basename] != path:
+            logger.warning(
+                "Skipping staged file %s because basename '%s' conflicts with %s.",
+                path,
+                basename,
+                dedup_by_basename[basename],
+            )
+            continue
+        dedup_by_basename[basename] = path
+
+    ordered: List[Path] = []
+    if processor_file.name in dedup_by_basename:
+        ordered.append(dedup_by_basename.pop(processor_file.name))
+    ordered.extend(
+        path for _, path in sorted(dedup_by_basename.items(), key=lambda item: item[0])
+    )
+    return [str(path) for path in ordered]
+
+
 def _safe_manager_call(manager: Any, attr: str) -> Any:
     value = getattr(manager, attr, None)
     if callable(value):
@@ -1631,7 +1758,13 @@ class ExecutorFactory:
 
         raise ValueError(f"Unknown executor '{executor}'")
 
-    def taskvine_context(self, executor: str) -> TaskVineContext:
+    def taskvine_context(
+        self,
+        executor: str,
+        *,
+        processor_path: Optional[Path] = None,
+        use_environment_file: bool = True,
+    ) -> TaskVineContext:
         """Return TaskVine/DDR runtime metadata derived from config."""
 
         port_range = parse_port_range(self._config.port)
@@ -1642,13 +1775,17 @@ class ExecutorFactory:
         manager_template = self._config.manager_name_template
         if manager_template is None and manager_name:
             manager_template = f"{manager_name}-{{pid}}"
-        environment_file = resolve_environment_file(
-            self._config.environment_file,
-            self._remote_environment,
-            extra_pip_local={"topeft": ["topeft", "setup.py"]},
-            extra_conda=["pyyaml"],
+        environment_file: Optional[str] = None
+        if use_environment_file:
+            environment_file = resolve_environment_file(
+                self._config.environment_file,
+                self._remote_environment,
+                extra_pip_local={"topeft": ["topeft", "setup.py"]},
+                extra_conda=["pyyaml"],
+            )
+        extra_input_files = tuple(
+            self._processor_extra_input_files(processor_path=processor_path)
         )
-        extra_input_files = tuple(self._processor_extra_input_files())
         return TaskVineContext(
             executor=executor,
             port_range=port_range,
@@ -1690,35 +1827,10 @@ class ExecutorFactory:
         logs_dir.mkdir(parents=True, exist_ok=True)
         return logs_dir
 
-    def _processor_extra_input_files(self) -> list[str]:
-        try:
-            package = importlib.import_module("analysis.topeft_run2")
-        except ImportError:
-            return ["analysis_processor.py"]
-
-        package_file = getattr(package, "__file__", None)
-        if not package_file:
-            return ["analysis_processor.py"]
-
-        package_dir = Path(package_file).resolve().parent
-        candidates: set[str] = set()
-
-        for module_path in sorted(package_dir.glob("analysis_processor*.py")):
-            if module_path.name == "__init__.py":
-                continue
-            candidates.add(module_path.relative_to(package_dir).as_posix())
-
-        helpers_dir = package_dir / "analysis_processor_helpers"
-        if helpers_dir.is_dir():
-            for helper_path in sorted(helpers_dir.rglob("*.py")):
-                if helper_path.name == "__init__.py":
-                    continue
-                candidates.add(helper_path.relative_to(package_dir).as_posix())
-
-        if not candidates:
-            candidates.add("analysis_processor.py")
-
-        return sorted(candidates)
+    def _processor_extra_input_files(self, *, processor_path: Optional[Path] = None) -> list[str]:
+        if processor_path is None:
+            processor_path = _resolve_processor_file_path(self._config.processor)
+        return _collect_processor_extra_files(processor_path)
 
 
 class RunWorkflow:
@@ -1933,6 +2045,8 @@ class RunWorkflow:
         golden_jsons: Mapping[str, str],
         ecut_threshold: Optional[float],
         analysis_processor_module: Any,
+        processor_file: Path,
+        processor_module_name: str,
         coffea_processor_module: Any,
     ) -> Mapping[str, Any]:
         try:
@@ -1945,7 +2059,11 @@ class RunWorkflow:
 
         from coffea.nanoevents import NanoAODSchema
 
-        context = self._executor_factory.taskvine_context("taskvine")
+        context = self._executor_factory.taskvine_context(
+            "taskvine",
+            processor_path=processor_file,
+            use_environment_file=False,
+        )
         data = ddr_helpers.build_ddr_data_from_flist(
             flist,
             object_path=self._config.treename or "Events",
@@ -2055,6 +2173,30 @@ class RunWorkflow:
             getattr(self._config, "ddr_environment_variables", {}) or {}
         )
         extra_files = list(context.extra_input_files)
+        processor_file_str = str(processor_file)
+        if processor_file_str not in extra_files:
+            extra_files.append(processor_file_str)
+        # Preserve order while removing accidental duplicates.
+        seen_extra_files: Set[str] = set()
+        dedup_extra_files: List[str] = []
+        for entry in extra_files:
+            key = str(entry)
+            if key in seen_extra_files:
+                continue
+            seen_extra_files.add(key)
+            dedup_extra_files.append(key)
+        extra_files = dedup_extra_files
+        staged_sample_names = ", ".join(Path(path).name for path in extra_files[:8])
+        if len(extra_files) > 8:
+            staged_sample_names = f"{staged_sample_names}, ..."
+        logger.info(
+            "[taskvine] Model S processor: file=%s module=%s extra_files=%d processor_staged=%s staged_names=[%s]",
+            processor_file,
+            processor_module_name,
+            len(extra_files),
+            processor_file_str in extra_files,
+            staged_sample_names if staged_sample_names else "<none>",
+        )
         staged_proxy_path: Optional[str] = None
         if self._config.ddr_x509_proxy:
             staged_proxy = stage_ddr_proxy(
@@ -2112,7 +2254,10 @@ class RunWorkflow:
                 f"preprocessed_data_path={preprocessed_data_path} "
                 f"save_preprocess_path={save_preprocess_path} "
                 f"results_dir={results_dir} "
+                f"processor_file={processor_file} "
+                f"processor_module={processor_module_name} "
                 f"extra_files={len(extra_files)} "
+                f"processor_staged={int(processor_file_str in extra_files)} "
                 f"has_staged_proxy={int(bool(staged_proxy_path))} "
                 f"resources_processing={ddr_kwargs.get('resources_processing')} "
                 f"resources_accumulating={ddr_kwargs.get('resources_accumulating')}",
@@ -2364,7 +2509,6 @@ class RunWorkflow:
 
     def run(self) -> None:
         from topeft.modules.systematics import SystematicsHelper
-        from . import analysis_processor
         import coffea.processor as coffea_processor
 
         self._validate_config()
@@ -2433,6 +2577,15 @@ class RunWorkflow:
                 f"Unsupported executor mode '{executor_mode}'. Expected one of: {', '.join(LST_OF_KNOWN_EXECUTORS)}."
             )
         self._config.executor = executor_mode
+        processor_file = _resolve_processor_file_path(self._config.processor)
+        analysis_processor_module, processor_module_name = _load_processor_module_from_file(
+            processor_file
+        )
+        logger.info(
+            "Processor selection: file=%s module=%s",
+            processor_file,
+            processor_module_name,
+        )
 
         if executor_mode == "taskvine":
             ddr_output = self._execute_ddr(
@@ -2441,7 +2594,9 @@ class RunWorkflow:
                 flist=flist,
                 golden_jsons=golden_jsons,
                 ecut_threshold=ecut_threshold,
-                analysis_processor_module=analysis_processor,
+                analysis_processor_module=analysis_processor_module,
+                processor_file=processor_file,
+                processor_module_name=processor_module_name,
                 coffea_processor_module=coffea_processor,
             )
             output_schema = getattr(self._config, "ddr_output_schema", "flat")
@@ -2518,7 +2673,7 @@ class RunWorkflow:
                 task=task,
                 sample_dict=sample_dict,
                 channel_dict=channel_dict,
-                analysis_processor_module=analysis_processor,
+                analysis_processor_module=analysis_processor_module,
                 coffea_processor_module=coffea_processor,
                 golden_jsons=golden_jsons,
                 ecut_threshold=ecut_threshold,

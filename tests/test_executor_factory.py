@@ -2,6 +2,7 @@ import importlib
 import inspect
 import sys
 import types
+from pathlib import Path
 
 import coffea  # ensure the real coffea package is available during tests
 
@@ -149,7 +150,10 @@ def test_executor_factory_taskvine_instantiates(tmp_path, monkeypatch, stub_remo
     assert kwargs.get("manager_name") == "test-taskvine"
     assert kwargs.get("filepath") == str(scratch_dir)
     assert isinstance(kwargs.get("custom_init"), types.FunctionType)
-    assert kwargs.get("extra_input_files") == ["analysis_processor.py"]
+    extra_input_files = kwargs.get("extra_input_files")
+    assert isinstance(extra_input_files, list)
+    assert extra_input_files
+    assert "analysis_processor.py" in [Path(path).name for path in extra_input_files]
     assert kwargs.get("retries") == 15
     assert kwargs.get("compression") == 8
     assert kwargs.get("fast_terminate_workers") == 0
@@ -157,7 +161,7 @@ def test_executor_factory_taskvine_instantiates(tmp_path, monkeypatch, stub_remo
     assert kwargs.get("print_stdout") is True
 
 
-def test_executor_factory_collects_processor_helpers(tmp_path, monkeypatch, stub_remote_environment):
+def test_executor_factory_collects_processor_helpers(tmp_path, stub_remote_environment):
     workflow = importlib.import_module("analysis.topeft_run2.workflow")
     workflow = importlib.reload(workflow)
 
@@ -170,21 +174,15 @@ def test_executor_factory_collects_processor_helpers(tmp_path, monkeypatch, stub
     init_path = package_dir / "__init__.py"
     init_path.write_text("# package\n")
 
-    fake_module = types.SimpleNamespace(__file__=str(init_path))
-    real_import_module = workflow.importlib.import_module
-
-    def _fake_import(name, package=None):
-        if name == "analysis.topeft_run2":
-            return fake_module
-        return real_import_module(name, package=package)
-
-    monkeypatch.setattr(workflow.importlib, "import_module", _fake_import)
-
-    config = RunConfig(executor="taskvine", environment_file=None)
+    config = RunConfig(
+        executor="taskvine",
+        environment_file=None,
+        processor=str(package_dir / "analysis_processor.py"),
+    )
     factory = workflow.ExecutorFactory(config)
 
     extras = factory._processor_extra_input_files()
     assert extras == [
-        "analysis_processor.py",
-        "analysis_processor_helpers/utilities.py",
+        str((package_dir / "analysis_processor.py").resolve()),
+        str((helpers_dir / "utilities.py").resolve()),
     ]

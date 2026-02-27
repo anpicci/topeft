@@ -19,8 +19,16 @@ class _DummyExecutorFactory:
     def __init__(self, context: TaskVineContext) -> None:
         self._context = context
 
-    def taskvine_context(self, executor: str) -> TaskVineContext:
+    def taskvine_context(
+        self,
+        executor: str,
+        *,
+        processor_path: Path | None = None,
+        use_environment_file: bool = True,
+    ) -> TaskVineContext:
         assert executor == "taskvine"
+        _ = processor_path
+        _ = use_environment_file
         return self._context
 
 
@@ -113,6 +121,8 @@ def test_execute_ddr_sets_proxy_env_var_to_proxy_pem_basename(
 ) -> None:
     source_proxy = tmp_path / "user_proxy.pem"
     source_proxy.write_text("proxy-data", encoding="utf-8")
+    processor_file = tmp_path / "analysis_processor.py"
+    processor_file.write_text("class AnalysisProcessor: pass\n", encoding="utf-8")
     staging_dir = tmp_path / "staging"
     logs_dir = tmp_path / "logs" / "taskvine"
     logs_dir.mkdir(parents=True, exist_ok=True)
@@ -187,6 +197,8 @@ def test_execute_ddr_sets_proxy_env_var_to_proxy_pem_basename(
         golden_jsons={},
         ecut_threshold=None,
         analysis_processor_module=SimpleNamespace(),
+        processor_file=processor_file,
+        processor_module_name="analysis_processor",
         coffea_processor_module=SimpleNamespace(),
     )
 

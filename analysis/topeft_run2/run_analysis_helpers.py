@@ -514,6 +514,7 @@ class RunConfig:
     outname: str = "plotsTopEFT"
     outpath: str = "histos"
     treename: str = "Events"
+    processor: str = "analysis_processor.py"
     metadata_path: Optional[str] = None
     do_errors: bool = False
     do_systs: bool = False
@@ -600,6 +601,12 @@ class RunConfigBuilder:
             "outname": ("outname", lambda v: "" if v is None else str(v)),
             "outpath": ("outpath", lambda v: "" if v is None else str(v)),
             "treename": ("treename", lambda v: "" if v is None else str(v)),
+            "processor": (
+                "processor",
+                lambda v: "analysis_processor.py"
+                if v in (None, "") or str(v).strip() == ""
+                else str(v).strip(),
+            ),
             "metadata": (
                 "metadata_path",
                 lambda v: None if v in (None, "") else str(v),
@@ -827,6 +834,7 @@ class RunConfigBuilder:
                 "outname": "outname",
                 "outpath": "outpath",
                 "treename": "treename",
+                "processor": "processor",
                 "metadata": "metadata",
                 "do_errors": "do_errors",
                 "do_systs": "do_systs",
