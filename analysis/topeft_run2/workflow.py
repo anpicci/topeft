@@ -1692,13 +1692,13 @@ class ExecutorFactory:
 
     def _processor_extra_input_files(self) -> list[str]:
         try:
-            package = importlib.import_module("topeft.modules.run2")
+            package = importlib.import_module("analysis.topeft_run2")
         except ImportError:
-            return []
+            return ["analysis_processor.py"]
 
         package_file = getattr(package, "__file__", None)
         if not package_file:
-            return []
+            return ["analysis_processor.py"]
 
         package_dir = Path(package_file).resolve().parent
         candidates: set[str] = set()
@@ -1706,14 +1706,17 @@ class ExecutorFactory:
         for module_path in sorted(package_dir.glob("analysis_processor*.py")):
             if module_path.name == "__init__.py":
                 continue
-            candidates.add(str(module_path.resolve()))
+            candidates.add(module_path.relative_to(package_dir).as_posix())
 
         helpers_dir = package_dir / "analysis_processor_helpers"
         if helpers_dir.is_dir():
             for helper_path in sorted(helpers_dir.rglob("*.py")):
                 if helper_path.name == "__init__.py":
                     continue
-                candidates.add(str(helper_path.resolve()))
+                candidates.add(helper_path.relative_to(package_dir).as_posix())
+
+        if not candidates:
+            candidates.add("analysis_processor.py")
 
         return sorted(candidates)
 
@@ -2361,7 +2364,7 @@ class RunWorkflow:
 
     def run(self) -> None:
         from topeft.modules.systematics import SystematicsHelper
-        import topeft.modules.run2.analysis_processor as analysis_processor
+        from . import analysis_processor
         import coffea.processor as coffea_processor
 
         self._validate_config()
