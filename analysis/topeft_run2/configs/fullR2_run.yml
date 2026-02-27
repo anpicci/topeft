@@ -44,5 +44,5 @@ profiles:
     # chunksize: 50
     # nchunks: 1
     outname: refact_250901_c1_CRs
-    environment_file: /users/apiccine/work/ChUpdate/topeft/analysis/topeft_run2/topeft-envs/env_spec_729160ab_edit_HEAD.tar.gz
+    environment_file: /users/apiccine/work/ChUpdate/ttbarEFT/analysis/topeft-envs/env_spec_f8064c46_edit_HEAD.tar.gz
     log_level: none
