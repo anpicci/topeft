@@ -45,7 +45,7 @@ def test_main_warns_for_taskvine_environment_file_but_keeps_value(
     def _record_warning(message: str, *args, **_kwargs) -> None:
         warning_messages.append(message % args if args else message)
 
-    monkeypatch.setattr(run_analysis, "_verify_numpy_pandas_abi", lambda: None)
+    monkeypatch.setattr(run_analysis, "_verify_numpy_abi", lambda: None)
     monkeypatch.setattr(
         run_analysis,
         "_apply_scenario_metadata_defaults",

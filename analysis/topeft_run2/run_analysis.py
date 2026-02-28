@@ -34,15 +34,16 @@ import topcoffea
 from analysis.topeft_run2 import metadata_authority
 
 
-def _env_truthy(name: str) -> bool:
-    value = os.environ.get(name)
+def _optional_import_modules() -> list[str]:
+    value = os.environ.get("TOPEFT_IMPORT_CHECK_MODULES")
     if value is None:
-        return False
-    return value.strip().lower() in {"1", "true", "yes", "on"}
+        return []
+    modules = [token.strip() for token in value.split(",")]
+    return [module for module in modules if module]
 
 
-def _verify_numpy_pandas_abi() -> None:
-    """Verify runtime imports, with pandas checks enabled only on demand."""
+def _verify_numpy_abi() -> None:
+    """Verify required runtime imports, with optional module checks on demand."""
 
     try:
         importlib.import_module("numpy")
@@ -54,40 +55,34 @@ def _verify_numpy_pandas_abi() -> None:
             "--prune` and `python -m topcoffea.modules.remote_environment`."
         ) from exc
 
-    if not _env_truthy("TOPEFT_IMPORT_CHECK_PANDAS"):
+    optional_modules = _optional_import_modules()
+    if not optional_modules:
         return
 
     print(
-        "[topeft.run_analysis] Optional pandas ABI check enabled via "
-        "TOPEFT_IMPORT_CHECK_PANDAS=1",
+        "[topeft.run_analysis] Optional import checks enabled via "
+        "TOPEFT_IMPORT_CHECK_MODULES="
+        f"{','.join(optional_modules)}",
         file=sys.stderr,
         flush=True,
     )
-    try:  # pragma: no cover - environment guard
-        pd = importlib.import_module("pandas")
-        from pandas import _libs as _pd_libs
-
-        # Touching a compiled extension exercises the linked NumPy ABI.
-        _ = _pd_libs.hashtable.Int64HashTable
-        print(
-            f"[topeft.run_analysis] Optional pandas ABI check passed "
-            f"(pandas {pd.__version__})",
-            file=sys.stderr,
-            flush=True,
-        )
-    except Exception as exc:
-        print(
-            "[topeft.run_analysis] Optional pandas ABI check failed while "
-            "TOPEFT_IMPORT_CHECK_PANDAS=1 is enabled.",
-            file=sys.stderr,
-            flush=True,
-        )
-        raise RuntimeError(
-            "Optional pandas ABI check failed. Recreate the coffea2025 "
-            "environment and rebuild the TaskVine tarball: `conda env update -f "
-            "environment.yml --prune` followed by `python -m "
-            "topcoffea.modules.remote_environment`."
-        ) from exc
+    for module_name in optional_modules:
+        try:  # pragma: no cover - environment guard
+            importlib.import_module(module_name)
+        except Exception as exc:
+            print(
+                "[topeft.run_analysis] Optional import check failed for "
+                f"module '{module_name}' while TOPEFT_IMPORT_CHECK_MODULES is set.",
+                file=sys.stderr,
+                flush=True,
+            )
+            raise RuntimeError(
+                "Optional module import check failed for "
+                f"'{module_name}'. Recreate the coffea2025 environment and "
+                "rebuild the TaskVine tarball: `conda env update -f "
+                "environment.yml --prune` followed by "
+                "`python -m topcoffea.modules.remote_environment`."
+            ) from exc
 
 from analysis.topeft_run2.run_analysis_helpers import (
     RunConfig,
@@ -620,7 +615,7 @@ def _build_equivalent_cli_call(
 
 
 def main(argv: Sequence[str] | None = None) -> None:
-    _verify_numpy_pandas_abi()
+    _verify_numpy_abi()
 
     parser = build_parser()
     parser_defaults = parser.parse_args([])
