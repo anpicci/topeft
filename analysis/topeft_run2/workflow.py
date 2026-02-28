@@ -342,27 +342,69 @@ def _collect_processor_extra_files(processor_file: Path) -> List[str]:
         seen_paths.add(path)
         dedup_by_path.append(path)
 
-    # DDR extra files are staged by basename; avoid ambiguous collisions.
-    dedup_by_basename: Dict[str, Path] = {}
-    for path in dedup_by_path:
-        basename = path.name
-        if basename in dedup_by_basename and dedup_by_basename[basename] != path:
-            logger.warning(
-                "Skipping staged file %s because basename '%s' conflicts with %s.",
-                path,
-                basename,
-                dedup_by_basename[basename],
-            )
-            continue
-        dedup_by_basename[basename] = path
-
-    ordered: List[Path] = []
-    if processor_file.name in dedup_by_basename:
-        ordered.append(dedup_by_basename.pop(processor_file.name))
-    ordered.extend(
-        path for _, path in sorted(dedup_by_basename.items(), key=lambda item: item[0])
+    staged_paths = [str(path) for path in dedup_by_path]
+    _validate_staged_basename_collisions(
+        staged_paths,
+        context="TaskVine DDR processor staging",
     )
-    return [str(path) for path in ordered]
+
+    processor_file_str = str(processor_file)
+    ordered: List[str] = []
+    if processor_file_str in staged_paths:
+        ordered.append(processor_file_str)
+    ordered.extend(
+        path
+        for path in sorted(staged_paths, key=lambda item: Path(item).name)
+        if path != processor_file_str
+    )
+    return ordered
+
+
+def _canonical_staged_path(entry: str | Path) -> str:
+    return str(Path(entry).expanduser().resolve(strict=False))
+
+
+def _deduplicate_staged_paths(entries: Iterable[str | Path]) -> List[str]:
+    deduplicated: List[str] = []
+    seen: Set[str] = set()
+    for entry in entries:
+        canonical = _canonical_staged_path(entry)
+        if canonical in seen:
+            continue
+        seen.add(canonical)
+        deduplicated.append(canonical)
+    return deduplicated
+
+
+def _validate_staged_basename_collisions(
+    entries: Iterable[str | Path],
+    *,
+    context: str,
+) -> None:
+    basenames: Dict[str, Set[str]] = {}
+    for entry in entries:
+        canonical = _canonical_staged_path(entry)
+        basenames.setdefault(Path(canonical).name, set()).add(canonical)
+
+    collisions = {
+        basename: sorted(paths)
+        for basename, paths in basenames.items()
+        if len(paths) > 1
+    }
+    if not collisions:
+        return
+
+    lines = [
+        f"Basename collision detected in {context}.",
+        "TaskVine stages extra files by basename, so each staged file must have a unique filename.",
+    ]
+    for basename, paths in sorted(collisions.items()):
+        lines.append(f"basename={basename}")
+        lines.extend(f"  path={path}" for path in paths)
+    lines.append(
+        "Remediation: rename colliding files or move them so staged basenames are unique."
+    )
+    raise ValueError("\n".join(lines))
 
 
 def _safe_manager_call(manager: Any, attr: str) -> Any:
@@ -2062,7 +2104,6 @@ class RunWorkflow:
         context = self._executor_factory.taskvine_context(
             "taskvine",
             processor_path=processor_file,
-            use_environment_file=False,
         )
         data = ddr_helpers.build_ddr_data_from_flist(
             flist,
@@ -2176,16 +2217,21 @@ class RunWorkflow:
         processor_file_str = str(processor_file)
         if processor_file_str not in extra_files:
             extra_files.append(processor_file_str)
-        # Preserve order while removing accidental duplicates.
-        seen_extra_files: Set[str] = set()
-        dedup_extra_files: List[str] = []
-        for entry in extra_files:
-            key = str(entry)
-            if key in seen_extra_files:
-                continue
-            seen_extra_files.add(key)
-            dedup_extra_files.append(key)
-        extra_files = dedup_extra_files
+        staged_proxy_path: Optional[str] = None
+        if self._config.ddr_x509_proxy:
+            staged_proxy = stage_ddr_proxy(
+                self._config.ddr_x509_proxy,
+                staging_dir=context.staging_dir,
+            )
+            staged_proxy_path = str(staged_proxy)
+            extra_files.append(staged_proxy_path)
+            if "X509_USER_PROXY" not in ddr_environment_variables:
+                ddr_environment_variables["X509_USER_PROXY"] = "proxy.pem"
+        extra_files = _deduplicate_staged_paths(extra_files)
+        _validate_staged_basename_collisions(
+            extra_files,
+            context="TaskVine DDR extra_files",
+        )
         staged_sample_names = ", ".join(Path(path).name for path in extra_files[:8])
         if len(extra_files) > 8:
             staged_sample_names = f"{staged_sample_names}, ..."
@@ -2197,16 +2243,6 @@ class RunWorkflow:
             processor_file_str in extra_files,
             staged_sample_names if staged_sample_names else "<none>",
         )
-        staged_proxy_path: Optional[str] = None
-        if self._config.ddr_x509_proxy:
-            staged_proxy = stage_ddr_proxy(
-                self._config.ddr_x509_proxy,
-                staging_dir=context.staging_dir,
-            )
-            staged_proxy_path = str(staged_proxy)
-            extra_files.append(staged_proxy_path)
-            if "X509_USER_PROXY" not in ddr_environment_variables:
-                ddr_environment_variables["X509_USER_PROXY"] = "proxy.pem"
 
         preprocess_kwargs = dict(
             getattr(self._config, "ddr_preprocess_kwargs", {}) or {}

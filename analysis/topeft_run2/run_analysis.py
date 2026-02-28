@@ -148,8 +148,9 @@ def build_parser() -> argparse.ArgumentParser:
             "  vine_submit_workers --python-env \"$(python -m topcoffea.modules.remote_environment)\" \\\n"
             "    --cores 4 --memory 16000 --disk 16000 -M <manager-name>\n"
             "TaskVine DDR uses worker-provided --python-env tarballs and stages the\n"
-            "--processor module file to workers (Model S). Adjust resources and the\n"
-            "manager name to match your deployment."
+            "--processor module file to workers (Model S). --environment-file is\n"
+            "still supported, but worker --python-env tarballs remain the recommended\n"
+            "path for TaskVine DDR."
         ),
     )
     parser.add_argument(
@@ -567,7 +568,7 @@ def _build_equivalent_cli_call(
         tokens.extend(["--resource-monitor", str(config.resource_monitor)])
     if config.resources_mode:
         tokens.extend(["--resources-mode", str(config.resources_mode)])
-    if config.environment_file and config.executor != "taskvine":
+    if config.environment_file:
         tokens.extend(["--environment-file", str(config.environment_file)])
     if not config.taskvine_print_stdout:
         tokens.append("--no-taskvine-print-stdout")
@@ -703,11 +704,11 @@ def main(argv: Sequence[str] | None = None) -> None:
     )
 
     if config.executor == "taskvine" and config.environment_file:
-        logger.info(
-            "Ignoring --environment-file for TaskVine DDR Model S. "
-            "Workers must be launched with vine_submit_workers --python-env <tarball>."
+        logger.warning(
+            "TaskVine DDR Model S recommends worker '--python-env <tarball>' "
+            "submission. --environment-file=%s is still honored for this run.",
+            config.environment_file,
         )
-        config.environment_file = None
 
     # Import lazily so module import stays lightweight and avoids pulling
     # optional runtime dependencies before execution is requested.

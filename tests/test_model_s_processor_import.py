@@ -62,3 +62,21 @@ def test_collect_processor_extra_files_includes_processor_and_helpers(tmp_path: 
     extras = _collect_processor_extra_files(processor_file)
     assert extras[0] == str(processor_file.resolve())
     assert str(helper_file.resolve()) in extras
+
+
+def test_collect_processor_extra_files_raises_on_basename_collision(tmp_path: Path) -> None:
+    processor_file = tmp_path / "analysis_processor.py"
+    processor_file.write_text("class AnalysisProcessor: pass\n", encoding="utf-8")
+
+    helpers_dir = tmp_path / "analysis_processor_helpers" / "nested"
+    helpers_dir.mkdir(parents=True)
+    colliding_helper = helpers_dir / "analysis_processor.py"
+    colliding_helper.write_text("VALUE = 1\n", encoding="utf-8")
+
+    with pytest.raises(ValueError) as excinfo:
+        _collect_processor_extra_files(processor_file)
+
+    message = str(excinfo.value)
+    assert "basename=analysis_processor.py" in message
+    assert str(processor_file.resolve()) in message
+    assert str(colliding_helper.resolve()) in message
