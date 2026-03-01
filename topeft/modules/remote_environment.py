@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from copy import deepcopy
+from pathlib import Path
 from typing import Dict, Iterable, List, Optional
 from typing import Sequence
 
@@ -15,9 +17,64 @@ ERROR_PREFIX = "[topeft.remote_environment] ERROR: "
 
 DEFAULT_EXTRA_PIP_LOCAL: Dict[str, List[str]] = {
     "topeft": ["topeft", "setup.py"],
-    "dynamic_data_reduction": ["src", "pyproject.toml"],
 }
 DEFAULT_EXTRA_CONDA: List[str] = ["pyyaml"]
+DDR_REPO_ENV_VAR = "TOPEFT_DDR_REPO"
+
+
+def _find_topeft_repo_root() -> Path:
+    module_path = Path(__file__).resolve()
+    for depth, candidate in enumerate(module_path.parents):
+        if (candidate / "setup.py").is_file() and (candidate / "topeft").is_dir():
+            return candidate
+        if depth >= 12:
+            break
+    raise FileNotFoundError(
+        "Unable to locate the topeft repository root from "
+        f"{module_path}. Expected a directory containing setup.py and topeft/."
+    )
+
+
+def _resolve_ddr_repo_root(*, topeft_repo_root: Path) -> Path:
+    attempted_paths: list[Path] = []
+
+    override = os.environ.get(DDR_REPO_ENV_VAR, "").strip()
+    if override:
+        candidate = Path(override).expanduser()
+        if not candidate.is_absolute():
+            candidate = Path.cwd() / candidate
+        candidate = candidate.resolve()
+    else:
+        candidate = (topeft_repo_root.parent / "dynamic_data_reduction").resolve()
+    attempted_paths.append(candidate)
+
+    src_dir = candidate / "src"
+    pyproject_file = candidate / "pyproject.toml"
+    if src_dir.is_dir() and pyproject_file.is_file():
+        return candidate
+
+    checks: list[str] = []
+    if not src_dir.is_dir():
+        checks.append(f"missing directory: {src_dir}")
+    if not pyproject_file.is_file():
+        checks.append(f"missing file: {pyproject_file}")
+    attempted = ", ".join(str(path) for path in attempted_paths)
+    details = "; ".join(checks)
+    raise FileNotFoundError(
+        "Unable to locate a valid dynamic_data_reduction repository. "
+        f"Attempted path(s): {attempted}. Validation failed: {details}. "
+        f"Set {DDR_REPO_ENV_VAR}=/path/to/dynamic_data_reduction."
+    )
+
+
+def _default_extra_pip_local() -> dict[str, list[str]]:
+    merged = deepcopy(DEFAULT_EXTRA_PIP_LOCAL)
+    ddr_root = _resolve_ddr_repo_root(topeft_repo_root=_find_topeft_repo_root())
+    merged["dynamic_data_reduction"] = [
+        str(ddr_root / "src"),
+        str(ddr_root / "pyproject.toml"),
+    ]
+    return merged
 
 
 def _load_delegate_module() -> object:
@@ -33,7 +90,7 @@ def _load_delegate_module() -> object:
 def _merge_extra_pip_local(
     extra_pip_local: Optional[dict[str, Iterable[str]]],
 ) -> dict[str, list[str]]:
-    merged = deepcopy(DEFAULT_EXTRA_PIP_LOCAL)
+    merged = _default_extra_pip_local()
     if extra_pip_local:
         for key, value in extra_pip_local.items():
             merged[str(key)] = [str(token) for token in value]
