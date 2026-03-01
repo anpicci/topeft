@@ -81,12 +81,16 @@ def test_emit_systematics_summary_reports_nominal_only_rate_mode(capsys):
         "CR",
         ("lumi", "pdf_scale"),
         details,
+        rate_calc_ok=True,
+        shape_calc_ok=True,
     )
 
     out = capsys.readouterr().out
     assert "No shape systematics found on pkl axis; using rate-only systematics: lumi, pdf_scale" in out
     assert "Rate systematics from rate_systs.json: lumi, pdf_scale" in out
-    assert "renormfact" in out
+    assert "Rate systematic computation succeeded." in out
+    assert "Shape systematic computation succeeded." in out
+    assert "renormfact" not in out
 
 
 def test_emit_systematics_summary_logs_orphan_pairs_once(capsys):
@@ -110,14 +114,53 @@ def test_emit_systematics_summary_logs_orphan_pairs_once(capsys):
         "CR",
         ("lumi",),
         details,
+        rate_calc_ok=True,
+        shape_calc_ok=True,
     )
     make_cr_and_sr_plots._emit_systematics_summary_once(
         "CR",
         ("lumi",),
         details,
+        rate_calc_ok=True,
+        shape_calc_ok=True,
     )
 
     out = capsys.readouterr().out
     assert out.count("Systematics summary") == 1
     assert "Skipping shape systematic 'Foo'" in out
     assert "FooDown" in out
+
+
+def test_emit_systematics_summary_reports_component_failures(capsys):
+    make_cr_and_sr_plots._SYSTEMATICS_SUMMARY_EMITTED.clear()
+    make_cr_and_sr_plots._emit_systematics_summary_once(
+        "CR",
+        ("lumi",),
+        {"valid_bases": (), "skipped_orphans": (), "skipped_failed": ()},
+        rate_calc_ok=False,
+        shape_calc_ok=False,
+    )
+
+    out = capsys.readouterr().out
+    assert "Shape systematic computation failed; shape uncertainties will be omitted." in out
+    assert "Rate systematic computation failed; rate uncertainties will be omitted." in out
+    assert "Shape systematic computation succeeded." not in out
+
+
+def test_emit_systematics_summary_mentions_renormfact_only_when_present(capsys):
+    make_cr_and_sr_plots._SYSTEMATICS_SUMMARY_EMITTED.clear()
+    make_cr_and_sr_plots._emit_systematics_summary_once(
+        "CR",
+        ("lumi",),
+        {
+            "valid_bases": (),
+            "skipped_orphans": (),
+            "skipped_failed": (),
+            "renormfact_present": True,
+        },
+        rate_calc_ok=True,
+        shape_calc_ok=True,
+    )
+
+    out = capsys.readouterr().out
+    assert "renormfact' present on axis and explicitly skipped by design." in out

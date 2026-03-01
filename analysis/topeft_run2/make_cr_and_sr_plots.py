@@ -2657,12 +2657,14 @@ def _render_variable_category(
                 "valid_bases": tuple(),
                 "skipped_orphans": tuple(),
                 "skipped_failed": tuple(),
+                "renormfact_present": False,
             }
             rate_systs_summed_arr_m = 0.0
             rate_systs_summed_arr_p = 0.0
             shape_systs_summed_arr_m = 0.0
             shape_systs_summed_arr_p = 0.0
-            has_syst_components = False
+            rate_calc_ok = False
+            shape_calc_ok = False
 
             try:
                 rate_systs_summed_arr_m, rate_systs_summed_arr_p = get_rate_syst_arrs(
@@ -2671,7 +2673,7 @@ def _render_variable_category(
                     group_type=region_ctx.name,
                     rate_syst_by_sample=region_ctx.rate_syst_by_sample,
                 )
-                has_syst_components = True
+                rate_calc_ok = True
             except Exception as exc:
                 print(
                     f"Warning: Failed to compute rate systematics for {region_ctx.name} {hist_cat} {var_name}: {exc}"
@@ -2687,7 +2689,7 @@ def _render_variable_category(
                     shape_systs_summed_arr_m,
                     shape_systs_summed_arr_p,
                 ) = shape_syst_output
-                has_syst_components = True
+                shape_calc_ok = True
             except Exception as exc:
                 shape_syst_details = {
                     "valid_bases": tuple(),
@@ -2695,6 +2697,7 @@ def _render_variable_category(
                     "skipped_failed": (
                         {"base": "__global__", "error": str(exc)},
                     ),
+                    "renormfact_present": False,
                 }
                 print(
                     f"Warning: Failed to compute shape systematics for {region_ctx.name} {hist_cat} {var_name}: {exc}"
@@ -2704,9 +2707,11 @@ def _render_variable_category(
                 region_ctx.name,
                 rate_syst_keys,
                 shape_syst_details,
+                rate_calc_ok=rate_calc_ok,
+                shape_calc_ok=shape_calc_ok,
             )
 
-            if has_syst_components:
+            if rate_calc_ok or shape_calc_ok:
                 if var_name == "njets":
                     diboson_samples = region_ctx.group_map.get("Diboson", [])
                     if diboson_samples:
@@ -2956,12 +2961,14 @@ def _render_variable_category(
                 "valid_bases": tuple(),
                 "skipped_orphans": tuple(),
                 "skipped_failed": tuple(),
+                "renormfact_present": False,
             }
             rate_systs_summed_arr_m = 0.0
             rate_systs_summed_arr_p = 0.0
             shape_systs_summed_arr_m = 0.0
             shape_systs_summed_arr_p = 0.0
-            has_syst_components = False
+            rate_calc_ok = False
+            shape_calc_ok = False
             try:
                 rate_systs_summed_arr_m, rate_systs_summed_arr_p = get_rate_syst_arrs(
                     hist_mc_channel,
@@ -2969,7 +2976,7 @@ def _render_variable_category(
                     group_type=region_ctx.name,
                     rate_syst_by_sample=region_ctx.rate_syst_by_sample,
                 )
-                has_syst_components = True
+                rate_calc_ok = True
             except Exception as exc:
                 print(
                     f"Warning: Failed to compute rate systematics for {region_ctx.name} {hist_cat} {var_name}: {exc}"
@@ -2985,7 +2992,7 @@ def _render_variable_category(
                     shape_systs_summed_arr_m,
                     shape_systs_summed_arr_p,
                 ) = shape_syst_output
-                has_syst_components = True
+                shape_calc_ok = True
             except Exception as exc:
                 shape_syst_details = {
                     "valid_bases": tuple(),
@@ -2993,6 +3000,7 @@ def _render_variable_category(
                     "skipped_failed": (
                         {"base": "__global__", "error": str(exc)},
                     ),
+                    "renormfact_present": False,
                 }
                 print(
                     f"Warning: Failed to compute shape systematics for {region_ctx.name} {hist_cat} {var_name}: {exc}"
@@ -3002,9 +3010,11 @@ def _render_variable_category(
                 region_ctx.name,
                 rate_syst_keys,
                 shape_syst_details,
+                rate_calc_ok=rate_calc_ok,
+                shape_calc_ok=shape_calc_ok,
             )
 
-            if has_syst_components:
+            if rate_calc_ok or shape_calc_ok:
                 nominal_projection = hist_mc_channel[{"process": sum}].integrate(
                     "systematic", "nominal"
                 )
@@ -5991,7 +6001,14 @@ def _discover_shape_systematics(all_syst_var_lst):
     }
 
 
-def _emit_systematics_summary_once(region_name, rate_syst_keys, shape_details):
+def _emit_systematics_summary_once(
+    region_name,
+    rate_syst_keys,
+    shape_details,
+    *,
+    rate_calc_ok,
+    shape_calc_ok,
+):
     summary_key = str(region_name or "UNKNOWN").upper()
     if summary_key in _SYSTEMATICS_SUMMARY_EMITTED:
         return
@@ -6001,17 +6018,22 @@ def _emit_systematics_summary_once(region_name, rate_syst_keys, shape_details):
     valid_shape_bases = tuple(details.get("valid_bases", ()))
     skipped_orphans = tuple(details.get("skipped_orphans", ()))
     skipped_failed = tuple(details.get("skipped_failed", ()))
+    renormfact_present = bool(details.get("renormfact_present", False))
     rate_keys = tuple(str(key) for key in (rate_syst_keys or ()))
     rate_text = _format_syst_preview(rate_keys)
 
-    if valid_shape_bases:
+    if shape_calc_ok and valid_shape_bases:
         print(
             f"[{summary_key}] Systematics summary: discovered {len(valid_shape_bases)} "
             f"shape systematic base(s): {_format_syst_preview(valid_shape_bases)}"
         )
-    else:
+    elif shape_calc_ok:
         print(
             f"[{summary_key}] No shape systematics found on pkl axis; using rate-only systematics: {rate_text}"
+        )
+    else:
+        print(
+            f"[{summary_key}] Shape systematic computation failed; shape uncertainties will be omitted."
         )
 
     if skipped_orphans:
@@ -6040,9 +6062,20 @@ def _emit_systematics_summary_once(region_name, rate_syst_keys, shape_details):
             )
 
     print(f"[{summary_key}] Rate systematics from rate_systs.json: {rate_text}")
-    print(
-        f"[{summary_key}] Note: shape systematic 'renormfact' is explicitly skipped by design."
-    )
+    if rate_calc_ok:
+        print(f"[{summary_key}] Rate systematic computation succeeded.")
+    else:
+        print(
+            f"[{summary_key}] Rate systematic computation failed; rate uncertainties will be omitted."
+        )
+
+    if shape_calc_ok:
+        print(f"[{summary_key}] Shape systematic computation succeeded.")
+
+    if renormfact_present:
+        print(
+            f"[{summary_key}] Note: 'renormfact' present on axis and explicitly skipped by design."
+        )
 
 
 # Wrapper for getting plus and minus shape arrs
