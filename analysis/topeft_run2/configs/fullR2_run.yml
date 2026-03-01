@@ -41,8 +41,8 @@ profiles:
     skip_sr: true
     split_lep_flavor: false
     executor: taskvine
-    # chunksize: 50
-    # nchunks: 1
-    outname: refact_250901_c1_CRs
-    environment_file: /users/apiccine/work/ChUpdate/ttbarEFT/analysis/topeft-envs/env_spec_f8064c46_edit_HEAD.tar.gz
+    chunksize: 100000
+    nchunks: 1
+    outname: refact_260301_test
+    environment_file: /users/apiccine/work/ChUpdate/topeft/topeft-envs/env_spec_9b56bdff_edit_3583f3e9.tar.gz
     log_level: none
