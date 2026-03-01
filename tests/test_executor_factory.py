@@ -17,15 +17,22 @@ def stub_remote_environment(monkeypatch):
 
     topcoffea_pkg = types.ModuleType("topcoffea")
     modules_pkg = types.ModuleType("topcoffea.modules")
+    modules_pkg.__path__ = []  # Mark as package for importlib submodule resolution.
     remote_env_mod = types.ModuleType("topcoffea.modules.remote_environment")
+    utils_mod = types.ModuleType("topcoffea.modules.utils")
     remote_env_mod.get_environment = lambda **_: None
+    utils_mod.load_sample_json_file = lambda *args, **kwargs: {}
+    utils_mod.read_cfg_file = lambda *args, **kwargs: {}
+    utils_mod.update_cfg = lambda *args, **kwargs: {}
 
     modules_pkg.remote_environment = remote_env_mod
+    modules_pkg.utils = utils_mod
     topcoffea_pkg.modules = modules_pkg
 
     monkeypatch.setitem(sys.modules, "topcoffea", topcoffea_pkg)
     monkeypatch.setitem(sys.modules, "topcoffea.modules", modules_pkg)
     monkeypatch.setitem(sys.modules, "topcoffea.modules.remote_environment", remote_env_mod)
+    monkeypatch.setitem(sys.modules, "topcoffea.modules.utils", utils_mod)
 
     sys.modules.pop("analysis.topeft_run2.workflow", None)
 
@@ -33,6 +40,7 @@ def stub_remote_environment(monkeypatch):
 
     for module_name in [
         "topcoffea.modules.remote_environment",
+        "topcoffea.modules.utils",
         "topcoffea.modules",
         "topcoffea",
     ]:

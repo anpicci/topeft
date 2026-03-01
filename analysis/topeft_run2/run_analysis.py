@@ -29,8 +29,6 @@ import shlex
 import sys
 from typing import Sequence
 
-import topcoffea
-
 from analysis.topeft_run2 import metadata_authority
 
 
@@ -52,7 +50,7 @@ def _verify_numpy_abi() -> None:
             "Failed to import numpy before launching the workflow. "
             "Recreate the coffea2025 environment and rebuild the TaskVine "
             "tarball before rerunning: `conda env update -f environment.yml "
-            "--prune` and `python -m topcoffea.modules.remote_environment`."
+            "--prune` and `python -m topeft.modules.remote_environment`."
         ) from exc
 
     optional_modules = _optional_import_modules()
@@ -81,7 +79,7 @@ def _verify_numpy_abi() -> None:
                 f"'{module_name}'. Recreate the coffea2025 environment and "
                 "rebuild the TaskVine tarball: `conda env update -f "
                 "environment.yml --prune` followed by "
-                "`python -m topcoffea.modules.remote_environment`."
+                "`python -m topeft.modules.remote_environment`."
             ) from exc
 
 from analysis.topeft_run2.run_analysis_helpers import (
@@ -96,12 +94,13 @@ from topeft.modules.executor_cli import (
     FuturesArgumentSpec,
     TaskVineArgumentSpec,
 )
+from topeft.modules import remote_environment as topeft_remote_environment
 
 from topeft.modules.logging_config import configure_topeft_logging
 
 logger = logging.getLogger(__name__)
 
-remote_environment = topcoffea.modules.remote_environment
+remote_environment = topeft_remote_environment
 
 SUPPORTED_EXECUTORS: tuple[str, ...] = ("futures", "iterative", "taskvine")
 
@@ -126,8 +125,6 @@ EXECUTOR_CLI = ExecutorCLIHelper(
         resource_monitor_default="measure",
         resources_mode_default="auto",
     ),
-    extra_pip_local={"topeft": ["topeft", "setup.py"]},
-    extra_conda=["pyyaml"],
     default_environment="cached",
 )
 
@@ -140,7 +137,7 @@ def build_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "TaskVine workers can be launched with:\n"
-            "  vine_submit_workers --python-env \"$(python -m topcoffea.modules.remote_environment)\" \\\n"
+            "  vine_submit_workers --python-env \"$(python -m topeft.modules.remote_environment)\" \\\n"
             "    --cores 4 --memory 16000 --disk 16000 -M <manager-name>\n"
             "TaskVine DDR uses worker-provided --python-env tarballs and stages the\n"
             "--processor module file to workers (Model S). --environment-file is\n"

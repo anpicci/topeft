@@ -71,6 +71,7 @@ from topeft.modules.executor import (
     resolve_environment_file,
     taskvine_log_configurator,
 )
+from topeft.modules import remote_environment as topeft_remote_environment
 from topeft.modules.logging_config import dev_debug_enabled
 from topeft.modules.runner_output import normalise_runner_output, tuple_dict_stats
 
@@ -1723,7 +1724,7 @@ class ExecutorFactory:
 
     def __init__(self, config: RunConfig) -> None:
         self._config = config
-        self._remote_environment = topcoffea.modules.remote_environment
+        self._remote_environment = topeft_remote_environment
 
     def create_runner(self) -> Any:
         import coffea.processor as processor
@@ -1822,8 +1823,6 @@ class ExecutorFactory:
             environment_file = resolve_environment_file(
                 self._config.environment_file,
                 self._remote_environment,
-                extra_pip_local={"topeft": ["topeft", "setup.py"]},
-                extra_conda=["pyyaml"],
             )
         extra_input_files = tuple(
             self._processor_extra_input_files(processor_path=processor_path)
