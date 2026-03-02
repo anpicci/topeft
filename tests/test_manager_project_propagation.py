@@ -1,0 +1,57 @@
+"""Regression checks for TaskVine manager/project name propagation."""
+
+from analysis.topeft_run2.run_processor_vineReduce_light import (
+    resolve_light_manager_project_name,
+)
+from analysis.topeft_run2.workflow import resolve_taskvine_manager_project_name
+
+
+def test_std_resolve_taskvine_manager_project_name_prefers_env() -> None:
+    result = resolve_taskvine_manager_project_name(
+        configured_manager_name="configured-manager",
+        default_manager_name="default-manager",
+        env={"TOPEFT_DDR_MANAGER_NAME": "apiccine-taskvine-coffea-std-smoke-run"},
+    )
+    assert result == "apiccine-taskvine-coffea-std-smoke-run"
+
+
+def test_std_resolve_taskvine_manager_project_name_falls_back_to_config() -> None:
+    result = resolve_taskvine_manager_project_name(
+        configured_manager_name="configured-manager",
+        default_manager_name="default-manager",
+        env={},
+    )
+    assert result == "configured-manager"
+
+
+def test_std_resolve_taskvine_manager_project_name_falls_back_to_default() -> None:
+    result = resolve_taskvine_manager_project_name(
+        configured_manager_name="",
+        default_manager_name="default-manager",
+        env={"TOPEFT_DDR_MANAGER_NAME": "   "},
+    )
+    assert result == "default-manager"
+
+
+def test_light_resolve_manager_project_name_uses_cli_argument() -> None:
+    result = resolve_light_manager_project_name(
+        "apiccine-taskvine-coffea-light-smoke-run",
+        default_manager="default-manager",
+    )
+    assert result == "apiccine-taskvine-coffea-light-smoke-run"
+
+
+def test_light_resolve_manager_project_name_uses_default_when_missing() -> None:
+    result = resolve_light_manager_project_name(
+        None,
+        default_manager="default-manager",
+    )
+    assert result == "default-manager"
+
+
+def test_light_resolve_manager_project_name_uses_default_when_blank() -> None:
+    result = resolve_light_manager_project_name(
+        "   ",
+        default_manager="default-manager",
+    )
+    assert result == "default-manager"

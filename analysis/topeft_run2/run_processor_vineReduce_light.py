@@ -184,6 +184,21 @@ def _worker_cmd(manager_name: str, env_tar: Optional[Path]) -> str:
     return " ".join(tokens)
 
 
+def resolve_light_manager_project_name(
+    manager_name: Optional[str],
+    *,
+    default_manager: str,
+) -> str:
+    """Resolve the TaskVine project name for the light runner."""
+
+    if manager_name is None:
+        return default_manager
+    candidate = str(manager_name).strip()
+    if candidate:
+        return candidate
+    return default_manager
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Run a minimal direct CoffeaDynamicDataReduction workflow for TaskVine isolation."
@@ -211,7 +226,11 @@ def _parser() -> argparse.ArgumentParser:
 def main() -> int:
     args = _parser().parse_args()
 
-    manager_name = str(args.manager_name)
+    default_manager = f"{os.environ.get('USER', 'user')}-taskvine-coffea"
+    manager_name = resolve_light_manager_project_name(
+        args.manager_name,
+        default_manager=default_manager,
+    )
     port_min, port_max = _parse_port(args.port)
     staging_dir = Path(args.staging_dir).expanduser()
     run_info = (
@@ -248,6 +267,7 @@ def main() -> int:
     else:
         manager_port = [port_min, port_max]
 
+    _debug(f"manager_project={manager_name} manager_port={manager_port}")
     mgr = vine.Manager(
         port=manager_port,
         name=manager_name,

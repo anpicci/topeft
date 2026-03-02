@@ -1181,6 +1181,35 @@ class TaskVineContext:
     extra_input_files: Tuple[str, ...]
 
 
+def resolve_taskvine_manager_project_name(
+    *,
+    configured_manager_name: Optional[str],
+    default_manager_name: str,
+    env: Optional[Mapping[str, str]] = None,
+) -> str:
+    """Resolve the TaskVine project/manager name for std DDR runs.
+
+    Priority:
+    1. `TOPEFT_DDR_MANAGER_NAME` when set to a non-empty string.
+    2. Configured `manager_name` from CLI/options.
+    3. Existing default manager name.
+    """
+
+    source_env = env if env is not None else os.environ
+    env_manager_name = source_env.get("TOPEFT_DDR_MANAGER_NAME")
+    if isinstance(env_manager_name, str):
+        candidate = env_manager_name.strip()
+        if candidate:
+            return candidate
+
+    if configured_manager_name is not None:
+        candidate = str(configured_manager_name).strip()
+        if candidate:
+            return candidate
+
+    return default_manager_name
+
+
 class ChannelPlanner:
     """Resolve channel metadata into lookups used during processing."""
 
@@ -1814,7 +1843,10 @@ class ExecutorFactory:
         staging_dir = self._distributed_staging_dir(executor)
         logs_dir = self._executor_logs_dir(executor, staging_dir)
         manager_default = self._manager_name_base(executor)
-        manager_name = self._config.manager_name or manager_default
+        manager_name = resolve_taskvine_manager_project_name(
+            configured_manager_name=self._config.manager_name,
+            default_manager_name=manager_default,
+        )
         manager_template = self._config.manager_name_template
         if manager_template is None and manager_name:
             manager_template = f"{manager_name}-{{pid}}"
@@ -2507,6 +2539,10 @@ class RunWorkflow:
                 f"port={port} "
                 f"staging_dir={staging_dir} "
                 f"run_info_path={run_info_path}"
+            )
+            _ddr_debug_emit(
+                f"manager_project={context.manager_name} manager_port={port}",
+                include_paths=False,
             )
             return vine.Manager(
                 port=port,
