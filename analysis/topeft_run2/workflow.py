@@ -1177,16 +1177,17 @@ class TaskVineContext:
     logs_dir: Path
     manager_name: Optional[str]
     manager_template: Optional[str]
+    manager_source: str
     environment_file: Optional[str]
     extra_input_files: Tuple[str, ...]
 
 
-def resolve_taskvine_manager_project_name(
+def resolve_taskvine_manager_project_name_with_source(
     *,
     configured_manager_name: Optional[str],
     default_manager_name: str,
     env: Optional[Mapping[str, str]] = None,
-) -> str:
+) -> Tuple[str, str]:
     """Resolve the TaskVine project/manager name for std DDR runs.
 
     Priority:
@@ -1200,14 +1201,28 @@ def resolve_taskvine_manager_project_name(
     if isinstance(env_manager_name, str):
         candidate = env_manager_name.strip()
         if candidate:
-            return candidate
+            return candidate, "env"
 
     if configured_manager_name is not None:
         candidate = str(configured_manager_name).strip()
         if candidate:
-            return candidate
+            return candidate, "config"
 
-    return default_manager_name
+    return default_manager_name, "default"
+
+
+def resolve_taskvine_manager_project_name(
+    *,
+    configured_manager_name: Optional[str],
+    default_manager_name: str,
+    env: Optional[Mapping[str, str]] = None,
+) -> str:
+    resolved_name, _ = resolve_taskvine_manager_project_name_with_source(
+        configured_manager_name=configured_manager_name,
+        default_manager_name=default_manager_name,
+        env=env,
+    )
+    return resolved_name
 
 
 class ChannelPlanner:
@@ -1843,7 +1858,7 @@ class ExecutorFactory:
         staging_dir = self._distributed_staging_dir(executor)
         logs_dir = self._executor_logs_dir(executor, staging_dir)
         manager_default = self._manager_name_base(executor)
-        manager_name = resolve_taskvine_manager_project_name(
+        manager_name, manager_source = resolve_taskvine_manager_project_name_with_source(
             configured_manager_name=self._config.manager_name,
             default_manager_name=manager_default,
         )
@@ -1866,6 +1881,7 @@ class ExecutorFactory:
             logs_dir=logs_dir,
             manager_name=manager_name,
             manager_template=manager_template,
+            manager_source=manager_source,
             environment_file=environment_file,
             extra_input_files=extra_input_files,
         )
@@ -2541,7 +2557,16 @@ class RunWorkflow:
                 f"run_info_path={run_info_path}"
             )
             _ddr_debug_emit(
-                f"manager_project={context.manager_name} manager_port={port}",
+                " ".join(
+                    (
+                        f"manager_project={context.manager_name}",
+                        f"manager_port={port}",
+                        f"manager_template={context.manager_template}",
+                        f"manager_source={context.manager_source}",
+                        f"staging_dir={staging_dir}",
+                        f"run_info={run_info_path}",
+                    )
+                ),
                 include_paths=False,
             )
             return vine.Manager(

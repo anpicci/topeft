@@ -134,6 +134,7 @@ def test_execute_ddr_sets_proxy_env_var_to_proxy_pem_basename(
         logs_dir=logs_dir,
         manager_name="test-manager",
         manager_template="test-manager-{pid}",
+        manager_source="config",
         environment_file=None,
         extra_input_files=(),
     )

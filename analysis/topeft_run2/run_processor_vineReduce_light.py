@@ -191,12 +191,26 @@ def resolve_light_manager_project_name(
 ) -> str:
     """Resolve the TaskVine project name for the light runner."""
 
+    resolved_name, _ = resolve_light_manager_project_name_with_source(
+        manager_name,
+        default_manager=default_manager,
+    )
+    return resolved_name
+
+
+def resolve_light_manager_project_name_with_source(
+    manager_name: Optional[str],
+    *,
+    default_manager: str,
+) -> Tuple[str, str]:
+    """Resolve the TaskVine project name and source for the light runner."""
+
     if manager_name is None:
-        return default_manager
+        return default_manager, "default"
     candidate = str(manager_name).strip()
     if candidate:
-        return candidate
-    return default_manager
+        return candidate, "config"
+    return default_manager, "default"
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -227,7 +241,7 @@ def main() -> int:
     args = _parser().parse_args()
 
     default_manager = f"{os.environ.get('USER', 'user')}-taskvine-coffea"
-    manager_name = resolve_light_manager_project_name(
+    manager_name, manager_source = resolve_light_manager_project_name_with_source(
         args.manager_name,
         default_manager=default_manager,
     )
@@ -267,7 +281,19 @@ def main() -> int:
     else:
         manager_port = [port_min, port_max]
 
-    _debug(f"manager_project={manager_name} manager_port={manager_port}")
+    manager_template: Optional[str] = None
+    _debug(
+        " ".join(
+            (
+                f"manager_project={manager_name}",
+                f"manager_port={manager_port}",
+                f"manager_template={manager_template}",
+                f"manager_source={manager_source}",
+                f"staging_dir={staging_dir}",
+                f"run_info={run_info}",
+            )
+        )
+    )
     mgr = vine.Manager(
         port=manager_port,
         name=manager_name,
@@ -294,6 +320,8 @@ def main() -> int:
         "DDR light runner: "
         f"manager={manager_name} "
         f"port={manager_port} "
+        f"manager_template={manager_template} "
+        f"manager_source={manager_source} "
         f"staging={staging_dir} "
         f"run_info={run_info} "
         f"preprocessed={preprocessed_path} "
