@@ -45,6 +45,6 @@ profiles:
     chunksize: 5000
     nchunks: 1
     outname: refact_260301_test
-    environment_file: /users/apiccine/work/ChUpdate/topeft/topeft-envs/env_spec_9b56bdff_edit_3583f3e9.tar.gz
+    environment_file: /users/apiccine/work/ChUpdate/topeft/topeft-envs/env_spec_1fb9714b_edit_HEAD.tar.gz
     log_level: none
     do_systs: false
