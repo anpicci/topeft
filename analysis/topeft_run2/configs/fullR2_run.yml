@@ -1,3 +1,4 @@
+# fullR2_run.yml
 # Preset configurations for the Run 2 SR/CR histogram production.
 #
 # The `defaults` section captures shared options, while individual profiles
@@ -46,3 +47,4 @@ profiles:
     outname: refact_260301_test
     environment_file: /users/apiccine/work/ChUpdate/topeft/topeft-envs/env_spec_9b56bdff_edit_3583f3e9.tar.gz
     log_level: none
+    do_systs: false
