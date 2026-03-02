@@ -37,7 +37,7 @@ profiles:
   cr:
     description: Control region histogram production (skip signal regions).
     jsonFiles:
-      - ../../input_samples/cfgs/mc_background_samples_cr_NDSkim.cfg
+      - ../../input_samples/cfgs/mc_background_samples_cr_NDSkim_loc.cfg
     skip_sr: true
     split_lep_flavor: false
     executor: taskvine
