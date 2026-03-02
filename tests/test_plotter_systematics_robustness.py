@@ -86,7 +86,7 @@ def test_emit_systematics_summary_reports_nominal_only_rate_mode(capsys):
     )
 
     out = capsys.readouterr().out
-    assert "No shape systematics found on pkl axis; using rate-only systematics: lumi, pdf_scale" in out
+    assert "No shape systematics found on pkl axis." in out
     assert "Rate systematics from rate_systs.json: lumi, pdf_scale" in out
     assert "Rate systematic computation succeeded." in out
     assert "Shape systematic computation succeeded." in out
@@ -145,6 +145,22 @@ def test_emit_systematics_summary_reports_component_failures(capsys):
     assert "Shape systematic computation failed; shape uncertainties will be omitted." in out
     assert "Rate systematic computation failed; rate uncertainties will be omitted." in out
     assert "Shape systematic computation succeeded." not in out
+
+
+def test_emit_systematics_summary_no_shape_does_not_imply_rate_usage_on_rate_failure(capsys):
+    make_cr_and_sr_plots._SYSTEMATICS_SUMMARY_EMITTED.clear()
+    make_cr_and_sr_plots._emit_systematics_summary_once(
+        "CR",
+        ("lumi",),
+        {"valid_bases": (), "skipped_orphans": (), "skipped_failed": ()},
+        rate_calc_ok=False,
+        shape_calc_ok=True,
+    )
+
+    out = capsys.readouterr().out
+    assert "No shape systematics found on pkl axis." in out
+    assert "Rate systematic computation failed; rate uncertainties will be omitted." in out
+    assert "using rate-only systematics" not in out
 
 
 def test_emit_systematics_summary_mentions_renormfact_only_when_present(capsys):

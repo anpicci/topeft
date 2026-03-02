@@ -6028,9 +6028,7 @@ def _emit_systematics_summary_once(
             f"shape systematic base(s): {_format_syst_preview(valid_shape_bases)}"
         )
     elif shape_calc_ok:
-        print(
-            f"[{summary_key}] No shape systematics found on pkl axis; using rate-only systematics: {rate_text}"
-        )
+        print(f"[{summary_key}] No shape systematics found on pkl axis.")
     else:
         print(
             f"[{summary_key}] Shape systematic computation failed; shape uncertainties will be omitted."
