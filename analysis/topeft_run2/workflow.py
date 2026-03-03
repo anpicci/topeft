@@ -250,103 +250,83 @@ def _trim_probe_text(text: str, *, limit: int = 12000) -> str:
     return f"{text[:limit]} ... <truncated {len(text) - limit} chars>"
 
 
-def _run_probe_command(
-    command: Sequence[str],
-    *,
-    timeout_seconds: int = 20,
-) -> Dict[str, Any]:
-    try:
-        completed = subprocess.run(
-            list(command),
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=max(1, int(timeout_seconds)),
-        )
-        return {
-            "command": " ".join(command),
-            "returncode": int(completed.returncode),
-            "stdout": _trim_probe_text(completed.stdout or ""),
-            "stderr": _trim_probe_text(completed.stderr or ""),
-        }
-    except Exception as exc:
-        return {
-            "command": " ".join(command),
-            "error": f"{exc.__class__.__name__}: {exc}",
-        }
+def _json_safe_payload(value: Any) -> Any:
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return value
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, Mapping):
+        return {str(key): _json_safe_payload(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [_json_safe_payload(item) for item in value]
+    return str(value)
 
 
-def _ddr_worker_cert_probe(test_url: str, timeout_seconds: int = 20) -> Dict[str, Any]:
-    """Collect worker-side cert/proxy/XRootD diagnostics inside a TaskVine sandbox."""
+def _decode_probe_stream(raw: Any) -> str:
+    if raw is None:
+        return ""
+    if isinstance(raw, bytes):
+        return raw.decode("utf-8", errors="replace")
+    return str(raw)
 
-    result: Dict[str, Any] = {
-        "test_url": str(test_url),
-        "cwd": str(Path.cwd()),
-    }
-    env_subset: Dict[str, str] = {}
-    for key, value in sorted(os.environ.items()):
-        if key.startswith(("X509_", "XRD_", "OSG_")):
-            env_subset[key] = value
-    result["env"] = env_subset
 
-    proxy_path = env_subset.get("X509_USER_PROXY", "proxy.pem")
-    result["proxy_path"] = proxy_path
-    result["proxy_exists"] = bool(Path(proxy_path).exists())
+def _build_ddr_worker_probe_command() -> str:
+    return """set -eu
+echo "[DDR_WORKER_PROBE] whoami=$(whoami 2>/dev/null || true)"
+echo "[DDR_WORKER_PROBE] hostname=$(hostname 2>/dev/null || true)"
+echo "[DDR_WORKER_PROBE] pwd=$(pwd)"
+echo "[DDR_WORKER_PROBE] env_X509_USER_PROXY=${X509_USER_PROXY:-<unset>}"
+echo "[DDR_WORKER_PROBE] env_X509_CERT_DIR=${X509_CERT_DIR:-<unset>}"
+echo "[DDR_WORKER_PROBE] env_OASIS_CERTIFICATES=${OASIS_CERTIFICATES:-<unset>}"
+echo "[DDR_WORKER_PROBE] env_HOME=${HOME:-<unset>}"
+echo "[DDR_WORKER_PROBE] env_USER=${USER:-<unset>}"
+echo "[DDR_WORKER_PROBE] ls_cwd_begin"
+ls -lah || true
+echo "[DDR_WORKER_PROBE] ls_cwd_end"
+if [ -n "${X509_USER_PROXY:-}" ]; then
+  ls -lah "$X509_USER_PROXY" || true
+else
+  echo "[DDR_WORKER_PROBE] X509_USER_PROXY missing"
+fi
+ls -lah proxy.pem || true
+if [ -n "${X509_CERT_DIR:-}" ]; then
+  ls -lah "$X509_CERT_DIR" || true
+else
+  echo "[DDR_WORKER_PROBE] X509_CERT_DIR missing"
+fi
+ls -lah /cvmfs/oasis.opensciencegrid.org/mis/certificates || true
+echo "[DDR_WORKER_PROBE] which_xrdcp=$(command -v xrdcp || echo missing)"
+if command -v xrdcp >/dev/null 2>&1; then
+  xrdcp --version || true
+fi
+python - <<'PY'
+import os
+import traceback
 
-    checks: Dict[str, Any] = {}
-    checks["ls_proxy_pem"] = _run_probe_command(["ls", "-lah", "proxy.pem"], timeout_seconds=5)
-    checks["ls_proxy_path"] = _run_probe_command(
-        ["ls", "-lah", proxy_path], timeout_seconds=5
-    )
-    checks["which_xrdcp"] = _run_probe_command(["which", "xrdcp"], timeout_seconds=5)
-    checks["xrdcp_version"] = _run_probe_command(["xrdcp", "--version"], timeout_seconds=10)
-    checks["ls_cvmfs_oasis_certs"] = _run_probe_command(
-        ["ls", "-lah", "/cvmfs/oasis.opensciencegrid.org/mis/certificates"],
-        timeout_seconds=10,
-    )
+url = os.environ.get("TOPEFT_DDR_PROBE_URL", "").strip()
+print(f"[DDR_WORKER_PROBE] test_url={url or '<unset>'}")
+try:
+    import sys
+    print(f"[DDR_WORKER_PROBE] python={sys.executable}")
+except Exception:
+    pass
 
-    cert_dir = env_subset.get("X509_CERT_DIR", "")
-    if cert_dir:
-        checks["ls_x509_cert_dir"] = _run_probe_command(
-            ["ls", "-lah", cert_dir],
-            timeout_seconds=10,
-        )
-    else:
-        checks["ls_x509_cert_dir"] = {"note": "X509_CERT_DIR not set"}
+if not url:
+    raise RuntimeError("TOPEFT_DDR_PROBE_URL is unset")
 
-    xrdcp_target = Path(tempfile.gettempdir()) / "ddr_worker_probe_xrdcp.root"
-    try:
-        if xrdcp_target.exists():
-            xrdcp_target.unlink()
-    except Exception:
-        pass
-    checks["xrdcp_fetch"] = _run_probe_command(
-        ["xrdcp", "-f", str(test_url), str(xrdcp_target)],
-        timeout_seconds=max(10, int(timeout_seconds)),
-    )
-    try:
-        if xrdcp_target.exists():
-            xrdcp_target.unlink()
-    except Exception:
-        pass
-
-    uproot_probe: Dict[str, Any] = {}
-    try:
-        import uproot
-
-        with uproot.open(str(test_url)) as root_file:
-            tree_name = "Events"
-            uproot_probe["tree_present"] = bool(tree_name in root_file)
-            if tree_name in root_file:
-                uproot_probe["num_entries"] = int(root_file[tree_name].num_entries)
-            uproot_probe["ok"] = True
-    except Exception as exc:
-        uproot_probe["ok"] = False
-        uproot_probe["error"] = f"{exc.__class__.__name__}: {exc}"
-    checks["uproot_open"] = uproot_probe
-
-    result["checks"] = checks
-    return result
+try:
+    import uproot
+    tree = uproot.open(f"{url}:Events")
+    entries = int(getattr(tree, "num_entries"))
+    print(f"[DDR_WORKER_PROBE] uproot_open_ok=1 num_entries={entries}")
+except Exception as exc:
+    print(f"[DDR_WORKER_PROBE] uproot_open_ok=0 error={exc.__class__.__name__}: {exc}")
+    traceback.print_exc()
+    raise
+PY
+"""
 
 
 def _resolve_ddr_probe_report_path(run_info_path: Path) -> Path:
@@ -362,16 +342,54 @@ def _resolve_ddr_probe_report_path(run_info_path: Path) -> Path:
     return Path(run_info_path) / "ddr_worker_probe.txt"
 
 
+def _resolve_ddr_probe_output_paths(run_info_path: Path) -> Dict[str, Path]:
+    report_path = _resolve_ddr_probe_report_path(run_info_path)
+    logs_dir = report_path.parent
+    return {
+        "report_path": report_path,
+        "stdout_path": logs_dir / "worker_probe.stdout",
+        "stderr_path": logs_dir / "worker_probe.stderr",
+    }
+
+
+def _write_ddr_probe_streams(
+    run_info_path: Path,
+    *,
+    stdout_text: str,
+    stderr_text: str,
+) -> Mapping[str, str]:
+    output_paths = _resolve_ddr_probe_output_paths(run_info_path)
+    stdout_path = output_paths["stdout_path"]
+    stderr_path = output_paths["stderr_path"]
+    stdout_path.parent.mkdir(parents=True, exist_ok=True)
+    stdout_path.write_text(stdout_text or "", encoding="utf-8")
+    stderr_path.write_text(stderr_text or "", encoding="utf-8")
+    return {
+        "stdout_path": str(stdout_path),
+        "stderr_path": str(stderr_path),
+    }
+
+
 def _write_ddr_probe_report(run_info_path: Path, payload: Mapping[str, Any]) -> Path:
-    output_path = _resolve_ddr_probe_report_path(run_info_path)
+    output_path = _resolve_ddr_probe_output_paths(run_info_path)["report_path"]
     output_path.parent.mkdir(parents=True, exist_ok=True)
+    safe_payload = _json_safe_payload(payload)
     with output_path.open("w", encoding="utf-8") as handle:
         handle.write("[DDR_WORKER_PROBE] begin\n")
-        for key in ("status", "successful", "task_id", "result", "exit_code", "hostname"):
-            if key in payload:
-                handle.write(f"[DDR_WORKER_PROBE] {key}={payload.get(key)}\n")
+        for key in (
+            "status",
+            "successful",
+            "task_id",
+            "result",
+            "exit_code",
+            "hostname",
+            "stdout_path",
+            "stderr_path",
+        ):
+            if key in safe_payload:
+                handle.write(f"[DDR_WORKER_PROBE] {key}={safe_payload.get(key)}\n")
         handle.write("[DDR_WORKER_PROBE] payload_json_begin\n")
-        json.dump(payload, handle, indent=2, sort_keys=True)
+        json.dump(safe_payload, handle, indent=2, sort_keys=True)
         handle.write("\n[DDR_WORKER_PROBE] payload_json_end\n")
     return output_path
 
@@ -387,7 +405,8 @@ def _run_ddr_worker_cert_probe_task(
 ) -> Mapping[str, Any]:
     import ndcctools.taskvine as vine
 
-    task = vine.PythonTask(_ddr_worker_cert_probe, str(test_url), int(timeout_seconds))
+    probe_command = _build_ddr_worker_probe_command()
+    task = vine.Task(probe_command)
     task.set_tag("ddr-worker-cert-probe")
     task.set_category("ddr-worker-cert-probe")
     task.set_cores(1)
@@ -405,6 +424,8 @@ def _run_ddr_worker_cert_probe_task(
 
     for key, value in (environment_variables or {}).items():
         task.set_env_var(str(key), str(value))
+    task.set_env_var("TOPEFT_DDR_PROBE_URL", str(test_url))
+    task.set_env_var("TOPEFT_DDR_PROBE_TIMEOUT", str(int(timeout_seconds)))
 
     task_id = int(manager.submit(task))
     deadline = time.time() + max(120, int(timeout_seconds) * 4)
@@ -421,22 +442,52 @@ def _run_ddr_worker_cert_probe_task(
     result: Dict[str, Any] = {
         "task_id": task_id,
         "status": "timeout" if completed_task is None else "completed",
+        "command": probe_command,
         "staging_errors": staging_errors,
         "environment_variables": dict(environment_variables or {}),
     }
     if completed_task is None:
+        stream_paths = _write_ddr_probe_streams(
+            run_info_path,
+            stdout_text="",
+            stderr_text="",
+        )
+        result.update(stream_paths)
         report_path = _write_ddr_probe_report(run_info_path, result)
         result["report_path"] = str(report_path)
         return result
 
     result["successful"] = bool(completed_task.successful())
-    result["result"] = getattr(completed_task, "result", None)
+    result["result"] = str(getattr(completed_task, "result", None))
     result["exit_code"] = getattr(completed_task, "exit_code", None)
     result["hostname"] = getattr(completed_task, "hostname", None)
+    stdout_raw = None
+    stderr_raw = None
     try:
-        result["output"] = completed_task.output
+        stdout_raw = completed_task.std_output
     except Exception as exc:
-        result["output_error"] = f"{exc.__class__.__name__}: {exc}"
+        result["std_output_error"] = f"{exc.__class__.__name__}: {exc}"
+    if stdout_raw is None:
+        try:
+            stdout_raw = completed_task.output
+        except Exception as exc:
+            result["output_error"] = f"{exc.__class__.__name__}: {exc}"
+    try:
+        stderr_raw = completed_task.std_error
+    except Exception:
+        stderr_raw = None
+
+    stdout_text = _trim_probe_text(_decode_probe_stream(stdout_raw), limit=200000)
+    stderr_text = _trim_probe_text(_decode_probe_stream(stderr_raw), limit=200000)
+    stream_paths = _write_ddr_probe_streams(
+        run_info_path,
+        stdout_text=stdout_text,
+        stderr_text=stderr_text,
+    )
+    result.update(stream_paths)
+    result["output_preview"] = _trim_probe_text(stdout_text, limit=12000)
+    if stderr_text:
+        result["stderr_preview"] = _trim_probe_text(stderr_text, limit=12000)
 
     report_path = _write_ddr_probe_report(run_info_path, result)
     result["report_path"] = str(report_path)
@@ -2577,11 +2628,21 @@ class RunWorkflow:
                 include_paths=True,
             )
             _emit_ddr_processor_key_sanity(processors)
-        if _env_flag_enabled("TOPEFT_DDR_CERT_PROBE"):
+        probe_enabled = _topeft_ddr_debug_enabled() and (
+            _env_flag_enabled("TOPEFT_DDR_WORKER_PROBE")
+            or _env_flag_enabled("TOPEFT_DDR_CERT_PROBE")
+        )
+        if probe_enabled:
             probe_url = str(
-                os.environ.get("TOPEFT_DDR_CERT_PROBE_URL", _DEFAULT_DDR_CERT_PROBE_URL)
+                os.environ.get(
+                    "TOPEFT_DDR_WORKER_PROBE_URL",
+                    os.environ.get("TOPEFT_DDR_CERT_PROBE_URL", _DEFAULT_DDR_CERT_PROBE_URL),
+                )
             )
-            timeout_raw = os.environ.get("TOPEFT_DDR_CERT_PROBE_TIMEOUT", "20")
+            timeout_raw = os.environ.get(
+                "TOPEFT_DDR_WORKER_PROBE_TIMEOUT",
+                os.environ.get("TOPEFT_DDR_CERT_PROBE_TIMEOUT", "20"),
+            )
             try:
                 probe_timeout = max(5, int(timeout_raw))
             except ValueError:
@@ -2606,6 +2667,8 @@ class RunWorkflow:
                 f"status={probe_payload.get('status')} "
                 f"successful={probe_payload.get('successful')} "
                 f"report_path={probe_payload.get('report_path')} "
+                f"stdout_path={probe_payload.get('stdout_path')} "
+                f"stderr_path={probe_payload.get('stderr_path')} "
                 f"task_id={probe_payload.get('task_id')}",
                 include_paths=True,
             )

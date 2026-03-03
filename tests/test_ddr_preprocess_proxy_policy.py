@@ -423,7 +423,8 @@ def test_execute_ddr_runs_worker_probe_when_enabled(
         "run_ddr",
         _fake_run_ddr,
     )
-    monkeypatch.setenv("TOPEFT_DDR_CERT_PROBE", "1")
+    monkeypatch.setenv("TOPEFT_DDR_DEBUG", "1")
+    monkeypatch.setenv("TOPEFT_DDR_WORKER_PROBE", "1")
 
     workflow._execute_ddr(
         histogram_plan=SimpleNamespace(tasks=()),
