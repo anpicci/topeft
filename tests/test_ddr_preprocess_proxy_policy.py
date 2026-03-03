@@ -53,6 +53,7 @@ def test_stage_ddr_proxy_copies_to_proxy_pem(tmp_path: Path) -> None:
     assert staged_proxy == staging_dir / "proxy.pem"
     assert staged_proxy.exists()
     assert staged_proxy.read_text(encoding="utf-8") == "proxy-data"
+    assert (staged_proxy.stat().st_mode & 0o777) == 0o600
 
 
 def test_stage_ddr_proxy_missing_path_raises(tmp_path: Path) -> None:
@@ -213,5 +214,111 @@ def test_execute_ddr_sets_proxy_env_var_to_proxy_pem_basename(
     assert ddr_kwargs["resources_processing"]["cores"] == 1
     assert ddr_kwargs["environment_variables"]["X509_USER_PROXY"] == "proxy.pem"
     assert preprocess_kwargs["environment_variables"]["X509_USER_PROXY"] == "proxy.pem"
-    assert str(ddr_kwargs["x509_proxy"]).endswith("proxy.pem")
+    assert ddr_kwargs["x509_proxy"] == "proxy.pem"
+    assert preprocess_kwargs["x509_proxy"] == "proxy.pem"
     assert any(str(path).endswith("proxy.pem") for path in extra_files)
+
+
+def test_execute_ddr_overrides_absolute_proxy_env_to_sandbox_proxy(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source_proxy = tmp_path / "user_proxy.pem"
+    source_proxy.write_text("proxy-data", encoding="utf-8")
+    processor_file = tmp_path / "analysis_processor.py"
+    processor_file.write_text("class AnalysisProcessor: pass\n", encoding="utf-8")
+    staging_dir = tmp_path / "staging"
+    logs_dir = tmp_path / "logs" / "taskvine"
+    logs_dir.mkdir(parents=True, exist_ok=True)
+
+    context = TaskVineContext(
+        executor="taskvine",
+        port_range=(9123, 9123),
+        staging_dir=staging_dir,
+        logs_dir=logs_dir,
+        manager_name="test-manager",
+        manager_template="test-manager-{pid}",
+        manager_source="config",
+        environment_file=None,
+        extra_input_files=(),
+    )
+    config = RunConfig(
+        executor="taskvine",
+        ddr_x509_proxy=str(source_proxy),
+        ddr_environment_variables={
+            "X509_USER_PROXY": "/tmp/absolute_proxy_should_not_be_used.pem",
+            "FOO": "BAR",
+        },
+        nworkers=8,
+    )
+
+    workflow = RunWorkflow(
+        config=config,
+        metadata={},
+        sample_loader=SimpleNamespace(),
+        channel_planner=SimpleNamespace(),
+        histogram_planner=SimpleNamespace(),
+        executor_factory=_DummyExecutorFactory(context),
+        weight_variations=(),
+        metadata_path="metadata.yml",
+    )
+    monkeypatch.setattr(
+        workflow,
+        "_build_ddr_processors",
+        lambda **_kwargs: {"proc": object()},
+    )
+    monkeypatch.setattr(
+        workflow,
+        "_create_ddr_manager",
+        lambda _context: _DummyManager(),
+    )
+    monkeypatch.setattr(
+        workflow_module,
+        "taskvine_log_configurator",
+        lambda _logs_dir: (lambda _manager: None),
+    )
+
+    captured: dict[str, object] = {}
+
+    def _fake_build_ddr_data(_flist, *, object_path: str = "Events"):
+        _ = object_path
+        return {"sampleA": {"files": {"/tmp/input.root": {"object_path": "Events"}}}}
+
+    def _fake_run_ddr(**kwargs):
+        captured.update(kwargs)
+        return {}
+
+    monkeypatch.setattr(
+        workflow_module.topcoffea.modules.dynamic_data_reduction,
+        "build_ddr_data_from_flist",
+        _fake_build_ddr_data,
+    )
+    monkeypatch.setattr(
+        workflow_module.topcoffea.modules.dynamic_data_reduction,
+        "run_ddr",
+        _fake_run_ddr,
+    )
+
+    workflow._execute_ddr(
+        histogram_plan=SimpleNamespace(tasks=()),
+        samplesdict={},
+        flist={},
+        golden_jsons={},
+        ecut_threshold=None,
+        analysis_processor_module=SimpleNamespace(),
+        processor_file=processor_file,
+        processor_module_name="analysis_processor",
+        coffea_processor_module=SimpleNamespace(),
+    )
+
+    ddr_kwargs = captured["ddr_kwargs"]
+    preprocess_kwargs = captured["preprocess_kwargs"]
+    assert isinstance(ddr_kwargs, dict)
+    assert isinstance(preprocess_kwargs, dict)
+
+    assert ddr_kwargs["x509_proxy"] == "proxy.pem"
+    assert preprocess_kwargs["x509_proxy"] == "proxy.pem"
+    assert ddr_kwargs["environment_variables"]["X509_USER_PROXY"] == "proxy.pem"
+    assert preprocess_kwargs["environment_variables"]["X509_USER_PROXY"] == "proxy.pem"
+    assert ddr_kwargs["environment_variables"]["FOO"] == "BAR"
+    assert preprocess_kwargs["environment_variables"]["FOO"] == "BAR"

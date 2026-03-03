@@ -1139,6 +1139,7 @@ def stage_ddr_proxy(proxy_path: str, *, staging_dir: Path) -> Path:
     staging_dir.mkdir(parents=True, exist_ok=True)
     staged_proxy = staging_dir / "proxy.pem"
     shutil.copyfile(source_path, staged_proxy)
+    os.chmod(staged_proxy, 0o600)
     return staged_proxy
 
 
@@ -2265,15 +2266,17 @@ class RunWorkflow:
         if processor_file_str not in extra_files:
             extra_files.append(processor_file_str)
         staged_proxy_path: Optional[str] = None
+        ddr_x509_proxy_effective: Optional[str] = None
         if self._config.ddr_x509_proxy:
             staged_proxy = stage_ddr_proxy(
                 self._config.ddr_x509_proxy,
                 staging_dir=context.staging_dir,
             )
             staged_proxy_path = str(staged_proxy)
+            ddr_x509_proxy_effective = "proxy.pem"
             extra_files.append(staged_proxy_path)
-            if "X509_USER_PROXY" not in ddr_environment_variables:
-                ddr_environment_variables["X509_USER_PROXY"] = "proxy.pem"
+            # DDR tasks run in worker sandboxes where staged files are referenced by basename.
+            ddr_environment_variables["X509_USER_PROXY"] = ddr_x509_proxy_effective
         extra_files = _deduplicate_staged_paths(extra_files)
         _validate_staged_basename_collisions(
             extra_files,
@@ -2306,13 +2309,19 @@ class RunWorkflow:
             preprocess_kwargs["show_progress"] = bool(
                 self._config.ddr_preprocess_show_progress
             )
-        if staged_proxy_path:
-            preprocess_kwargs.setdefault("x509_proxy", staged_proxy_path)
-            if ddr_environment_variables:
-                preprocess_kwargs.setdefault(
-                    "environment_variables",
-                    dict(ddr_environment_variables),
-                )
+        if staged_proxy_path and ddr_x509_proxy_effective:
+            preprocess_kwargs["x509_proxy"] = ddr_x509_proxy_effective
+            preprocess_env = dict(
+                preprocess_kwargs.get("environment_variables", {}) or {}
+            )
+            preprocess_env.update(ddr_environment_variables)
+            preprocess_env["X509_USER_PROXY"] = ddr_x509_proxy_effective
+            preprocess_kwargs["environment_variables"] = preprocess_env
+        elif ddr_environment_variables:
+            preprocess_kwargs.setdefault(
+                "environment_variables",
+                dict(ddr_environment_variables),
+            )
 
         ddr_kwargs = dict(getattr(self._config, "ddr_kwargs", {}) or {})
         ddr_kwargs.setdefault(
@@ -2329,9 +2338,25 @@ class RunWorkflow:
             ddr_kwargs.setdefault("verbose", ddr_verbose)
         if ddr_environment_variables:
             ddr_kwargs.setdefault("environment_variables", ddr_environment_variables)
-        if staged_proxy_path:
-            ddr_kwargs.setdefault("x509_proxy", staged_proxy_path)
+        if staged_proxy_path and ddr_x509_proxy_effective:
+            ddr_kwargs["x509_proxy"] = ddr_x509_proxy_effective
+            ddr_env = dict(ddr_kwargs.get("environment_variables", {}) or {})
+            ddr_env["X509_USER_PROXY"] = ddr_x509_proxy_effective
+            ddr_kwargs["environment_variables"] = ddr_env
         if _topeft_ddr_debug_enabled():
+            proxy_staged_exists = (
+                int(Path(staged_proxy_path).exists()) if staged_proxy_path else 0
+            )
+            _ddr_debug_emit(
+                "proxy staging "
+                f"staging_dir={context.staging_dir} "
+                f"proxy_source={self._config.ddr_x509_proxy} "
+                f"proxy_staged_path={staged_proxy_path} "
+                f"proxy_staged_exists={proxy_staged_exists} "
+                f"ddr_x509_proxy_effective={ddr_x509_proxy_effective} "
+                f"x509_env={ddr_environment_variables.get('X509_USER_PROXY')}",
+                include_paths=True,
+            )
             _ddr_debug_emit(
                 "handoff paths "
                 f"preprocessed_data_path={preprocessed_data_path} "
@@ -2342,6 +2367,7 @@ class RunWorkflow:
                 f"extra_files={len(extra_files)} "
                 f"processor_staged={int(processor_file_str in extra_files)} "
                 f"has_staged_proxy={int(bool(staged_proxy_path))} "
+                f"ddr_x509_proxy_effective={ddr_x509_proxy_effective} "
                 f"resources_processing={ddr_kwargs.get('resources_processing')} "
                 f"resources_accumulating={ddr_kwargs.get('resources_accumulating')}",
                 include_paths=True,
