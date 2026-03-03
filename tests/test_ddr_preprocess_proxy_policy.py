@@ -322,3 +322,124 @@ def test_execute_ddr_overrides_absolute_proxy_env_to_sandbox_proxy(
     assert preprocess_kwargs["environment_variables"]["X509_USER_PROXY"] == "proxy.pem"
     assert ddr_kwargs["environment_variables"]["FOO"] == "BAR"
     assert preprocess_kwargs["environment_variables"]["FOO"] == "BAR"
+
+
+def test_execute_ddr_runs_worker_probe_when_enabled(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source_proxy = tmp_path / "user_proxy.pem"
+    source_proxy.write_text("proxy-data", encoding="utf-8")
+    processor_file = tmp_path / "analysis_processor.py"
+    processor_file.write_text("class AnalysisProcessor: pass\n", encoding="utf-8")
+    staging_dir = tmp_path / "staging"
+    logs_dir = tmp_path / "logs" / "taskvine"
+    logs_dir.mkdir(parents=True, exist_ok=True)
+
+    context = TaskVineContext(
+        executor="taskvine",
+        port_range=(9123, 9123),
+        staging_dir=staging_dir,
+        logs_dir=logs_dir,
+        manager_name="test-manager",
+        manager_template="test-manager-{pid}",
+        manager_source="config",
+        environment_file=None,
+        extra_input_files=(),
+    )
+    config = RunConfig(
+        executor="taskvine",
+        ddr_x509_proxy=str(source_proxy),
+        nworkers=8,
+    )
+
+    workflow = RunWorkflow(
+        config=config,
+        metadata={},
+        sample_loader=SimpleNamespace(),
+        channel_planner=SimpleNamespace(),
+        histogram_planner=SimpleNamespace(),
+        executor_factory=_DummyExecutorFactory(context),
+        weight_variations=(),
+        metadata_path="metadata.yml",
+    )
+    monkeypatch.setattr(
+        workflow,
+        "_build_ddr_processors",
+        lambda **_kwargs: {"proc": object()},
+    )
+    monkeypatch.setattr(
+        workflow,
+        "_create_ddr_manager",
+        lambda _context: _DummyManager(),
+    )
+    monkeypatch.setattr(
+        workflow_module,
+        "taskvine_log_configurator",
+        lambda _logs_dir: (lambda _manager: None),
+    )
+
+    captured_probe: dict[str, object] = {}
+
+    def _fake_probe(
+        _manager,
+        *,
+        extra_files,
+        environment_variables,
+        run_info_path,
+        test_url,
+        timeout_seconds,
+    ):
+        captured_probe["extra_files"] = list(extra_files)
+        captured_probe["environment_variables"] = dict(environment_variables)
+        captured_probe["run_info_path"] = str(run_info_path)
+        captured_probe["test_url"] = test_url
+        captured_probe["timeout_seconds"] = timeout_seconds
+        return {
+            "status": "completed",
+            "successful": True,
+            "report_path": str(Path(run_info_path) / "ddr_worker_probe.txt"),
+            "task_id": 1,
+        }
+
+    captured_run_ddr: dict[str, object] = {}
+
+    def _fake_build_ddr_data(_flist, *, object_path: str = "Events"):
+        _ = object_path
+        return {"sampleA": {"files": {"/tmp/input.root": {"object_path": "Events"}}}}
+
+    def _fake_run_ddr(**kwargs):
+        captured_run_ddr.update(kwargs)
+        return {}
+
+    monkeypatch.setattr(workflow_module, "_run_ddr_worker_cert_probe_task", _fake_probe)
+    monkeypatch.setattr(
+        workflow_module.topcoffea.modules.dynamic_data_reduction,
+        "build_ddr_data_from_flist",
+        _fake_build_ddr_data,
+    )
+    monkeypatch.setattr(
+        workflow_module.topcoffea.modules.dynamic_data_reduction,
+        "run_ddr",
+        _fake_run_ddr,
+    )
+    monkeypatch.setenv("TOPEFT_DDR_CERT_PROBE", "1")
+
+    workflow._execute_ddr(
+        histogram_plan=SimpleNamespace(tasks=()),
+        samplesdict={},
+        flist={},
+        golden_jsons={},
+        ecut_threshold=None,
+        analysis_processor_module=SimpleNamespace(),
+        processor_file=processor_file,
+        processor_module_name="analysis_processor",
+        coffea_processor_module=SimpleNamespace(),
+    )
+
+    assert "extra_files" in captured_probe
+    assert any(str(path).endswith("proxy.pem") for path in captured_probe["extra_files"])
+    env_map = captured_probe["environment_variables"]
+    assert isinstance(env_map, dict)
+    assert env_map["X509_USER_PROXY"] == "proxy.pem"
+    assert "ddr_kwargs" in captured_run_ddr

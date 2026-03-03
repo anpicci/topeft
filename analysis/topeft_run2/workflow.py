@@ -32,6 +32,7 @@ import json
 import logging
 import os
 import shutil
+import subprocess
 import sys
 import tempfile
 import time
@@ -79,6 +80,10 @@ logger = logging.getLogger(__name__)
 _DEV_DEBUG = dev_debug_enabled()
 _DDR_DEBUG_T0: Optional[float] = None
 _DDR_DEBUG_RUN_INFO_PATH: Optional[Path] = None
+_DEFAULT_DDR_CERT_PROBE_URL = (
+    "root://cmsxrootd.crc.nd.edu//store/user/awightma/skims/mc/new-lepMVA-v2/"
+    "central_bkgd_p5/fix_ext_stats_jsons/v1/UL18_WWW_4F/output_157.root"
+)
 
 
 def _topeft_ddr_debug_enabled() -> bool:
@@ -237,6 +242,205 @@ def _env_flag_enabled(name: str) -> bool:
     if value is None:
         return False
     return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _trim_probe_text(text: str, *, limit: int = 12000) -> str:
+    if len(text) <= limit:
+        return text
+    return f"{text[:limit]} ... <truncated {len(text) - limit} chars>"
+
+
+def _run_probe_command(
+    command: Sequence[str],
+    *,
+    timeout_seconds: int = 20,
+) -> Dict[str, Any]:
+    try:
+        completed = subprocess.run(
+            list(command),
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=max(1, int(timeout_seconds)),
+        )
+        return {
+            "command": " ".join(command),
+            "returncode": int(completed.returncode),
+            "stdout": _trim_probe_text(completed.stdout or ""),
+            "stderr": _trim_probe_text(completed.stderr or ""),
+        }
+    except Exception as exc:
+        return {
+            "command": " ".join(command),
+            "error": f"{exc.__class__.__name__}: {exc}",
+        }
+
+
+def _ddr_worker_cert_probe(test_url: str, timeout_seconds: int = 20) -> Dict[str, Any]:
+    """Collect worker-side cert/proxy/XRootD diagnostics inside a TaskVine sandbox."""
+
+    result: Dict[str, Any] = {
+        "test_url": str(test_url),
+        "cwd": str(Path.cwd()),
+    }
+    env_subset: Dict[str, str] = {}
+    for key, value in sorted(os.environ.items()):
+        if key.startswith(("X509_", "XRD_", "OSG_")):
+            env_subset[key] = value
+    result["env"] = env_subset
+
+    proxy_path = env_subset.get("X509_USER_PROXY", "proxy.pem")
+    result["proxy_path"] = proxy_path
+    result["proxy_exists"] = bool(Path(proxy_path).exists())
+
+    checks: Dict[str, Any] = {}
+    checks["ls_proxy_pem"] = _run_probe_command(["ls", "-lah", "proxy.pem"], timeout_seconds=5)
+    checks["ls_proxy_path"] = _run_probe_command(
+        ["ls", "-lah", proxy_path], timeout_seconds=5
+    )
+    checks["which_xrdcp"] = _run_probe_command(["which", "xrdcp"], timeout_seconds=5)
+    checks["xrdcp_version"] = _run_probe_command(["xrdcp", "--version"], timeout_seconds=10)
+    checks["ls_cvmfs_oasis_certs"] = _run_probe_command(
+        ["ls", "-lah", "/cvmfs/oasis.opensciencegrid.org/mis/certificates"],
+        timeout_seconds=10,
+    )
+
+    cert_dir = env_subset.get("X509_CERT_DIR", "")
+    if cert_dir:
+        checks["ls_x509_cert_dir"] = _run_probe_command(
+            ["ls", "-lah", cert_dir],
+            timeout_seconds=10,
+        )
+    else:
+        checks["ls_x509_cert_dir"] = {"note": "X509_CERT_DIR not set"}
+
+    xrdcp_target = Path(tempfile.gettempdir()) / "ddr_worker_probe_xrdcp.root"
+    try:
+        if xrdcp_target.exists():
+            xrdcp_target.unlink()
+    except Exception:
+        pass
+    checks["xrdcp_fetch"] = _run_probe_command(
+        ["xrdcp", "-f", str(test_url), str(xrdcp_target)],
+        timeout_seconds=max(10, int(timeout_seconds)),
+    )
+    try:
+        if xrdcp_target.exists():
+            xrdcp_target.unlink()
+    except Exception:
+        pass
+
+    uproot_probe: Dict[str, Any] = {}
+    try:
+        import uproot
+
+        with uproot.open(str(test_url)) as root_file:
+            tree_name = "Events"
+            uproot_probe["tree_present"] = bool(tree_name in root_file)
+            if tree_name in root_file:
+                uproot_probe["num_entries"] = int(root_file[tree_name].num_entries)
+            uproot_probe["ok"] = True
+    except Exception as exc:
+        uproot_probe["ok"] = False
+        uproot_probe["error"] = f"{exc.__class__.__name__}: {exc}"
+    checks["uproot_open"] = uproot_probe
+
+    result["checks"] = checks
+    return result
+
+
+def _resolve_ddr_probe_report_path(run_info_path: Path) -> Path:
+    resolved = _resolve_run_info_paths(Path(run_info_path))
+    for key in ("newest_run_info", "most_recent"):
+        candidate = resolved.get(key, "<none>")
+        if candidate and candidate != "<none>":
+            base = Path(candidate)
+            logs_dir = base / "vine-logs"
+            if logs_dir.exists() and logs_dir.is_dir():
+                return logs_dir / "ddr_worker_probe.txt"
+            return base / "ddr_worker_probe.txt"
+    return Path(run_info_path) / "ddr_worker_probe.txt"
+
+
+def _write_ddr_probe_report(run_info_path: Path, payload: Mapping[str, Any]) -> Path:
+    output_path = _resolve_ddr_probe_report_path(run_info_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with output_path.open("w", encoding="utf-8") as handle:
+        handle.write("[DDR_WORKER_PROBE] begin\n")
+        for key in ("status", "successful", "task_id", "result", "exit_code", "hostname"):
+            if key in payload:
+                handle.write(f"[DDR_WORKER_PROBE] {key}={payload.get(key)}\n")
+        handle.write("[DDR_WORKER_PROBE] payload_json_begin\n")
+        json.dump(payload, handle, indent=2, sort_keys=True)
+        handle.write("\n[DDR_WORKER_PROBE] payload_json_end\n")
+    return output_path
+
+
+def _run_ddr_worker_cert_probe_task(
+    manager: Any,
+    *,
+    extra_files: Sequence[str],
+    environment_variables: Mapping[str, str],
+    run_info_path: Path,
+    test_url: str,
+    timeout_seconds: int = 20,
+) -> Mapping[str, Any]:
+    import ndcctools.taskvine as vine
+
+    task = vine.PythonTask(_ddr_worker_cert_probe, str(test_url), int(timeout_seconds))
+    task.set_tag("ddr-worker-cert-probe")
+    task.set_category("ddr-worker-cert-probe")
+    task.set_cores(1)
+    task.set_memory(1024)
+    task.set_disk(512)
+    task.set_time_max(max(60, int(timeout_seconds) * 3))
+
+    staging_errors: List[str] = []
+    for path in extra_files:
+        try:
+            declared = manager.declare_file(str(path), cache=True)
+            task.add_input(declared, Path(path).name)
+        except Exception as exc:
+            staging_errors.append(f"{path}: {exc.__class__.__name__}: {exc}")
+
+    for key, value in (environment_variables or {}).items():
+        task.set_env_var(str(key), str(value))
+
+    task_id = int(manager.submit(task))
+    deadline = time.time() + max(120, int(timeout_seconds) * 4)
+    completed_task = None
+    while time.time() < deadline:
+        candidate = manager.wait(5)
+        if candidate is None:
+            continue
+        if int(getattr(candidate, "id", -1)) != task_id:
+            continue
+        completed_task = candidate
+        break
+
+    result: Dict[str, Any] = {
+        "task_id": task_id,
+        "status": "timeout" if completed_task is None else "completed",
+        "staging_errors": staging_errors,
+        "environment_variables": dict(environment_variables or {}),
+    }
+    if completed_task is None:
+        report_path = _write_ddr_probe_report(run_info_path, result)
+        result["report_path"] = str(report_path)
+        return result
+
+    result["successful"] = bool(completed_task.successful())
+    result["result"] = getattr(completed_task, "result", None)
+    result["exit_code"] = getattr(completed_task, "exit_code", None)
+    result["hostname"] = getattr(completed_task, "hostname", None)
+    try:
+        result["output"] = completed_task.output
+    except Exception as exc:
+        result["output_error"] = f"{exc.__class__.__name__}: {exc}"
+
+    report_path = _write_ddr_probe_report(run_info_path, result)
+    result["report_path"] = str(report_path)
+    return result
 
 
 def _resolve_processor_file_path(processor: str | Path) -> Path:
@@ -2373,6 +2577,43 @@ class RunWorkflow:
                 include_paths=True,
             )
             _emit_ddr_processor_key_sanity(processors)
+        if _env_flag_enabled("TOPEFT_DDR_CERT_PROBE"):
+            probe_url = str(
+                os.environ.get("TOPEFT_DDR_CERT_PROBE_URL", _DEFAULT_DDR_CERT_PROBE_URL)
+            )
+            timeout_raw = os.environ.get("TOPEFT_DDR_CERT_PROBE_TIMEOUT", "20")
+            try:
+                probe_timeout = max(5, int(timeout_raw))
+            except ValueError:
+                probe_timeout = 20
+            probe_env = dict(preprocess_kwargs.get("environment_variables", {}) or {})
+            probe_payload = _run_ddr_worker_cert_probe_task(
+                manager,
+                extra_files=extra_files,
+                environment_variables=probe_env,
+                run_info_path=run_info_path,
+                test_url=probe_url,
+                timeout_seconds=probe_timeout,
+            )
+            logger.info(
+                "[taskvine] DDR worker cert probe status=%s successful=%s report=%s",
+                probe_payload.get("status"),
+                probe_payload.get("successful"),
+                probe_payload.get("report_path"),
+            )
+            _ddr_debug_emit(
+                "worker cert probe "
+                f"status={probe_payload.get('status')} "
+                f"successful={probe_payload.get('successful')} "
+                f"report_path={probe_payload.get('report_path')} "
+                f"task_id={probe_payload.get('task_id')}",
+                include_paths=True,
+            )
+            if probe_payload.get("staging_errors"):
+                logger.warning(
+                    "[taskvine] DDR worker cert probe staging_errors=%s",
+                    probe_payload.get("staging_errors"),
+                )
 
         try:
             with _instrument_ddr_runtime_stages(ddr_helpers):
