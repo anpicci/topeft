@@ -358,6 +358,10 @@ def test_execute_ddr_runs_worker_probe_when_enabled(
     config = RunConfig(
         executor="taskvine",
         ddr_x509_proxy=str(source_proxy),
+        ddr_debug=True,
+        ddr_worker_probe_enabled=True,
+        ddr_worker_probe_url="root://example.invalid//store/file.root",
+        ddr_worker_probe_timeout=11,
         nworkers=8,
     )
 
@@ -431,26 +435,28 @@ def test_execute_ddr_runs_worker_probe_when_enabled(
         "run_ddr",
         _fake_run_ddr,
     )
-    monkeypatch.setenv("TOPEFT_DDR_DEBUG", "1")
-    monkeypatch.setenv("TOPEFT_DDR_WORKER_PROBE", "1")
-
-    workflow._execute_ddr(
-        histogram_plan=SimpleNamespace(tasks=()),
-        samplesdict={},
-        flist={},
-        golden_jsons={},
-        ecut_threshold=None,
-        analysis_processor_module=SimpleNamespace(),
-        processor_file=processor_file,
-        processor_module_name="analysis_processor",
-        coffea_processor_module=SimpleNamespace(),
-    )
+    try:
+        workflow._execute_ddr(
+            histogram_plan=SimpleNamespace(tasks=()),
+            samplesdict={},
+            flist={},
+            golden_jsons={},
+            ecut_threshold=None,
+            analysis_processor_module=SimpleNamespace(),
+            processor_file=processor_file,
+            processor_module_name="analysis_processor",
+            coffea_processor_module=SimpleNamespace(),
+        )
+    finally:
+        workflow_module._set_ddr_debug_enabled(False)
 
     assert "extra_files" in captured_probe
     assert any(str(path).endswith("proxy.pem") for path in captured_probe["extra_files"])
     env_map = captured_probe["environment_variables"]
     assert isinstance(env_map, dict)
     assert env_map["X509_USER_PROXY"] == "proxy.pem"
+    assert captured_probe["test_url"] == "root://example.invalid//store/file.root"
+    assert captured_probe["timeout_seconds"] == 11
     assert "ddr_kwargs" in captured_run_ddr
 
 

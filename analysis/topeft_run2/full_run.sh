@@ -18,7 +18,7 @@ set -euo pipefail
 
 write_exit_marker() {
   local status="$1"
-  local marker_path="${TOPEFT_EXIT_MARKER:-}"
+  local marker_path="${2:-}"
   if [[ -z "$marker_path" ]]; then
     return
   fi
@@ -29,16 +29,21 @@ write_exit_marker() {
 emit_exit_debug() {
   local status="$1"
   local pipestatus_text="$2"
-  if [[ "${TOPEFT_EXIT_DEBUG:-0}" != "1" ]]; then
+  local debug_enabled="${3:-0}"
+  if [[ "$debug_enabled" != "1" ]]; then
     return
   fi
   printf 'full_run.sh: driver_status=%s pipestatus=[%s]\n' "$status" "$pipestatus_text" >&2
 }
 
 run_with_status_capture() {
+  local log_path="${1:-}"
+  local marker_path="${2:-}"
+  local debug_enabled="${3:-0}"
+  shift 3
+
   local status=0
   local pipestatus_text=""
-  local log_path="${TOPEFT_DRIVER_LOG:-}"
 
   if [[ -n "$log_path" ]]; then
     mkdir -p "$(dirname "$log_path")"
@@ -56,13 +61,16 @@ run_with_status_capture() {
     pipestatus_text="$status"
   fi
 
-  write_exit_marker "$status"
-  emit_exit_debug "$status" "$pipestatus_text"
+  write_exit_marker "$status" "$marker_path"
+  emit_exit_debug "$status" "$pipestatus_text" "$debug_enabled"
   return "$status"
 }
 
 run_self_test_exit_propagation() {
   local status="${1:-}"
+  local log_path="${2:-}"
+  local marker_path="${3:-}"
+  local debug_enabled="${4:-0}"
   if ! [[ "$status" =~ ^[0-9]+$ ]] || (( status < 0 || status > 255 )); then
     echo "Error: --self-test-exit-propagation expects an integer exit code in [0,255]." >&2
     return 1
@@ -75,7 +83,8 @@ run_self_test_exit_propagation() {
     "exit $status"
 
   local test_status=0
-  run_with_status_capture /bin/bash --noprofile --norc -c "$script" || test_status=$?
+  run_with_status_capture "$log_path" "$marker_path" "$debug_enabled" \
+    /bin/bash --noprofile --norc -c "$script" || test_status=$?
   return "$test_status"
 }
 
@@ -83,7 +92,7 @@ print_usage() {
   cat <<'USAGE'
 Usage:
   full_run.sh --options <path[:profile]>
-  full_run.sh --self-test-exit-propagation <status>
+  full_run.sh --self-test-exit-propagation <status> [--driver-log-path <path>] [--exit-marker-path <path>] [--exit-debug]
   full_run.sh --help
 
 Description:
@@ -93,6 +102,7 @@ Rules:
   - --options is required for normal execution.
   - --self-test-exit-propagation runs a local dummy command and exits with the requested status.
   - No other CLI flags are accepted by this wrapper.
+  - --driver-log-path/--exit-marker-path/--exit-debug are only valid with --self-test-exit-propagation.
   - Profile auto-selection is handled by RunConfigBuilder:
     pass path.yml and use default_profile in YAML when desired.
 
@@ -104,16 +114,15 @@ Tips:
   - Pin chunksize in YAML defaults (recommended: 500000).
   - Set executor: taskvine and DDR knobs in YAML for production runs.
   - Use dedicated futures/iterative debug profiles in YAML for local smoke tests.
-  - Optional env vars:
-      TOPEFT_EXIT_MARKER=<path>   # write final driver exit status to file
-      TOPEFT_EXIT_DEBUG=1         # print driver_status + pipestatus to stderr
-      TOPEFT_DRIVER_LOG=<path>    # tee driver stdout/stderr to this file
 USAGE
 }
 
 main() {
   local options_spec=""
   local self_test_status=""
+  local driver_log_path=""
+  local exit_marker_path=""
+  local exit_debug="0"
 
   if [[ $# -eq 0 ]]; then
     echo "Error: --options is required." >&2
@@ -167,8 +176,36 @@ main() {
         self_test_status="${1#*=}"
         shift
         ;;
+      --driver-log-path)
+        if [[ $# -lt 2 ]]; then
+          echo "Error: --driver-log-path expects a non-empty value." >&2
+          return 1
+        fi
+        driver_log_path="$2"
+        shift 2
+        ;;
+      --driver-log-path=*)
+        driver_log_path="${1#*=}"
+        shift
+        ;;
+      --exit-marker-path)
+        if [[ $# -lt 2 ]]; then
+          echo "Error: --exit-marker-path expects a non-empty value." >&2
+          return 1
+        fi
+        exit_marker_path="$2"
+        shift 2
+        ;;
+      --exit-marker-path=*)
+        exit_marker_path="${1#*=}"
+        shift
+        ;;
+      --exit-debug)
+        exit_debug="1"
+        shift
+        ;;
       *)
-        echo "Error: unsupported argument '$1'. This wrapper only accepts --options, --self-test-exit-propagation, and --help." >&2
+        echo "Error: unsupported argument '$1'. This wrapper only accepts --options, --self-test-exit-propagation, --driver-log-path, --exit-marker-path, --exit-debug, and --help." >&2
         print_usage >&2
         return 1
         ;;
@@ -180,9 +217,14 @@ main() {
     return 1
   fi
 
+  if [[ -n "$options_spec" ]] && [[ -n "$driver_log_path" || -n "$exit_marker_path" || "$exit_debug" == "1" ]]; then
+    echo "Error: --options cannot be mixed with --driver-log-path, --exit-marker-path, or --exit-debug." >&2
+    return 1
+  fi
+
   if [[ -n "$self_test_status" ]]; then
     local self_test_rc=0
-    run_self_test_exit_propagation "$self_test_status" || self_test_rc=$?
+    run_self_test_exit_propagation "$self_test_status" "$driver_log_path" "$exit_marker_path" "$exit_debug" || self_test_rc=$?
     return "$self_test_rc"
   fi
 
@@ -195,7 +237,7 @@ main() {
   script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 
   local driver_status=0
-  run_with_status_capture python "$script_dir/run_analysis.py" --options "$options_spec" || driver_status=$?
+  run_with_status_capture "" "" "0" python "$script_dir/run_analysis.py" --options "$options_spec" || driver_status=$?
   return "$driver_status"
 }
 

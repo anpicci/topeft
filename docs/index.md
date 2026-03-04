@@ -26,8 +26,12 @@ overlapping quickstarts.
   Flag-by-flag lookup table.
 - [Schema reference](schemas.md) – Canonical internal/output schema contracts
   and DDR flattening fail-fast rules.
+- [TaskVine/DDR knob reference](taskvine_ddr_knobs.md) – Canonical CLI+YAML
+  knobs for manager/debug/proxy/probe/log/exit-marker behavior.
 - [DDR preprocess + proxy policy](ddr_preprocess_proxy_policy.md) – TaskVine
   operational defaults for proxy staging and preprocess artifacts.
+- [DDR outputs and pickle structure](ddr_outputs_and_pkl.md) – Raw DDR payload,
+  flattened schema, and final `.pkl.gz` layout.
 - [TaskVine workflow quickstart](taskvine_workflow.md) – Distributed executor
   focus, including environment packaging pointers.
 - [Datacard fitting workflow](fitting.md) – Canonical handoff from histogram
@@ -61,6 +65,8 @@ overlapping quickstarts.
 
 - [Workflow and processor reference](analysis_processing.md) – Processor ↔
   workflow architecture and execution flow.
+- [Workflow module chain](workflow_module_chain.md) – Concrete call chain from
+  `run_analysis.py` to TaskVine DDR helpers.
 - [Analysis processor data flow](analysis_processor_data_flow.md) – Detailed
   `AnalysisProcessor` runtime flow from dataset context to accumulator output.
 - [Tuple key audit](tuple_key_audit.md) – 5‑tuple conventions for histogram

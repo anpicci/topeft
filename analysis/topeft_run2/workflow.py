@@ -78,6 +78,7 @@ from topeft.modules.runner_output import normalise_runner_output, tuple_dict_sta
 
 logger = logging.getLogger(__name__)
 _DEV_DEBUG = dev_debug_enabled()
+_DDR_DEBUG_ENABLED = False
 _DDR_DEBUG_T0: Optional[float] = None
 _DDR_DEBUG_RUN_INFO_PATH: Optional[Path] = None
 _DEFAULT_DDR_CERT_PROBE_URL = (
@@ -87,10 +88,12 @@ _DEFAULT_DDR_CERT_PROBE_URL = (
 
 
 def _topeft_ddr_debug_enabled() -> bool:
-    value = os.environ.get("TOPEFT_DDR_DEBUG")
-    if value is None:
-        return False
-    return value.strip().lower() in {"1", "true", "yes", "on"}
+    return bool(_DDR_DEBUG_ENABLED)
+
+
+def _set_ddr_debug_enabled(enabled: bool) -> None:
+    global _DDR_DEBUG_ENABLED
+    _DDR_DEBUG_ENABLED = bool(enabled)
 
 
 def _set_ddr_debug_context(
@@ -1453,22 +1456,13 @@ def resolve_taskvine_manager_project_name_with_source(
     *,
     configured_manager_name: Optional[str],
     default_manager_name: str,
-    env: Optional[Mapping[str, str]] = None,
 ) -> Tuple[str, str]:
     """Resolve the TaskVine project/manager name for std DDR runs.
 
     Priority:
-    1. `TOPEFT_DDR_MANAGER_NAME` when set to a non-empty string.
-    2. Configured `manager_name` from CLI/options.
-    3. Existing default manager name.
+    1. Configured manager name from CLI/YAML options.
+    2. Existing default manager name.
     """
-
-    source_env = env if env is not None else os.environ
-    env_manager_name = source_env.get("TOPEFT_DDR_MANAGER_NAME")
-    if isinstance(env_manager_name, str):
-        candidate = env_manager_name.strip()
-        if candidate:
-            return candidate, "env"
 
     if configured_manager_name is not None:
         candidate = str(configured_manager_name).strip()
@@ -1482,12 +1476,10 @@ def resolve_taskvine_manager_project_name(
     *,
     configured_manager_name: Optional[str],
     default_manager_name: str,
-    env: Optional[Mapping[str, str]] = None,
 ) -> str:
     resolved_name, _ = resolve_taskvine_manager_project_name_with_source(
         configured_manager_name=configured_manager_name,
         default_manager_name=default_manager_name,
-        env=env,
     )
     return resolved_name
 
@@ -2405,6 +2397,7 @@ class RunWorkflow:
         processor_module_name: str,
         coffea_processor_module: Any,
     ) -> Mapping[str, Any]:
+        _set_ddr_debug_enabled(bool(getattr(self._config, "ddr_debug", False)))
         try:
             ddr_helpers = topcoffea.modules.dynamic_data_reduction
         except (ImportError, AttributeError) as exc:  # pragma: no cover - dependency guard
@@ -2639,25 +2632,15 @@ class RunWorkflow:
                 include_paths=True,
             )
             _emit_ddr_processor_key_sanity(processors)
-        probe_enabled = _topeft_ddr_debug_enabled() and (
-            _env_flag_enabled("TOPEFT_DDR_WORKER_PROBE")
-            or _env_flag_enabled("TOPEFT_DDR_CERT_PROBE")
-        )
+        probe_enabled = bool(getattr(self._config, "ddr_worker_probe_enabled", False))
         if probe_enabled:
-            probe_url = str(
-                os.environ.get(
-                    "TOPEFT_DDR_WORKER_PROBE_URL",
-                    os.environ.get("TOPEFT_DDR_CERT_PROBE_URL", _DEFAULT_DDR_CERT_PROBE_URL),
-                )
-            )
-            timeout_raw = os.environ.get(
-                "TOPEFT_DDR_WORKER_PROBE_TIMEOUT",
-                os.environ.get("TOPEFT_DDR_CERT_PROBE_TIMEOUT", "20"),
-            )
-            try:
-                probe_timeout = max(5, int(timeout_raw))
-            except ValueError:
+            configured_url = getattr(self._config, "ddr_worker_probe_url", None)
+            probe_url = str(configured_url or _DEFAULT_DDR_CERT_PROBE_URL)
+            timeout_raw = getattr(self._config, "ddr_worker_probe_timeout", None)
+            if timeout_raw is None:
                 probe_timeout = 20
+            else:
+                probe_timeout = max(5, int(timeout_raw))
             probe_env = dict(preprocess_kwargs.get("environment_variables", {}) or {})
             probe_payload = _run_ddr_worker_cert_probe_task(
                 manager,
@@ -2950,6 +2933,7 @@ class RunWorkflow:
         from topeft.modules.systematics import SystematicsHelper
         import coffea.processor as coffea_processor
 
+        _set_ddr_debug_enabled(bool(getattr(self._config, "ddr_debug", False)))
         self._validate_config()
 
         sample_specs = self._sample_loader.collect(self._config.json_files)

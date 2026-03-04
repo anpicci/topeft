@@ -22,12 +22,14 @@ How to run:
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager
 import importlib
 import logging
 import os
 import shlex
 import sys
-from typing import Sequence
+from pathlib import Path
+from typing import IO, Iterator, Sequence
 
 from analysis.topeft_run2 import metadata_authority
 
@@ -103,6 +105,91 @@ logger = logging.getLogger(__name__)
 remote_environment = topeft_remote_environment
 
 SUPPORTED_EXECUTORS: tuple[str, ...] = ("futures", "iterative", "taskvine")
+
+
+class _TeeStream:
+    """Write to a primary stream and optionally mirror into a logfile."""
+
+    def __init__(self, primary: IO[str], mirror: IO[str]) -> None:
+        self._primary = primary
+        self._mirror = mirror
+
+    def write(self, data: str) -> int:
+        self._primary.write(data)
+        self._mirror.write(data)
+        return len(data)
+
+    def flush(self) -> None:
+        self._primary.flush()
+        self._mirror.flush()
+
+    def isatty(self) -> bool:
+        return bool(getattr(self._primary, "isatty", lambda: False)())
+
+    @property
+    def encoding(self) -> str:
+        return getattr(self._primary, "encoding", "utf-8")
+
+
+@contextmanager
+def _driver_log_context(driver_log_path: str | None) -> Iterator[None]:
+    """Mirror stdout/stderr to ``driver_log_path`` when configured."""
+
+    if not driver_log_path:
+        yield
+        return
+
+    log_path = Path(driver_log_path).expanduser()
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    with log_path.open("a", encoding="utf-8") as handle:
+        original_stdout = sys.stdout
+        original_stderr = sys.stderr
+        sys.stdout = _TeeStream(original_stdout, handle)
+        sys.stderr = _TeeStream(original_stderr, handle)
+        try:
+            yield
+        finally:
+            sys.stdout = original_stdout
+            sys.stderr = original_stderr
+
+
+def _write_exit_marker(path: str | None, status: int) -> None:
+    if not path:
+        return
+    marker_path = Path(path).expanduser()
+    marker_path.parent.mkdir(parents=True, exist_ok=True)
+    marker_path.write_text(f"{int(status)}\n", encoding="utf-8")
+
+
+def _emit_exit_debug(enabled: bool, status: int) -> None:
+    if not enabled:
+        return
+    print(
+        f"run_analysis.py: driver_status={int(status)}",
+        file=sys.stderr,
+        flush=True,
+    )
+
+
+def _log_taskvine_ddr_knob_summary(config: RunConfig) -> None:
+    """Emit a stable summary block for TaskVine/DDR driver knobs."""
+
+    summary_items = [
+        ("taskvine_manager_name", config.manager_name),
+        ("taskvine_manager_name_template", config.manager_name_template),
+        ("taskvine_proxy_path", config.ddr_x509_proxy),
+        ("ddr_debug", config.ddr_debug),
+        ("ddr_worker_probe_enabled", config.ddr_worker_probe_enabled),
+        ("ddr_worker_probe_url", config.ddr_worker_probe_url),
+        ("ddr_worker_probe_timeout", config.ddr_worker_probe_timeout),
+        ("driver_log_path", config.driver_log_path),
+        ("exit_marker_path", config.exit_marker_path),
+        ("exit_debug", config.exit_debug),
+    ]
+
+    logger.info("Resolved TaskVine/DDR driver knobs:")
+    for key, value in summary_items:
+        logger.info("  %s=%s", key, value if value not in (None, "") else "<none>")
 
 
 EXECUTOR_CLI = ExecutorCLIHelper(
@@ -335,6 +422,59 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--taskvine-manager-name",
+        dest="taskvine_manager_name",
+        default=None,
+        help=(
+            "TaskVine manager/project name override. "
+            "YAML key: taskvine_manager_name."
+        ),
+    )
+    parser.add_argument(
+        "--taskvine-manager-name-template",
+        dest="taskvine_manager_name_template",
+        default=None,
+        help=(
+            "TaskVine manager template override. "
+            "YAML key: taskvine_manager_name_template."
+        ),
+    )
+    parser.add_argument(
+        "--ddr-debug",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help=(
+            "Enable deterministic DDR debug markers from workflow/taskvine handoff. "
+            "YAML key: ddr_debug."
+        ),
+    )
+    parser.add_argument(
+        "--ddr-worker-probe-enabled",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help=(
+            "Enable the worker-side cert/xrootd probe task before DDR preprocess. "
+            "YAML key: ddr_worker_probe_enabled."
+        ),
+    )
+    parser.add_argument(
+        "--ddr-worker-probe-url",
+        default=None,
+        help=(
+            "ROOT URL used by the worker probe task. "
+            "YAML key: ddr_worker_probe_url."
+        ),
+    )
+    parser.add_argument(
+        "--ddr-worker-probe-timeout",
+        type=int,
+        default=None,
+        help=(
+            "Probe timeout in seconds for the worker-side cert/xrootd probe. "
+            "YAML key: ddr_worker_probe_timeout."
+        ),
+    )
+    parser.add_argument(
         "--ddr-processor-key-delim",
         default="-",
         help=(
@@ -398,6 +538,14 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--taskvine-proxy-path",
+        default=None,
+        help=(
+            "Alias for --ddr-x509-proxy. "
+            "YAML key: taskvine_proxy_path."
+        ),
+    )
+    parser.add_argument(
         "--ddr-preprocessed-data",
         default=None,
         help=(
@@ -437,6 +585,31 @@ def build_parser() -> argparse.ArgumentParser:
             " a specific profile. When provided, CLI flags are ignored in favour"
             " of the YAML configuration. --options and --metadata are mutually "
             "exclusive, and passing other config flags is an error."
+        ),
+    )
+    parser.add_argument(
+        "--driver-log-path",
+        default=None,
+        help=(
+            "Mirror run_analysis stdout/stderr to this logfile. "
+            "YAML key: driver_log_path."
+        ),
+    )
+    parser.add_argument(
+        "--exit-marker-path",
+        default=None,
+        help=(
+            "Write the final run_analysis exit status to this file. "
+            "YAML key: exit_marker_path."
+        ),
+    )
+    parser.add_argument(
+        "--exit-debug",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help=(
+            "Emit a final run_analysis exit-status debug line to stderr. "
+            "YAML key: exit_debug."
         ),
     )
     parser.set_defaults(negotiate_manager_port=True)
@@ -551,9 +724,9 @@ def _build_equivalent_cli_call(
     if not config.negotiate_manager_port:
         tokens.append("--no-port-negotiation")
     if config.manager_name:
-        tokens.extend(["--manager-name", str(config.manager_name)])
+        tokens.extend(["--taskvine-manager-name", str(config.manager_name)])
     if config.manager_name_template:
-        tokens.extend(["--manager-name-template", str(config.manager_name_template)])
+        tokens.extend(["--taskvine-manager-name-template", str(config.manager_name_template)])
     if config.scratch_dir:
         tokens.extend(["--scratch-dir", str(config.scratch_dir)])
     if config.resource_monitor:
@@ -564,6 +737,14 @@ def _build_equivalent_cli_call(
         tokens.extend(["--environment-file", str(config.environment_file)])
     if not config.taskvine_print_stdout:
         tokens.append("--no-taskvine-print-stdout")
+    if config.ddr_debug:
+        tokens.append("--ddr-debug")
+    if config.ddr_worker_probe_enabled:
+        tokens.append("--ddr-worker-probe-enabled")
+    if config.ddr_worker_probe_url:
+        tokens.extend(["--ddr-worker-probe-url", str(config.ddr_worker_probe_url)])
+    if config.ddr_worker_probe_timeout is not None:
+        tokens.extend(["--ddr-worker-probe-timeout", str(config.ddr_worker_probe_timeout)])
 
     if config.futures_status is not None:
         tokens.append("--futures-status" if config.futures_status else "--no-futures-status")
@@ -595,7 +776,7 @@ def _build_equivalent_cli_call(
     if config.ddr_verbose is not None:
         tokens.append("--ddr-verbose" if config.ddr_verbose else "--no-ddr-verbose")
     if config.ddr_x509_proxy:
-        tokens.extend(["--ddr-x509-proxy", str(config.ddr_x509_proxy)])
+        tokens.extend(["--taskvine-proxy-path", str(config.ddr_x509_proxy)])
     if config.ddr_preprocessed_data:
         tokens.extend(["--ddr-preprocessed-data", str(config.ddr_preprocessed_data)])
     if config.ddr_save_preprocess:
@@ -607,11 +788,21 @@ def _build_equivalent_cli_call(
     )
     if config.ddr_preprocess_artifact:
         tokens.extend(["--ddr-preprocess-artifact", str(config.ddr_preprocess_artifact)])
+    if config.driver_log_path:
+        tokens.extend(["--driver-log-path", str(config.driver_log_path)])
+    if config.exit_marker_path:
+        tokens.extend(["--exit-marker-path", str(config.exit_marker_path)])
+    if config.exit_debug:
+        tokens.append("--exit-debug")
 
     return " ".join(shlex.quote(token) for token in tokens)
 
 
-def main(argv: Sequence[str] | None = None) -> None:
+def main(argv: Sequence[str] | None = None) -> int:
+    marker_path: str | None = None
+    driver_log_path: str | None = None
+    exit_debug: bool = False
+    status_code = 1
     _verify_numpy_abi()
 
     parser = build_parser()
@@ -640,6 +831,10 @@ def main(argv: Sequence[str] | None = None) -> None:
         )
     except (ValueError, TypeError, KeyError) as exc:
         parser.error(str(exc))
+
+    marker_path = config.exit_marker_path
+    driver_log_path = config.driver_log_path
+    exit_debug = bool(config.exit_debug)
 
     metadata_cli_value = getattr(args, "metadata", None)
     if config.options_path:
@@ -678,36 +873,44 @@ def main(argv: Sequence[str] | None = None) -> None:
         metadata_bundle.metadata_path,
         metadata_provenance,
     )
-    logger.info(
-        "Informational (best-effort): resolved equivalent CLI without --options:\n  %s",
-        _build_equivalent_cli_call(
-            config,
-            scenario_name=scenario_name,
-            metadata_path=str(metadata_bundle.metadata_path),
-        ),
-    )
+    try:
+        with _driver_log_context(driver_log_path):
+            _log_taskvine_ddr_knob_summary(config)
+            logger.info(
+                "Informational (best-effort): resolved equivalent CLI without --options:\n  %s",
+                _build_equivalent_cli_call(
+                    config,
+                    scenario_name=scenario_name,
+                    metadata_path=str(metadata_bundle.metadata_path),
+                ),
+            )
 
-    config.log_level = effective_log_level
-    logger.info(
-        "Using executor: %s | chunksize=%s | maxchunks=%s",
-        config.executor,
-        config.chunksize,
-        config.nchunks if config.nchunks is not None else "unbounded",
-    )
+            config.log_level = effective_log_level
+            logger.info(
+                "Using executor: %s | chunksize=%s | maxchunks=%s",
+                config.executor,
+                config.chunksize,
+                config.nchunks if config.nchunks is not None else "unbounded",
+            )
 
-    if config.executor == "taskvine" and config.environment_file:
-        logger.warning(
-            "TaskVine DDR Model S recommends worker '--python-env <tarball>' "
-            "submission. --environment-file=%s is still honored for this run.",
-            config.environment_file,
-        )
+            if config.executor == "taskvine" and config.environment_file:
+                logger.warning(
+                    "TaskVine DDR Model S recommends worker '--python-env <tarball>' "
+                    "submission. --environment-file=%s is still honored for this run.",
+                    config.environment_file,
+                )
 
-    # Import lazily so module import stays lightweight and avoids pulling
-    # optional runtime dependencies before execution is requested.
-    from analysis.topeft_run2.workflow import run_workflow
+            # Import lazily so module import stays lightweight and avoids pulling
+            # optional runtime dependencies before execution is requested.
+            from analysis.topeft_run2.workflow import run_workflow
 
-    run_workflow(config, metadata_bundle=metadata_bundle)
+            run_workflow(config, metadata_bundle=metadata_bundle)
+        status_code = 0
+        return status_code
+    finally:
+        _write_exit_marker(marker_path, status_code)
+        _emit_exit_debug(exit_debug, status_code)
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

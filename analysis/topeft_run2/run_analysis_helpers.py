@@ -529,6 +529,10 @@ class RunConfig:
     negotiate_manager_port: bool = True
     manager_name: Optional[str] = None
     manager_name_template: Optional[str] = None
+    ddr_debug: bool = False
+    ddr_worker_probe_enabled: bool = False
+    ddr_worker_probe_url: Optional[str] = None
+    ddr_worker_probe_timeout: Optional[int] = None
     scratch_dir: Optional[str] = None
     resource_monitor: Optional[str] = "measure"
     resources_mode: Optional[str] = "auto"
@@ -567,6 +571,9 @@ class RunConfig:
     futures_prefetch: Optional[int] = 1
     futures_retries: int = 0
     futures_retry_wait: float = 5.0
+    driver_log_path: Optional[str] = None
+    exit_marker_path: Optional[str] = None
+    exit_debug: bool = False
     channel_groups_strict: bool = True
     options_profile: Optional[str] = None
     options_path: Optional[str] = None
@@ -637,7 +644,12 @@ class RunConfigBuilder:
                 coerce_bool,
             ),
             "manager_name": ("manager_name", _coerce_optional_string),
+            "taskvine_manager_name": ("manager_name", _coerce_optional_string),
             "manager_name_template": (
+                "manager_name_template",
+                _coerce_optional_string,
+            ),
+            "taskvine_manager_name_template": (
                 "manager_name_template",
                 _coerce_optional_string,
             ),
@@ -646,6 +658,13 @@ class RunConfigBuilder:
             "resource_monitor": ("resource_monitor", _coerce_optional_string),
             "resources_mode": ("resources_mode", _coerce_optional_string),
             "taskvine_print_stdout": ("taskvine_print_stdout", coerce_bool),
+            "ddr_debug": ("ddr_debug", coerce_bool),
+            "ddr_worker_probe_enabled": ("ddr_worker_probe_enabled", coerce_bool),
+            "ddr_worker_probe_url": ("ddr_worker_probe_url", _coerce_optional_string),
+            "ddr_worker_probe_timeout": (
+                "ddr_worker_probe_timeout",
+                lambda v: coerce_int(v, allow_none=True),
+            ),
             "ddr_processor_key_delim": ("ddr_processor_key_delim", coerce_delimiter),
             "produce_sidecars": ("produce_sidecars", coerce_bool),
             "ddr_preserve_sidecars": ("ddr_preserve_sidecars", coerce_bool),
@@ -687,6 +706,7 @@ class RunConfigBuilder:
             ),
             "ddr_verbose": ("ddr_verbose", coerce_bool),
             "ddr_x509_proxy": ("ddr_x509_proxy", _coerce_optional_string),
+            "taskvine_proxy_path": ("ddr_x509_proxy", _coerce_optional_string),
             "ddr_environment_variables": (
                 "ddr_environment_variables",
                 coerce_str_mapping,
@@ -736,6 +756,9 @@ class RunConfigBuilder:
                 "futures_retry_wait",
                 coerce_optional_float,
             ),
+            "driver_log_path": ("driver_log_path", _coerce_optional_string),
+            "exit_marker_path": ("exit_marker_path", _coerce_optional_string),
+            "exit_debug": ("exit_debug", coerce_bool),
         }
 
         def _apply_source(source: Mapping[str, Any]):
@@ -849,11 +872,17 @@ class RunConfigBuilder:
                 "port": "port",
                 "negotiate_manager_port": "negotiate_manager_port",
                 "manager_name": "manager_name",
+                "taskvine_manager_name": "taskvine_manager_name",
                 "manager_name_template": "manager_name_template",
+                "taskvine_manager_name_template": "taskvine_manager_name_template",
                 "scratch_dir": "scratch_dir",
                 "resource_monitor": "resource_monitor",
                 "resources_mode": "resources_mode",
                 "taskvine_print_stdout": "taskvine_print_stdout",
+                "ddr_debug": "ddr_debug",
+                "ddr_worker_probe_enabled": "ddr_worker_probe_enabled",
+                "ddr_worker_probe_url": "ddr_worker_probe_url",
+                "ddr_worker_probe_timeout": "ddr_worker_probe_timeout",
                 "ddr_processor_key_delim": "ddr_processor_key_delim",
                 "produce_sidecars": "produce_sidecars",
                 "ddr_preserve_sidecars": "ddr_preserve_sidecars",
@@ -864,12 +893,16 @@ class RunConfigBuilder:
                 "ddr_results_directory": "ddr_results_directory",
                 "ddr_verbose": "ddr_verbose",
                 "ddr_x509_proxy": "ddr_x509_proxy",
+                "taskvine_proxy_path": "taskvine_proxy_path",
                 "ddr_preprocessed_data": "ddr_preprocessed_data",
                 "ddr_save_preprocess": "ddr_save_preprocess",
                 "ddr_auto_save_preprocess": "ddr_auto_save_preprocess",
                 "ddr_preprocess_artifact": "ddr_preprocess_artifact",
                 "environment_file": "environment_file",
                 "log_level": "log_level",
+                "driver_log_path": "driver_log_path",
+                "exit_marker_path": "exit_marker_path",
+                "exit_debug": "exit_debug",
                 "futures_status": "futures_status",
                 "futures_tail_timeout": "futures_tail_timeout",
                 "futures_memory": "futures_memory",

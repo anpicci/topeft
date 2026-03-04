@@ -10,20 +10,18 @@ from analysis.topeft_run2.workflow import (
 )
 
 
-def test_std_resolve_taskvine_manager_project_name_prefers_env() -> None:
+def test_std_resolve_taskvine_manager_project_name_prefers_config() -> None:
     result = resolve_taskvine_manager_project_name(
         configured_manager_name="configured-manager",
         default_manager_name="default-manager",
-        env={"TOPEFT_DDR_MANAGER_NAME": "apiccine-taskvine-coffea-std-smoke-run"},
     )
-    assert result == "apiccine-taskvine-coffea-std-smoke-run"
+    assert result == "configured-manager"
 
 
 def test_std_resolve_taskvine_manager_project_name_falls_back_to_config() -> None:
     result = resolve_taskvine_manager_project_name(
         configured_manager_name="configured-manager",
         default_manager_name="default-manager",
-        env={},
     )
     assert result == "configured-manager"
 
@@ -32,26 +30,23 @@ def test_std_resolve_taskvine_manager_project_name_falls_back_to_default() -> No
     result = resolve_taskvine_manager_project_name(
         configured_manager_name="",
         default_manager_name="default-manager",
-        env={"TOPEFT_DDR_MANAGER_NAME": "   "},
     )
     assert result == "default-manager"
 
 
-def test_std_resolve_taskvine_manager_project_name_with_source_prefers_env() -> None:
+def test_std_resolve_taskvine_manager_project_name_with_source_prefers_config() -> None:
     result, source = resolve_taskvine_manager_project_name_with_source(
         configured_manager_name="configured-manager",
         default_manager_name="default-manager",
-        env={"TOPEFT_DDR_MANAGER_NAME": "apiccine-taskvine-coffea-std-smoke-run"},
     )
-    assert result == "apiccine-taskvine-coffea-std-smoke-run"
-    assert source == "env"
+    assert result == "configured-manager"
+    assert source == "config"
 
 
 def test_std_resolve_taskvine_manager_project_name_with_source_uses_config() -> None:
     result, source = resolve_taskvine_manager_project_name_with_source(
         configured_manager_name="configured-manager",
         default_manager_name="default-manager",
-        env={},
     )
     assert result == "configured-manager"
     assert source == "config"
@@ -61,7 +56,6 @@ def test_std_resolve_taskvine_manager_project_name_with_source_uses_default() ->
     result, source = resolve_taskvine_manager_project_name_with_source(
         configured_manager_name="",
         default_manager_name="default-manager",
-        env={"TOPEFT_DDR_MANAGER_NAME": "   "},
     )
     assert result == "default-manager"
     assert source == "default"
