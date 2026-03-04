@@ -1222,6 +1222,15 @@ def _tuple_sort_key(key: Tuple[str, str, str, str, str]) -> Tuple[str, str, str,
     return tuple(str(piece) for piece in key)
 
 
+def _normalise_histogram_variable_name(value: Any) -> str:
+    """Normalise histogram variable labels for schema compatibility checks."""
+
+    variable = str(value)
+    if variable.endswith("_sumw2"):
+        return variable[: -len("_sumw2")]
+    return variable
+
+
 def flatten_ddr_output(
     ddr_payload: Mapping[str, Any],
     *,
@@ -1281,10 +1290,12 @@ def flatten_ddr_output(
                     )
 
                 tuple_var, tuple_channel, tuple_application, tuple_sample, tuple_systematic = leaf_key
+                tuple_var_label = str(tuple_var)
+                tuple_var_normalized = _normalise_histogram_variable_name(tuple_var_label)
                 tuple_systematic_label = _normalise_systematic_label(tuple_systematic)
                 if (
                     str(tuple_channel) != key_channel
-                    or str(tuple_var) != key_var
+                    or tuple_var_normalized != key_var
                     or str(tuple_application) != key_application
                     or tuple_systematic_label != key_systematic
                 ):
@@ -1298,13 +1309,13 @@ def flatten_ddr_output(
                     target_key = (
                         sample_label,
                         str(tuple_channel),
-                        str(tuple_var),
+                        tuple_var_label,
                         str(tuple_application),
                         tuple_systematic_label,
                     )
                 else:
                     target_key = (
-                        str(tuple_var),
+                        tuple_var_label,
                         str(tuple_channel),
                         str(tuple_application),
                         sample_label,

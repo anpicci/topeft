@@ -7,9 +7,9 @@ from typing import Sequence
 
 
 def _delegate_main(argv: Sequence[str] | None = None) -> int:
-    from topcoffea.modules.taskvine_probe import main as topcoffea_probe_main
+    import topcoffea
 
-    return int(topcoffea_probe_main(argv))
+    return int(topcoffea.modules.taskvine_probe.main(argv))
 
 
 def main(argv: Sequence[str] | None = None) -> int:
