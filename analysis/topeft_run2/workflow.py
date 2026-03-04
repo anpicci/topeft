@@ -2705,7 +2705,9 @@ class RunWorkflow:
             if _topeft_ddr_debug_enabled():
                 _emit_transactions_snapshot("finally_before_manager_shutdown")
             try:
-                manager.shutdown()
+                shutdown = getattr(manager, "shutdown", None)
+                if callable(shutdown):
+                    shutdown()
             except Exception:
                 logger.debug("DDR manager shutdown encountered an error", exc_info=True)
             if _topeft_ddr_debug_enabled():
