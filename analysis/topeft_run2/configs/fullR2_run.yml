@@ -45,7 +45,7 @@ profiles:
     chunksize: 5000
     nchunks: 1
     outname: proxydebug_260303
-    environment_file: /users/apiccine/work/ChUpdate/topeft/topeft-envs/env_spec_1fb9714b_edit_HEAD.tar.gz
+    environment_file: /users/apiccine/work/ChUpdate/topeft/topeft-envs/env_spec_2ae74f84_edit_HEAD.tar.gz
     log_level: debug
     do_systs: false
     ddr_x509_proxy: /tmp/x509up_u241575
