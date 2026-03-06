@@ -13,8 +13,12 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import resource
+import sys
+import threading
 import time
-from typing import Any, Dict, Iterable, List, Optional
+import tracemalloc
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 import topcoffea.modules.utils as utils
 
@@ -73,6 +77,28 @@ def _build_argument_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Silence progress heartbeats during histogram finalization.",
     )
+    parser.add_argument(
+        "--mem-report",
+        action="store_true",
+        help=(
+            "Print stage-tagged memory (RSS) usage and periodic memory heartbeats while "
+            "processing histograms."
+        ),
+    )
+    parser.add_argument(
+        "--mem-tracemalloc",
+        action="store_true",
+        help=(
+            "Also collect and print tracemalloc top allocations at major stages. "
+            "Implies --mem-report."
+        ),
+    )
+    parser.add_argument(
+        "--mem-top-n",
+        type=int,
+        default=20,
+        help="How many tracemalloc entries to print per stage when --mem-tracemalloc is enabled.",
+    )
     return parser
 
 
@@ -130,6 +156,113 @@ def _validate_input_path(input_path: str) -> None:
         raise FileNotFoundError(f"Histogram pickle not found: {input_path}")
 
 
+def _peak_rss_mb() -> float:
+    peak_rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+    # Linux reports ru_maxrss in KiB; macOS reports bytes.
+    if sys.platform == "darwin":
+        return peak_rss / (1024.0 * 1024.0)
+    return peak_rss / 1024.0
+
+
+def _current_rss_mb() -> float:
+    try:
+        with open("/proc/self/status") as status_stream:
+            for line in status_stream:
+                if line.startswith("VmRSS:"):
+                    fields = line.split()
+                    if len(fields) >= 2:
+                        return float(fields[1]) / 1024.0
+    except OSError:
+        pass
+    # Fallback when /proc is unavailable.
+    return _peak_rss_mb()
+
+
+class _MemoryReporter:
+    def __init__(
+        self,
+        *,
+        enabled: bool,
+        include_tracemalloc: bool,
+        heartbeat_seconds: float,
+        top_n: int,
+    ) -> None:
+        self.enabled = enabled
+        self.include_tracemalloc = include_tracemalloc
+        self.heartbeat_seconds = heartbeat_seconds
+        self.top_n = max(1, top_n)
+        self._stage = "startup"
+        self._stage_lock = threading.Lock()
+        self._stop_event = threading.Event()
+        self._thread: Optional[threading.Thread] = None
+
+    def start(self) -> None:
+        if not self.enabled:
+            return
+        if self.include_tracemalloc and not tracemalloc.is_tracing():
+            tracemalloc.start(25)
+
+        interval = self.heartbeat_seconds if self.heartbeat_seconds > 0 else 30.0
+
+        def _heartbeat_worker() -> None:
+            while not self._stop_event.wait(interval):
+                self._emit(f"heartbeat ({self._get_stage()})", include_top=False)
+
+        self._thread = threading.Thread(
+            target=_heartbeat_worker,
+            name="run-data-driven-mem-heartbeat",
+            daemon=True,
+        )
+        self._thread.start()
+
+    def stop(self) -> None:
+        if not self.enabled:
+            return
+        self._stop_event.set()
+        if self._thread is not None:
+            self._thread.join(timeout=1.0)
+        if self.include_tracemalloc and tracemalloc.is_tracing():
+            tracemalloc.stop()
+
+    def _get_stage(self) -> str:
+        with self._stage_lock:
+            return self._stage
+
+    def _set_stage(self, stage: str) -> None:
+        with self._stage_lock:
+            self._stage = stage
+
+    def _emit(self, stage: str, *, include_top: bool) -> None:
+        rss_mb = _current_rss_mb()
+        peak_mb = _peak_rss_mb()
+        print(
+            f"[run_data_driven][mem] {stage}: "
+            f"rss={rss_mb:.1f} MB peak={peak_mb:.1f} MB"
+        )
+
+        if not include_top:
+            return
+        if not self.include_tracemalloc or not tracemalloc.is_tracing():
+            return
+
+        stats = tracemalloc.take_snapshot().statistics("lineno")
+        count = min(len(stats), self.top_n)
+        print(f"[run_data_driven][mem] top {count} allocations ({stage}):")
+        for idx, stat in enumerate(stats[:count], start=1):
+            frame = stat.traceback[0]
+            print(
+                "[run_data_driven][mem]   "
+                f"{idx:02d}. {frame.filename}:{frame.lineno} "
+                f"{stat.size / (1024.0 * 1024.0):.1f} MB in {stat.count} blocks"
+            )
+
+    def mark(self, stage: str, *, include_top: bool = False) -> None:
+        if not self.enabled:
+            return
+        self._set_stage(stage)
+        self._emit(stage, include_top=include_top)
+
+
 def _filter_to_flips(histo: Any) -> Any:
     if histo is None:
         return histo
@@ -158,15 +291,15 @@ def _maybe_emit_heartbeat(
     last_heartbeat: float,
     heartbeat_seconds: float,
     quiet: bool,
-) -> float:
+) -> Tuple[float, bool]:
     if quiet:
-        return last_heartbeat
+        return last_heartbeat, False
     now = time.monotonic()
     if heartbeat_seconds <= 0 or now - last_heartbeat >= heartbeat_seconds:
         elapsed = now - start_time
         print(f"[run_data_driven] Processed {count} histograms after {elapsed:.1f}s...")
-        return now
-    return last_heartbeat
+        return now, True
+    return last_heartbeat, False
 
 
 def _finalize_histograms(
@@ -177,35 +310,72 @@ def _finalize_histograms(
     apply_envelope: bool,
     heartbeat_seconds: float,
     quiet: bool,
+    mem_report: bool,
+    mem_tracemalloc: bool,
+    mem_top_n: int,
 ) -> None:
-    ddp = DataDrivenProducer(input_pkl, output_pkl)
-    histograms = ddp.getDataDrivenHistogram()
+    memory_reporter = _MemoryReporter(
+        enabled=(mem_report or mem_tracemalloc),
+        include_tracemalloc=mem_tracemalloc,
+        heartbeat_seconds=heartbeat_seconds,
+        top_n=mem_top_n,
+    )
+    memory_reporter.start()
 
-    start_time = time.monotonic()
-    last_heartbeat = start_time
-    processed = 0
-    filtered: Dict[str, Any] = {}
-    for key, histo in histograms.items():
-        processed += 1
-        last_heartbeat = _maybe_emit_heartbeat(
-            count=processed,
-            start_time=start_time,
-            last_heartbeat=last_heartbeat,
-            heartbeat_seconds=heartbeat_seconds,
-            quiet=quiet,
-        )
+    try:
+        memory_reporter.mark("start")
+        memory_reporter.mark("before DataDrivenProducer(...)")
+        ddp = DataDrivenProducer(input_pkl, output_pkl)
+        memory_reporter.mark("after DataDrivenProducer(...)", include_top=mem_tracemalloc)
 
-        working_histo = _filter_to_flips(histo) if only_flips else histo
-        filtered[key] = working_histo
+        histograms = ddp.getDataDrivenHistogram()
+        del ddp
+        memory_reporter.mark("after getDataDrivenHistogram()")
 
-    if not quiet and processed:
-        elapsed = time.monotonic() - start_time
-        print(f"[run_data_driven] Finalized {processed} histograms in {elapsed:.1f}s.")
-    histograms = filtered
-    if apply_envelope:
-        histograms = get_renormfact_envelope(histograms)
-    os.makedirs(os.path.dirname(output_pkl) or ".", exist_ok=True)
-    utils.dump_to_pkl(output_pkl, histograms)
+        start_time = time.monotonic()
+        last_heartbeat = start_time
+        processed = 0
+        filtered: Optional[Dict[str, Any]] = {} if only_flips else None
+
+        for key, histo in histograms.items():
+            processed += 1
+            last_heartbeat, emitted_heartbeat = _maybe_emit_heartbeat(
+                count=processed,
+                start_time=start_time,
+                last_heartbeat=last_heartbeat,
+                heartbeat_seconds=heartbeat_seconds,
+                quiet=quiet,
+            )
+
+            if only_flips:
+                assert filtered is not None
+                filtered[key] = _filter_to_flips(histo)
+
+            if emitted_heartbeat:
+                memory_reporter.mark(f"processed {processed} histograms")
+
+        if not quiet and processed:
+            elapsed = time.monotonic() - start_time
+            print(f"[run_data_driven] Finalized {processed} histograms in {elapsed:.1f}s.")
+
+        if only_flips:
+            assert filtered is not None
+            memory_reporter.mark("before only-flips replacement")
+            histograms = filtered
+            del filtered
+            memory_reporter.mark("after only-flips replacement")
+
+        if apply_envelope:
+            memory_reporter.mark("before get_renormfact_envelope()", include_top=mem_tracemalloc)
+            histograms = get_renormfact_envelope(histograms)
+            memory_reporter.mark("after get_renormfact_envelope()", include_top=mem_tracemalloc)
+
+        os.makedirs(os.path.dirname(output_pkl) or ".", exist_ok=True)
+        memory_reporter.mark("before dump_to_pkl()", include_top=mem_tracemalloc)
+        utils.dump_to_pkl(output_pkl, histograms)
+        memory_reporter.mark("after dump_to_pkl()")
+    finally:
+        memory_reporter.stop()
 
 
 def main(argv: Optional[List[str]] = None) -> int:
@@ -242,6 +412,9 @@ def main(argv: Optional[List[str]] = None) -> int:
         apply_envelope=args.apply_renormfact_envelope,
         heartbeat_seconds=args.heartbeat_seconds,
         quiet=args.quiet,
+        mem_report=args.mem_report,
+        mem_tracemalloc=args.mem_tracemalloc,
+        mem_top_n=args.mem_top_n,
     )
 
     return 0
