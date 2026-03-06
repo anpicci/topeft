@@ -569,7 +569,7 @@ class RunConfig:
     summary_verbosity: str = "brief"
     log_level: Optional[str] = None
     log_tasks: bool = False
-    environment_file: Optional[str] = "cached"
+    environment_file: Optional[str] = None
     futures_status: Optional[bool] = None
     futures_tail_timeout: Optional[int] = None
     futures_memory: Optional[int] = None

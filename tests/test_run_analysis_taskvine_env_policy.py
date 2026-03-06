@@ -24,6 +24,66 @@ def test_equivalent_cli_includes_environment_file_for_taskvine() -> None:
     assert "/tmp/model-s-env.tar.gz" in rendered
 
 
+def test_main_builds_taskvine_environment_when_missing(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    processor_file = tmp_path / "analysis_processor.py"
+    processor_file.write_text("class AnalysisProcessor: pass\n", encoding="utf-8")
+
+    captured: dict[str, object] = {}
+    metadata_bundle = types.SimpleNamespace(metadata_path=tmp_path / "metadata.yml")
+    build_calls: list[dict[str, object]] = []
+
+    def _fake_run_workflow(config, metadata_bundle):
+        captured["config"] = config
+        captured["metadata_bundle"] = metadata_bundle
+
+    def _fake_ensure_taskvine_environment_file(config, *, repo_root=None) -> str:
+        build_calls.append(
+            {
+                "before": config.environment_file,
+                "repo_root": repo_root,
+            }
+        )
+        config.environment_file = "/tmp/auto-built-env.tar.gz"
+        return config.environment_file
+
+    fake_workflow_module = types.ModuleType("analysis.topeft_run2.workflow")
+    fake_workflow_module.run_workflow = _fake_run_workflow
+
+    monkeypatch.setattr(run_analysis, "_verify_numpy_abi", lambda: None)
+    monkeypatch.setattr(
+        run_analysis,
+        "_apply_scenario_metadata_defaults",
+        lambda _config, _metadata_cli: ("TOP_22_006", metadata_bundle, "test"),
+    )
+    monkeypatch.setattr(
+        run_analysis,
+        "configure_topeft_logging",
+        lambda *_args, **_kwargs: "info",
+    )
+    monkeypatch.setattr(
+        run_analysis,
+        "ensure_taskvine_environment_file",
+        _fake_ensure_taskvine_environment_file,
+    )
+    monkeypatch.setitem(sys.modules, "analysis.topeft_run2.workflow", fake_workflow_module)
+
+    run_analysis.main(
+        [
+            "--executor",
+            "taskvine",
+            "--processor",
+            str(processor_file),
+        ]
+    )
+
+    assert len(build_calls) == 1
+    assert build_calls[0]["before"] is None
+    assert captured["config"].environment_file == "/tmp/auto-built-env.tar.gz"
+
+
 def test_main_warns_for_taskvine_environment_file_but_keeps_value(
     monkeypatch,
     tmp_path: Path,

@@ -63,11 +63,11 @@ python -c "from topcoffea.modules.remote_environment import get_environment; pri
 
 The returned path is exactly what the TaskVine executor passes via the
 `environment_file` argument.  Keep the archive under version control whenever you
-update the dependencies so other analysts can reuse the same package.  The
-``run_analysis.py`` CLI now defaults to ``--environment-file=cached`` so the
-workflow fails fast when the tarball has not been prepared.  Override the option
-with ``--environment-file auto`` if you want the script to rebuild the archive
-on demand instead.
+update the dependencies so other analysts can reuse the same package.  For
+`executor=taskvine`, `run_analysis.py` now auto-builds a tarball whenever
+`environment_file` is unset/empty and logs both the build trigger and the final
+path.  You can still set `environment_file` explicitly (path, `cached`, `auto`,
+or `none`) for reproducibility and policy control.
 
 ## 3. Enable TaskVine in the workflow configuration
 

@@ -28,6 +28,7 @@ import logging
 import os
 import shlex
 import sys
+import traceback
 from pathlib import Path
 from typing import IO, Iterator, Sequence
 
@@ -105,6 +106,10 @@ logger = logging.getLogger(__name__)
 remote_environment = topeft_remote_environment
 
 SUPPORTED_EXECUTORS: tuple[str, ...] = ("futures", "iterative", "taskvine")
+
+
+class TaskVineEnvironmentBuildError(RuntimeError):
+    """Raised when TaskVine env tarball auto-build fails."""
 
 
 class _TeeStream:
@@ -192,6 +197,46 @@ def _log_taskvine_ddr_knob_summary(config: RunConfig) -> None:
         logger.info("  %s=%s", key, value if value not in (None, "") else "<none>")
 
 
+def _environment_file_missing(value: str | None) -> bool:
+    """Return ``True`` when ``value`` is unset/empty."""
+
+    if value is None:
+        return True
+    return str(value).strip() == ""
+
+
+def ensure_taskvine_environment_file(
+    config: RunConfig,
+    *,
+    repo_root: Path | None = None,
+) -> str:
+    """Ensure TaskVine runs have an environment tarball path."""
+
+    if not _environment_file_missing(config.environment_file):
+        return str(config.environment_file)
+
+    logger.info("TaskVine environment_file not set; building environment tarball...")
+    try:
+        built_path = Path(str(remote_environment.get_environment())).expanduser()
+    except Exception as exc:
+        raise TaskVineEnvironmentBuildError(
+            "TaskVine environment_file not set and automatic tarball build failed."
+        ) from exc
+
+    if not built_path.is_absolute():
+        resolved_root = Path(repo_root or metadata_authority.get_repo_root()).resolve()
+        built_path = (resolved_root / built_path).resolve()
+
+    if not built_path.is_file():
+        raise TaskVineEnvironmentBuildError(
+            f"TaskVine environment tarball build returned a missing path: {built_path}"
+        )
+
+    config.environment_file = str(built_path)
+    logger.info("Built environment tarball at: %s", config.environment_file)
+    return config.environment_file
+
+
 EXECUTOR_CLI = ExecutorCLIHelper(
     remote_environment=remote_environment,
     futures_spec=FuturesArgumentSpec(
@@ -212,7 +257,7 @@ EXECUTOR_CLI = ExecutorCLIHelper(
         resource_monitor_default="measure",
         resources_mode_default="auto",
     ),
-    default_environment="cached",
+    default_environment=None,
 )
 
 
@@ -865,6 +910,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
 
         with _driver_log_context(driver_log_path):
+            if config.executor == "taskvine":
+                ensure_taskvine_environment_file(
+                    config,
+                    repo_root=metadata_authority.get_repo_root(),
+                )
+
             _log_taskvine_ddr_knob_summary(config)
             logger.info(
                 "Informational (best-effort): resolved equivalent CLI without --options:\n  %s",
@@ -896,6 +947,10 @@ def main(argv: Sequence[str] | None = None) -> int:
 
             run_workflow(config, metadata_bundle=metadata_bundle)
         status_code = 0
+        return status_code
+    except TaskVineEnvironmentBuildError as exc:
+        status_code = 2
+        traceback.print_exception(type(exc), exc, exc.__traceback__, file=sys.stderr)
         return status_code
     except KeyboardInterrupt:
         status_code = 130

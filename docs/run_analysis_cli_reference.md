@@ -57,7 +57,7 @@ of truth.
 | `--scratch-dir` | `scratch_dir` | optional string | `None` | Shared staging directory for distributed execution. |
 | `--resource-monitor` | `resource_monitor` | optional string | `measure` | TaskVine resource monitor mode. |
 | `--resources-mode` | `resources_mode` | optional string | `auto` | TaskVine resource mode. |
-| `--environment-file` | `environment_file` | optional string | `cached` | Remote environment tarball selection (`cached`, `auto`, `none`, or path). |
+| `--environment-file` | `environment_file` | optional string | unset | Remote environment tarball selection (`cached`, `auto`, `none`, or path). For `executor=taskvine`, when this value is unset/empty the driver auto-builds a tarball and logs the resulting path before workflow launch. |
 | `--no-environment-file` | `environment_file` | optional string | n/a | Alias for `--environment-file none`. |
 | `--taskvine-print-stdout`, `--no-taskvine-print-stdout` | `taskvine_print_stdout` | bool | `true` | Forward worker stdout to manager logs. |
 | `--futures-status`, `--no-futures-status` | `futures_status` | optional bool | `None` | Toggle futures progress status output. |
@@ -96,3 +96,16 @@ for DDR internals (for example `ddr_resources_processing`,
 `ddr_environment_variables`, `ddr_preprocess_kwargs`, `ddr_kwargs`) when a
 profile needs settings that are intentionally not exposed as top-level CLI
 switches.
+
+## TaskVine `environment_file` auto-build policy
+
+When `executor=taskvine` and `environment_file` resolves to an unset/empty
+value, `run_analysis.py` now follows one deterministic path:
+
+1. Log: `TaskVine environment_file not set; building environment tarball...`
+2. Build via the canonical `topeft.modules.remote_environment` helper.
+3. Log: `Built environment tarball at: <path>`
+4. Continue the run with `config.environment_file` set to that path.
+
+For reproducibility across repeated runs, explicitly setting
+`environment_file` in CLI or YAML remains recommended.

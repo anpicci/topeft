@@ -130,3 +130,52 @@ def test_main_runtime_exception_maps_to_1_and_writes_marker(
     captured = capsys.readouterr()
     assert "driver_status=1" in captured.err
     assert marker_path.read_text(encoding="utf-8").strip() == "1"
+
+
+def test_main_taskvine_env_build_failure_uses_exit_code_2_and_writes_marker(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    marker_path = tmp_path / "taskvine_env_build_error.exit"
+    metadata_bundle = types.SimpleNamespace(metadata_path=tmp_path / "metadata.yml")
+
+    monkeypatch.setattr(run_analysis, "_verify_numpy_abi", lambda: None)
+    monkeypatch.setattr(
+        run_analysis,
+        "_apply_scenario_metadata_defaults",
+        lambda _config, _metadata_cli: ("TOP_22_006", metadata_bundle, "test"),
+    )
+    monkeypatch.setattr(
+        run_analysis,
+        "configure_topeft_logging",
+        lambda *_args, **_kwargs: "INFO",
+    )
+
+    def _raise_taskvine_env_build_error(*_args, **_kwargs):
+        raise run_analysis.TaskVineEnvironmentBuildError(
+            "TaskVine environment_file not set and automatic tarball build failed."
+        ) from RuntimeError("simulated tarball build failure")
+
+    monkeypatch.setattr(
+        run_analysis,
+        "ensure_taskvine_environment_file",
+        _raise_taskvine_env_build_error,
+    )
+
+    status = run_analysis.main(
+        [
+            "--executor",
+            "taskvine",
+            "--exit-marker-path",
+            str(marker_path),
+            "--exit-debug",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert status == 2
+    assert "TaskVineEnvironmentBuildError" in captured.err
+    assert "simulated tarball build failure" in captured.err
+    assert "driver_status=2" in captured.err
+    assert marker_path.read_text(encoding="utf-8").strip() == "2"
