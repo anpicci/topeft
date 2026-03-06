@@ -2253,9 +2253,6 @@ class RunWorkflow:
         self._weight_variations = list(weight_variations)
         self._metadata_path = metadata_path
         self._golden_json_cache: Dict[str, Optional[str]] = {}
-        self._ddr_debug_context = DDRDebugContext(
-            enabled=bool(getattr(self._config, "ddr_debug", False))
-        )
 
     def _log_task_submission(self, task: HistogramTask) -> None:
         """Emit a concise log describing the histogram combinations for ``task``."""
@@ -2450,10 +2447,9 @@ class RunWorkflow:
         processor_module_name: str,
         coffea_processor_module: Any,
     ) -> Mapping[str, Any]:
-        debug = self._ddr_debug_context
-        debug.enabled = bool(getattr(self._config, "ddr_debug", False))
-        debug.t0 = None
-        debug.run_info_path = None
+        debug = DDRDebugContext(
+            enabled=bool(getattr(self._config, "ddr_debug", False))
+        )
         try:
             ddr_helpers = topcoffea.modules.dynamic_data_reduction
         except (ImportError, AttributeError) as exc:  # pragma: no cover - dependency guard
@@ -3005,7 +3001,6 @@ class RunWorkflow:
         from topeft.modules.systematics import SystematicsHelper
         import coffea.processor as coffea_processor
 
-        self._ddr_debug_context.enabled = bool(getattr(self._config, "ddr_debug", False))
         self._validate_config()
 
         sample_specs = self._sample_loader.collect(self._config.json_files)

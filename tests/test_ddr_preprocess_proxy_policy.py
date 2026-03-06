@@ -124,6 +124,21 @@ def test_preprocess_paths_reuse_mode_keeps_explicit_save(tmp_path: Path) -> None
     assert save_path == str(explicit_save)
 
 
+def test_run_workflow_does_not_store_ddr_debug_context_on_self() -> None:
+    workflow = RunWorkflow(
+        config=RunConfig(executor="taskvine"),
+        metadata={},
+        sample_loader=SimpleNamespace(),
+        channel_planner=SimpleNamespace(),
+        histogram_planner=SimpleNamespace(),
+        executor_factory=SimpleNamespace(),
+        weight_variations=(),
+        metadata_path="metadata.yml",
+    )
+
+    assert not hasattr(workflow, "_ddr_debug_context")
+
+
 def test_execute_ddr_sets_proxy_env_var_to_proxy_pem_basename(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

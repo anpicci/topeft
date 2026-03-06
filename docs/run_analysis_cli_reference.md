@@ -35,7 +35,7 @@ of truth.
 | `--outname`, `-o` | `outname` | string | `plotsTopEFT` | Output filename stem. |
 | `--outpath`, `-p` | `outpath` | string | `histos` | Output directory. |
 | `--treename` | `treename` | string | `Events` | Input tree name. |
-| `--metadata` | `metadata` | optional string | `None` | CLI metadata path. Forbidden when `--options` is supplied. |
+| `--metadata` | `metadata` | optional string | `None` | CLI metadata path. Use `analysis/metadata/metadata.yml` for the standard bundle. Relative paths are repo-root-relative and may not resolve outside the repo root; absolute paths remain allowed. Forbidden when `--options` is supplied. |
 | `--scenario` (repeatable) | `scenarios` | list of strings | `TOP_22_006` when unset | Scenario names resolved through `metadata_authority`. |
 | `--allow-partial-channel-groups` | `allow_partial_channel_groups` | bool | `false` | When true, missing scenario channel groups do not fail run construction. |
 | `--skip-sr` | `skip_sr` | bool | `false` | Skip signal-region channels. |

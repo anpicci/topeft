@@ -24,6 +24,13 @@ is packaged with the module so that quickstarts, CLI runs, and YAML-driven
 profiles all agree on the same catalogue of tasks.  The table below summarises
 the metadata sections that feed directly into the planners:
 
+For standard runs, use ``analysis/metadata/metadata.yml`` exactly as written.
+Relative ``--metadata`` values (and YAML ``metadata`` keys) are resolved from
+the repository root, not from the current working directory. Paths that resolve
+outside the ``topeft`` repo root via ``..`` are rejected; use the canonical
+repo-root-relative path above or pass an absolute path when you really intend to
+load a different file.
+
 | Metadata key | Controls | Processor impact |
 | --- | --- | --- |
 | ``channels.groups[].regions`` | Channel labels, subchannels, jet bins, tags, and application assignments. | Guides :class:`ChannelPlanner` when enumerating signal/control regions and annotating each Coffea task. |

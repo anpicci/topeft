@@ -57,6 +57,25 @@ def test_main_metadata_error_uses_exit_code_2_and_writes_marker(
     assert marker_path.read_text(encoding="utf-8").strip() == "2"
 
 
+def test_main_metadata_traversal_error_uses_exit_code_2_and_shows_canonical_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    monkeypatch.setattr(run_analysis, "_verify_numpy_abi", lambda: None)
+    monkeypatch.setattr(run_analysis.metadata_authority, "get_repo_root", lambda: repo_root)
+
+    with pytest.raises(SystemExit) as excinfo:
+        run_analysis.main(["--metadata", "../outside.yml"])
+
+    captured = capsys.readouterr()
+    assert excinfo.value.code == 2
+    assert "Metadata path resolves outside the topeft repo root" in captured.err
+    assert "analysis/metadata/metadata.yml" in captured.err
+
+
 def test_main_keyboard_interrupt_maps_to_130_and_writes_marker(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
