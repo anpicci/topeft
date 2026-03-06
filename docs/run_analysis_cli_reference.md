@@ -21,11 +21,9 @@ of truth.
 
 ## CLI to YAML mapping
 
-Keys marked with `*` are accepted aliases for backward compatibility in YAML.
-
 | CLI flag(s) | YAML key(s) | Type after coercion | Default | Notes |
 | --- | --- | --- | --- | --- |
-| `jsonFiles` (positional) | `jsonFiles`, `json_files`* | list of strings | `[]` | Accepts one path, comma-separated string, or YAML list. |
+| `jsonFiles` (positional) | `jsonFiles` | list of strings | `[]` | Accepts one path, comma-separated string, or YAML list. |
 | `--options` | n/a (selector) | `path[:profile]` string | unset | Selects options file/profile. Not a `RunConfig` value by itself. |
 | `--prefix`, `-r` | `prefix` | string | `""` | Prefix/redirector applied during sample loading. |
 | `--executor`, `-x` | `executor` | string | `taskvine` | Supported: `taskvine`, `futures`, `iterative`. |
@@ -37,7 +35,7 @@ Keys marked with `*` are accepted aliases for backward compatibility in YAML.
 | `--outname`, `-o` | `outname` | string | `plotsTopEFT` | Output filename stem. |
 | `--outpath`, `-p` | `outpath` | string | `histos` | Output directory. |
 | `--treename` | `treename` | string | `Events` | Input tree name. |
-| `--metadata` | `metadata`, `metadata_path`* | optional string | `None` | CLI metadata path. Forbidden when `--options` is supplied. |
+| `--metadata` | `metadata` | optional string | `None` | CLI metadata path. Forbidden when `--options` is supplied. |
 | `--scenario` (repeatable) | `scenarios` | list of strings | `TOP_22_006` when unset | Scenario names resolved through `metadata_authority`. |
 | `--allow-partial-channel-groups` | `allow_partial_channel_groups` | bool | `false` | When true, missing scenario channel groups do not fail run construction. |
 | `--skip-sr` | `skip_sr` | bool | `false` | Skip signal-region channels. |
@@ -54,9 +52,9 @@ Keys marked with `*` are accepted aliases for backward compatibility in YAML.
 | `--do-renormfact-envelope` | `do_renormfact_envelope` | bool | `false` | Requires `do_np` and `do_systs`. |
 | `--port` | `port` | string | `9123-9130` | TaskVine manager port/range. |
 | `--no-port-negotiation` | `negotiate_manager_port` | bool | negotiation enabled (`true`) | Flag disables fallback port negotiation. |
-| `--manager-name` | `manager_name` | optional string | `None` | Explicit TaskVine manager name. |
-| `--manager-name-template` | `manager_name_template` | optional string | `None` | Template with `{pid}` support. |
-| `--scratch-dir` | `scratch_dir`, `scratch_path`* | optional string | `None` | Shared staging directory for distributed execution. |
+| `--taskvine-manager-name` | `taskvine_manager_name` | optional string | `None` | Explicit TaskVine manager/project name. |
+| `--taskvine-manager-name-template` | `taskvine_manager_name_template` | optional string | `None` | Template with `{pid}` support for per-run materialization. |
+| `--scratch-dir` | `scratch_dir` | optional string | `None` | Shared staging directory for distributed execution. |
 | `--resource-monitor` | `resource_monitor` | optional string | `measure` | TaskVine resource monitor mode. |
 | `--resources-mode` | `resources_mode` | optional string | `auto` | TaskVine resource mode. |
 | `--environment-file` | `environment_file` | optional string | `cached` | Remote environment tarball selection (`cached`, `auto`, `none`, or path). |
@@ -77,7 +75,7 @@ Keys marked with `*` are accepted aliases for backward compatibility in YAML.
 | `--ddr-max-task-retries` | `ddr_max_task_retries` | optional int | `None` | Maximum DDR task retries. |
 | `--ddr-results-directory` | `ddr_results_directory` | optional string | `None` | Override DDR results directory path. |
 | `--ddr-verbose`, `--no-ddr-verbose` | `ddr_verbose` | optional bool | `None` | DDR-layer verbose logging toggle. |
-| `--ddr-x509-proxy` | `ddr_x509_proxy` | optional string | `None` | Proxy source path; staged as `proxy.pem` for workers. |
+| `--taskvine-proxy-path` | `taskvine_proxy_path` | optional string | `None` | Proxy source path; staged as `proxy.pem` for workers. |
 | `--ddr-preprocessed-data` | `ddr_preprocessed_data` | optional string | `None` | Reuse preprocess artifact and skip preprocess step. |
 | `--ddr-save-preprocess` | `ddr_save_preprocess` | optional string | `None` | Save preprocess artifact after preprocess step. |
 | `--ddr-auto-save-preprocess`, `--no-ddr-auto-save-preprocess` | `ddr_auto_save_preprocess` | bool | `true` | Auto-save preprocess artifact when reuse is not requested. |

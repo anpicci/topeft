@@ -11,7 +11,7 @@
 #   - Futures/iterative debug profiles may still produce tuple-keyed outputs.
 #   - Preprocess artifacts default to taskvine-results/ddr_preprocessed_data.json
 #     unless overridden in YAML.
-#   - If ddr_x509_proxy is configured, the workflow stages proxy.pem and sets
+#   - If taskvine_proxy_path is configured, the workflow stages proxy.pem and sets
 #     X509_USER_PROXY=proxy.pem for worker tasks.
 
 set -euo pipefail

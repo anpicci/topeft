@@ -85,7 +85,7 @@ profiles:
 
 The [`run_analysis.py` CLI and YAML reference](run_analysis_cli_reference.md)
 documents every distributed-execution flag, including helper attributes such as
-`manager_name_template`, `environment_file`, and `resources_mode`. Worker
+`taskvine_manager_name_template`, `environment_file`, and `resources_mode`. Worker
 standard output is forwarded to the TaskVine manager logs by default—override
 this behaviour with `--no-taskvine-print-stdout` (or the YAML key
 `taskvine_print_stdout: false`) when you only want the structured processor logs
@@ -95,7 +95,7 @@ to reach the terminal.
 
 When the workflow starts it advertises a manager name of the form
 `<user>-taskvine-coffea` (or a custom value passed through
-`--manager-name`).  Launch a worker pool that matches this identifier and stages
+`--taskvine-manager-name`). Launch a worker pool that matches this identifier and stages
 the tarball produced in step 2:
 
 ```bash

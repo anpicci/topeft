@@ -15,8 +15,8 @@ ad-hoc environment variables to first-class `run_analysis.py` configuration.
 | CLI flag | YAML key | Default | Effect |
 | --- | --- | --- | --- |
 | `--taskvine-manager-name` | `taskvine_manager_name` | unset | Overrides TaskVine manager/project name. |
-| `--taskvine-manager-name-template` | `taskvine_manager_name_template` | auto (`<manager>-{pid}`) when manager is set | Overrides TaskVine manager template. |
-| `--taskvine-proxy-path` (alias of `--ddr-x509-proxy`) | `taskvine_proxy_path` | unset | Stages proxy as `proxy.pem` and sets worker `X509_USER_PROXY=proxy.pem`. |
+| `--taskvine-manager-name-template` | `taskvine_manager_name_template` | auto (`<manager>-{pid}`) when manager is set | Controls manager-name materialization per run (supports `{pid}`). |
+| `--taskvine-proxy-path` | `taskvine_proxy_path` | unset | Stages proxy as `proxy.pem` and sets worker `X509_USER_PROXY=proxy.pem`. |
 | `--ddr-debug` / `--no-ddr-debug` | `ddr_debug` | `false` | Enables deterministic DDR debug markers in workflow logs. |
 | `--ddr-worker-probe-enabled` / `--no-ddr-worker-probe-enabled` | `ddr_worker_probe_enabled` | `false` | Runs worker-side cert/xrootd probe before DDR preprocess. |
 | `--ddr-worker-probe-url` | `ddr_worker_probe_url` | built-in test URL | ROOT URL used by the worker probe task. |
@@ -24,6 +24,20 @@ ad-hoc environment variables to first-class `run_analysis.py` configuration.
 | `--driver-log-path` | `driver_log_path` | unset | Mirrors driver stdout/stderr into a logfile. |
 | `--exit-marker-path` | `exit_marker_path` | unset | Writes final driver exit code to a marker file. |
 | `--exit-debug` / `--no-exit-debug` | `exit_debug` | `false` | Emits final `driver_status=<code>` line to stderr. |
+
+## Manager Name vs Template
+
+- `taskvine_manager_name` / `--taskvine-manager-name`:
+  sets the base TaskVine project/manager name (for example
+  `apiccine-taskvine-proxydebug9-std-fullrun`).
+- `taskvine_manager_name_template` / `--taskvine-manager-name-template`:
+  controls how that base is materialized per run. The template can include
+  placeholders like `{pid}` to avoid collisions across concurrent runs.
+
+Typical behavior:
+
+- Name only: manager template defaults to `<name>-{pid}`.
+- Name + template: template wins and controls final manager identity.
 
 ## YAML-only Example (recommended with `full_run.sh`)
 
@@ -80,3 +94,17 @@ python analysis/topeft_run2/run_analysis.py \
 Use either:
 - YAML-only (`--options ...`), or
 - CLI-only (no `--options`).
+
+## Exit-Code Policy
+
+`run_analysis.py` uses this explicit policy:
+
+- `0`: workflow completed and output write succeeded.
+- `2`: argument/config/options errors (argparse errors, YAML parse/validation
+  errors, and options/CLI conflict errors).
+- `130`: `KeyboardInterrupt`.
+- `1`: all other runtime failures.
+
+`exit_marker_path` writes the selected code when configured, and `exit_debug`
+emits `driver_status=<code>` on stderr. Runtime failures are not swallowed, so
+their full Python stacktraces remain visible.

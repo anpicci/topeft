@@ -204,8 +204,8 @@ EXECUTOR_CLI = ExecutorCLIHelper(
         include_retry_wait=True,
     ),
     taskvine_spec=TaskVineArgumentSpec(
-        include_manager_name=True,
-        include_manager_template=True,
+        include_manager_name=False,
+        include_manager_template=False,
         include_scratch_dir=True,
         include_resource_monitor=True,
         include_resources_mode=True,
@@ -530,18 +530,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Enable/disable verbose DDR logging at the CoffeaDynamicDataReduction layer.",
     )
     parser.add_argument(
-        "--ddr-x509-proxy",
-        default=None,
-        help=(
-            "Path to an x509 proxy file used by TaskVine DDR workers. "
-            "When set, run_analysis stages it as proxy.pem."
-        ),
-    )
-    parser.add_argument(
         "--taskvine-proxy-path",
         default=None,
         help=(
-            "Alias for --ddr-x509-proxy. "
+            "Path to an x509 proxy file used by TaskVine DDR workers. "
+            "When set, run_analysis stages it as proxy.pem. "
             "YAML key: taskvine_proxy_path."
         ),
     )
@@ -803,77 +796,74 @@ def main(argv: Sequence[str] | None = None) -> int:
     driver_log_path: str | None = None
     exit_debug: bool = False
     status_code = 1
-    _verify_numpy_abi()
-
-    parser = build_parser()
-    parser_defaults = parser.parse_args([])
-    if argv is None:
-        argv_list = list(sys.argv[1:])
-    else:
-        argv_list = list(argv)
-    enforce_options_single_source(parser, argv_list, options_allowlist(parser))
-
-    args = parser.parse_args(argv_list)
-
-    executor_default = _normalize_executor_name(getattr(parser_defaults, "executor", ""))
-    if not executor_default:
-        executor_default = "taskvine"
-    executor_choice = _normalize_executor_name(getattr(args, "executor", ""))
-    if not executor_choice:
-        executor_choice = executor_default
-    setattr(args, "executor", executor_choice)
-
-    config_builder = RunConfigBuilder(parser_defaults)
     try:
-        config = config_builder.build(
-            args,
-            getattr(args, "options", None),
-        )
-    except (ValueError, TypeError, KeyError) as exc:
-        parser.error(str(exc))
+        _verify_numpy_abi()
 
-    marker_path = config.exit_marker_path
-    driver_log_path = config.driver_log_path
-    exit_debug = bool(config.exit_debug)
-
-    metadata_cli_value = getattr(args, "metadata", None)
-    if config.options_path:
-        metadata_cli_value = None
-    try:
-        scenario_name, metadata_bundle, metadata_provenance = _apply_scenario_metadata_defaults(
-            config,
-            metadata_cli_value,
-        )
-    except (ValueError, FileNotFoundError, KeyError, TypeError) as exc:
-        message = str(exc)
-        if message:
-            logger.error("%s", message)
+        parser = build_parser()
+        parser_defaults = parser.parse_args([])
+        if argv is None:
+            argv_list = list(sys.argv[1:])
         else:
-            logger.error("Failed to resolve metadata scenario")
-        sys.exit(1)
+            argv_list = list(argv)
+        enforce_options_single_source(parser, argv_list, options_allowlist(parser))
 
-    current_executor = _normalize_executor_name(getattr(config, "executor", "")) or executor_choice
-    _ensure_supported_executor(current_executor)
-    config.executor = current_executor
+        args = parser.parse_args(argv_list)
 
-    # Currently configures logging for the driver process; futures workers keep
-    # their default handlers until we plumb a per-worker hook.
-    try:
-        effective_log_level = configure_topeft_logging(
-            config.log_level,
-            executor=config.executor,
-            allow_dev_debug=True,
+        executor_default = _normalize_executor_name(getattr(parser_defaults, "executor", ""))
+        if not executor_default:
+            executor_default = "taskvine"
+        executor_choice = _normalize_executor_name(getattr(args, "executor", ""))
+        if not executor_choice:
+            executor_choice = executor_default
+        setattr(args, "executor", executor_choice)
+
+        config_builder = RunConfigBuilder(parser_defaults)
+        try:
+            config = config_builder.build(
+                args,
+                getattr(args, "options", None),
+            )
+        except (ValueError, TypeError, KeyError) as exc:
+            parser.error(str(exc))
+
+        marker_path = config.exit_marker_path
+        driver_log_path = config.driver_log_path
+        exit_debug = bool(config.exit_debug)
+
+        metadata_cli_value = getattr(args, "metadata", None)
+        if config.options_path:
+            metadata_cli_value = None
+        try:
+            scenario_name, metadata_bundle, metadata_provenance = _apply_scenario_metadata_defaults(
+                config,
+                metadata_cli_value,
+            )
+        except (ValueError, FileNotFoundError, KeyError, TypeError) as exc:
+            message = str(exc) or "Failed to resolve metadata scenario"
+            parser.error(message)
+
+        current_executor = _normalize_executor_name(getattr(config, "executor", "")) or executor_choice
+        _ensure_supported_executor(current_executor)
+        config.executor = current_executor
+
+        # Currently configures logging for the driver process; futures workers keep
+        # their default handlers until we plumb a per-worker hook.
+        try:
+            effective_log_level = configure_topeft_logging(
+                config.log_level,
+                executor=config.executor,
+                allow_dev_debug=True,
+            )
+        except ValueError as exc:
+            parser.error(str(exc))
+
+        logger.info(
+            "Using scenario '%s' with metadata '%s' (source: %s)",
+            scenario_name,
+            metadata_bundle.metadata_path,
+            metadata_provenance,
         )
-    except ValueError as exc:
-        parser.error(str(exc))
 
-    logger.info(
-        "Using scenario '%s' with metadata '%s' (source: %s)",
-        scenario_name,
-        metadata_bundle.metadata_path,
-        metadata_provenance,
-    )
-    try:
         with _driver_log_context(driver_log_path):
             _log_taskvine_ddr_knob_summary(config)
             logger.info(
@@ -907,6 +897,17 @@ def main(argv: Sequence[str] | None = None) -> int:
             run_workflow(config, metadata_bundle=metadata_bundle)
         status_code = 0
         return status_code
+    except KeyboardInterrupt:
+        status_code = 130
+        raise
+    except SystemExit as exc:
+        if isinstance(exc.code, int):
+            status_code = int(exc.code)
+        elif exc.code is None:
+            status_code = 0
+        else:
+            status_code = 1
+        raise
     finally:
         _write_exit_marker(marker_path, status_code)
         _emit_exit_debug(exit_debug, status_code)

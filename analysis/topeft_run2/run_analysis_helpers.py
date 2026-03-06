@@ -42,6 +42,11 @@ DEFAULT_WEIGHT_VARIATIONS = [
 
 VALID_LOG_LEVELS = {"NONE", "INFO", "WARNING", "ERROR", "DEBUG"}
 VALID_LOG_LEVELS_DISPLAY = "none, info, warning, error, debug"
+LEGACY_TASKVINE_DDR_KNOB_KEYS: Dict[str, str] = {
+    "manager_name": "taskvine_manager_name",
+    "manager_name_template": "taskvine_manager_name_template",
+    "ddr_x509_proxy": "taskvine_proxy_path",
+}
 
 def normalize_sequence(value: Any) -> List[str]:
     """Flatten ``value`` into a list of strings."""
@@ -643,12 +648,7 @@ class RunConfigBuilder:
                 "negotiate_manager_port",
                 coerce_bool,
             ),
-            "manager_name": ("manager_name", _coerce_optional_string),
             "taskvine_manager_name": ("manager_name", _coerce_optional_string),
-            "manager_name_template": (
-                "manager_name_template",
-                _coerce_optional_string,
-            ),
             "taskvine_manager_name_template": (
                 "manager_name_template",
                 _coerce_optional_string,
@@ -677,7 +677,6 @@ class RunConfigBuilder:
                 "ddr_step_size",
                 lambda v: coerce_int(v, allow_none=True),
             ),
-            "ddr_x509_proxy": ("ddr_x509_proxy", _coerce_optional_string),
             "ddr_preprocessed_data": ("ddr_preprocessed_data", _coerce_optional_string),
             "ddr_save_preprocess": ("ddr_save_preprocess", _coerce_optional_string),
             "ddr_auto_save_preprocess": (
@@ -705,7 +704,6 @@ class RunConfigBuilder:
                 _coerce_optional_string,
             ),
             "ddr_verbose": ("ddr_verbose", coerce_bool),
-            "ddr_x509_proxy": ("ddr_x509_proxy", _coerce_optional_string),
             "taskvine_proxy_path": ("ddr_x509_proxy", _coerce_optional_string),
             "ddr_environment_variables": (
                 "ddr_environment_variables",
@@ -763,6 +761,11 @@ class RunConfigBuilder:
 
         def _apply_source(source: Mapping[str, Any]):
             for key, value in source.items():
+                if key in LEGACY_TASKVINE_DDR_KNOB_KEYS:
+                    raise KeyError(
+                        "Unsupported legacy options key "
+                        f"'{key}'. Use '{LEGACY_TASKVINE_DDR_KNOB_KEYS[key]}' instead."
+                    )
                 if key not in field_specs:
                     continue
                 field_name, coercer = field_specs[key]
@@ -871,9 +874,7 @@ class RunConfigBuilder:
                 "ecut": "ecut",
                 "port": "port",
                 "negotiate_manager_port": "negotiate_manager_port",
-                "manager_name": "manager_name",
                 "taskvine_manager_name": "taskvine_manager_name",
-                "manager_name_template": "manager_name_template",
                 "taskvine_manager_name_template": "taskvine_manager_name_template",
                 "scratch_dir": "scratch_dir",
                 "resource_monitor": "resource_monitor",
@@ -892,7 +893,6 @@ class RunConfigBuilder:
                 "ddr_max_task_retries": "ddr_max_task_retries",
                 "ddr_results_directory": "ddr_results_directory",
                 "ddr_verbose": "ddr_verbose",
-                "ddr_x509_proxy": "ddr_x509_proxy",
                 "taskvine_proxy_path": "taskvine_proxy_path",
                 "ddr_preprocessed_data": "ddr_preprocessed_data",
                 "ddr_save_preprocess": "ddr_save_preprocess",

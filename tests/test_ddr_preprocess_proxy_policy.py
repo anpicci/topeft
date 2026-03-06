@@ -171,7 +171,7 @@ def test_execute_ddr_sets_proxy_env_var_to_proxy_pem_basename(
     monkeypatch.setattr(
         workflow,
         "_create_ddr_manager",
-        lambda _context: _DummyManager(),
+        lambda _context, **_kwargs: _DummyManager(),
     )
     monkeypatch.setattr(
         workflow_module,
@@ -278,7 +278,7 @@ def test_execute_ddr_overrides_absolute_proxy_env_to_sandbox_proxy(
     monkeypatch.setattr(
         workflow,
         "_create_ddr_manager",
-        lambda _context: _DummyManager(),
+        lambda _context, **_kwargs: _DummyManager(),
     )
     monkeypatch.setattr(
         workflow_module,
@@ -383,7 +383,7 @@ def test_execute_ddr_runs_worker_probe_when_enabled(
     monkeypatch.setattr(
         workflow,
         "_create_ddr_manager",
-        lambda _context: _DummyManager(),
+        lambda _context, **_kwargs: _DummyManager(),
     )
     monkeypatch.setattr(
         workflow_module,
@@ -435,20 +435,17 @@ def test_execute_ddr_runs_worker_probe_when_enabled(
         "run_ddr",
         _fake_run_ddr,
     )
-    try:
-        workflow._execute_ddr(
-            histogram_plan=SimpleNamespace(tasks=()),
-            samplesdict={},
-            flist={},
-            golden_jsons={},
-            ecut_threshold=None,
-            analysis_processor_module=SimpleNamespace(),
-            processor_file=processor_file,
-            processor_module_name="analysis_processor",
-            coffea_processor_module=SimpleNamespace(),
-        )
-    finally:
-        workflow_module._set_ddr_debug_enabled(False)
+    workflow._execute_ddr(
+        histogram_plan=SimpleNamespace(tasks=()),
+        samplesdict={},
+        flist={},
+        golden_jsons={},
+        ecut_threshold=None,
+        analysis_processor_module=SimpleNamespace(),
+        processor_file=processor_file,
+        processor_module_name="analysis_processor",
+        coffea_processor_module=SimpleNamespace(),
+    )
 
     assert "extra_files" in captured_probe
     assert any(str(path).endswith("proxy.pem") for path in captured_probe["extra_files"])
@@ -504,7 +501,7 @@ def test_execute_ddr_preserves_original_error_when_manager_has_no_shutdown(
     monkeypatch.setattr(
         workflow,
         "_create_ddr_manager",
-        lambda _context: _DummyManagerNoShutdown(),
+        lambda _context, **_kwargs: _DummyManagerNoShutdown(),
     )
     monkeypatch.setattr(
         workflow_module,

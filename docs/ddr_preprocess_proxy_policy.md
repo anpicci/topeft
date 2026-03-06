@@ -5,7 +5,7 @@ and proxy handling.
 
 ## Proxy handling policy
 
-When `ddr_x509_proxy` is configured:
+When `taskvine_proxy_path` is configured:
 
 1. Workflow validates source path exists/is readable.
 2. Proxy is copied into TaskVine staging as exactly `proxy.pem`.

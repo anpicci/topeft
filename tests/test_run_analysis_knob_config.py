@@ -99,3 +99,38 @@ def test_options_mode_rejects_new_knob_flags(capsys: pytest.CaptureFixture[str])
     captured = capsys.readouterr()
     assert "--ddr-debug" in captured.err
     assert "--options" in captured.err
+
+
+@pytest.mark.parametrize(
+    ("legacy_key", "replacement_key"),
+    [
+        ("manager_name", "taskvine_manager_name"),
+        ("manager_name_template", "taskvine_manager_name_template"),
+        ("ddr_x509_proxy", "taskvine_proxy_path"),
+    ],
+)
+def test_yaml_legacy_knobs_are_rejected(
+    tmp_path: Path,
+    legacy_key: str,
+    replacement_key: str,
+) -> None:
+    options_file = tmp_path / "legacy_knob.yml"
+    options_file.write_text(
+        "\n".join(
+            [
+                "defaults:",
+                f"  {legacy_key}: /tmp/legacy-value",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    parser = run_analysis.build_parser()
+    defaults = parser.parse_args([])
+    args = parser.parse_args(["--options", str(options_file)])
+
+    with pytest.raises(KeyError) as excinfo:
+        RunConfigBuilder(defaults).build(args, getattr(args, "options", None))
+    assert legacy_key in str(excinfo.value)
+    assert replacement_key in str(excinfo.value)
