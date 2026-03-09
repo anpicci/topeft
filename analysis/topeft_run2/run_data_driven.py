@@ -99,6 +99,14 @@ def _build_argument_parser() -> argparse.ArgumentParser:
         default=20,
         help="How many tracemalloc entries to print per stage when --mem-tracemalloc is enabled.",
     )
+    parser.add_argument(
+        "--iterator-mode",
+        action="store_true",
+        help=(
+            "Use streaming iterator mode: process histograms incrementally and "
+            "serialize with a streaming pickle writer."
+        ),
+    )
     return parser
 
 
@@ -302,12 +310,18 @@ def _maybe_emit_heartbeat(
     return last_heartbeat, False
 
 
+def _envelope_single_histogram(key: str, histo: Any) -> Any:
+    enveloped = get_renormfact_envelope({key: histo}, verbose=False)
+    return enveloped[key]
+
+
 def _finalize_histograms(
     input_pkl: str,
     output_pkl: str,
     *,
     only_flips: bool,
     apply_envelope: bool,
+    iterator_mode: bool,
     heartbeat_seconds: float,
     quiet: bool,
     mem_report: bool,
@@ -325,55 +339,88 @@ def _finalize_histograms(
     try:
         memory_reporter.mark("start")
         memory_reporter.mark("before DataDrivenProducer(...)")
-        ddp = DataDrivenProducer(input_pkl, output_pkl)
+        ddp = DataDrivenProducer(input_pkl, output_pkl, iterator_mode=iterator_mode)
         memory_reporter.mark("after DataDrivenProducer(...)", include_top=mem_tracemalloc)
-
-        histograms = ddp.getDataDrivenHistogram()
-        del ddp
-        memory_reporter.mark("after getDataDrivenHistogram()")
+        os.makedirs(os.path.dirname(output_pkl) or ".", exist_ok=True)
 
         start_time = time.monotonic()
         last_heartbeat = start_time
         processed = 0
-        filtered: Optional[Dict[str, Any]] = {} if only_flips else None
 
-        for key, histo in histograms.items():
-            processed += 1
-            last_heartbeat, emitted_heartbeat = _maybe_emit_heartbeat(
-                count=processed,
-                start_time=start_time,
-                last_heartbeat=last_heartbeat,
-                heartbeat_seconds=heartbeat_seconds,
-                quiet=quiet,
-            )
+        if iterator_mode:
+            if apply_envelope:
+                memory_reporter.mark(
+                    "iterator mode: envelope is applied per histogram",
+                    include_top=mem_tracemalloc,
+                )
+
+            def _iter_output_items():
+                nonlocal processed, last_heartbeat
+                for key, histo in ddp.iter_data_driven_histograms():
+                    processed += 1
+                    last_heartbeat, emitted_heartbeat = _maybe_emit_heartbeat(
+                        count=processed,
+                        start_time=start_time,
+                        last_heartbeat=last_heartbeat,
+                        heartbeat_seconds=heartbeat_seconds,
+                        quiet=quiet,
+                    )
+
+                    working_histo = _filter_to_flips(histo) if only_flips else histo
+                    if apply_envelope:
+                        working_histo = _envelope_single_histogram(key, working_histo)
+
+                    if emitted_heartbeat:
+                        memory_reporter.mark(f"processed {processed} histograms")
+
+                    yield key, working_histo
+
+            memory_reporter.mark("before dump_dict_streaming()", include_top=mem_tracemalloc)
+            utils.dump_dict_streaming(output_pkl, _iter_output_items())
+            memory_reporter.mark("after dump_dict_streaming()")
+        else:
+            histograms = ddp.getDataDrivenHistogram()
+            memory_reporter.mark("after getDataDrivenHistogram()")
+
+            filtered: Optional[Dict[str, Any]] = {} if only_flips else None
+            for key, histo in histograms.items():
+                processed += 1
+                last_heartbeat, emitted_heartbeat = _maybe_emit_heartbeat(
+                    count=processed,
+                    start_time=start_time,
+                    last_heartbeat=last_heartbeat,
+                    heartbeat_seconds=heartbeat_seconds,
+                    quiet=quiet,
+                )
+
+                if only_flips:
+                    assert filtered is not None
+                    filtered[key] = _filter_to_flips(histo)
+
+                if emitted_heartbeat:
+                    memory_reporter.mark(f"processed {processed} histograms")
 
             if only_flips:
                 assert filtered is not None
-                filtered[key] = _filter_to_flips(histo)
+                memory_reporter.mark("before only-flips replacement")
+                histograms = filtered
+                del filtered
+                memory_reporter.mark("after only-flips replacement")
 
-            if emitted_heartbeat:
-                memory_reporter.mark(f"processed {processed} histograms")
+            if apply_envelope:
+                memory_reporter.mark("before get_renormfact_envelope()", include_top=mem_tracemalloc)
+                histograms = get_renormfact_envelope(histograms, verbose=False)
+                memory_reporter.mark("after get_renormfact_envelope()", include_top=mem_tracemalloc)
+
+            memory_reporter.mark("before dump_to_pkl()", include_top=mem_tracemalloc)
+            utils.dump_to_pkl(output_pkl, histograms)
+            memory_reporter.mark("after dump_to_pkl()")
 
         if not quiet and processed:
             elapsed = time.monotonic() - start_time
             print(f"[run_data_driven] Finalized {processed} histograms in {elapsed:.1f}s.")
 
-        if only_flips:
-            assert filtered is not None
-            memory_reporter.mark("before only-flips replacement")
-            histograms = filtered
-            del filtered
-            memory_reporter.mark("after only-flips replacement")
-
-        if apply_envelope:
-            memory_reporter.mark("before get_renormfact_envelope()", include_top=mem_tracemalloc)
-            histograms = get_renormfact_envelope(histograms)
-            memory_reporter.mark("after get_renormfact_envelope()", include_top=mem_tracemalloc)
-
-        os.makedirs(os.path.dirname(output_pkl) or ".", exist_ok=True)
-        memory_reporter.mark("before dump_to_pkl()", include_top=mem_tracemalloc)
-        utils.dump_to_pkl(output_pkl, histograms)
-        memory_reporter.mark("after dump_to_pkl()")
+        del ddp
     finally:
         memory_reporter.stop()
 
@@ -410,6 +457,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         output_pkl,
         only_flips=args.only_flips,
         apply_envelope=args.apply_renormfact_envelope,
+        iterator_mode=args.iterator_mode,
         heartbeat_seconds=args.heartbeat_seconds,
         quiet=args.quiet,
         mem_report=args.mem_report,
