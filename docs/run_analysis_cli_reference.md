@@ -7,6 +7,31 @@ The single metadata/scenario authority is
 `analysis/topeft_run2/metadata_authority.py`, with canonical scenario
 definitions in `analysis/metadata/run2_scenarios.yaml`.
 
+## Canonical invocation
+
+`run_analysis` is **not** an installed shell entrypoint in this workflow.
+Invoke the script through Python:
+
+```bash
+# From the topeft repository root
+"$PYTHON_ENV" analysis/topeft_run2/run_analysis.py --help
+```
+
+```bash
+# From analysis/topeft_run2
+cd analysis/topeft_run2
+"$PYTHON_ENV" run_analysis.py --help
+```
+
+Do not rely on `run_analysis --help`; that command is not the canonical entry.
+
+## Execution modes: YAML-only vs CLI-only
+
+- YAML-only mode: pass `--options path.yml[:profile]` and put all runtime knobs
+  (including `metadata`, `executor`, and TaskVine settings) in YAML.
+- CLI-only mode: omit `--options` and pass knobs directly on the command line.
+- No mixing: with `--options` present, other config flags are rejected.
+
 ## Options exclusivity rule
 
 When `--options <path[:profile]>` is present, options YAML is the single source
@@ -18,6 +43,16 @@ of truth.
   `--executor`, `--chunksize`, `--scenario`, `--pretend`, etc.
 - Wrapper note: `analysis/topeft_run2/full_run.sh` is stricter and accepts only
   `--options` and `--help`.
+
+## Metadata path authority
+
+Use `analysis/metadata/metadata.yml` for standard runs.
+
+- Relative metadata paths are resolved from the repository root.
+- Relative paths that resolve outside the repo root (for example via `..`) are
+  rejected.
+- Absolute metadata paths are allowed when you intentionally use an external
+  file.
 
 ## CLI to YAML mapping
 
@@ -110,6 +145,11 @@ value, `run_analysis.py` now follows one deterministic path:
 When `executor=taskvine`, explicit `environment_file=none` (including
 `--no-environment-file`) is rejected with exit code `2`. TaskVine workers
 require a Python environment tarball.
+
+Supported explicit TaskVine values remain:
+- Tarball path
+- `cached`
+- `auto`
 
 For reproducibility across repeated runs, explicitly setting
 `environment_file` in CLI or YAML remains recommended.

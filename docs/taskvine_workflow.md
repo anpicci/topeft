@@ -87,6 +87,22 @@ profiles:
     executor: taskvine
 ```
 
+Run invocations should call `run_analysis.py` through Python; `run_analysis`
+itself is not an installed entrypoint:
+
+```bash
+"$PYTHON_ENV" analysis/topeft_run2/run_analysis.py --help
+```
+
+```bash
+cd analysis/topeft_run2
+"$PYTHON_ENV" run_analysis.py --help
+```
+
+When launching via YAML (`--options path.yml[:profile]`), set metadata inside
+the YAML profile using the canonical repo-root-relative path:
+`analysis/metadata/metadata.yml`.
+
 The [`run_analysis.py` CLI and YAML reference](run_analysis_cli_reference.md)
 documents every distributed-execution flag, including helper attributes such as
 `taskvine_manager_name_template`, `environment_file`, and `resources_mode`. Worker

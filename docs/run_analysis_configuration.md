@@ -11,6 +11,25 @@ with the [Run configuration dataclasses and metadata overview](dataclasses_and_m
 If you only need a quick lookup of supported CLI flags and YAML keys, jump to
 the dedicated [`run_analysis.py` CLI and YAML reference](run_analysis_cli_reference.md).
 
+## Invocation quick reference
+
+`run_analysis` is not installed as a standalone shell command in this workflow.
+Use Python to launch `run_analysis.py`:
+
+```bash
+# from repo root
+"$PYTHON_ENV" analysis/topeft_run2/run_analysis.py --help
+```
+
+```bash
+# from analysis/topeft_run2
+cd analysis/topeft_run2
+"$PYTHON_ENV" run_analysis.py --help
+```
+
+For YAML-driven runs, keep execution options in `--options path.yml[:profile]`
+only; CLI-only runs should omit `--options` and pass flags directly.
+
 The guide follows the same YAML-first workflow presented in the quickstart
 examples (``docs/quickstart_run2.md`` and ``docs/quickstart_top22_006.md``).  The
 YAML options file is optional, but using it keeps custom runs reproducible and
