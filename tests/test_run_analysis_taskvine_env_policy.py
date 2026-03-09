@@ -84,6 +84,45 @@ def test_main_builds_taskvine_environment_when_missing(
     assert captured["config"].environment_file == "/tmp/auto-built-env.tar.gz"
 
 
+def test_main_rejects_taskvine_no_environment_file(
+    monkeypatch,
+    tmp_path: Path,
+    capsys,
+) -> None:
+    marker_path = tmp_path / "taskvine_no_environment_file.exit"
+    metadata_bundle = types.SimpleNamespace(metadata_path=tmp_path / "metadata.yml")
+
+    monkeypatch.setattr(run_analysis, "_verify_numpy_abi", lambda: None)
+    monkeypatch.setattr(
+        run_analysis,
+        "_apply_scenario_metadata_defaults",
+        lambda _config, _metadata_cli: ("TOP_22_006", metadata_bundle, "test"),
+    )
+    monkeypatch.setattr(
+        run_analysis,
+        "configure_topeft_logging",
+        lambda *_args, **_kwargs: "info",
+    )
+
+    status = run_analysis.main(
+        [
+            "--executor",
+            "taskvine",
+            "--no-environment-file",
+            "--exit-marker-path",
+            str(marker_path),
+            "--exit-debug",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert status == 2
+    assert marker_path.read_text(encoding="utf-8").strip() == "2"
+    assert "TaskVine requires an environment_file." in captured.err
+    assert "Leave environment_file unset/empty to auto-build" in captured.err
+    assert "driver_status=2" in captured.err
+
+
 def test_main_warns_for_taskvine_environment_file_but_keeps_value(
     monkeypatch,
     tmp_path: Path,

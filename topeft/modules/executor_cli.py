@@ -213,7 +213,8 @@ class ExecutorCLIHelper:
             "--environment-file",
             default=self._default_environment,
             help=(
-                "Environment tarball for distributed executors ('cached', 'auto', 'none', or path)."
+                "Environment tarball for distributed executors ('cached', 'auto', 'none', or path). "
+                "TaskVine in run_analysis.py rejects explicit 'none': leave unset to auto-build."
             ),
         )
         parser.add_argument(
@@ -221,7 +222,11 @@ class ExecutorCLIHelper:
             dest="environment_file",
             action="store_const",
             const="none",
-            help="Disable environment shipping (equivalent to --environment-file=none).",
+            help=(
+                "Disable environment shipping (equivalent to --environment-file=none). "
+                "Invalid with run_analysis.py --executor taskvine; leave unset to auto-build "
+                "or set a tarball path/cached/auto."
+            ),
         )
 
         if self._taskvine_spec.include_manager_name:

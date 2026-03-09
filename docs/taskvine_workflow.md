@@ -66,8 +66,12 @@ The returned path is exactly what the TaskVine executor passes via the
 update the dependencies so other analysts can reuse the same package.  For
 `executor=taskvine`, `run_analysis.py` now auto-builds a tarball whenever
 `environment_file` is unset/empty and logs both the build trigger and the final
-path.  You can still set `environment_file` explicitly (path, `cached`, `auto`,
-or `none`) for reproducibility and policy control.
+path.  You can still set `environment_file` explicitly (`path`, `cached`, or
+`auto`) for reproducibility and policy control.
+
+`environment_file=none` (including `--no-environment-file`) is not supported
+for TaskVine in `run_analysis.py`; the run fails fast with exit code `2`
+because workers require a Python environment tarball.
 
 ## 3. Enable TaskVine in the workflow configuration
 

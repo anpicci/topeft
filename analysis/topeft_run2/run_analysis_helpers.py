@@ -250,6 +250,21 @@ def coerce_environment_file(value: Any) -> Optional[str]:
     return result
 
 
+def environment_file_is_explicit_none(value: Any) -> bool:
+    """Return ``True`` when ``value`` explicitly disables env shipping."""
+
+    if isinstance(value, bool):
+        return value is False
+    if value is None:
+        return True
+    if isinstance(value, str):
+        stripped = value.strip()
+        if not stripped:
+            return False
+        return stripped.lower() in {"none", "null", "false", "0", "off", "disable", "disabled"}
+    return False
+
+
 def coerce_optional_float(value: Any) -> Optional[float]:
     """Return ``value`` as a float or ``None`` if unset."""
 
@@ -570,6 +585,7 @@ class RunConfig:
     log_level: Optional[str] = None
     log_tasks: bool = False
     environment_file: Optional[str] = None
+    environment_file_explicit_none: bool = False
     futures_status: Optional[bool] = None
     futures_tail_timeout: Optional[int] = None
     futures_memory: Optional[int] = None
@@ -771,6 +787,10 @@ class RunConfigBuilder:
                 field_name, coercer = field_specs[key]
                 coerced = coercer(value)
                 setattr(config, field_name, coerced)
+                if key == "environment_file":
+                    config.environment_file_explicit_none = environment_file_is_explicit_none(
+                        value
+                    )
 
         options_path: Optional[str] = None
         selected_profile: Optional[str] = None

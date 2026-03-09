@@ -58,7 +58,7 @@ of truth.
 | `--resource-monitor` | `resource_monitor` | optional string | `measure` | TaskVine resource monitor mode. |
 | `--resources-mode` | `resources_mode` | optional string | `auto` | TaskVine resource mode. |
 | `--environment-file` | `environment_file` | optional string | unset | Remote environment tarball selection (`cached`, `auto`, `none`, or path). For `executor=taskvine`, when this value is unset/empty the driver auto-builds a tarball and logs the resulting path before workflow launch. |
-| `--no-environment-file` | `environment_file` | optional string | n/a | Alias for `--environment-file none`. |
+| `--no-environment-file` | `environment_file` | optional string | n/a | Alias for `--environment-file none`. Invalid with `executor=taskvine` in `run_analysis.py`. |
 | `--taskvine-print-stdout`, `--no-taskvine-print-stdout` | `taskvine_print_stdout` | bool | `true` | Forward worker stdout to manager logs. |
 | `--futures-status`, `--no-futures-status` | `futures_status` | optional bool | `None` | Toggle futures progress status output. |
 | `--futures-tail-timeout` | `futures_tail_timeout` | optional int | `None` | Timeout for stalled futures tasks. |
@@ -106,6 +106,10 @@ value, `run_analysis.py` now follows one deterministic path:
 2. Build via the canonical `topeft.modules.remote_environment` helper.
 3. Log: `Built environment tarball at: <path>`
 4. Continue the run with `config.environment_file` set to that path.
+
+When `executor=taskvine`, explicit `environment_file=none` (including
+`--no-environment-file`) is rejected with exit code `2`. TaskVine workers
+require a Python environment tarball.
 
 For reproducibility across repeated runs, explicitly setting
 `environment_file` in CLI or YAML remains recommended.

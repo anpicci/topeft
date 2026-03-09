@@ -197,12 +197,20 @@ def _log_taskvine_ddr_knob_summary(config: RunConfig) -> None:
         logger.info("  %s=%s", key, value if value not in (None, "") else "<none>")
 
 
-def _environment_file_missing(value: str | None) -> bool:
+def _environment_file_is_unset_or_empty(value: str | None) -> bool:
     """Return ``True`` when ``value`` is unset/empty."""
 
     if value is None:
         return True
     return str(value).strip() == ""
+
+
+def _environment_file_is_explicit_none(value: str | None) -> bool:
+    """Return ``True`` when ``value`` explicitly disables env shipping."""
+
+    if value is None:
+        return False
+    return str(value).strip().lower() == "none"
 
 
 def ensure_taskvine_environment_file(
@@ -212,7 +220,18 @@ def ensure_taskvine_environment_file(
 ) -> str:
     """Ensure TaskVine runs have an environment tarball path."""
 
-    if not _environment_file_missing(config.environment_file):
+    if (
+        getattr(config, "environment_file_explicit_none", False)
+        or _environment_file_is_explicit_none(config.environment_file)
+    ):
+        raise TaskVineEnvironmentBuildError(
+            "TaskVine requires an environment_file. "
+            "'--environment-file none' and '--no-environment-file' are not supported "
+            "with executor=taskvine. Leave environment_file unset/empty to auto-build, "
+            "or set a tarball path, 'cached', or 'auto'."
+        )
+
+    if not _environment_file_is_unset_or_empty(config.environment_file):
         return str(config.environment_file)
 
     logger.info("TaskVine environment_file not set; building environment tarball...")
