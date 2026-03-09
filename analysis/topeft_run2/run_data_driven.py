@@ -374,9 +374,16 @@ def _finalize_histograms(
                         memory_reporter.mark(f"processed {processed} histograms")
 
                     yield key, working_histo
+                    del working_histo
+                    del histo
 
             memory_reporter.mark("before dump_dict_streaming()", include_top=mem_tracemalloc)
-            utils.dump_dict_streaming(output_pkl, _iter_output_items())
+            utils.dump_dict_streaming(
+                output_pkl,
+                _iter_output_items(),
+                protocol=3,
+                clear_memo_interval=1,
+            )
             memory_reporter.mark("after dump_dict_streaming()")
         else:
             histograms = ddp.getDataDrivenHistogram()

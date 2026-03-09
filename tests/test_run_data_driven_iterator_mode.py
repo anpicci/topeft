@@ -91,6 +91,7 @@ def test_iterator_mode_uses_streaming_writer(tmp_path, monkeypatch):
     def fake_dump_streaming(out_name, items, **_kwargs):
         payload = dict(items)
         captured["payload"] = payload
+        captured["kwargs"] = _kwargs
         _write_with_cloudpickle(out_name, payload)
 
     monkeypatch.setattr(run_data_driven.utils, "dump_dict_streaming", fake_dump_streaming)
@@ -115,6 +116,8 @@ def test_iterator_mode_uses_streaming_writer(tmp_path, monkeypatch):
     assert IteratorDummyProducer.get_calls == 0
     assert IteratorDummyProducer.iter_calls == 1
     assert "payload" in captured
+    assert captured["kwargs"].get("protocol") == 3
+    assert captured["kwargs"].get("clear_memo_interval") == 1
     result = _load_pkl(output_path)
     assert list(result["njets"].axes["process"]) == ["flipsUL18"]
 
