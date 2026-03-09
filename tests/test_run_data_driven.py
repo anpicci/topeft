@@ -34,23 +34,31 @@ class FakeHist:
 class DummyProducer:
     output_hist = {}
     calls = []
+    iter_calls = 0
 
-    def __init__(self, inputHist, outputName):
+    def __init__(self, inputHist, outputName, iterator_mode=False):
         self.inputHist = inputHist
         self.outputName = outputName
-        DummyProducer.calls.append((inputHist, outputName))
+        self.iterator_mode = iterator_mode
+        DummyProducer.calls.append((inputHist, outputName, iterator_mode))
 
     def getDataDrivenHistogram(self):
         return DummyProducer.output_hist
+
+    def iter_data_driven_histograms(self):
+        DummyProducer.iter_calls += 1
+        yield from DummyProducer.output_hist.items()
 
 
 @pytest.fixture(autouse=True)
 def clear_dummy_state():
     DummyProducer.calls.clear()
     DummyProducer.output_hist = {}
+    DummyProducer.iter_calls = 0
     yield
     DummyProducer.calls.clear()
     DummyProducer.output_hist = {}
+    DummyProducer.iter_calls = 0
 
 
 def _write_metadata(tmp_path: Path, *, input_path: Path, output_path: Path) -> Path:
@@ -83,7 +91,7 @@ def test_run_data_driven_from_metadata(tmp_path, monkeypatch):
 
     run_data_driven.main(["--metadata-json", str(metadata_path)])
 
-    assert DummyProducer.calls == [(str(input_path), str(output_path))]
+    assert DummyProducer.calls == [(str(input_path), str(output_path), False)]
     result = _load_pkl(output_path)
     assert list(result["njets"].axes["process"]) == ["flipsUL17"]
 
@@ -101,7 +109,7 @@ def test_run_data_driven_only_flips_and_envelope(tmp_path, monkeypatch):
 
     envelope_calls = {}
 
-    def fake_envelope(hist_dict):
+    def fake_envelope(hist_dict, **_kwargs):
         envelope_calls["value"] = hist_dict
         return hist_dict
 
@@ -117,6 +125,7 @@ def test_run_data_driven_only_flips_and_envelope(tmp_path, monkeypatch):
     )
 
     assert "value" in envelope_calls
+    assert DummyProducer.calls == [(str(input_path), str(output_path), False)]
     result = _load_pkl(output_path)
     assert list(result["njets"].axes["process"]) == ["flipsUL18"]
 
