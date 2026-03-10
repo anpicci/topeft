@@ -109,7 +109,11 @@ documents every distributed-execution flag, including helper attributes such as
 standard output is forwarded to the TaskVine manager logs by default—override
 this behaviour with `--no-taskvine-print-stdout` (or the YAML key
 `taskvine_print_stdout: false`) when you only want the structured processor logs
-to reach the terminal.
+to reach the terminal.  For smoke profiles, prefer
+`taskvine_print_stdout: false`; turn it back on only for worker-debug sessions.
+The knob is defined at the CLI surface in `topeft/modules/executor_cli.py`,
+normalized by `analysis/topeft_run2/run_analysis_helpers.py`, and consumed in
+TaskVine runner creation in `analysis/topeft_run2/workflow.py`.
 
 ## 4. Submit a worker pool with the packaged environment
 

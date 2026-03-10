@@ -132,6 +132,20 @@ for DDR internals (for example `ddr_resources_processing`,
 profile needs settings that are intentionally not exposed as top-level CLI
 switches.
 
+## TaskVine worker-stdout knob (`taskvine_print_stdout`)
+
+- CLI flags: `--taskvine-print-stdout` / `--no-taskvine-print-stdout`
+- YAML key: `taskvine_print_stdout`
+- Definition and wiring:
+  - CLI surface is registered in `topeft/modules/executor_cli.py`
+  - YAML/CLI normalization flows through `analysis/topeft_run2/run_analysis_helpers.py`
+  - TaskVine executor creation consumes the value in `analysis/topeft_run2/workflow.py`
+    (`print_stdout=...`)
+
+Recommended values:
+- Smoke profiles: `taskvine_print_stdout: false` (smaller logs, faster review)
+- Worker-debug sessions: `taskvine_print_stdout: true`
+
 ## TaskVine `environment_file` auto-build policy
 
 When `executor=taskvine` and `environment_file` resolves to an unset/empty
