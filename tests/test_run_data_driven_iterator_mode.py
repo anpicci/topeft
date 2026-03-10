@@ -78,7 +78,7 @@ def _write_with_cloudpickle(path: str, payload):
         cloudpickle.dump(payload, stream)
 
 
-def test_iterator_mode_uses_streaming_writer(tmp_path, monkeypatch):
+def test_default_mode_uses_streaming_writer(tmp_path, monkeypatch):
     input_path = tmp_path / "input.pkl.gz"
     input_path.write_bytes(b"content")
     output_path = tmp_path / "output.pkl.gz"
@@ -107,7 +107,6 @@ def test_iterator_mode_uses_streaming_writer(tmp_path, monkeypatch):
             str(input_path),
             "--output-pkl",
             str(output_path),
-            "--iterator-mode",
             "--only-flips",
         ]
     )
@@ -122,11 +121,11 @@ def test_iterator_mode_uses_streaming_writer(tmp_path, monkeypatch):
     assert list(result["njets"].axes["process"]) == ["flipsUL18"]
 
 
-def test_iterator_mode_matches_non_iterator_mode(tmp_path, monkeypatch):
+def test_default_mode_matches_legacy_dict_mode(tmp_path, monkeypatch):
     input_path = tmp_path / "input.pkl.gz"
     input_path.write_bytes(b"content")
-    output_dict_mode = tmp_path / "dict_mode.pkl.gz"
-    output_iter_mode = tmp_path / "iter_mode.pkl.gz"
+    output_default_mode = tmp_path / "default_mode.pkl.gz"
+    output_legacy_mode = tmp_path / "legacy_mode.pkl.gz"
 
     IteratorDummyProducer.output_hist = {
         "njets": FakeHist(["flipsUL18", "nonpromptUL18"]),
@@ -144,7 +143,7 @@ def test_iterator_mode_matches_non_iterator_mode(tmp_path, monkeypatch):
             "--input-pkl",
             str(input_path),
             "--output-pkl",
-            str(output_dict_mode),
+            str(output_default_mode),
         ]
     )
     run_data_driven.main(
@@ -152,17 +151,22 @@ def test_iterator_mode_matches_non_iterator_mode(tmp_path, monkeypatch):
             "--input-pkl",
             str(input_path),
             "--output-pkl",
-            str(output_iter_mode),
-            "--iterator-mode",
+            str(output_legacy_mode),
+            "--legacy-dict-mode",
         ]
     )
 
-    dict_mode = _load_pkl(output_dict_mode)
-    iter_mode = _load_pkl(output_iter_mode)
+    assert IteratorDummyProducer.calls == [
+        (str(input_path), str(output_default_mode), True),
+        (str(input_path), str(output_legacy_mode), False),
+    ]
 
-    assert set(dict_mode.keys()) == set(iter_mode.keys())
-    for key in dict_mode:
-        assert list(dict_mode[key].axes["process"]) == list(iter_mode[key].axes["process"])
+    default_mode = _load_pkl(output_default_mode)
+    legacy_mode = _load_pkl(output_legacy_mode)
+
+    assert set(default_mode.keys()) == set(legacy_mode.keys())
+    for key in default_mode:
+        assert list(default_mode[key].axes["process"]) == list(legacy_mode[key].axes["process"])
 
 
 def compare_histogram_pickles(reference_path: Path, candidate_path: Path, *, rtol=1e-12, atol=1e-12):

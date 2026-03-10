@@ -81,6 +81,8 @@ python analysis/topeft_run2/run_data_driven.py --input-pkl histos/plotsTopEFT.pk
 ```
 The direct invocation is handy when the metadata json is missing or when you have relocated the base pickle and want to override the output destination in one call. Long-running deferred jobs emit lightweight progress heartbeats while histograms are combined; tune the cadence with `--heartbeat-seconds` (set to `0` to log every histogram) or silence the messages with `--quiet` for batch use.
 
+`run_data_driven.py` now defaults to the streaming iterator workflow (lower peak RSS). The helper processes histograms incrementally and writes the output with hardcoded serialization defaults `protocol=3` and `clear_memo_interval=1`. These values are intentional: the memo-clearing strategy bounds memory safely for large payloads and is not currently used with pickle protocols `>=4` in this path. If you need the historical fully materialized behavior, pass `--legacy-dict-mode` explicitly.
+
 ## Executor diagnostics and troubleshooting
 Run 3 workflows emit clearer diagnostics for executor issues. When running with `-x futures` or `-x work_queue`, an empty file list (or `--nchunks 0`) fails fast with guidance instead of silently submitting nothing. Worker-side exceptions are surfaced explicitly rather than triggering a cryptic `TypeError`; review the stack trace printed in the error message and the worker logs to decide whether to retry the job or adjust the sample JSON/prefix.
 

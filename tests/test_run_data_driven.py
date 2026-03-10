@@ -34,6 +34,7 @@ class FakeHist:
 class DummyProducer:
     output_hist = {}
     calls = []
+    get_calls = 0
     iter_calls = 0
 
     def __init__(self, inputHist, outputName, iterator_mode=False):
@@ -43,6 +44,7 @@ class DummyProducer:
         DummyProducer.calls.append((inputHist, outputName, iterator_mode))
 
     def getDataDrivenHistogram(self):
+        DummyProducer.get_calls += 1
         return DummyProducer.output_hist
 
     def iter_data_driven_histograms(self):
@@ -54,10 +56,12 @@ class DummyProducer:
 def clear_dummy_state():
     DummyProducer.calls.clear()
     DummyProducer.output_hist = {}
+    DummyProducer.get_calls = 0
     DummyProducer.iter_calls = 0
     yield
     DummyProducer.calls.clear()
     DummyProducer.output_hist = {}
+    DummyProducer.get_calls = 0
     DummyProducer.iter_calls = 0
 
 
@@ -91,7 +95,9 @@ def test_run_data_driven_from_metadata(tmp_path, monkeypatch):
 
     run_data_driven.main(["--metadata-json", str(metadata_path)])
 
-    assert DummyProducer.calls == [(str(input_path), str(output_path), False)]
+    assert DummyProducer.calls == [(str(input_path), str(output_path), True)]
+    assert DummyProducer.iter_calls == 1
+    assert DummyProducer.get_calls == 0
     result = _load_pkl(output_path)
     assert list(result["njets"].axes["process"]) == ["flipsUL17"]
 
@@ -125,9 +131,50 @@ def test_run_data_driven_only_flips_and_envelope(tmp_path, monkeypatch):
     )
 
     assert "value" in envelope_calls
-    assert DummyProducer.calls == [(str(input_path), str(output_path), False)]
+    assert DummyProducer.calls == [(str(input_path), str(output_path), True)]
+    assert DummyProducer.iter_calls == 1
+    assert DummyProducer.get_calls == 0
     result = _load_pkl(output_path)
     assert list(result["njets"].axes["process"]) == ["flipsUL18"]
+
+
+def test_run_data_driven_legacy_dict_mode(tmp_path, monkeypatch):
+    input_path = tmp_path / "input.pkl.gz"
+    input_path.write_bytes(b"content")
+    output_path = tmp_path / "output.pkl.gz"
+
+    DummyProducer.output_hist = {"njets": FakeHist(["flipsUL18", "ttbarUL18"])}
+    monkeypatch.setattr(run_data_driven, "DataDrivenProducer", DummyProducer)
+
+    monkeypatch.setattr(
+        run_data_driven.utils,
+        "dump_dict_streaming",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            RuntimeError("streaming writer should not be used in legacy mode")
+        ),
+    )
+
+    def _fake_dump_to_pkl(path, payload):
+        with gzip.open(path, "wb") as stream:
+            cloudpickle.dump(payload, stream)
+
+    monkeypatch.setattr(run_data_driven.utils, "dump_to_pkl", _fake_dump_to_pkl)
+
+    run_data_driven.main(
+        [
+            "--input-pkl",
+            str(input_path),
+            "--output-pkl",
+            str(output_path),
+            "--legacy-dict-mode",
+        ]
+    )
+
+    assert DummyProducer.calls == [(str(input_path), str(output_path), False)]
+    assert DummyProducer.get_calls == 1
+    assert DummyProducer.iter_calls == 0
+    result = _load_pkl(output_path)
+    assert list(result["njets"].axes["process"]) == ["flipsUL18", "ttbarUL18"]
 
 
 def test_run_data_driven_heartbeat(tmp_path, monkeypatch, capsys):

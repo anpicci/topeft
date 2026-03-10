@@ -6,6 +6,11 @@ Quickstart examples:
       --apply-renormfact-envelope
   - Direct pickle paths: python run_data_driven.py --input-pkl histos/plotsTopEFT.pkl.gz \
       --output-pkl histos/plotsTopEFT_np.pkl.gz --apply-renormfact-envelope
+  - Legacy/materialized fallback: add --legacy-dict-mode to restore the
+      original fully materialized dict workflow.
+
+By default the helper uses the streaming iterator path, writing output with
+``dump_dict_streaming(..., protocol=3, clear_memo_interval=1)`` to cap RSS.
 """
 
 from __future__ import annotations
@@ -25,6 +30,9 @@ import topcoffea.modules.utils as utils
 from topeft.modules.dataDrivenEstimation import DataDrivenProducer
 from topeft.modules.get_renormfact_envelope import get_renormfact_envelope
 
+_STREAMING_PICKLE_PROTOCOL = 3
+_STREAMING_MEMO_CLEAR_INTERVAL = 1
+
 
 def _build_argument_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
@@ -34,7 +42,11 @@ def _build_argument_parser() -> argparse.ArgumentParser:
             "  - Metadata sidecar: python run_data_driven.py --metadata-json histos/plotsTopEFT_np.pkl.gz.metadata.json\\\n"
             "      --apply-renormfact-envelope\n"
             "  - Direct pickle paths: python run_data_driven.py --input-pkl histos/plotsTopEFT.pkl.gz\\\n"
-            "      --output-pkl histos/plotsTopEFT_np.pkl.gz --apply-renormfact-envelope"
+            "      --output-pkl histos/plotsTopEFT_np.pkl.gz --apply-renormfact-envelope\n"
+            "Default mode is streaming iterator mode (lower peak RSS). "
+            "Pass --legacy-dict-mode to restore the original materialized-dict behavior.\n"
+            f"Streaming serialization defaults are hardcoded to protocol={_STREAMING_PICKLE_PROTOCOL} "
+            f"and clear_memo_interval={_STREAMING_MEMO_CLEAR_INTERVAL}."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -99,14 +111,24 @@ def _build_argument_parser() -> argparse.ArgumentParser:
         default=20,
         help="How many tracemalloc entries to print per stage when --mem-tracemalloc is enabled.",
     )
-    parser.add_argument(
-        "--iterator-mode",
+
+    mode_group = parser.add_mutually_exclusive_group()
+    mode_group.add_argument(
+        "--legacy-dict-mode",
         action="store_true",
         help=(
-            "Use streaming iterator mode: process histograms incrementally and "
-            "serialize with a streaming pickle writer."
+            "Restore the original materialized-dict path (higher peak RSS): "
+            "build the full histogram dict in memory and write it with dump_to_pkl."
         ),
     )
+    # Backward-compatible no-op alias: the default is already iterator mode.
+    mode_group.add_argument(
+        "--iterator-mode",
+        dest="legacy_dict_mode",
+        action="store_false",
+        help=argparse.SUPPRESS,
+    )
+    parser.set_defaults(legacy_dict_mode=False)
     return parser
 
 
@@ -321,12 +343,12 @@ def _finalize_histograms(
     *,
     only_flips: bool,
     apply_envelope: bool,
-    iterator_mode: bool,
-    heartbeat_seconds: float,
-    quiet: bool,
-    mem_report: bool,
-    mem_tracemalloc: bool,
-    mem_top_n: int,
+    iterator_mode: bool = True,
+    heartbeat_seconds: float = 30.0,
+    quiet: bool = False,
+    mem_report: bool = False,
+    mem_tracemalloc: bool = False,
+    mem_top_n: int = 20,
 ) -> None:
     memory_reporter = _MemoryReporter(
         enabled=(mem_report or mem_tracemalloc),
@@ -381,8 +403,8 @@ def _finalize_histograms(
             utils.dump_dict_streaming(
                 output_pkl,
                 _iter_output_items(),
-                protocol=3,
-                clear_memo_interval=1,
+                protocol=_STREAMING_PICKLE_PROTOCOL,
+                clear_memo_interval=_STREAMING_MEMO_CLEAR_INTERVAL,
             )
             memory_reporter.mark("after dump_dict_streaming()")
         else:
@@ -464,7 +486,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         output_pkl,
         only_flips=args.only_flips,
         apply_envelope=args.apply_renormfact_envelope,
-        iterator_mode=args.iterator_mode,
+        iterator_mode=not args.legacy_dict_mode,
         heartbeat_seconds=args.heartbeat_seconds,
         quiet=args.quiet,
         mem_report=args.mem_report,

@@ -105,6 +105,10 @@ This directory contains scripts for the Full Run 2 EFT analysis. This README doc
 
   The helper streams `.pkl`/`.pkl.gz` inputs one histogram at a time, so even multi-GB dictionaries can be processed without holding everything in memory. Expect the `--input-pkl` file to be the base (pre-nonprompt) histograms and the `--output-pkl` path to receive the `_np.pkl.gz` variant ready for datacard production.
 
+- **Default vs legacy mode:** the helper now defaults to the streaming iterator path. To restore the original materialized-dict behavior, pass `--legacy-dict-mode`.
+
+- **Hardcoded streaming writer settings:** iterator/default mode writes through `dump_dict_streaming` with hardcoded `protocol=3` and `clear_memo_interval=1`. This is intentional for bounded-memory safety; protocols `>=4` are not currently used in this memo-clearing streaming path.
+
 - **Troubleshooting missing metadata or moved pickles:** if the sidecar no longer matches your filesystem (for example, after relocating the histogram directory), re-run the helper with explicit `--input-pkl`/`--output-pkl` paths. You can also pass an absolute path to `--metadata-json` so relative entries resolve correctly when the metadata lives in a different folder than the pickle.
 
 > **Sourcing helpers:** `run_plotter.sh`, `submit_plotter_condor.sh`, `fullR3_run.sh`, `fullR3_run_diboson.sh`, and `condor_plotter_entry.sh` now funnel their work through a `main()` function. They return non-zero statuses instead of exiting outright when validation fails, so sourcing them in an interactive shell will surface the error without tearing down your session. Executing the scripts directly still exits with the same return codes as before.
