@@ -9,6 +9,8 @@ ad-hoc environment variables to first-class `run_analysis.py` configuration.
 - Use either YAML (`--options`) or CLI flags for these knobs.
 - Do not mix `--options` with conflicting CLI flags.
 - `analysis/topeft_run2/full_run.sh` remains options-only for normal runs.
+- In `fullR2_run.yml`, use `cr` for normal CR runs and `cr_smoke` for
+  smoke/probe launches.
 
 ## Knob Reference
 
@@ -44,7 +46,7 @@ Typical behavior:
 ```yaml
 # analysis/topeft_run2/configs/fullR2_run.yml
 profiles:
-  cr:
+  cr_smoke:
     executor: taskvine
     taskvine_manager_name: apiccine-taskvine-proxydebug
     taskvine_proxy_path: /tmp/x509up_u241575
@@ -60,7 +62,7 @@ profiles:
 Run:
 
 ```bash
-./analysis/topeft_run2/full_run.sh --options analysis/topeft_run2/configs/fullR2_run.yml:cr
+./analysis/topeft_run2/full_run.sh --options analysis/topeft_run2/configs/fullR2_run.yml:cr_smoke
 ```
 
 ## CLI-only Example (`run_analysis.py` without `--options`)
@@ -87,7 +89,7 @@ Invalid (hard error):
 
 ```bash
 python analysis/topeft_run2/run_analysis.py \
-  --options analysis/topeft_run2/configs/fullR2_run.yml:cr \
+  --options analysis/topeft_run2/configs/fullR2_run.yml:cr_smoke \
   --ddr-debug
 ```
 
