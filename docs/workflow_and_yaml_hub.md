@@ -1,15 +1,19 @@
 # Workflow and YAML hub
 
-> Start here for Run-2 execution. This page documents the options-first wrapper
-> flow, TaskVine DDR defaults, and where to find detailed schema/reference docs.
+> Orientation and decision hub for current Run-2 execution.
+> Start here to understand the wrapper/YAML model, then branch to the
+> first-run, TaskVine, wrapper-operator, or detailed configuration guide.
 
 Use this hub to orient yourself, then pick exactly one next guide:
 
-- [Run 2 quickstart pipeline](quickstart_run2.md) for a first local or smoke-test run
+- [Run 2 quickstart pipeline](quickstart_run2.md) for a first successful local
+  or smoke-test run
 - [TaskVine workflow quickstart](taskvine_workflow.md) once you are ready for
-  distributed execution
+  distributed execution after the quickstart path is clear
+- [How to run an analysis workflow](how_to_run_analysis_workflow.md) if you
+  already know you want the `full_run.sh` wrapper entrypoint
 - [Run analysis configuration flow](run_analysis_configuration.md) when you need
-  to tune YAML, CLI, or troubleshooting behavior
+  the detailed YAML, CLI, or troubleshooting guide
 
 Do not start with the legacy quickstarts unless you are reproducing an older
 analysis flow.

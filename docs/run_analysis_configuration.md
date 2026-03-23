@@ -1,10 +1,11 @@
 # Run analysis configuration flow
 
-The ``analysis/topeft_run2/run_analysis.py`` entry point stitches together the
-command line, metadata bundles, and Coffea execution helpers that drive the Run 2
-analysis.  This page documents how the configuration is normalized, how the
+This is the detailed configuration and troubleshooting guide for
+``analysis/topeft_run2/run_analysis.py``. The entry point stitches together the
+command line, metadata bundles, and Coffea execution helpers that drive the Run
+2 analysis. This page documents how the configuration is normalized, how the
 helpers cooperate, and which extension points are available when adapting the
-workflow to new samples or channels.  Readers looking for a catalog of the
+workflow to new samples or channels. Readers looking for a catalog of the
 dataclasses and metadata payloads that emerge from this process should start
 with the [Run configuration dataclasses and metadata overview](dataclasses_and_metadata.md).
 
@@ -13,7 +14,9 @@ the dedicated [`run_analysis.py` CLI and YAML reference](run_analysis_cli_refere
 If this is your first pass through the workflow, start instead with
 [workflow_and_yaml_hub.md](workflow_and_yaml_hub.md) and
 [quickstart_run2.md](quickstart_run2.md), then return here when you need to
-tune behavior or debug configuration issues.
+tune behavior or debug configuration issues. If you specifically need the
+wrapper/operator recipe, use
+[how_to_run_analysis_workflow.md](how_to_run_analysis_workflow.md).
 
 ## Invocation quick reference
 
