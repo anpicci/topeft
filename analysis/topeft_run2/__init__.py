@@ -1,41 +1,38 @@
 """Run 2 analysis scripts and workflow helpers."""
 
-try:
-    from .workflow import (
-        ChannelPlanner,
-        ExecutorFactory,
-        HistogramPlan,
-        HistogramPlanner,
-        HistogramTask,
-        RunWorkflow,
-        normalize_jet_category,
-        run_workflow,
-    )
-    _WORKFLOW_AVAILABLE = True
-except ImportError:  # pragma: no cover - optional workflow helper
-    ChannelPlanner = None  # type: ignore[assignment]
-    ExecutorFactory = None  # type: ignore[assignment]
-    HistogramPlan = None  # type: ignore[assignment]
-    HistogramPlanner = None  # type: ignore[assignment]
-    HistogramTask = None  # type: ignore[assignment]
-    normalize_jet_category = None  # type: ignore[assignment]
-    run_workflow = None  # type: ignore[assignment]
-    RunWorkflow = None  # type: ignore[assignment]
-    _WORKFLOW_AVAILABLE = False
-from .quickstart import PreparedSamples, prepare_samples, run_quickstart
+from __future__ import annotations
 
-__all__ = ["PreparedSamples", "prepare_samples", "run_quickstart"]
-if _WORKFLOW_AVAILABLE:
-    __all__.extend(
-        [
-            "ChannelPlanner",
-            "ExecutorFactory",
-            "HistogramPlan",
-            "HistogramPlanner",
-            "HistogramTask",
-            "normalize_jet_category",
-            "run_workflow",
-        ]
-    )
-    if RunWorkflow is not None:
-        __all__.append("RunWorkflow")
+from importlib import import_module as _import_module
+from typing import Any
+
+_QUICKSTART_EXPORTS = (
+    "PreparedSamples",
+    "prepare_samples",
+    "run_quickstart",
+)
+_WORKFLOW_EXPORTS = (
+    "ChannelPlanner",
+    "ExecutorFactory",
+    "HistogramPlan",
+    "HistogramPlanner",
+    "HistogramTask",
+    "RunWorkflow",
+    "normalize_jet_category",
+    "run_workflow",
+)
+
+__all__ = [*_QUICKSTART_EXPORTS, *_WORKFLOW_EXPORTS]
+
+
+def __getattr__(name: str) -> Any:
+    if name in _QUICKSTART_EXPORTS:
+        module = _import_module("analysis.topeft_run2.quickstart")
+        value = getattr(module, name)
+        globals()[name] = value
+        return value
+    if name in _WORKFLOW_EXPORTS:
+        module = _import_module("analysis.topeft_run2.workflow")
+        value = getattr(module, name)
+        globals()[name] = value
+        return value
+    raise AttributeError(f"module 'analysis.topeft_run2' has no attribute {name!r}")

@@ -49,6 +49,25 @@ def get_repo_root() -> Path:
     return Path(__file__).resolve().parents[2]
 
 
+def _anchor_metadata_path(candidate: Path) -> Path:
+    """Return a repo-root anchored candidate for relative metadata paths."""
+
+    if candidate.is_absolute():
+        return candidate
+
+    repo_root = get_repo_root().resolve()
+    anchored = repo_root / candidate
+    normalized = anchored.resolve(strict=False)
+    try:
+        normalized.relative_to(repo_root)
+    except ValueError as exc:
+        raise ValueError(
+            "Metadata path resolves outside the topeft repo root; "
+            "use 'analysis/metadata/metadata.yml' (repo-root relative) or an absolute path."
+        ) from exc
+    return anchored
+
+
 def resolve_metadata_path(path: str | Path | None) -> Path:
     """Return the absolute metadata path, anchored at the repo root."""
 
@@ -57,9 +76,7 @@ def resolve_metadata_path(path: str | Path | None) -> Path:
     else:
         candidate = Path(path).expanduser()
 
-    if not candidate.is_absolute():
-        # Relative metadata paths resolve relative to the repo root.
-        candidate = get_repo_root() / candidate
+    candidate = _anchor_metadata_path(candidate)
 
     try:
         return candidate.resolve(strict=True)
@@ -71,9 +88,7 @@ def resolve_metadata_path(path: str | Path | None) -> Path:
 
 def _prepare_metadata_path(path: str | Path) -> Path:
     candidate = Path(path).expanduser()
-    if not candidate.is_absolute():
-        candidate = get_repo_root() / candidate
-    return candidate
+    return _anchor_metadata_path(candidate)
 
 
 def _normalize_optional_string(value: Optional[str]) -> Optional[str]:

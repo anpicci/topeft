@@ -43,6 +43,7 @@ from topeft.modules.executor_cli import (
     FuturesArgumentSpec,
     TaskVineArgumentSpec,
 )
+from topeft.modules import remote_environment as topeft_remote_environment
 from topeft.modules.executor import (
     build_futures_executor,
     futures_runner_overrides,
@@ -50,7 +51,7 @@ from topeft.modules.executor import (
 )
 
 
-remote_environment = topcoffea.modules.remote_environment
+remote_environment = topeft_remote_environment
 tc_utils = topcoffea.modules.utils
 load_sample_json_file = tc_utils.load_sample_json_file
 read_cfg_file = tc_utils.read_cfg_file
@@ -87,8 +88,6 @@ EXECUTOR_CLI = ExecutorCLIHelper(
         resource_monitor_default="measure",
         resources_mode_default="auto",
     ),
-    extra_pip_local={"topeft": ["topeft", "setup.py"]},
-    extra_conda=["pyyaml"],
 )
 
 EXECUTOR_CLI.configure_parser(parser)

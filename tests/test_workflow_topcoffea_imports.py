@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import importlib
-import runpy
 import sys
 import warnings
 
@@ -26,12 +25,11 @@ def test_workflow_imports_topcoffea_helpers(monkeypatch: pytest.MonkeyPatch) -> 
 
     with warnings.catch_warnings():
         warnings.filterwarnings("ignore", category=RuntimeWarning)
-        module_globals = runpy.run_module(
-            "analysis.topeft_run2.workflow", run_name="analysis.topeft_run2.workflow"
-        )
+        module = importlib.import_module("analysis.topeft_run2.workflow")
 
-    assert callable(module_globals["_import_topcoffea_submodule"])
-    assert module_globals["topcoffea_utils"] is not None
+    assert callable(module._import_topcoffea_submodule)
+    assert module.topcoffea_utils is not None
+    assert "topcoffea.modules.utils" in sys.modules
 
 
 def test_workflow_imports_missing_paths(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -51,6 +49,4 @@ def test_workflow_imports_missing_paths(monkeypatch: pytest.MonkeyPatch) -> None
     with warnings.catch_warnings():
         warnings.filterwarnings("ignore", category=RuntimeWarning)
         with pytest.raises(ImportError, match="coordinated ref"):
-            runpy.run_module(
-                "analysis.topeft_run2.workflow", run_name="analysis.topeft_run2.workflow"
-            )
+            importlib.import_module("analysis.topeft_run2.workflow")

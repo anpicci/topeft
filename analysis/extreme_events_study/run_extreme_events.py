@@ -39,9 +39,10 @@ from topeft.modules.executor_cli import (
     FuturesArgumentSpec,
     TaskVineArgumentSpec,
 )
+from topeft.modules import remote_environment as topeft_remote_environment
 from topeft.modules.runner_output import normalise_runner_output
 
-remote_environment = topcoffea.modules.remote_environment
+remote_environment = topeft_remote_environment
 tc_utils = topcoffea.modules.utils
 load_sample_json_file = tc_utils.load_sample_json_file
 read_cfg_file = tc_utils.read_cfg_file
@@ -53,7 +54,7 @@ parser = argparse.ArgumentParser(
     formatter_class=argparse.RawDescriptionHelpFormatter,
     epilog=(
         "TaskVine workers can be launched with:\n"
-        "  vine_submit_workers --python-env \"$(python -m topcoffea.modules.remote_environment)\" \\\n"
+        "  vine_submit_workers --python-env \"$(python -m topeft.modules.remote_environment)\" \\\n"
         "    --cores 4 --memory 16000 --disk 16000 -M <manager-name>\n"
         "Adjust the resources and manager to match your deployment."
     ),
@@ -82,8 +83,6 @@ EXECUTOR_CLI = ExecutorCLIHelper(
         resource_monitor_default="measure",
         resources_mode_default="auto",
     ),
-    extra_pip_local={"topeft": ["topeft", "setup.py"]},
-    extra_conda=["pyyaml"],
 )
 
 EXECUTOR_CLI.configure_parser(parser)

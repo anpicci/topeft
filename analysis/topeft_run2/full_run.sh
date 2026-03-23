@@ -11,23 +11,98 @@
 #   - Futures/iterative debug profiles may still produce tuple-keyed outputs.
 #   - Preprocess artifacts default to taskvine-results/ddr_preprocessed_data.json
 #     unless overridden in YAML.
-#   - If ddr_x509_proxy is configured, the workflow stages proxy.pem and sets
+#   - If taskvine_proxy_path is configured, the workflow stages proxy.pem and sets
 #     X509_USER_PROXY=proxy.pem for worker tasks.
 
 set -euo pipefail
+
+write_exit_marker() {
+  local status="$1"
+  local marker_path="${2:-}"
+  if [[ -z "$marker_path" ]]; then
+    return
+  fi
+  mkdir -p "$(dirname "$marker_path")"
+  printf '%s\n' "$status" > "$marker_path"
+}
+
+emit_exit_debug() {
+  local status="$1"
+  local pipestatus_text="$2"
+  local debug_enabled="${3:-0}"
+  if [[ "$debug_enabled" != "1" ]]; then
+    return
+  fi
+  printf 'full_run.sh: driver_status=%s pipestatus=[%s]\n' "$status" "$pipestatus_text" >&2
+}
+
+run_with_status_capture() {
+  local log_path="${1:-}"
+  local marker_path="${2:-}"
+  local debug_enabled="${3:-0}"
+  shift 3
+
+  local status=0
+  local pipestatus_text=""
+
+  if [[ -n "$log_path" ]]; then
+    mkdir -p "$(dirname "$log_path")"
+    set +e
+    "$@" 2>&1 | tee "$log_path"
+    local -a pipe_status=("${PIPESTATUS[@]}")
+    status="${pipe_status[0]}"
+    pipestatus_text="${pipe_status[*]}"
+    set -e
+  else
+    set +e
+    "$@"
+    status=$?
+    set -e
+    pipestatus_text="$status"
+  fi
+
+  write_exit_marker "$status" "$marker_path"
+  emit_exit_debug "$status" "$pipestatus_text" "$debug_enabled"
+  return "$status"
+}
+
+run_self_test_exit_propagation() {
+  local status="${1:-}"
+  local log_path="${2:-}"
+  local marker_path="${3:-}"
+  local debug_enabled="${4:-0}"
+  if ! [[ "$status" =~ ^[0-9]+$ ]] || (( status < 0 || status > 255 )); then
+    echo "Error: --self-test-exit-propagation expects an integer exit code in [0,255]." >&2
+    return 1
+  fi
+
+  local script
+  printf -v script '%s\n%s\n%s\n' \
+    'echo "full_run self-test stdout"' \
+    'echo "full_run self-test stderr" >&2' \
+    "exit $status"
+
+  local test_status=0
+  run_with_status_capture "$log_path" "$marker_path" "$debug_enabled" \
+    /bin/bash --noprofile --norc -c "$script" || test_status=$?
+  return "$test_status"
+}
 
 print_usage() {
   cat <<'USAGE'
 Usage:
   full_run.sh --options <path[:profile]>
+  full_run.sh --self-test-exit-propagation <status> [--driver-log-path <path>] [--exit-marker-path <path>] [--exit-debug]
   full_run.sh --help
 
 Description:
   Wrapper around run_analysis.py in strict options-only mode.
 
 Rules:
-  - --options is required for execution.
+  - --options is required for normal execution.
+  - --self-test-exit-propagation runs a local dummy command and exits with the requested status.
   - No other CLI flags are accepted by this wrapper.
+  - --driver-log-path/--exit-marker-path/--exit-debug are only valid with --self-test-exit-propagation.
   - Profile auto-selection is handled by RunConfigBuilder:
     pass path.yml and use default_profile in YAML when desired.
 
@@ -44,6 +119,10 @@ USAGE
 
 main() {
   local options_spec=""
+  local self_test_status=""
+  local driver_log_path=""
+  local exit_marker_path=""
+  local exit_debug="0"
 
   if [[ $# -eq 0 ]]; then
     echo "Error: --options is required." >&2
@@ -77,13 +156,77 @@ main() {
         options_spec="${1#*=}"
         shift
         ;;
+      --self-test-exit-propagation)
+        if [[ -n "$self_test_status" ]]; then
+          echo "Error: --self-test-exit-propagation was provided more than once." >&2
+          return 1
+        fi
+        if [[ $# -lt 2 ]]; then
+          echo "Error: --self-test-exit-propagation expects an integer value." >&2
+          return 1
+        fi
+        self_test_status="$2"
+        shift 2
+        ;;
+      --self-test-exit-propagation=*)
+        if [[ -n "$self_test_status" ]]; then
+          echo "Error: --self-test-exit-propagation was provided more than once." >&2
+          return 1
+        fi
+        self_test_status="${1#*=}"
+        shift
+        ;;
+      --driver-log-path)
+        if [[ $# -lt 2 ]]; then
+          echo "Error: --driver-log-path expects a non-empty value." >&2
+          return 1
+        fi
+        driver_log_path="$2"
+        shift 2
+        ;;
+      --driver-log-path=*)
+        driver_log_path="${1#*=}"
+        shift
+        ;;
+      --exit-marker-path)
+        if [[ $# -lt 2 ]]; then
+          echo "Error: --exit-marker-path expects a non-empty value." >&2
+          return 1
+        fi
+        exit_marker_path="$2"
+        shift 2
+        ;;
+      --exit-marker-path=*)
+        exit_marker_path="${1#*=}"
+        shift
+        ;;
+      --exit-debug)
+        exit_debug="1"
+        shift
+        ;;
       *)
-        echo "Error: unsupported argument '$1'. This wrapper only accepts --options and --help." >&2
+        echo "Error: unsupported argument '$1'. This wrapper only accepts --options, --self-test-exit-propagation, --driver-log-path, --exit-marker-path, --exit-debug, and --help." >&2
         print_usage >&2
         return 1
         ;;
     esac
   done
+
+  if [[ -n "$self_test_status" && -n "$options_spec" ]]; then
+    echo "Error: --options and --self-test-exit-propagation are mutually exclusive." >&2
+    return 1
+  fi
+
+  if [[ -n "$options_spec" ]] && [[ -n "$driver_log_path" || -n "$exit_marker_path" || "$exit_debug" == "1" ]]; then
+    echo "Error: --options cannot be mixed with --driver-log-path, --exit-marker-path, or --exit-debug." >&2
+    return 1
+  fi
+
+  if [[ -n "$self_test_status" ]]; then
+    local self_test_rc=0
+    run_self_test_exit_propagation "$self_test_status" "$driver_log_path" "$exit_marker_path" "$exit_debug" || self_test_rc=$?
+    return "$self_test_rc"
+  fi
 
   if [[ -z "${options_spec// }" ]]; then
     echo "Error: --options value cannot be empty." >&2
@@ -93,7 +236,9 @@ main() {
   local script_dir
   script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 
-  exec python "$script_dir/run_analysis.py" --options "$options_spec"
+  local driver_status=0
+  run_with_status_capture "" "" "0" python "$script_dir/run_analysis.py" --options "$options_spec" || driver_status=$?
+  return "$driver_status"
 }
 
 main "$@"

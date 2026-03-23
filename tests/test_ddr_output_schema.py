@@ -171,6 +171,52 @@ def test_flatten_ddr_output_raises_on_processor_key_mismatch():
     assert "DDR schema mismatch" in str(exc.value)
 
 
+def test_flatten_ddr_output_accepts_sumw2_histogram_suffix():
+    processor_key = workflow.build_ddr_processor_key(
+        "2los_CRZ_0j",
+        "invmass",
+        "isAR_2lOS",
+        "nominal",
+        delim="-",
+    )
+    payload = {
+        processor_key: {
+            "UL18_WWW_4F_NDSkim": {
+                (
+                    "invmass",
+                    "2los_CRZ_0j",
+                    "isAR_2lOS",
+                    "UL18_WWW_4F_NDSkim",
+                    "nominal",
+                ): _DummyAccumulator(2),
+                (
+                    "invmass_sumw2",
+                    "2los_CRZ_0j",
+                    "isAR_2lOS",
+                    "UL18_WWW_4F_NDSkim",
+                    "nominal",
+                ): _DummyAccumulator(5),
+            }
+        }
+    }
+
+    flattened = workflow.flatten_ddr_output(payload, delim="-", output_schema="flat")
+    assert (
+        "UL18_WWW_4F_NDSkim",
+        "2los_CRZ_0j",
+        "invmass",
+        "isAR_2lOS",
+        "nominal",
+    ) in flattened
+    assert (
+        "UL18_WWW_4F_NDSkim",
+        "2los_CRZ_0j",
+        "invmass_sumw2",
+        "isAR_2lOS",
+        "nominal",
+    ) in flattened
+
+
 def test_analysis_processor_sidecars_disabled_by_default():
     sample_info, hist_keys, var_info, channel_dict = _minimal_processor_inputs()
 

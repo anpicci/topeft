@@ -48,6 +48,24 @@ def test_full_run_sh_rejects_unknown_flags() -> None:
     assert "unsupported argument" in completed.stderr
 
 
+def test_full_run_sh_rejects_options_mixed_with_exit_knobs() -> None:
+    _, script_path = _wrapper_path()
+    completed = subprocess.run(
+        [
+            str(script_path),
+            "--options",
+            "configs/fullR2_run.yml:cr",
+            "--exit-marker-path",
+            "/tmp/marker.txt",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert completed.returncode != 0
+    assert "--options cannot be mixed" in completed.stderr
+
+
 def test_full_run_sh_runs_with_options_only(tmp_path: Path) -> None:
     repo_root, script_path = _wrapper_path()
     output_dir = tmp_path / "pretend_output"

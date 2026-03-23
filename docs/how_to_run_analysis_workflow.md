@@ -39,7 +39,7 @@ is set): `taskvine-results/ddr_preprocessed_data.json`.
 
 ## Proxy policy
 
-Set `ddr_x509_proxy` in YAML.
+Set `taskvine_proxy_path` in YAML.
 
 - Workflow copies proxy to `proxy.pem` in TaskVine staging
 - Worker env gets `X509_USER_PROXY=proxy.pem`
