@@ -69,6 +69,9 @@ update the dependencies so other analysts can reuse the same package.  For
 path.  You can still set `environment_file` explicitly (`path`, `cached`, or
 `auto`) for reproducibility and policy control.
 
+For the detailed rebuild policy, cache naming rules, and maintainer-focused
+packaging notes, see [Environment packaging](environment_packaging.md).
+
 `environment_file=none` (including `--no-environment-file`) is not supported
 for TaskVine in `run_analysis.py`; the run fails fast with exit code `2`
 because workers require a Python environment tarball.

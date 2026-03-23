@@ -62,5 +62,6 @@ policies.
 ## Detailed references
 
 - [Analysis processor data flow](analysis_processor_data_flow.md)
+- [Workflow module chain](workflow_module_chain.md)
 - [CLI and YAML reference](run_analysis_cli_reference.md)
 - [DDR preprocess and proxy policy](ddr_preprocess_proxy_policy.md)

@@ -55,7 +55,9 @@ Output schema depends on executor path:
 - Futures/iterative outputs are tuple-keyed:
   `(var, channel, application, sample, systematic)`
 
-See [schemas.md](schemas.md) for complete details.
+See [schemas.md](schemas.md) for the canonical tuple-key contracts and
+[ddr_outputs_and_pkl.md](ddr_outputs_and_pkl.md) for the TaskVine DDR sidecars,
+flattened output schema, and final `.pkl.gz` layout.
 
 ## Step 4: plot
 
