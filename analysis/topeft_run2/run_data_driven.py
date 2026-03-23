@@ -2,8 +2,7 @@
 """Standalone helper to build data driven histograms from saved metadata.
 
 Quickstart examples:
-  - Metadata sidecar: python run_data_driven.py --metadata-json histos/plotsTopEFT_np.pkl.gz.metadata.json \
-      --apply-renormfact-envelope
+  - Metadata sidecar: python run_data_driven.py --metadata-json histos/plotsTopEFT_np.pkl.gz.metadata.json
   - Direct pickle paths: python run_data_driven.py --input-pkl histos/plotsTopEFT.pkl.gz \
       --output-pkl histos/plotsTopEFT_np.pkl.gz --apply-renormfact-envelope
   - Legacy/materialized fallback: add --legacy-dict-mode to restore the
@@ -16,7 +15,8 @@ By default the helper uses the streaming iterator path, writing output with
 from __future__ import annotations
 
 import argparse
-import json
+import ctypes
+import gc
 import os
 import resource
 import sys
@@ -28,10 +28,15 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 import topcoffea.modules.utils as utils
 
 from topeft.modules.dataDrivenEstimation import DataDrivenProducer
-from topeft.modules.get_renormfact_envelope import get_renormfact_envelope
+from topeft.modules.deferred_np_metadata import load_deferred_np_metadata
+from topeft.modules.get_renormfact_envelope import (
+    apply_renormfact_envelope_to_histogram,
+    get_renormfact_envelope,
+)
 
 _STREAMING_PICKLE_PROTOCOL = 3
 _STREAMING_MEMO_CLEAR_INTERVAL = 1
+_LIBC = None
 
 
 def _build_argument_parser() -> argparse.ArgumentParser:
@@ -39,8 +44,7 @@ def _build_argument_parser() -> argparse.ArgumentParser:
         description=(
             "Finalize deferred nonprompt/flips histograms using the metadata emitted by run_analysis.py.\n\n"
             "Quickstart:\n"
-            "  - Metadata sidecar: python run_data_driven.py --metadata-json histos/plotsTopEFT_np.pkl.gz.metadata.json\\\n"
-            "      --apply-renormfact-envelope\n"
+            "  - Metadata sidecar: python run_data_driven.py --metadata-json histos/plotsTopEFT_np.pkl.gz.metadata.json\n"
             "  - Direct pickle paths: python run_data_driven.py --input-pkl histos/plotsTopEFT.pkl.gz\\\n"
             "      --output-pkl histos/plotsTopEFT_np.pkl.gz --apply-renormfact-envelope\n"
             "Default mode is streaming iterator mode (lower peak RSS). "
@@ -68,7 +72,10 @@ def _build_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--apply-renormfact-envelope",
         action="store_true",
-        help="Also run the renorm/fact envelope step on the output histogram.",
+        help=(
+            "Also run the renorm/fact envelope step on the output histogram. "
+            "Metadata-driven runs also honor the contract-recorded envelope setting automatically."
+        ),
     )
     parser.add_argument(
         "--only-flips",
@@ -133,27 +140,7 @@ def _build_argument_parser() -> argparse.ArgumentParser:
 
 
 def _load_metadata(metadata_path: str) -> Dict[str, Any]:
-    if not os.path.exists(metadata_path):
-        raise FileNotFoundError(f"Metadata file not found: {metadata_path}")
-    with open(metadata_path) as metadata_stream:
-        payload = json.load(metadata_stream)
-    version = payload.get("metadata_version")
-    if version != 1:
-        raise ValueError(
-            f"Unsupported metadata schema version {version!r}. Expected version 1 metadata."
-        )
-    resolved_years = payload.get("resolved_years")
-    sample_years = payload.get("sample_years")
-    if resolved_years and sample_years:
-        resolved_set = set(resolved_years)
-        sample_set = set(sample_years)
-        missing = resolved_set - sample_set
-        if missing:
-            raise ValueError(
-                "Metadata contains requested years that are not present in the samples: "
-                f"{sorted(missing)}"
-            )
-    return payload
+    return load_deferred_np_metadata(metadata_path)
 
 
 def _default_output_path(input_path: str) -> str:
@@ -206,6 +193,21 @@ def _current_rss_mb() -> float:
         pass
     # Fallback when /proc is unavailable.
     return _peak_rss_mb()
+
+
+def _trim_allocator() -> None:
+    global _LIBC
+    if sys.platform != "linux":
+        return
+    if _LIBC is False:
+        return
+    if _LIBC is None:
+        try:
+            _LIBC = ctypes.CDLL("libc.so.6")
+        except OSError:
+            _LIBC = False
+            return
+    _LIBC.malloc_trim(0)
 
 
 class _MemoryReporter:
@@ -333,8 +335,9 @@ def _maybe_emit_heartbeat(
 
 
 def _envelope_single_histogram(key: str, histo: Any) -> Any:
-    enveloped = get_renormfact_envelope({key: histo}, verbose=False)
-    return enveloped[key]
+    return apply_renormfact_envelope_to_histogram(
+        histo, verbose=False, hist_name=key
+    )
 
 
 def _finalize_histograms(
@@ -398,6 +401,8 @@ def _finalize_histograms(
                     yield key, working_histo
                     del working_histo
                     del histo
+                    gc.collect()
+                    _trim_allocator()
 
             memory_reporter.mark("before dump_dict_streaming()", include_top=mem_tracemalloc)
             utils.dump_dict_streaming(
@@ -463,10 +468,6 @@ def main(argv: Optional[List[str]] = None) -> int:
     if args.metadata_json:
         metadata = _load_metadata(args.metadata_json)
         metadata_dir = os.path.dirname(os.path.abspath(args.metadata_json))
-        if not metadata.get("do_np", True):
-            raise ValueError(
-                "Metadata indicates nonprompt estimation was disabled (do_np=False). Nothing to do."
-            )
 
     input_pkl = _resolve_path(
         args.input_pkl, metadata.get("input_histogram"), metadata_dir=metadata_dir
@@ -481,11 +482,15 @@ def main(argv: Optional[List[str]] = None) -> int:
     if not output_pkl:
         output_pkl = _default_output_path(input_pkl)
 
+    apply_envelope = args.apply_renormfact_envelope or metadata.get(
+        "apply_renormfact_envelope", False
+    )
+
     _finalize_histograms(
         input_pkl,
         output_pkl,
         only_flips=args.only_flips,
-        apply_envelope=args.apply_renormfact_envelope,
+        apply_envelope=apply_envelope,
         iterator_mode=not args.legacy_dict_mode,
         heartbeat_seconds=args.heartbeat_seconds,
         quiet=args.quiet,
