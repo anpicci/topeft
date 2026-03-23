@@ -3,6 +3,17 @@
 > Start here for Run-2 execution. This page documents the options-first wrapper
 > flow, TaskVine DDR defaults, and where to find detailed schema/reference docs.
 
+Use this hub to orient yourself, then pick exactly one next guide:
+
+- [Run 2 quickstart pipeline](quickstart_run2.md) for a first local or smoke-test run
+- [TaskVine workflow quickstart](taskvine_workflow.md) once you are ready for
+  distributed execution
+- [Run analysis configuration flow](run_analysis_configuration.md) when you need
+  to tune YAML, CLI, or troubleshooting behavior
+
+Do not start with the legacy quickstarts unless you are reproducing an older
+analysis flow.
+
 ## Recommended execution model
 
 `analysis/topeft_run2/full_run.sh` is now a strict options-only wrapper:
@@ -75,7 +86,12 @@ See:
 
 ## Where to go next
 
-- [How to run an analysis workflow](how_to_run_analysis_workflow.md)
-- [Run 2 quickstart pipeline](quickstart_run2.md)
-- [TaskVine workflow quickstart](taskvine_workflow.md)
-- [Analysis processor data flow](analysis_processor_data_flow.md)
+- [Run 2 quickstart pipeline](quickstart_run2.md) – Primary newcomer path
+- [TaskVine workflow quickstart](taskvine_workflow.md) – Distributed execution
+  branch of the same path
+- [How to run an analysis workflow](how_to_run_analysis_workflow.md) – Wrapper
+  entrypoint details
+- [Run analysis configuration flow](run_analysis_configuration.md) – YAML, CLI,
+  and troubleshooting detail
+- [Analysis processor data flow](analysis_processor_data_flow.md) – Runtime
+  internals after the workflow path is clear

@@ -10,6 +10,10 @@ with the [Run configuration dataclasses and metadata overview](dataclasses_and_m
 
 If you only need a quick lookup of supported CLI flags and YAML keys, jump to
 the dedicated [`run_analysis.py` CLI and YAML reference](run_analysis_cli_reference.md).
+If this is your first pass through the workflow, start instead with
+[workflow_and_yaml_hub.md](workflow_and_yaml_hub.md) and
+[quickstart_run2.md](quickstart_run2.md), then return here when you need to
+tune behavior or debug configuration issues.
 
 ## Invocation quick reference
 

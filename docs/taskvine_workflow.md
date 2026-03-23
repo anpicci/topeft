@@ -5,6 +5,10 @@ together the full workflow so new analysts can bootstrap the Coffea 2025.7
 environment, package the tarball consumed by remote workers, and submit a
 matching worker pool.
 
+This page is the distributed-execution branch of the primary newcomer path. If
+you are starting from scratch, read [workflow_and_yaml_hub.md](workflow_and_yaml_hub.md)
+and [quickstart_run2.md](quickstart_run2.md) first.
+
 ## 1. Prepare the Coffea 2025.7 environment
 
 All examples assume a clean checkout of both `topeft` and `topcoffea`.  Install
@@ -160,6 +164,10 @@ end-to-end examples:
 Both guides call out where to adjust metadata, toggle scenarios, and select the
 TaskVine executor so analysts can move seamlessly from setup to distributed
 submissions.
+
+If you need to tune YAML, CLI, metadata, or troubleshooting behavior after the
+TaskVine setup is clear, continue with
+[run_analysis_configuration.md](run_analysis_configuration.md).
 
 ## Legacy naming note
 

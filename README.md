@@ -23,33 +23,33 @@ newcomer, follow this path:
 
 1. [Workflow and YAML hub](docs/workflow_and_yaml_hub.md)
 2. [Run 2 quickstart pipeline](docs/quickstart_run2.md)
-3. [TaskVine workflow quickstart](docs/taskvine_workflow.md)
-4. [Run analysis configuration flow](docs/run_analysis_configuration.md)
+3. [TaskVine workflow quickstart](docs/taskvine_workflow.md) for distributed
+   execution, or [How to run an analysis workflow](docs/how_to_run_analysis_workflow.md)
+   for the wrapper entrypoint
+4. [Run analysis configuration flow](docs/run_analysis_configuration.md) when
+   you need to tune YAML or CLI behavior
 5. [`run_analysis.py` CLI and YAML reference](docs/run_analysis_cli_reference.md)
 
-If you prefer the options-first wrapper entrypoint, continue with
-[How to run an analysis workflow](docs/how_to_run_analysis_workflow.md).
-
-## Read next by intent
+## Choose your next guide
 
 - First run / newcomer: [Workflow and YAML hub](docs/workflow_and_yaml_hub.md)
   and [Run 2 quickstart pipeline](docs/quickstart_run2.md)
 - Distributed execution / TaskVine: [TaskVine workflow quickstart](docs/taskvine_workflow.md)
   and [Environment packaging](docs/environment_packaging.md)
-- Workflow guide / configuration reference: [Run analysis configuration flow](docs/run_analysis_configuration.md)
+- Wrapper-driven execution: [How to run an analysis workflow](docs/how_to_run_analysis_workflow.md)
+- Configuration and workflow knobs: [Run analysis configuration flow](docs/run_analysis_configuration.md)
   and [`run_analysis.py` CLI and YAML reference](docs/run_analysis_cli_reference.md)
-- Metadata, scenarios, and sample manifests: [Run 2 metadata scenarios guide](docs/run2_scenarios.md)
-  and [Sample metadata reference](docs/sample_metadata_reference.md)
-- Output schema / DDR payloads: [Schema reference](docs/schemas.md) and
+- Troubleshooting outputs, metadata, or schemas:
+  [Run analysis configuration flow](docs/run_analysis_configuration.md#troubleshooting-checklist),
+  [Sample metadata reference](docs/sample_metadata_reference.md), and
   [DDR outputs and pickle structure](docs/ddr_outputs_and_pkl.md)
 - Architecture / maintainer context: [Workflow and processor reference](docs/analysis_processing.md)
   and [Workflow module chain](docs/workflow_module_chain.md)
-- Contributor / developer docs: [Testing guide](docs/developer/testing.md),
-  [Module notes](docs/developer/modules.md), and
-  [Parameters and calibration assets](docs/developer/parameters.md)
+- Developer verification: [Testing guide](docs/developer/testing.md)
 - Legacy / archival context: [Run 2 legacy notes](docs/run2_legacy_notes.md),
   [TOP-22-006 script walkthrough](docs/quickstart_top22_006.md), and
-  [Run and plot quickstart](docs/run_and_plot_quickstart.md)
+  [Run and plot quickstart](docs/run_and_plot_quickstart.md). These are not
+  part of the primary newcomer path.
 
 ## Documentation map
 

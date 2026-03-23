@@ -2,6 +2,8 @@
 
 This quickstart is the shortest path from sample JSON to a first output pickle.
 It uses the options-first wrapper and mirrors current TaskVine DDR defaults.
+Read [workflow_and_yaml_hub.md](workflow_and_yaml_hub.md) first if you need the
+high-level map of where this page fits in the overall workflow.
 
 ## Prerequisites
 
@@ -79,3 +81,11 @@ Run-2 scenario resolution is controlled by:
 - `analysis/topeft_run2/metadata_authority.py`
 
 For wrapper-driven runs, place `scenarios:` in YAML options.
+
+## Next steps
+
+- Ready to scale out: continue with [taskvine_workflow.md](taskvine_workflow.md)
+- Need to adjust YAML or CLI behavior: continue with
+  [run_analysis_configuration.md](run_analysis_configuration.md)
+- Need the wrapper entrypoint details:
+  [how_to_run_analysis_workflow.md](how_to_run_analysis_workflow.md)

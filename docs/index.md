@@ -23,6 +23,9 @@ setup to a first successful run:
 If you are using the wrapper entrypoint directly, continue with
 [How to run an analysis workflow](how_to_run_analysis_workflow.md).
 
+Do not start with the legacy pages at the bottom of this map unless you are
+reproducing an older workflow or need historical context.
+
 ## Workflow guides and reference
 
 - [How to run an analysis workflow](how_to_run_analysis_workflow.md) –
@@ -46,6 +49,15 @@ If you are using the wrapper entrypoint directly, continue with
 - [Datacard fitting workflow](fitting.md) – Canonical handoff from histogram
   production to datacard generation and Combine setup.
 
+If you only need one next stop after the primary path above:
+
+- choose [TaskVine workflow quickstart](taskvine_workflow.md) for distributed
+  execution
+- choose [How to run an analysis workflow](how_to_run_analysis_workflow.md) for
+  wrapper-first execution
+- choose [Run analysis configuration flow](run_analysis_configuration.md) for
+  YAML, CLI, and troubleshooting detail
+
 ## Metadata and scenario reference
 
 - [Run configuration dataclasses and metadata overview](dataclasses_and_metadata.md)
@@ -61,6 +73,8 @@ If you are using the wrapper entrypoint directly, continue with
 
 ## Troubleshooting and validation
 
+- [Run analysis configuration flow](run_analysis_configuration.md#troubleshooting-checklist)
+  – General troubleshooting checklist for workflow/configuration issues.
 - [Sample metadata reference](sample_metadata_reference.md) – First stop for
   malformed manifests, missing metadata keys, and sample-bookkeeping issues.
 - [Schema reference](schemas.md) – Check tuple ordering and schema expectations
@@ -102,3 +116,5 @@ If you are using the wrapper entrypoint directly, continue with
   appendix with extra tips beyond the primary quickstart path.
 - [Extreme events study notes](extreme_events_study.md) – Consolidated legacy
   notes for `analysis/extreme_events_study/`.
+
+These pages are archival and should not be used as the default onboarding path.
