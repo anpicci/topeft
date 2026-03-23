@@ -24,6 +24,7 @@ task.
 from __future__ import annotations
 
 from collections import OrderedDict
+from contextlib import contextmanager
 import getpass
 import gzip
 import importlib
@@ -31,12 +32,15 @@ import json
 import logging
 import os
 import shutil
+import subprocess
+import sys
 import tempfile
 import time
+import traceback
 import warnings
 from collections import OrderedDict
 from dataclasses import asdict, dataclass, field
-from functools import partial
+from functools import partial, wraps
 from pathlib import Path
 from typing import (
     TYPE_CHECKING,
@@ -68,11 +72,1099 @@ from topeft.modules.executor import (
     resolve_environment_file,
     taskvine_log_configurator,
 )
+from topeft.modules import remote_environment as topeft_remote_environment
 from topeft.modules.logging_config import dev_debug_enabled
 from topeft.modules.runner_output import normalise_runner_output, tuple_dict_stats
 
 logger = logging.getLogger(__name__)
 _DEV_DEBUG = dev_debug_enabled()
+_DEFAULT_DDR_CERT_PROBE_URL = (
+    "root://cmsxrootd.crc.nd.edu//store/user/awightma/skims/mc/new-lepMVA-v2/"
+    "central_bkgd_p5/fix_ext_stats_jsons/v1/UL18_WWW_4F/output_157.root"
+)
+
+
+@dataclass
+class DDRDebugContext:
+    enabled: bool = False
+    t0: Optional[float] = None
+    run_info_path: Optional[Path] = None
+
+
+def _resolve_run_info_paths(run_info_path: Path) -> Dict[str, str]:
+    run_info_root = Path(run_info_path)
+    most_recent_target: Optional[Path] = None
+    newest_run_info: Optional[Path] = None
+
+    most_recent_link = run_info_root / "most-recent"
+    try:
+        if most_recent_link.exists():
+            resolved = most_recent_link.resolve()
+            if resolved.is_dir():
+                most_recent_target = resolved
+    except Exception:
+        most_recent_target = None
+
+    if run_info_root.exists() and run_info_root.is_dir():
+        candidates: List[Path] = []
+        for entry in run_info_root.iterdir():
+            if not entry.is_dir():
+                continue
+            if entry.name in {"most-recent", "vine-cache"}:
+                continue
+            if entry.is_symlink():
+                continue
+            candidates.append(entry)
+        if candidates:
+            newest_run_info = max(candidates, key=lambda item: item.stat().st_mtime)
+
+    chosen_run_info = most_recent_target or newest_run_info
+    tx_most_recent = (
+        str(most_recent_target / "vine-logs" / "transactions")
+        if most_recent_target is not None
+        else "<none>"
+    )
+    tx_newest = (
+        str(newest_run_info / "vine-logs" / "transactions")
+        if newest_run_info is not None
+        else "<none>"
+    )
+    transactions_path = (
+        str(chosen_run_info / "vine-logs" / "transactions")
+        if chosen_run_info is not None
+        else "<none>"
+    )
+    return {
+        "run_info_path": str(run_info_root),
+        "most_recent": str(most_recent_target) if most_recent_target is not None else "<none>",
+        "tx_most_recent": tx_most_recent,
+        "newest_run_info": str(newest_run_info) if newest_run_info is not None else "<none>",
+        "tx_newest": tx_newest,
+        "transactions_path": transactions_path,
+    }
+
+
+def _count_transaction_tokens(transactions_path: Path) -> Tuple[int, int, int]:
+    if not transactions_path.exists() or not transactions_path.is_file():
+        return (0, 0, 0)
+
+    category_lines = 0
+    processing_tokens = 0
+    accumulating_tokens = 0
+    with transactions_path.open("r", encoding="utf-8", errors="replace") as handle:
+        for line in handle:
+            if "CATEGORY " in line:
+                category_lines += 1
+            processing_tokens += line.count("processing#")
+            accumulating_tokens += line.count("accumulating#")
+    return category_lines, processing_tokens, accumulating_tokens
+
+
+def _emit_transactions_snapshot(context: str, *, debug: DDRDebugContext) -> None:
+    if not debug.enabled:
+        return
+    if debug.run_info_path is None:
+        _ddr_debug_emit(
+            f"transactions_snapshot context={context} run_info_path=<none>",
+            debug=debug,
+            include_paths=False,
+        )
+        return
+
+    resolved_paths = _resolve_run_info_paths(debug.run_info_path)
+    tx_path_str = resolved_paths.get("transactions_path", "<none>")
+    tx_path = Path(tx_path_str) if tx_path_str != "<none>" else None
+    category_lines = 0
+    processing_tokens = 0
+    accumulating_tokens = 0
+    if tx_path is not None:
+        category_lines, processing_tokens, accumulating_tokens = _count_transaction_tokens(
+            tx_path
+        )
+
+    _ddr_debug_emit(
+        "transactions_snapshot "
+        f"context={context} "
+        f"final_transactions_path={tx_path_str} "
+        f"category_lines={category_lines} "
+        f"processing_tokens={processing_tokens} "
+        f"accumulating_tokens={accumulating_tokens}",
+        debug=debug,
+        include_paths=True,
+    )
+
+
+def _ddr_debug_emit(
+    message: str,
+    *,
+    debug: DDRDebugContext,
+    include_paths: bool = False,
+) -> None:
+    if not debug.enabled:
+        return
+    ts_unix = time.time()
+    if debug.t0 is None:
+        dt_text = "na"
+    else:
+        dt_text = f"{ts_unix - debug.t0:.3f}"
+    prefix = f"ts_unix={ts_unix:.3f} dt_since_ddr_start_s={dt_text}"
+    if debug.run_info_path is not None:
+        prefix += f" run_info_path={debug.run_info_path}"
+        if include_paths:
+            resolved_paths = _resolve_run_info_paths(debug.run_info_path)
+            prefix += (
+                f" most_recent={resolved_paths['most_recent']}"
+                f" tx_most_recent={resolved_paths['tx_most_recent']}"
+                f" newest_run_info={resolved_paths['newest_run_info']}"
+                f" tx_newest={resolved_paths['tx_newest']}"
+                f" transactions_path={resolved_paths['transactions_path']}"
+            )
+    print(f"[TOPEFT_DDR_DEBUG] {prefix} {message}", file=sys.stderr, flush=True)
+
+
+def _env_flag_enabled(name: str) -> bool:
+    value = os.environ.get(name)
+    if value is None:
+        return False
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _trim_probe_text(text: str, *, limit: int = 12000) -> str:
+    if len(text) <= limit:
+        return text
+    return f"{text[:limit]} ... <truncated {len(text) - limit} chars>"
+
+
+def _json_safe_payload(value: Any) -> Any:
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return value
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, Mapping):
+        return {str(key): _json_safe_payload(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [_json_safe_payload(item) for item in value]
+    return str(value)
+
+
+def _decode_probe_stream(raw: Any) -> str:
+    if raw is None:
+        return ""
+    if isinstance(raw, bytes):
+        return raw.decode("utf-8", errors="replace")
+    return str(raw)
+
+
+def _build_ddr_worker_probe_command() -> str:
+    return """set -eu
+echo "[DDR_WORKER_PROBE] whoami=$(whoami 2>/dev/null || true)"
+echo "[DDR_WORKER_PROBE] hostname=$(hostname 2>/dev/null || true)"
+echo "[DDR_WORKER_PROBE] pwd=$(pwd)"
+echo "[DDR_WORKER_PROBE] env_X509_USER_PROXY=${X509_USER_PROXY:-<unset>}"
+echo "[DDR_WORKER_PROBE] env_X509_CERT_DIR=${X509_CERT_DIR:-<unset>}"
+echo "[DDR_WORKER_PROBE] env_OASIS_CERTIFICATES=${OASIS_CERTIFICATES:-<unset>}"
+echo "[DDR_WORKER_PROBE] env_HOME=${HOME:-<unset>}"
+echo "[DDR_WORKER_PROBE] env_USER=${USER:-<unset>}"
+echo "[DDR_WORKER_PROBE] ls_cwd_begin"
+ls -lah || true
+echo "[DDR_WORKER_PROBE] ls_cwd_end"
+if [ -n "${X509_USER_PROXY:-}" ]; then
+  ls -lah "$X509_USER_PROXY" || true
+else
+  echo "[DDR_WORKER_PROBE] X509_USER_PROXY missing"
+fi
+ls -lah proxy.pem || true
+if [ -n "${X509_CERT_DIR:-}" ]; then
+  ls -lah "$X509_CERT_DIR" || true
+else
+  echo "[DDR_WORKER_PROBE] X509_CERT_DIR missing"
+fi
+ls -lah /cvmfs/oasis.opensciencegrid.org/mis/certificates || true
+echo "[DDR_WORKER_PROBE] which_xrdcp=$(command -v xrdcp || echo missing)"
+if command -v xrdcp >/dev/null 2>&1; then
+  xrdcp --version || true
+fi
+python - <<'PY'
+import os
+import traceback
+
+url = os.environ.get("TOPEFT_DDR_PROBE_URL", "").strip()
+print(f"[DDR_WORKER_PROBE] test_url={url or '<unset>'}")
+try:
+    import sys
+    print(f"[DDR_WORKER_PROBE] python={sys.executable}")
+except Exception:
+    pass
+
+if not url:
+    raise RuntimeError("TOPEFT_DDR_PROBE_URL is unset")
+
+try:
+    import uproot
+    tree = uproot.open(f"{url}:Events")
+    entries = int(getattr(tree, "num_entries"))
+    print(f"[DDR_WORKER_PROBE] uproot_open_ok=1 num_entries={entries}")
+except Exception as exc:
+    print(f"[DDR_WORKER_PROBE] uproot_open_ok=0 error={exc.__class__.__name__}: {exc}")
+    traceback.print_exc()
+    raise
+PY
+"""
+
+
+def _resolve_ddr_probe_report_path(run_info_path: Path) -> Path:
+    resolved = _resolve_run_info_paths(Path(run_info_path))
+    for key in ("newest_run_info", "most_recent"):
+        candidate = resolved.get(key, "<none>")
+        if candidate and candidate != "<none>":
+            base = Path(candidate)
+            logs_dir = base / "vine-logs"
+            if logs_dir.exists() and logs_dir.is_dir():
+                return logs_dir / "ddr_worker_probe.txt"
+            return base / "ddr_worker_probe.txt"
+    return Path(run_info_path) / "ddr_worker_probe.txt"
+
+
+def _resolve_ddr_probe_output_paths(run_info_path: Path) -> Dict[str, Path]:
+    report_path = _resolve_ddr_probe_report_path(run_info_path)
+    logs_dir = report_path.parent
+    return {
+        "report_path": report_path,
+        "stdout_path": logs_dir / "worker_probe.stdout",
+        "stderr_path": logs_dir / "worker_probe.stderr",
+    }
+
+
+def _write_ddr_probe_streams(
+    run_info_path: Path,
+    *,
+    stdout_text: str,
+    stderr_text: str,
+) -> Mapping[str, str]:
+    output_paths = _resolve_ddr_probe_output_paths(run_info_path)
+    stdout_path = output_paths["stdout_path"]
+    stderr_path = output_paths["stderr_path"]
+    stdout_path.parent.mkdir(parents=True, exist_ok=True)
+    stdout_path.write_text(stdout_text or "", encoding="utf-8")
+    stderr_path.write_text(stderr_text or "", encoding="utf-8")
+    return {
+        "stdout_path": str(stdout_path),
+        "stderr_path": str(stderr_path),
+    }
+
+
+def _write_ddr_probe_report(run_info_path: Path, payload: Mapping[str, Any]) -> Path:
+    output_path = _resolve_ddr_probe_output_paths(run_info_path)["report_path"]
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    safe_payload = _json_safe_payload(payload)
+    with output_path.open("w", encoding="utf-8") as handle:
+        handle.write("[DDR_WORKER_PROBE] begin\n")
+        for key in (
+            "status",
+            "successful",
+            "task_id",
+            "result",
+            "exit_code",
+            "hostname",
+            "stdout_path",
+            "stderr_path",
+        ):
+            if key in safe_payload:
+                handle.write(f"[DDR_WORKER_PROBE] {key}={safe_payload.get(key)}\n")
+        handle.write("[DDR_WORKER_PROBE] payload_json_begin\n")
+        json.dump(safe_payload, handle, indent=2, sort_keys=True)
+        handle.write("\n[DDR_WORKER_PROBE] payload_json_end\n")
+    return output_path
+
+
+def _run_ddr_worker_cert_probe_task(
+    manager: Any,
+    *,
+    extra_files: Sequence[str],
+    environment_variables: Mapping[str, str],
+    run_info_path: Path,
+    test_url: str,
+    timeout_seconds: int = 20,
+) -> Mapping[str, Any]:
+    import ndcctools.taskvine as vine
+
+    probe_command = _build_ddr_worker_probe_command()
+    task = vine.Task(probe_command)
+    task.set_tag("ddr-worker-cert-probe")
+    task.set_category("ddr-worker-cert-probe")
+    task.set_cores(1)
+    task.set_memory(1024)
+    task.set_disk(512)
+    task.set_time_max(max(60, int(timeout_seconds) * 3))
+
+    staging_errors: List[str] = []
+    for path in extra_files:
+        try:
+            declared = manager.declare_file(str(path), cache=True)
+            task.add_input(declared, Path(path).name)
+        except Exception as exc:
+            staging_errors.append(f"{path}: {exc.__class__.__name__}: {exc}")
+
+    for key, value in (environment_variables or {}).items():
+        task.set_env_var(str(key), str(value))
+    task.set_env_var("TOPEFT_DDR_PROBE_URL", str(test_url))
+    task.set_env_var("TOPEFT_DDR_PROBE_TIMEOUT", str(int(timeout_seconds)))
+
+    task_id = int(manager.submit(task))
+    deadline = time.time() + max(120, int(timeout_seconds) * 4)
+    completed_task = None
+    while time.time() < deadline:
+        candidate = manager.wait(5)
+        if candidate is None:
+            continue
+        if int(getattr(candidate, "id", -1)) != task_id:
+            continue
+        completed_task = candidate
+        break
+
+    result: Dict[str, Any] = {
+        "task_id": task_id,
+        "status": "timeout" if completed_task is None else "completed",
+        "command": probe_command,
+        "staging_errors": staging_errors,
+        "environment_variables": dict(environment_variables or {}),
+    }
+    if completed_task is None:
+        stream_paths = _write_ddr_probe_streams(
+            run_info_path,
+            stdout_text="",
+            stderr_text="",
+        )
+        result.update(stream_paths)
+        report_path = _write_ddr_probe_report(run_info_path, result)
+        result["report_path"] = str(report_path)
+        return result
+
+    result["successful"] = bool(completed_task.successful())
+    result["result"] = str(getattr(completed_task, "result", None))
+    result["exit_code"] = getattr(completed_task, "exit_code", None)
+    result["hostname"] = getattr(completed_task, "hostname", None)
+    stdout_raw = None
+    stderr_raw = None
+    try:
+        stdout_raw = completed_task.std_output
+    except Exception as exc:
+        result["std_output_error"] = f"{exc.__class__.__name__}: {exc}"
+    if stdout_raw is None:
+        try:
+            stdout_raw = completed_task.output
+        except Exception as exc:
+            result["output_error"] = f"{exc.__class__.__name__}: {exc}"
+    try:
+        stderr_raw = completed_task.std_error
+    except Exception:
+        stderr_raw = None
+
+    stdout_text = _trim_probe_text(_decode_probe_stream(stdout_raw), limit=200000)
+    stderr_text = _trim_probe_text(_decode_probe_stream(stderr_raw), limit=200000)
+    stream_paths = _write_ddr_probe_streams(
+        run_info_path,
+        stdout_text=stdout_text,
+        stderr_text=stderr_text,
+    )
+    result.update(stream_paths)
+    result["output_preview"] = _trim_probe_text(stdout_text, limit=12000)
+    if stderr_text:
+        result["stderr_preview"] = _trim_probe_text(stderr_text, limit=12000)
+
+    report_path = _write_ddr_probe_report(run_info_path, result)
+    result["report_path"] = str(report_path)
+    return result
+
+
+def _resolve_processor_file_path(processor: str | Path) -> Path:
+    """Resolve the configured processor module path to an existing ``.py`` file."""
+
+    raw_value = str(processor).strip() if processor is not None else ""
+    if not raw_value:
+        raise ValueError("Processor path is empty. Pass --processor <module.py>.")
+
+    candidate = Path(raw_value).expanduser()
+    if candidate.suffix.lower() != ".py":
+        raise ValueError(
+            f"Processor path must point to a .py file, received: {candidate}."
+        )
+
+    if candidate.is_absolute():
+        resolved = candidate.resolve()
+    else:
+        search_roots = (
+            Path.cwd(),
+            Path(__file__).resolve().parent,
+        )
+        resolved = None
+        for root in search_roots:
+            probe = (root / candidate).resolve()
+            if probe.exists():
+                resolved = probe
+                break
+        if resolved is None:
+            searched = ", ".join(str(root) for root in search_roots)
+            raise FileNotFoundError(
+                f"Processor file '{candidate}' was not found. Searched roots: {searched}."
+            )
+
+    if not resolved.exists() or not resolved.is_file():
+        raise FileNotFoundError(f"Processor file does not exist: {resolved}.")
+    return resolved
+
+
+def _load_processor_module_from_file(
+    processor_file: Path,
+    *,
+    required_symbol: str = "AnalysisProcessor",
+) -> Tuple[Any, str]:
+    """Import the processor module by filename stem and validate its symbol."""
+
+    module_name = processor_file.stem
+    module_dir = str(processor_file.parent)
+    if module_dir not in sys.path:
+        sys.path.insert(0, module_dir)
+
+    existing = sys.modules.get(module_name)
+    existing_file = getattr(existing, "__file__", None) if existing is not None else None
+    if existing_file:
+        try:
+            if Path(existing_file).resolve() != processor_file.resolve():
+                del sys.modules[module_name]
+        except Exception:
+            del sys.modules[module_name]
+
+    importlib.invalidate_caches()
+    try:
+        module = importlib.import_module(module_name)
+    except Exception as exc:
+        raise ImportError(
+            f"Failed to import processor module '{module_name}' from {processor_file}."
+        ) from exc
+
+    if not hasattr(module, required_symbol):
+        public_attrs = [name for name in dir(module) if not name.startswith("_")]
+        attr_preview = ", ".join(public_attrs[:20]) if public_attrs else "<none>"
+        raise AttributeError(
+            f"Processor module '{module_name}' from {processor_file} does not define "
+            f"'{required_symbol}'. Public attributes: {attr_preview}"
+        )
+
+    return module, module_name
+
+
+def _collect_processor_extra_files(processor_file: Path) -> List[str]:
+    """Collect processor-adjacent python files to stage with DDR tasks."""
+
+    processor_file = processor_file.resolve()
+    processor_dir = processor_file.parent
+    path_candidates: List[Path] = [processor_file]
+
+    for module_path in sorted(processor_dir.glob("analysis_processor*.py")):
+        if module_path.name == "__init__.py":
+            continue
+        path_candidates.append(module_path.resolve())
+
+    helpers_dir = processor_dir / "analysis_processor_helpers"
+    if helpers_dir.is_dir():
+        for helper_path in sorted(helpers_dir.rglob("*.py")):
+            if helper_path.name == "__init__.py":
+                continue
+            path_candidates.append(helper_path.resolve())
+
+    dedup_by_path: List[Path] = []
+    seen_paths: Set[Path] = set()
+    for path in path_candidates:
+        if path in seen_paths:
+            continue
+        seen_paths.add(path)
+        dedup_by_path.append(path)
+
+    staged_paths = [str(path) for path in dedup_by_path]
+    _validate_staged_basename_collisions(
+        staged_paths,
+        context="TaskVine DDR processor staging",
+    )
+
+    processor_file_str = str(processor_file)
+    ordered: List[str] = []
+    if processor_file_str in staged_paths:
+        ordered.append(processor_file_str)
+    ordered.extend(
+        path
+        for path in sorted(staged_paths, key=lambda item: Path(item).name)
+        if path != processor_file_str
+    )
+    return ordered
+
+
+def _canonical_staged_path(entry: str | Path) -> str:
+    return str(Path(entry).expanduser().resolve(strict=False))
+
+
+def _deduplicate_staged_paths(entries: Iterable[str | Path]) -> List[str]:
+    deduplicated: List[str] = []
+    seen: Set[str] = set()
+    for entry in entries:
+        canonical = _canonical_staged_path(entry)
+        if canonical in seen:
+            continue
+        seen.add(canonical)
+        deduplicated.append(canonical)
+    return deduplicated
+
+
+def _validate_staged_basename_collisions(
+    entries: Iterable[str | Path],
+    *,
+    context: str,
+) -> None:
+    basenames: Dict[str, Set[str]] = {}
+    for entry in entries:
+        canonical = _canonical_staged_path(entry)
+        basenames.setdefault(Path(canonical).name, set()).add(canonical)
+
+    collisions = {
+        basename: sorted(paths)
+        for basename, paths in basenames.items()
+        if len(paths) > 1
+    }
+    if not collisions:
+        return
+
+    lines = [
+        f"Basename collision detected in {context}.",
+        "TaskVine stages extra files by basename, so each staged file must have a unique filename.",
+    ]
+    for basename, paths in sorted(collisions.items()):
+        lines.append(f"basename={basename}")
+        lines.extend(f"  path={path}" for path in paths)
+    lines.append(
+        "Remediation: rename colliding files or move them so staged basenames are unique."
+    )
+    raise ValueError("\n".join(lines))
+
+
+def _safe_manager_call(manager: Any, attr: str) -> Any:
+    value = getattr(manager, attr, None)
+    if callable(value):
+        try:
+            return value()
+        except Exception:
+            return "<call-failed>"
+    return value
+
+
+def _summarize_ddr_input(data: Mapping[str, Any]) -> Tuple[int, int, Optional[int]]:
+    dataset_count = len(data)
+    total_files = 0
+    total_entries = 0
+    saw_entries = False
+    for dataset_specs in data.values():
+        files = dataset_specs.get("files") if isinstance(dataset_specs, Mapping) else None
+        if not isinstance(files, Mapping):
+            continue
+        total_files += len(files)
+        for file_info in files.values():
+            if not isinstance(file_info, Mapping):
+                continue
+            num_entries = file_info.get("num_entries")
+            if isinstance(num_entries, (int, float)) and not isinstance(num_entries, bool):
+                total_entries += int(num_entries)
+                saw_entries = True
+    return dataset_count, total_files, total_entries if saw_entries else None
+
+
+def _emit_ddr_knob_message(message: str, *, debug: DDRDebugContext) -> None:
+    if debug.enabled:
+        _ddr_debug_emit(message, debug=debug)
+        return
+    logger.info(message)
+
+
+@contextmanager
+def _ddr_debug_stage(
+    stage: str,
+    *,
+    debug: DDRDebugContext,
+    details: Optional[str] = None,
+) -> Iterator[None]:
+    """Emit begin/end markers for debug-only DDR stages."""
+
+    started = time.monotonic()
+    if debug.enabled:
+        suffix = f" {details}" if details else ""
+        _ddr_debug_emit(f"stage={stage} begin{suffix}", debug=debug, include_paths=True)
+
+    succeeded = False
+    try:
+        yield
+        succeeded = True
+    except Exception as exc:
+        if debug.enabled:
+            _ddr_debug_emit(
+                f"stage={stage} exception type={exc.__class__.__name__} message={exc}",
+                debug=debug,
+                include_paths=True,
+            )
+            traceback.print_exc(file=sys.stderr)
+        raise
+    finally:
+        if debug.enabled:
+            elapsed_seconds = time.monotonic() - started
+            status = "end" if succeeded else "end_error"
+            _ddr_debug_emit(
+                f"stage={stage} {status} elapsed_seconds={elapsed_seconds:.3f}",
+                debug=debug,
+                include_paths=True,
+            )
+
+
+def _parse_ddr_processor_slice(
+    raw_slice: str,
+    *,
+    debug: DDRDebugContext,
+) -> Optional[Tuple[Optional[int], Optional[int]]]:
+    """Parse ``TOPEFT_DDR_PROCESSOR_SLICE`` values of the form ``start:stop``."""
+
+    if ":" not in raw_slice:
+        _emit_ddr_knob_message(
+            "Ignoring TOPEFT_DDR_PROCESSOR_SLICE: expected 'start:stop' syntax, "
+            f"received {raw_slice!r}.",
+            debug=debug,
+        )
+        return None
+
+    start_text, stop_text = raw_slice.split(":", 1)
+    try:
+        start = int(start_text) if start_text.strip() else None
+        stop = int(stop_text) if stop_text.strip() else None
+    except ValueError:
+        _emit_ddr_knob_message(
+            "Ignoring TOPEFT_DDR_PROCESSOR_SLICE: non-integer bound in "
+            f"{raw_slice!r}.",
+            debug=debug,
+        )
+        return None
+
+    if start is not None and start < 0:
+        _emit_ddr_knob_message(
+            "Ignoring TOPEFT_DDR_PROCESSOR_SLICE: start must be >= 0, "
+            f"received {start}.",
+            debug=debug,
+        )
+        return None
+    if stop is not None and stop < 0:
+        _emit_ddr_knob_message(
+            "Ignoring TOPEFT_DDR_PROCESSOR_SLICE: stop must be >= 0, "
+            f"received {stop}.",
+            debug=debug,
+        )
+        return None
+
+    return start, stop
+
+
+def _apply_ddr_processor_subset(
+    processors: Mapping[str, Any],
+    *,
+    debug: DDRDebugContext,
+) -> Dict[str, Any]:
+    """Apply deterministic prefix/slice filtering to processor mappings.
+
+    Precedence is fixed as:
+    1) ``TOPEFT_DDR_PROCESSOR_KEY_PREFIX``
+    2) ``TOPEFT_DDR_PROCESSOR_SLICE``
+    3) ``TOPEFT_DDR_MAX_PROCESSORS`` (applied later by caller)
+    """
+
+    processors_dict = dict(processors)
+    raw_prefix = os.environ.get("TOPEFT_DDR_PROCESSOR_KEY_PREFIX")
+    raw_slice = os.environ.get("TOPEFT_DDR_PROCESSOR_SLICE")
+    if raw_prefix is None and raw_slice is None:
+        return processors_dict
+
+    sorted_items = sorted(processors_dict.items(), key=lambda item: str(item[0]))
+    original_count = len(sorted_items)
+    filtered_items = sorted_items
+
+    prefix_value = raw_prefix if raw_prefix is not None else None
+    if prefix_value is not None:
+        filtered_items = [
+            (key, value)
+            for key, value in filtered_items
+            if str(key).startswith(prefix_value)
+        ]
+    after_prefix_count = len(filtered_items)
+
+    applied_slice = None
+    if raw_slice is not None:
+        slice_spec = str(raw_slice).strip()
+        parsed_bounds = _parse_ddr_processor_slice(slice_spec, debug=debug)
+        if parsed_bounds is not None:
+            start, stop = parsed_bounds
+            filtered_items = filtered_items[slice(start, stop)]
+            applied_slice = slice_spec
+        else:
+            applied_slice = f"invalid:{slice_spec!r}"
+
+    after_slice_count = len(filtered_items)
+    first_keys = (
+        ", ".join(str(key) for key, _ in filtered_items[:5])
+        if filtered_items
+        else "<none>"
+    )
+    _emit_ddr_knob_message(
+        "Applied TOPEFT_DDR_PROCESSOR_SUBSET "
+        f"order=prefix->slice->max "
+        f"original={original_count} "
+        f"after_prefix={after_prefix_count} "
+        f"after_slice={after_slice_count} "
+        f"prefix={prefix_value!r} "
+        f"slice={applied_slice!r} "
+        f"first_keys=[{first_keys}]",
+        debug=debug,
+    )
+    return {key: value for key, value in filtered_items}
+
+
+def _format_ddr_task_label(task: Any) -> str:
+    if task is None:
+        return "<none>"
+    description = getattr(task, "description", None)
+    if callable(description):
+        try:
+            desc = str(description())
+        except Exception:
+            desc = "<description-failed>"
+    else:
+        desc = str(task)
+
+    task_dataset = getattr(getattr(task, "dataset", None), "name", None)
+    if task_dataset is not None:
+        desc = f"{desc} dataset={task_dataset}"
+    return desc
+
+
+def _wrap_ddr_stage_method(
+    original: Any,
+    *,
+    stage: str,
+    debug: DDRDebugContext,
+    details_getter: Optional[Any] = None,
+) -> Any:
+    """Wrap a DDR instance method with stage begin/end markers."""
+
+    @wraps(original)
+    def wrapped(instance, *args, **kwargs):
+        details_text = None
+        if callable(details_getter):
+            try:
+                details_text = details_getter(instance, args, kwargs)
+            except Exception as exc:
+                details_text = f"details_error={exc.__class__.__name__}:{exc}"
+
+        with _ddr_debug_stage(stage, debug=debug, details=details_text):
+            return original(instance, *args, **kwargs)
+
+    return wrapped
+
+
+def _wrap_ddr_generate_processing_args(
+    original: Any,
+    *,
+    debug: DDRDebugContext,
+) -> Any:
+    """Wrap ``generate_processing_args`` to expose task materialization boundaries."""
+
+    @wraps(original)
+    def wrapped(instance, datasets, *args, **kwargs):
+        dataset_count = len(datasets) if isinstance(datasets, Mapping) else "<unknown>"
+        with _ddr_debug_stage(
+            "task_materialization",
+            debug=debug,
+            details=f"datasets={dataset_count}",
+        ):
+            yielded = 0
+            try:
+                for item in original(instance, datasets, *args, **kwargs):
+                    yielded += 1
+                    if yielded <= 3 or yielded % 5000 == 0:
+                        if debug.enabled:
+                            processor_name = "<unknown>"
+                            dataset_name = "<unknown>"
+                            if isinstance(item, tuple) and len(item) >= 2:
+                                processor_name = str(getattr(item[0], "name", "<unknown>"))
+                                dataset_name = str(getattr(item[1], "name", "<unknown>"))
+                            _ddr_debug_emit(
+                                "stage=task_materialization yielded "
+                                f"count={yielded} processor={processor_name} dataset={dataset_name}",
+                                debug=debug,
+                            )
+                    yield item
+            except Exception as exc:
+                if debug.enabled:
+                    _ddr_debug_emit(
+                        "stage=task_materialization exception "
+                        f"type={exc.__class__.__name__} message={exc}",
+                        debug=debug,
+                    )
+                    traceback.print_exc(file=sys.stderr)
+                raise
+            finally:
+                if debug.enabled:
+                    _ddr_debug_emit(
+                        f"stage=task_materialization summary yielded={yielded}",
+                        debug=debug,
+                    )
+
+    return wrapped
+
+
+def _wrap_ddr_submit_method(
+    original: Any,
+    *,
+    debug: DDRDebugContext,
+) -> Any:
+    """Wrap ``submit`` to expose task submission boundaries with light rate limiting."""
+
+    @wraps(original)
+    def wrapped(instance, task, *args, **kwargs):
+        submit_calls = int(getattr(instance, "_topeft_ddr_submit_calls", 0)) + 1
+        setattr(instance, "_topeft_ddr_submit_calls", submit_calls)
+        should_emit = submit_calls <= 10 or submit_calls % 100 == 0
+        label = _format_ddr_task_label(task)
+
+        if should_emit and debug.enabled:
+            _ddr_debug_emit(
+                "stage=submission_to_manager begin "
+                f"submit_call={submit_calls} task={label}",
+                debug=debug,
+            )
+
+        try:
+            task_id = original(instance, task, *args, **kwargs)
+        except Exception as exc:
+            if debug.enabled:
+                _ddr_debug_emit(
+                    "stage=submission_to_manager exception "
+                    f"submit_call={submit_calls} task={label} "
+                    f"type={exc.__class__.__name__} message={exc}",
+                    debug=debug,
+                )
+                traceback.print_exc(file=sys.stderr)
+            raise
+
+        if should_emit and debug.enabled:
+            _ddr_debug_emit(
+                "stage=submission_to_manager end "
+                f"submit_call={submit_calls} task_id={task_id}",
+                debug=debug,
+            )
+        return task_id
+
+    return wrapped
+
+
+@contextmanager
+def _instrument_ddr_runtime_stages(
+    ddr_helpers: Any,
+    *,
+    debug: DDRDebugContext,
+) -> Iterator[None]:
+    """Temporarily instrument DDR internals for TOPEFT debug runs."""
+
+    if not debug.enabled:
+        yield
+        return
+
+    ddr_cls = getattr(ddr_helpers, "CoffeaDynamicDataReduction", None)
+    if ddr_cls is None:
+        _ddr_debug_emit(
+            "stage=runtime_instrumentation skipped reason=missing_CoffeaDynamicDataReduction",
+            debug=debug,
+        )
+        yield
+        return
+
+    patched_methods: List[Tuple[str, Any]] = []
+
+    def _patch(method_name: str, wrapper: Any) -> None:
+        original = getattr(ddr_cls, method_name, None)
+        if not callable(original):
+            _ddr_debug_emit(
+                f"stage=runtime_instrumentation missing_method={method_name}",
+                debug=debug,
+            )
+            return
+        setattr(ddr_cls, method_name, wrapper(original))
+        patched_methods.append((method_name, original))
+
+    _patch(
+        "_set_resources",
+        lambda original: _wrap_ddr_stage_method(
+            original,
+            stage="category_creation",
+            debug=debug,
+            details_getter=lambda instance, _args, _kwargs: (
+                f"datasets={len(instance.data.get('datasets', {}))}"
+            ),
+        ),
+    )
+    _patch(
+        "generate_processing_args",
+        lambda original: _wrap_ddr_generate_processing_args(original, debug=debug),
+    )
+    _patch(
+        "submit",
+        lambda original: _wrap_ddr_submit_method(original, debug=debug),
+    )
+    _patch(
+        "compute",
+        lambda original: _wrap_ddr_stage_method(
+            original,
+            stage="compute",
+            debug=debug,
+            details_getter=lambda instance, _args, _kwargs: (
+                f"processors={len(getattr(instance, 'processors', {}))} "
+                f"datasets={len(getattr(instance, 'data', {}).get('datasets', {}))}"
+            ),
+        ),
+    )
+
+    patched_names = ", ".join(name for name, _ in patched_methods) or "<none>"
+    _ddr_debug_emit(
+        f"stage=runtime_instrumentation begin patched_methods={patched_names}",
+        debug=debug,
+    )
+    try:
+        yield
+    finally:
+        for method_name, original in reversed(patched_methods):
+            setattr(ddr_cls, method_name, original)
+        _ddr_debug_emit("stage=runtime_instrumentation end", debug=debug)
+
+
+def _ddr_probe_processor(events, **_kwargs):
+    return {"n_events": int(len(events))}
+
+
+def _build_ddr_probe_processor(*, debug: DDRDebugContext):
+    try:
+        from analysis.topeft_run2.run_processor_vineReduce_light import (
+            _build_probe_processor as _light_probe_builder,
+        )
+    except Exception as exc:
+        _emit_ddr_knob_message(
+            "TOPEFT_DDR_USE_PROBE_PROCESSOR=1: using local probe processor "
+            f"(light-runner import failed: {exc.__class__.__name__}: {exc})",
+            debug=debug,
+        )
+        return _ddr_probe_processor
+
+    try:
+        probe = _light_probe_builder()
+    except Exception as exc:
+        _emit_ddr_knob_message(
+            "TOPEFT_DDR_USE_PROBE_PROCESSOR=1: using local probe processor "
+            f"(light-runner builder failed: {exc.__class__.__name__}: {exc})",
+            debug=debug,
+        )
+        return _ddr_probe_processor
+
+    if not callable(probe):
+        _emit_ddr_knob_message(
+            "TOPEFT_DDR_USE_PROBE_PROCESSOR=1: using local probe processor "
+            "(light-runner probe is not callable)",
+            debug=debug,
+        )
+        return _ddr_probe_processor
+
+    _emit_ddr_knob_message(
+        "TOPEFT_DDR_USE_PROBE_PROCESSOR=1: using probe processor imported from light runner.",
+        debug=debug,
+    )
+    return probe
+
+
+def _apply_ddr_processor_limit(
+    processors: Mapping[str, Any],
+    *,
+    debug: DDRDebugContext,
+) -> Dict[str, Any]:
+    raw_limit = os.environ.get("TOPEFT_DDR_MAX_PROCESSORS")
+    processors_dict = dict(processors)
+    if raw_limit is None:
+        return processors_dict
+
+    raw_limit = str(raw_limit).strip()
+    try:
+        max_processors = int(raw_limit)
+    except ValueError:
+        _emit_ddr_knob_message(
+            "Ignoring TOPEFT_DDR_MAX_PROCESSORS: expected integer > 0, "
+            f"received {raw_limit!r}.",
+            debug=debug,
+        )
+        return processors_dict
+
+    if max_processors <= 0:
+        _emit_ddr_knob_message(
+            "Ignoring TOPEFT_DDR_MAX_PROCESSORS: expected integer > 0, "
+            f"received {max_processors}.",
+            debug=debug,
+        )
+        return processors_dict
+
+    sorted_keys = sorted(processors_dict)
+    limited_keys = sorted_keys[:max_processors]
+    limited = {key: processors_dict[key] for key in limited_keys}
+    first_keys = ", ".join(str(key) for key in limited_keys[:5]) if limited_keys else "<none>"
+    max_key_len = max((len(str(key)) for key in limited_keys), default=0)
+    _emit_ddr_knob_message(
+        "Applied TOPEFT_DDR_MAX_PROCESSORS "
+        f"original={len(processors_dict)} limited={len(limited)} "
+        f"first_keys=[{first_keys}] max_key_len={max_key_len}",
+        debug=debug,
+    )
+    return limited
+
+
+def _emit_ddr_processor_key_sanity(
+    processors: Mapping[str, Any],
+    *,
+    debug: DDRDebugContext,
+) -> None:
+    if not debug.enabled:
+        return
+
+    keys = [str(key) for key in processors]
+    hash_keys = [key for key in keys if "#" in key]
+    newline_keys = [key for key in keys if ("\n" in key or "\r" in key)]
+    max_key_len = max((len(key) for key in keys), default=0)
+    _ddr_debug_emit(
+        "processor_key_sanity "
+        f"total={len(keys)} "
+        f"keys_with_hash={len(hash_keys)} "
+        f"keys_with_newline={len(newline_keys)} "
+        f"max_key_len={max_key_len}",
+        debug=debug,
+    )
+    if hash_keys:
+        _ddr_debug_emit(
+            "processor_key_sanity hash_examples="
+            + ", ".join(repr(key) for key in hash_keys[:3]),
+            debug=debug,
+        )
+    if newline_keys:
+        _ddr_debug_emit(
+            "processor_key_sanity newline_examples="
+            + ", ".join(repr(key) for key in newline_keys[:3]),
+            debug=debug,
+        )
 
 
 def _import_topcoffea_submodule(submodule: str):
@@ -183,6 +1275,15 @@ def _tuple_sort_key(key: Tuple[str, str, str, str, str]) -> Tuple[str, str, str,
     return tuple(str(piece) for piece in key)
 
 
+def _normalise_histogram_variable_name(value: Any) -> str:
+    """Normalise histogram variable labels for schema compatibility checks."""
+
+    variable = str(value)
+    if variable.endswith("_sumw2"):
+        return variable[: -len("_sumw2")]
+    return variable
+
+
 def flatten_ddr_output(
     ddr_payload: Mapping[str, Any],
     *,
@@ -242,10 +1343,12 @@ def flatten_ddr_output(
                     )
 
                 tuple_var, tuple_channel, tuple_application, tuple_sample, tuple_systematic = leaf_key
+                tuple_var_label = str(tuple_var)
+                tuple_var_normalized = _normalise_histogram_variable_name(tuple_var_label)
                 tuple_systematic_label = _normalise_systematic_label(tuple_systematic)
                 if (
                     str(tuple_channel) != key_channel
-                    or str(tuple_var) != key_var
+                    or tuple_var_normalized != key_var
                     or str(tuple_application) != key_application
                     or tuple_systematic_label != key_systematic
                 ):
@@ -259,13 +1362,13 @@ def flatten_ddr_output(
                     target_key = (
                         sample_label,
                         str(tuple_channel),
-                        str(tuple_var),
+                        tuple_var_label,
                         str(tuple_application),
                         tuple_systematic_label,
                     )
                 else:
                     target_key = (
-                        str(tuple_var),
+                        tuple_var_label,
                         str(tuple_channel),
                         str(tuple_application),
                         sample_label,
@@ -355,6 +1458,7 @@ def stage_ddr_proxy(proxy_path: str, *, staging_dir: Path) -> Path:
     staging_dir.mkdir(parents=True, exist_ok=True)
     staged_proxy = staging_dir / "proxy.pem"
     shutil.copyfile(source_path, staged_proxy)
+    os.chmod(staged_proxy, 0o600)
     return staged_proxy
 
 
@@ -393,8 +1497,41 @@ class TaskVineContext:
     logs_dir: Path
     manager_name: Optional[str]
     manager_template: Optional[str]
+    manager_source: str
     environment_file: Optional[str]
     extra_input_files: Tuple[str, ...]
+
+
+def resolve_taskvine_manager_project_name_with_source(
+    *,
+    configured_manager_name: Optional[str],
+    default_manager_name: str,
+) -> Tuple[str, str]:
+    """Resolve the TaskVine project/manager name for std DDR runs.
+
+    Priority:
+    1. Configured manager name from CLI/YAML options.
+    2. Existing default manager name.
+    """
+
+    if configured_manager_name is not None:
+        candidate = str(configured_manager_name).strip()
+        if candidate:
+            return candidate, "config"
+
+    return default_manager_name, "default"
+
+
+def resolve_taskvine_manager_project_name(
+    *,
+    configured_manager_name: Optional[str],
+    default_manager_name: str,
+) -> str:
+    resolved_name, _ = resolve_taskvine_manager_project_name_with_source(
+        configured_manager_name=configured_manager_name,
+        default_manager_name=default_manager_name,
+    )
+    return resolved_name
 
 
 class ChannelPlanner:
@@ -940,7 +2077,7 @@ class ExecutorFactory:
 
     def __init__(self, config: RunConfig) -> None:
         self._config = config
-        self._remote_environment = topcoffea.modules.remote_environment
+        self._remote_environment = topeft_remote_environment
 
     def create_runner(self) -> Any:
         import coffea.processor as processor
@@ -1017,24 +2154,35 @@ class ExecutorFactory:
 
         raise ValueError(f"Unknown executor '{executor}'")
 
-    def taskvine_context(self, executor: str) -> TaskVineContext:
+    def taskvine_context(
+        self,
+        executor: str,
+        *,
+        processor_path: Optional[Path] = None,
+        use_environment_file: bool = True,
+    ) -> TaskVineContext:
         """Return TaskVine/DDR runtime metadata derived from config."""
 
         port_range = parse_port_range(self._config.port)
         staging_dir = self._distributed_staging_dir(executor)
         logs_dir = self._executor_logs_dir(executor, staging_dir)
         manager_default = self._manager_name_base(executor)
-        manager_name = self._config.manager_name or manager_default
+        manager_name, manager_source = resolve_taskvine_manager_project_name_with_source(
+            configured_manager_name=self._config.manager_name,
+            default_manager_name=manager_default,
+        )
         manager_template = self._config.manager_name_template
         if manager_template is None and manager_name:
             manager_template = f"{manager_name}-{{pid}}"
-        environment_file = resolve_environment_file(
-            self._config.environment_file,
-            self._remote_environment,
-            extra_pip_local={"topeft": ["topeft", "setup.py"]},
-            extra_conda=["pyyaml"],
+        environment_file: Optional[str] = None
+        if use_environment_file:
+            environment_file = resolve_environment_file(
+                self._config.environment_file,
+                self._remote_environment,
+            )
+        extra_input_files = tuple(
+            self._processor_extra_input_files(processor_path=processor_path)
         )
-        extra_input_files = tuple(self._processor_extra_input_files())
         return TaskVineContext(
             executor=executor,
             port_range=port_range,
@@ -1042,6 +2190,7 @@ class ExecutorFactory:
             logs_dir=logs_dir,
             manager_name=manager_name,
             manager_template=manager_template,
+            manager_source=manager_source,
             environment_file=environment_file,
             extra_input_files=extra_input_files,
         )
@@ -1076,35 +2225,10 @@ class ExecutorFactory:
         logs_dir.mkdir(parents=True, exist_ok=True)
         return logs_dir
 
-    def _processor_extra_input_files(self) -> list[str]:
-        try:
-            package = importlib.import_module("analysis.topeft_run2")
-        except ImportError:
-            return ["analysis_processor.py"]
-
-        package_file = getattr(package, "__file__", None)
-        if not package_file:
-            return ["analysis_processor.py"]
-
-        package_dir = Path(package_file).resolve().parent
-        candidates: set[str] = set()
-
-        for module_path in sorted(package_dir.glob("analysis_processor*.py")):
-            if module_path.name == "__init__.py":
-                continue
-            candidates.add(module_path.relative_to(package_dir).as_posix())
-
-        helpers_dir = package_dir / "analysis_processor_helpers"
-        if helpers_dir.is_dir():
-            for helper_path in sorted(helpers_dir.rglob("*.py")):
-                if helper_path.name == "__init__.py":
-                    continue
-                candidates.add(helper_path.relative_to(package_dir).as_posix())
-
-        if not candidates:
-            candidates.add("analysis_processor.py")
-
-        return sorted(candidates)
+    def _processor_extra_input_files(self, *, processor_path: Optional[Path] = None) -> list[str]:
+        if processor_path is None:
+            processor_path = _resolve_processor_file_path(self._config.processor)
+        return _collect_processor_extra_files(processor_path)
 
 
 class RunWorkflow:
@@ -1319,8 +2443,13 @@ class RunWorkflow:
         golden_jsons: Mapping[str, str],
         ecut_threshold: Optional[float],
         analysis_processor_module: Any,
+        processor_file: Path,
+        processor_module_name: str,
         coffea_processor_module: Any,
     ) -> Mapping[str, Any]:
+        debug = DDRDebugContext(
+            enabled=bool(getattr(self._config, "ddr_debug", False))
+        )
         try:
             ddr_helpers = topcoffea.modules.dynamic_data_reduction
         except (ImportError, AttributeError) as exc:  # pragma: no cover - dependency guard
@@ -1331,19 +2460,37 @@ class RunWorkflow:
 
         from coffea.nanoevents import NanoAODSchema
 
-        context = self._executor_factory.taskvine_context("taskvine")
+        context = self._executor_factory.taskvine_context(
+            "taskvine",
+            processor_path=processor_file,
+        )
         data = ddr_helpers.build_ddr_data_from_flist(
             flist,
             object_path=self._config.treename or "Events",
         )
-        processors = self._build_ddr_processors(
-            histogram_plan=histogram_plan,
-            samplesdict=samplesdict,
-            golden_jsons=golden_jsons,
-            analysis_processor_module=analysis_processor_module,
-            coffea_processor_module=coffea_processor_module,
-            ecut_threshold=ecut_threshold,
-        )
+        with _ddr_debug_stage(
+            "processor_map_build",
+            debug=debug,
+            details=f"histogram_tasks={len(histogram_plan.tasks)}",
+        ):
+            processors = self._build_ddr_processors(
+                histogram_plan=histogram_plan,
+                samplesdict=samplesdict,
+                golden_jsons=golden_jsons,
+                analysis_processor_module=analysis_processor_module,
+                coffea_processor_module=coffea_processor_module,
+                ecut_threshold=ecut_threshold,
+            )
+
+        with _ddr_debug_stage(
+            "processor_map_filter",
+            debug=debug,
+            details="order=prefix->slice->max->probe",
+        ):
+            processors = _apply_ddr_processor_subset(processors, debug=debug)
+            processors = _apply_ddr_processor_limit(processors, debug=debug)
+            if _env_flag_enabled("TOPEFT_DDR_USE_PROBE_PROCESSOR"):
+                processors = {"tensors": _build_ddr_probe_processor(debug=debug)}
         if not processors:
             logger.warning(
                 "TaskVine executor selected but no histogram tasks were constructed; returning empty output."
@@ -1351,7 +2498,30 @@ class RunWorkflow:
             return {}
 
         logger.info("[taskvine] Launching CoffeaDynamicDataReduction with %d processors", len(processors))
-        manager = self._create_ddr_manager(context)
+        run_info_path = context.staging_dir / "vine-run-info"
+        if debug.enabled:
+            debug.t0 = time.time()
+            debug.run_info_path = run_info_path
+            _ddr_debug_emit("ddr_debug_context begin", debug=debug, include_paths=True)
+        manager = self._create_ddr_manager(context, debug=debug)
+        if debug.enabled:
+            datasets_count, total_files, total_entries = _summarize_ddr_input(data)
+            _ddr_debug_emit(
+                "handoff manager_name="
+                f"{context.manager_name} "
+                f"manager_port={_safe_manager_call(manager, 'port')} "
+                f"staging_dir={context.staging_dir} "
+                f"run_info_path={run_info_path} "
+                f"workers_connected={_safe_manager_call(manager, 'workers_connected')} "
+                f"hungry={_safe_manager_call(manager, 'hungry')} "
+                f"empty={_safe_manager_call(manager, 'empty')} "
+                f"processors={len(processors)} "
+                f"datasets={datasets_count} "
+                f"total_files={total_files} "
+                f"total_entries={total_entries}",
+                debug=debug,
+                include_paths=True,
+            )
         log_configurator = taskvine_log_configurator(context.logs_dir)
         try:
             log_configurator(manager)
@@ -1375,7 +2545,9 @@ class RunWorkflow:
         resources_processing = (
             dict(self._config.ddr_resources_processing)
             if getattr(self._config, "ddr_resources_processing", None)
-            else {"cores": max(1, int(self._config.nworkers or 1))}
+            # Per-task TaskVine cores requests should stay small by default.
+            # Oversized defaults can make tasks unschedulable on many workers.
+            else {"cores": 1}
         )
         resources_accumulating = (
             dict(self._config.ddr_resources_accumulating)
@@ -1402,16 +2574,37 @@ class RunWorkflow:
             getattr(self._config, "ddr_environment_variables", {}) or {}
         )
         extra_files = list(context.extra_input_files)
+        processor_file_str = str(processor_file)
+        if processor_file_str not in extra_files:
+            extra_files.append(processor_file_str)
         staged_proxy_path: Optional[str] = None
+        ddr_x509_proxy_effective: Optional[str] = None
         if self._config.ddr_x509_proxy:
             staged_proxy = stage_ddr_proxy(
                 self._config.ddr_x509_proxy,
                 staging_dir=context.staging_dir,
             )
             staged_proxy_path = str(staged_proxy)
+            ddr_x509_proxy_effective = "proxy.pem"
             extra_files.append(staged_proxy_path)
-            if "X509_USER_PROXY" not in ddr_environment_variables:
-                ddr_environment_variables["X509_USER_PROXY"] = "proxy.pem"
+            # DDR tasks run in worker sandboxes where staged files are referenced by basename.
+            ddr_environment_variables["X509_USER_PROXY"] = ddr_x509_proxy_effective
+        extra_files = _deduplicate_staged_paths(extra_files)
+        _validate_staged_basename_collisions(
+            extra_files,
+            context="TaskVine DDR extra_files",
+        )
+        staged_sample_names = ", ".join(Path(path).name for path in extra_files[:8])
+        if len(extra_files) > 8:
+            staged_sample_names = f"{staged_sample_names}, ..."
+        logger.info(
+            "[taskvine] Model S processor: file=%s module=%s extra_files=%d processor_staged=%s staged_names=[%s]",
+            processor_file,
+            processor_module_name,
+            len(extra_files),
+            processor_file_str in extra_files,
+            staged_sample_names if staged_sample_names else "<none>",
+        )
 
         preprocess_kwargs = dict(
             getattr(self._config, "ddr_preprocess_kwargs", {}) or {}
@@ -1428,13 +2621,19 @@ class RunWorkflow:
             preprocess_kwargs["show_progress"] = bool(
                 self._config.ddr_preprocess_show_progress
             )
-        if staged_proxy_path:
-            preprocess_kwargs.setdefault("x509_proxy", staged_proxy_path)
-            if ddr_environment_variables:
-                preprocess_kwargs.setdefault(
-                    "environment_variables",
-                    dict(ddr_environment_variables),
-                )
+        if staged_proxy_path and ddr_x509_proxy_effective:
+            preprocess_kwargs["x509_proxy"] = ddr_x509_proxy_effective
+            preprocess_env = dict(
+                preprocess_kwargs.get("environment_variables", {}) or {}
+            )
+            preprocess_env.update(ddr_environment_variables)
+            preprocess_env["X509_USER_PROXY"] = ddr_x509_proxy_effective
+            preprocess_kwargs["environment_variables"] = preprocess_env
+        elif ddr_environment_variables:
+            preprocess_kwargs.setdefault(
+                "environment_variables",
+                dict(ddr_environment_variables),
+            )
 
         ddr_kwargs = dict(getattr(self._config, "ddr_kwargs", {}) or {})
         ddr_kwargs.setdefault(
@@ -1451,28 +2650,124 @@ class RunWorkflow:
             ddr_kwargs.setdefault("verbose", ddr_verbose)
         if ddr_environment_variables:
             ddr_kwargs.setdefault("environment_variables", ddr_environment_variables)
-        if staged_proxy_path:
-            ddr_kwargs.setdefault("x509_proxy", staged_proxy_path)
+        if staged_proxy_path and ddr_x509_proxy_effective:
+            ddr_kwargs["x509_proxy"] = ddr_x509_proxy_effective
+            ddr_env = dict(ddr_kwargs.get("environment_variables", {}) or {})
+            ddr_env["X509_USER_PROXY"] = ddr_x509_proxy_effective
+            ddr_kwargs["environment_variables"] = ddr_env
+        if debug.enabled:
+            proxy_staged_exists = (
+                int(Path(staged_proxy_path).exists()) if staged_proxy_path else 0
+            )
+            _ddr_debug_emit(
+                "proxy staging "
+                f"staging_dir={context.staging_dir} "
+                f"proxy_source={self._config.ddr_x509_proxy} "
+                f"proxy_staged_path={staged_proxy_path} "
+                f"proxy_staged_exists={proxy_staged_exists} "
+                f"ddr_x509_proxy_effective={ddr_x509_proxy_effective} "
+                f"x509_env={ddr_environment_variables.get('X509_USER_PROXY')}",
+                debug=debug,
+                include_paths=True,
+            )
+            _ddr_debug_emit(
+                "handoff paths "
+                f"preprocessed_data_path={preprocessed_data_path} "
+                f"save_preprocess_path={save_preprocess_path} "
+                f"results_dir={results_dir} "
+                f"processor_file={processor_file} "
+                f"processor_module={processor_module_name} "
+                f"extra_files={len(extra_files)} "
+                f"processor_staged={int(processor_file_str in extra_files)} "
+                f"has_staged_proxy={int(bool(staged_proxy_path))} "
+                f"ddr_x509_proxy_effective={ddr_x509_proxy_effective} "
+                f"resources_processing={ddr_kwargs.get('resources_processing')} "
+                f"resources_accumulating={ddr_kwargs.get('resources_accumulating')}",
+                debug=debug,
+                include_paths=True,
+            )
+            _emit_ddr_processor_key_sanity(processors, debug=debug)
+        probe_enabled = bool(getattr(self._config, "ddr_worker_probe_enabled", False))
+        if probe_enabled:
+            configured_url = getattr(self._config, "ddr_worker_probe_url", None)
+            probe_url = str(configured_url or _DEFAULT_DDR_CERT_PROBE_URL)
+            timeout_raw = getattr(self._config, "ddr_worker_probe_timeout", None)
+            if timeout_raw is None:
+                probe_timeout = 20
+            else:
+                probe_timeout = max(5, int(timeout_raw))
+            probe_env = dict(preprocess_kwargs.get("environment_variables", {}) or {})
+            probe_payload = _run_ddr_worker_cert_probe_task(
+                manager,
+                extra_files=extra_files,
+                environment_variables=probe_env,
+                run_info_path=run_info_path,
+                test_url=probe_url,
+                timeout_seconds=probe_timeout,
+            )
+            logger.info(
+                "[taskvine] DDR worker cert probe status=%s successful=%s report=%s",
+                probe_payload.get("status"),
+                probe_payload.get("successful"),
+                probe_payload.get("report_path"),
+            )
+            _ddr_debug_emit(
+                "worker cert probe "
+                f"status={probe_payload.get('status')} "
+                f"successful={probe_payload.get('successful')} "
+                f"report_path={probe_payload.get('report_path')} "
+                f"stdout_path={probe_payload.get('stdout_path')} "
+                f"stderr_path={probe_payload.get('stderr_path')} "
+                f"task_id={probe_payload.get('task_id')}",
+                debug=debug,
+                include_paths=True,
+            )
+            if probe_payload.get("staging_errors"):
+                logger.warning(
+                    "[taskvine] DDR worker cert probe staging_errors=%s",
+                    probe_payload.get("staging_errors"),
+                )
 
         try:
-            raw_output = ddr_helpers.run_ddr(
-                manager=manager,
-                data=data,
-                processors=processors,
-                schema=NanoAODSchema,
-                extra_files=extra_files,
-                tree_name=self._config.treename or "Events",
-                preprocessed_data_path=preprocessed_data_path,
-                save_preprocess_path=save_preprocess_path,
-                preprocess_kwargs=preprocess_kwargs or None,
-                ddr_kwargs=ddr_kwargs,
-            )
+            with _instrument_ddr_runtime_stages(ddr_helpers, debug=debug):
+                with _ddr_debug_stage(
+                    "compute_handoff",
+                    debug=debug,
+                    details=(
+                        f"processors={len(processors)} "
+                        f"datasets={len(data)} "
+                        f"manager={context.manager_name}"
+                    ),
+                ):
+                    raw_output = ddr_helpers.run_ddr(
+                        manager=manager,
+                        data=data,
+                        processors=processors,
+                        schema=NanoAODSchema,
+                        extra_files=extra_files,
+                        tree_name=self._config.treename or "Events",
+                        preprocessed_data_path=preprocessed_data_path,
+                        save_preprocess_path=save_preprocess_path,
+                        preprocess_kwargs=preprocess_kwargs or None,
+                        ddr_kwargs=ddr_kwargs,
+                    )
             return raw_output
         finally:
+            if debug.enabled:
+                _emit_transactions_snapshot(
+                    "finally_before_manager_shutdown",
+                    debug=debug,
+                )
             try:
-                manager.shutdown()
+                shutdown = getattr(manager, "shutdown", None)
+                if callable(shutdown):
+                    shutdown()
             except Exception:
                 logger.debug("DDR manager shutdown encountered an error", exc_info=True)
+            if debug.enabled:
+                _ddr_debug_emit("ddr_debug_context end", debug=debug, include_paths=True)
+            debug.t0 = None
+            debug.run_info_path = None
 
     def _build_ddr_processors(
         self,
@@ -1632,7 +2927,12 @@ class RunWorkflow:
         )
         return processors
 
-    def _create_ddr_manager(self, context: TaskVineContext) -> Any:
+    def _create_ddr_manager(
+        self,
+        context: TaskVineContext,
+        *,
+        debug: DDRDebugContext,
+    ) -> Any:
         import ndcctools.taskvine as vine
 
         port_min, port_max = context.port_range
@@ -1641,6 +2941,28 @@ class RunWorkflow:
         run_info_path.mkdir(parents=True, exist_ok=True)
 
         def _instantiate(port: int) -> Any:
+            _ddr_debug_emit(
+                "manager instantiate "
+                f"name={context.manager_name} "
+                f"port={port} "
+                f"staging_dir={staging_dir} "
+                f"run_info_path={run_info_path}",
+                debug=debug,
+            )
+            _ddr_debug_emit(
+                " ".join(
+                    (
+                        f"manager_project={context.manager_name}",
+                        f"manager_port={port}",
+                        f"manager_template={context.manager_template}",
+                        f"manager_source={context.manager_source}",
+                        f"staging_dir={staging_dir}",
+                        f"run_info={run_info_path}",
+                    )
+                ),
+                debug=debug,
+                include_paths=False,
+            )
             return vine.Manager(
                 port=port,
                 name=context.manager_name,
@@ -1677,7 +2999,6 @@ class RunWorkflow:
 
     def run(self) -> None:
         from topeft.modules.systematics import SystematicsHelper
-        from . import analysis_processor
         import coffea.processor as coffea_processor
 
         self._validate_config()
@@ -1746,6 +3067,15 @@ class RunWorkflow:
                 f"Unsupported executor mode '{executor_mode}'. Expected one of: {', '.join(LST_OF_KNOWN_EXECUTORS)}."
             )
         self._config.executor = executor_mode
+        processor_file = _resolve_processor_file_path(self._config.processor)
+        analysis_processor_module, processor_module_name = _load_processor_module_from_file(
+            processor_file
+        )
+        logger.info(
+            "Processor selection: file=%s module=%s",
+            processor_file,
+            processor_module_name,
+        )
 
         if executor_mode == "taskvine":
             ddr_output = self._execute_ddr(
@@ -1754,7 +3084,9 @@ class RunWorkflow:
                 flist=flist,
                 golden_jsons=golden_jsons,
                 ecut_threshold=ecut_threshold,
-                analysis_processor_module=analysis_processor,
+                analysis_processor_module=analysis_processor_module,
+                processor_file=processor_file,
+                processor_module_name=processor_module_name,
                 coffea_processor_module=coffea_processor,
             )
             output_schema = getattr(self._config, "ddr_output_schema", "flat")
@@ -1831,7 +3163,7 @@ class RunWorkflow:
                 task=task,
                 sample_dict=sample_dict,
                 channel_dict=channel_dict,
-                analysis_processor_module=analysis_processor,
+                analysis_processor_module=analysis_processor_module,
                 coffea_processor_module=coffea_processor,
                 golden_jsons=golden_jsons,
                 ecut_threshold=ecut_threshold,

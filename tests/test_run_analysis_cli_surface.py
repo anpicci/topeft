@@ -29,6 +29,26 @@ def test_run_analysis_help_omits_legacy_worker_flag() -> None:
     assert forbidden not in completed.stdout
 
 
+def test_run_analysis_help_includes_taskvine_ddr_driver_knobs() -> None:
+    script_path = _run_analysis_path()
+    completed = subprocess.run(
+        [sys.executable, str(script_path), "--help"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert "--taskvine-manager-name" in completed.stdout
+    assert "--taskvine-manager-name-template" in completed.stdout
+    assert "--taskvine-proxy-path" in completed.stdout
+    assert "--ddr-debug" in completed.stdout
+    assert "--ddr-worker-probe-enabled" in completed.stdout
+    assert "--driver-log-path" in completed.stdout
+    assert "--exit-marker-path" in completed.stdout
+    assert "--ddr-x509-proxy" not in completed.stdout
+    assert "--manager-name " not in completed.stdout
+    assert "--manager-name-template" not in completed.stdout
+
+
 def test_run_sow_help_includes_central_nworkers_flag() -> None:
     script_path = _run_sow_path()
     completed = subprocess.run(

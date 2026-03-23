@@ -7,6 +7,31 @@ The single metadata/scenario authority is
 `analysis/topeft_run2/metadata_authority.py`, with canonical scenario
 definitions in `analysis/metadata/run2_scenarios.yaml`.
 
+## Canonical invocation
+
+`run_analysis` is **not** an installed shell entrypoint in this workflow.
+Invoke the script through Python:
+
+```bash
+# From the topeft repository root
+"$PYTHON_ENV" analysis/topeft_run2/run_analysis.py --help
+```
+
+```bash
+# From analysis/topeft_run2
+cd analysis/topeft_run2
+"$PYTHON_ENV" run_analysis.py --help
+```
+
+Do not rely on `run_analysis --help`; that command is not the canonical entry.
+
+## Execution modes: YAML-only vs CLI-only
+
+- YAML-only mode: pass `--options path.yml[:profile]` and put all runtime knobs
+  (including `metadata`, `executor`, and TaskVine settings) in YAML.
+- CLI-only mode: omit `--options` and pass knobs directly on the command line.
+- No mixing: with `--options` present, other config flags are rejected.
+
 ## Options exclusivity rule
 
 When `--options <path[:profile]>` is present, options YAML is the single source
@@ -19,13 +44,21 @@ of truth.
 - Wrapper note: `analysis/topeft_run2/full_run.sh` is stricter and accepts only
   `--options` and `--help`.
 
-## CLI to YAML mapping
+## Metadata path authority
 
-Keys marked with `*` are accepted aliases for backward compatibility in YAML.
+Use `analysis/metadata/metadata.yml` for standard runs.
+
+- Relative metadata paths are resolved from the repository root.
+- Relative paths that resolve outside the repo root (for example via `..`) are
+  rejected.
+- Absolute metadata paths are allowed when you intentionally use an external
+  file.
+
+## CLI to YAML mapping
 
 | CLI flag(s) | YAML key(s) | Type after coercion | Default | Notes |
 | --- | --- | --- | --- | --- |
-| `jsonFiles` (positional) | `jsonFiles`, `json_files`* | list of strings | `[]` | Accepts one path, comma-separated string, or YAML list. |
+| `jsonFiles` (positional) | `jsonFiles` | list of strings | `[]` | Accepts one path, comma-separated string, or YAML list. |
 | `--options` | n/a (selector) | `path[:profile]` string | unset | Selects options file/profile. Not a `RunConfig` value by itself. |
 | `--prefix`, `-r` | `prefix` | string | `""` | Prefix/redirector applied during sample loading. |
 | `--executor`, `-x` | `executor` | string | `taskvine` | Supported: `taskvine`, `futures`, `iterative`. |
@@ -37,7 +70,7 @@ Keys marked with `*` are accepted aliases for backward compatibility in YAML.
 | `--outname`, `-o` | `outname` | string | `plotsTopEFT` | Output filename stem. |
 | `--outpath`, `-p` | `outpath` | string | `histos` | Output directory. |
 | `--treename` | `treename` | string | `Events` | Input tree name. |
-| `--metadata` | `metadata`, `metadata_path`* | optional string | `None` | CLI metadata path. Forbidden when `--options` is supplied. |
+| `--metadata` | `metadata` | optional string | `None` | CLI metadata path. Use `analysis/metadata/metadata.yml` for the standard bundle. Relative paths are repo-root-relative and may not resolve outside the repo root; absolute paths remain allowed. Forbidden when `--options` is supplied. |
 | `--scenario` (repeatable) | `scenarios` | list of strings | `TOP_22_006` when unset | Scenario names resolved through `metadata_authority`. |
 | `--allow-partial-channel-groups` | `allow_partial_channel_groups` | bool | `false` | When true, missing scenario channel groups do not fail run construction. |
 | `--skip-sr` | `skip_sr` | bool | `false` | Skip signal-region channels. |
@@ -54,13 +87,13 @@ Keys marked with `*` are accepted aliases for backward compatibility in YAML.
 | `--do-renormfact-envelope` | `do_renormfact_envelope` | bool | `false` | Requires `do_np` and `do_systs`. |
 | `--port` | `port` | string | `9123-9130` | TaskVine manager port/range. |
 | `--no-port-negotiation` | `negotiate_manager_port` | bool | negotiation enabled (`true`) | Flag disables fallback port negotiation. |
-| `--manager-name` | `manager_name` | optional string | `None` | Explicit TaskVine manager name. |
-| `--manager-name-template` | `manager_name_template` | optional string | `None` | Template with `{pid}` support. |
-| `--scratch-dir` | `scratch_dir`, `scratch_path`* | optional string | `None` | Shared staging directory for distributed execution. |
+| `--taskvine-manager-name` | `taskvine_manager_name` | optional string | `None` | Explicit TaskVine manager/project name. |
+| `--taskvine-manager-name-template` | `taskvine_manager_name_template` | optional string | `None` | Template with `{pid}` support for per-run materialization. |
+| `--scratch-dir` | `scratch_dir` | optional string | `None` | Shared staging directory for distributed execution. |
 | `--resource-monitor` | `resource_monitor` | optional string | `measure` | TaskVine resource monitor mode. |
 | `--resources-mode` | `resources_mode` | optional string | `auto` | TaskVine resource mode. |
-| `--environment-file` | `environment_file` | optional string | `cached` | Remote environment tarball selection (`cached`, `auto`, `none`, or path). |
-| `--no-environment-file` | `environment_file` | optional string | n/a | Alias for `--environment-file none`. |
+| `--environment-file` | `environment_file` | optional string | unset | Remote environment tarball selection (`cached`, `auto`, `none`, or path). For `executor=taskvine`, when this value is unset/empty the driver auto-builds a tarball and logs the resulting path before workflow launch. |
+| `--no-environment-file` | `environment_file` | optional string | n/a | Alias for `--environment-file none`. Invalid with `executor=taskvine` in `run_analysis.py`. |
 | `--taskvine-print-stdout`, `--no-taskvine-print-stdout` | `taskvine_print_stdout` | bool | `true` | Forward worker stdout to manager logs. |
 | `--futures-status`, `--no-futures-status` | `futures_status` | optional bool | `None` | Toggle futures progress status output. |
 | `--futures-tail-timeout` | `futures_tail_timeout` | optional int | `None` | Timeout for stalled futures tasks. |
@@ -77,7 +110,7 @@ Keys marked with `*` are accepted aliases for backward compatibility in YAML.
 | `--ddr-max-task-retries` | `ddr_max_task_retries` | optional int | `None` | Maximum DDR task retries. |
 | `--ddr-results-directory` | `ddr_results_directory` | optional string | `None` | Override DDR results directory path. |
 | `--ddr-verbose`, `--no-ddr-verbose` | `ddr_verbose` | optional bool | `None` | DDR-layer verbose logging toggle. |
-| `--ddr-x509-proxy` | `ddr_x509_proxy` | optional string | `None` | Proxy source path; staged as `proxy.pem` for workers. |
+| `--taskvine-proxy-path` | `taskvine_proxy_path` | optional string | `None` | Proxy source path; staged as `proxy.pem` for workers. |
 | `--ddr-preprocessed-data` | `ddr_preprocessed_data` | optional string | `None` | Reuse preprocess artifact and skip preprocess step. |
 | `--ddr-save-preprocess` | `ddr_save_preprocess` | optional string | `None` | Save preprocess artifact after preprocess step. |
 | `--ddr-auto-save-preprocess`, `--no-ddr-auto-save-preprocess` | `ddr_auto_save_preprocess` | bool | `true` | Auto-save preprocess artifact when reuse is not requested. |
@@ -98,3 +131,39 @@ for DDR internals (for example `ddr_resources_processing`,
 `ddr_environment_variables`, `ddr_preprocess_kwargs`, `ddr_kwargs`) when a
 profile needs settings that are intentionally not exposed as top-level CLI
 switches.
+
+## TaskVine worker-stdout knob (`taskvine_print_stdout`)
+
+- CLI flags: `--taskvine-print-stdout` / `--no-taskvine-print-stdout`
+- YAML key: `taskvine_print_stdout`
+- Definition and wiring:
+  - CLI surface is registered in `topeft/modules/executor_cli.py`
+  - YAML/CLI normalization flows through `analysis/topeft_run2/run_analysis_helpers.py`
+  - TaskVine executor creation consumes the value in `analysis/topeft_run2/workflow.py`
+    (`print_stdout=...`)
+
+Recommended values:
+- Smoke profiles: `taskvine_print_stdout: false` (smaller logs, faster review)
+- Worker-debug sessions: `taskvine_print_stdout: true`
+
+## TaskVine `environment_file` auto-build policy
+
+When `executor=taskvine` and `environment_file` resolves to an unset/empty
+value, `run_analysis.py` now follows one deterministic path:
+
+1. Log: `TaskVine environment_file not set; building environment tarball...`
+2. Build via the canonical `topeft.modules.remote_environment` helper.
+3. Log: `Built environment tarball at: <path>`
+4. Continue the run with `config.environment_file` set to that path.
+
+When `executor=taskvine`, explicit `environment_file=none` (including
+`--no-environment-file`) is rejected with exit code `2`. TaskVine workers
+require a Python environment tarball.
+
+Supported explicit TaskVine values remain:
+- Tarball path
+- `cached`
+- `auto`
+
+For reproducibility across repeated runs, explicitly setting
+`environment_file` in CLI or YAML remains recommended.

@@ -1,3 +1,4 @@
+# fullR2_run.yml
 # Preset configurations for the Run 2 SR/CR histogram production.
 #
 # The `defaults` section captures shared options, while individual profiles
@@ -37,12 +38,52 @@ profiles:
   cr:
     description: Control region histogram production (skip signal regions).
     jsonFiles:
-      - ../../input_samples/cfgs/mc_background_samples_cr_NDSkim.cfg
+      - ../../input_samples/cfgs/mc_background_samples_NDSkim_loc.cfg
     skip_sr: true
     split_lep_flavor: false
     executor: taskvine
-    # chunksize: 50
-    # nchunks: 1
+    chunksize: 5000
+    nchunks: 1
     outname: refact_250901_c1_CRs
-    log_level: none
-    environment_file: auto
+    environment_file: /users/apiccine/work/ChUpdate/topeft/topeft-envs/env_spec_2ae74f84_edit_HEAD.tar.gz
+    taskvine_proxy_path: /tmp/x509up_u241575
+
+  cr_smoke:
+    description: CU005BT standard CR smoke profile (YAML-only probe settings).
+    jsonFiles:
+      - ../../input_samples/cfgs/mc_background_samples_NDSkim_loc.cfg
+    skip_sr: true
+    split_lep_flavor: false
+    executor: taskvine
+    chunksize: 5000
+    nchunks: 1
+    outname: cu005bt_cr_smoke
+    environment_file: /users/apiccine/work/ChUpdate/topeft/topeft-envs/env_spec_2ae74f84_edit_HEAD.tar.gz
+    do_systs: false
+    taskvine_manager_name: apiccine-taskvine-proxydebug12-std-fullrun
+    taskvine_proxy_path: /tmp/x509up_u241575
+    taskvine_print_stdout: false
+    driver_log_path: /users/apiccine/work/ChUpdate/reports/prompt_CU005BT_fullrun.driver.log
+    exit_marker_path: /users/apiccine/work/ChUpdate/reports/prompt_CU005BT_fullrun.exit_marker
+    exit_debug: true
+
+  cr_cu005bn_fullrun:
+    description: CU005BN standard full_run.sh probe profile (YAML-only driver knobs).
+    jsonFiles:
+      - ../../input_samples/cfgs/mc_background_samples_NDSkim_loc.cfg
+    skip_sr: true
+    split_lep_flavor: false
+    executor: taskvine
+    chunksize: 5000
+    nchunks: 1
+    outname: cu005bn_std_fullrun
+    environment_file: /users/apiccine/work/ChUpdate/topeft/topeft-envs/env_spec_2ae74f84_edit_HEAD.tar.gz
+    log_level: debug
+    do_systs: false
+    taskvine_manager_name: apiccine-taskvine-proxydebug9-std-fullrun
+    taskvine_proxy_path: /tmp/x509up_u241575
+    ddr_debug: true
+    ddr_worker_probe_enabled: true
+    driver_log_path: /users/apiccine/work/ChUpdate/reports/prompt_CU005BN_fullrun.driver.log
+    exit_marker_path: /users/apiccine/work/ChUpdate/reports/prompt_CU005BN_fullrun.exit_marker
+    exit_debug: true

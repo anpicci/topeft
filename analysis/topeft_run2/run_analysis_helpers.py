@@ -42,6 +42,11 @@ DEFAULT_WEIGHT_VARIATIONS = [
 
 VALID_LOG_LEVELS = {"NONE", "INFO", "WARNING", "ERROR", "DEBUG"}
 VALID_LOG_LEVELS_DISPLAY = "none, info, warning, error, debug"
+LEGACY_TASKVINE_DDR_KNOB_KEYS: Dict[str, str] = {
+    "manager_name": "taskvine_manager_name",
+    "manager_name_template": "taskvine_manager_name_template",
+    "ddr_x509_proxy": "taskvine_proxy_path",
+}
 
 def normalize_sequence(value: Any) -> List[str]:
     """Flatten ``value`` into a list of strings."""
@@ -243,6 +248,21 @@ def coerce_environment_file(value: Any) -> Optional[str]:
     if isinstance(value, str) and value.strip().lower() == "auto":
         return "auto"
     return result
+
+
+def environment_file_is_explicit_none(value: Any) -> bool:
+    """Return ``True`` when ``value`` explicitly disables env shipping."""
+
+    if isinstance(value, bool):
+        return value is False
+    if value is None:
+        return True
+    if isinstance(value, str):
+        stripped = value.strip()
+        if not stripped:
+            return False
+        return stripped.lower() in {"none", "null", "false", "0", "off", "disable", "disabled"}
+    return False
 
 
 def coerce_optional_float(value: Any) -> Optional[float]:
@@ -514,6 +534,7 @@ class RunConfig:
     outname: str = "plotsTopEFT"
     outpath: str = "histos"
     treename: str = "Events"
+    processor: str = "analysis_processor.py"
     metadata_path: Optional[str] = None
     do_errors: bool = False
     do_systs: bool = False
@@ -528,6 +549,10 @@ class RunConfig:
     negotiate_manager_port: bool = True
     manager_name: Optional[str] = None
     manager_name_template: Optional[str] = None
+    ddr_debug: bool = False
+    ddr_worker_probe_enabled: bool = False
+    ddr_worker_probe_url: Optional[str] = None
+    ddr_worker_probe_timeout: Optional[int] = None
     scratch_dir: Optional[str] = None
     resource_monitor: Optional[str] = "measure"
     resources_mode: Optional[str] = "auto"
@@ -559,13 +584,17 @@ class RunConfig:
     summary_verbosity: str = "brief"
     log_level: Optional[str] = None
     log_tasks: bool = False
-    environment_file: Optional[str] = "cached"
+    environment_file: Optional[str] = None
+    environment_file_explicit_none: bool = False
     futures_status: Optional[bool] = None
     futures_tail_timeout: Optional[int] = None
     futures_memory: Optional[int] = None
     futures_prefetch: Optional[int] = 1
     futures_retries: int = 0
     futures_retry_wait: float = 5.0
+    driver_log_path: Optional[str] = None
+    exit_marker_path: Optional[str] = None
+    exit_debug: bool = False
     channel_groups_strict: bool = True
     options_profile: Optional[str] = None
     options_path: Optional[str] = None
@@ -600,6 +629,12 @@ class RunConfigBuilder:
             "outname": ("outname", lambda v: "" if v is None else str(v)),
             "outpath": ("outpath", lambda v: "" if v is None else str(v)),
             "treename": ("treename", lambda v: "" if v is None else str(v)),
+            "processor": (
+                "processor",
+                lambda v: "analysis_processor.py"
+                if v in (None, "") or str(v).strip() == ""
+                else str(v).strip(),
+            ),
             "metadata": (
                 "metadata_path",
                 lambda v: None if v in (None, "") else str(v),
@@ -629,8 +664,8 @@ class RunConfigBuilder:
                 "negotiate_manager_port",
                 coerce_bool,
             ),
-            "manager_name": ("manager_name", _coerce_optional_string),
-            "manager_name_template": (
+            "taskvine_manager_name": ("manager_name", _coerce_optional_string),
+            "taskvine_manager_name_template": (
                 "manager_name_template",
                 _coerce_optional_string,
             ),
@@ -639,6 +674,13 @@ class RunConfigBuilder:
             "resource_monitor": ("resource_monitor", _coerce_optional_string),
             "resources_mode": ("resources_mode", _coerce_optional_string),
             "taskvine_print_stdout": ("taskvine_print_stdout", coerce_bool),
+            "ddr_debug": ("ddr_debug", coerce_bool),
+            "ddr_worker_probe_enabled": ("ddr_worker_probe_enabled", coerce_bool),
+            "ddr_worker_probe_url": ("ddr_worker_probe_url", _coerce_optional_string),
+            "ddr_worker_probe_timeout": (
+                "ddr_worker_probe_timeout",
+                lambda v: coerce_int(v, allow_none=True),
+            ),
             "ddr_processor_key_delim": ("ddr_processor_key_delim", coerce_delimiter),
             "produce_sidecars": ("produce_sidecars", coerce_bool),
             "ddr_preserve_sidecars": ("ddr_preserve_sidecars", coerce_bool),
@@ -651,7 +693,6 @@ class RunConfigBuilder:
                 "ddr_step_size",
                 lambda v: coerce_int(v, allow_none=True),
             ),
-            "ddr_x509_proxy": ("ddr_x509_proxy", _coerce_optional_string),
             "ddr_preprocessed_data": ("ddr_preprocessed_data", _coerce_optional_string),
             "ddr_save_preprocess": ("ddr_save_preprocess", _coerce_optional_string),
             "ddr_auto_save_preprocess": (
@@ -679,7 +720,7 @@ class RunConfigBuilder:
                 _coerce_optional_string,
             ),
             "ddr_verbose": ("ddr_verbose", coerce_bool),
-            "ddr_x509_proxy": ("ddr_x509_proxy", _coerce_optional_string),
+            "taskvine_proxy_path": ("ddr_x509_proxy", _coerce_optional_string),
             "ddr_environment_variables": (
                 "ddr_environment_variables",
                 coerce_str_mapping,
@@ -729,15 +770,27 @@ class RunConfigBuilder:
                 "futures_retry_wait",
                 coerce_optional_float,
             ),
+            "driver_log_path": ("driver_log_path", _coerce_optional_string),
+            "exit_marker_path": ("exit_marker_path", _coerce_optional_string),
+            "exit_debug": ("exit_debug", coerce_bool),
         }
 
         def _apply_source(source: Mapping[str, Any]):
             for key, value in source.items():
+                if key in LEGACY_TASKVINE_DDR_KNOB_KEYS:
+                    raise KeyError(
+                        "Unsupported legacy options key "
+                        f"'{key}'. Use '{LEGACY_TASKVINE_DDR_KNOB_KEYS[key]}' instead."
+                    )
                 if key not in field_specs:
                     continue
                 field_name, coercer = field_specs[key]
                 coerced = coercer(value)
                 setattr(config, field_name, coerced)
+                if key == "environment_file":
+                    config.environment_file_explicit_none = environment_file_is_explicit_none(
+                        value
+                    )
 
         options_path: Optional[str] = None
         selected_profile: Optional[str] = None
@@ -827,6 +880,7 @@ class RunConfigBuilder:
                 "outname": "outname",
                 "outpath": "outpath",
                 "treename": "treename",
+                "processor": "processor",
                 "metadata": "metadata",
                 "do_errors": "do_errors",
                 "do_systs": "do_systs",
@@ -840,12 +894,16 @@ class RunConfigBuilder:
                 "ecut": "ecut",
                 "port": "port",
                 "negotiate_manager_port": "negotiate_manager_port",
-                "manager_name": "manager_name",
-                "manager_name_template": "manager_name_template",
+                "taskvine_manager_name": "taskvine_manager_name",
+                "taskvine_manager_name_template": "taskvine_manager_name_template",
                 "scratch_dir": "scratch_dir",
                 "resource_monitor": "resource_monitor",
                 "resources_mode": "resources_mode",
                 "taskvine_print_stdout": "taskvine_print_stdout",
+                "ddr_debug": "ddr_debug",
+                "ddr_worker_probe_enabled": "ddr_worker_probe_enabled",
+                "ddr_worker_probe_url": "ddr_worker_probe_url",
+                "ddr_worker_probe_timeout": "ddr_worker_probe_timeout",
                 "ddr_processor_key_delim": "ddr_processor_key_delim",
                 "produce_sidecars": "produce_sidecars",
                 "ddr_preserve_sidecars": "ddr_preserve_sidecars",
@@ -855,13 +913,16 @@ class RunConfigBuilder:
                 "ddr_max_task_retries": "ddr_max_task_retries",
                 "ddr_results_directory": "ddr_results_directory",
                 "ddr_verbose": "ddr_verbose",
-                "ddr_x509_proxy": "ddr_x509_proxy",
+                "taskvine_proxy_path": "taskvine_proxy_path",
                 "ddr_preprocessed_data": "ddr_preprocessed_data",
                 "ddr_save_preprocess": "ddr_save_preprocess",
                 "ddr_auto_save_preprocess": "ddr_auto_save_preprocess",
                 "ddr_preprocess_artifact": "ddr_preprocess_artifact",
                 "environment_file": "environment_file",
                 "log_level": "log_level",
+                "driver_log_path": "driver_log_path",
+                "exit_marker_path": "exit_marker_path",
+                "exit_debug": "exit_debug",
                 "futures_status": "futures_status",
                 "futures_tail_timeout": "futures_tail_timeout",
                 "futures_memory": "futures_memory",

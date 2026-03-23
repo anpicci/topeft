@@ -55,8 +55,9 @@ def resolve_environment_file(
         ``"none"``/``None`` disables shipping. Any other non-empty string is
         returned verbatim.
     remote_environment:
-        The :mod:`topcoffea.modules.remote_environment` module (or compatible)
-        used to materialise or locate the packaged archive.
+        The environment helper module (for example
+        :mod:`topeft.modules.remote_environment`) used to materialise or locate
+        the packaged archive.
     extra_pip_local, extra_conda:
         Forwarded to :func:`remote_environment.get_environment` when the
         ``"auto"`` path is requested.
@@ -81,7 +82,7 @@ def resolve_environment_file(
         if cached is None:
             raise FileNotFoundError(
                 "No cached remote environment tarball found. "
-                "Run 'python -m topcoffea.modules.remote_environment' to "
+                "Run 'python -m topeft.modules.remote_environment' to "
                 "materialise one or pass --environment-file auto to build "
                 "on demand."
             )
@@ -378,4 +379,3 @@ def futures_runner_overrides(
         overrides["prefetch"] = int(prefetch)
 
     return overrides
-

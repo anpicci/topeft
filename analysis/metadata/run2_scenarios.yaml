@@ -1,3 +1,4 @@
+# run2_scenarios.yaml
 # Run 2 scenario composition. This file is the single source of truth
 # for mapping high-level scenario names to channel groups. Each group
 # is defined in the canonical analysis/metadata/metadata.yml bundle.

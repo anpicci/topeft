@@ -63,11 +63,15 @@ python -c "from topcoffea.modules.remote_environment import get_environment; pri
 
 The returned path is exactly what the TaskVine executor passes via the
 `environment_file` argument.  Keep the archive under version control whenever you
-update the dependencies so other analysts can reuse the same package.  The
-``run_analysis.py`` CLI now defaults to ``--environment-file=cached`` so the
-workflow fails fast when the tarball has not been prepared.  Override the option
-with ``--environment-file auto`` if you want the script to rebuild the archive
-on demand instead.
+update the dependencies so other analysts can reuse the same package.  For
+`executor=taskvine`, `run_analysis.py` now auto-builds a tarball whenever
+`environment_file` is unset/empty and logs both the build trigger and the final
+path.  You can still set `environment_file` explicitly (`path`, `cached`, or
+`auto`) for reproducibility and policy control.
+
+`environment_file=none` (including `--no-environment-file`) is not supported
+for TaskVine in `run_analysis.py`; the run fails fast with exit code `2`
+because workers require a Python environment tarball.
 
 ## 3. Enable TaskVine in the workflow configuration
 
@@ -83,19 +87,39 @@ profiles:
     executor: taskvine
 ```
 
+Run invocations should call `run_analysis.py` through Python; `run_analysis`
+itself is not an installed entrypoint:
+
+```bash
+"$PYTHON_ENV" analysis/topeft_run2/run_analysis.py --help
+```
+
+```bash
+cd analysis/topeft_run2
+"$PYTHON_ENV" run_analysis.py --help
+```
+
+When launching via YAML (`--options path.yml[:profile]`), set metadata inside
+the YAML profile using the canonical repo-root-relative path:
+`analysis/metadata/metadata.yml`.
+
 The [`run_analysis.py` CLI and YAML reference](run_analysis_cli_reference.md)
 documents every distributed-execution flag, including helper attributes such as
-`manager_name_template`, `environment_file`, and `resources_mode`. Worker
+`taskvine_manager_name_template`, `environment_file`, and `resources_mode`. Worker
 standard output is forwarded to the TaskVine manager logs by default—override
 this behaviour with `--no-taskvine-print-stdout` (or the YAML key
 `taskvine_print_stdout: false`) when you only want the structured processor logs
-to reach the terminal.
+to reach the terminal.  For smoke profiles, prefer
+`taskvine_print_stdout: false`; turn it back on only for worker-debug sessions.
+The knob is defined at the CLI surface in `topeft/modules/executor_cli.py`,
+normalized by `analysis/topeft_run2/run_analysis_helpers.py`, and consumed in
+TaskVine runner creation in `analysis/topeft_run2/workflow.py`.
 
 ## 4. Submit a worker pool with the packaged environment
 
 When the workflow starts it advertises a manager name of the form
 `<user>-taskvine-coffea` (or a custom value passed through
-`--manager-name`).  Launch a worker pool that matches this identifier and stages
+`--taskvine-manager-name`). Launch a worker pool that matches this identifier and stages
 the tarball produced in step 2:
 
 ```bash

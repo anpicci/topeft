@@ -18,8 +18,18 @@ analysis/*/wq-executor-tmp-*
 analysis/*/wq-*.summary
 analysis/*/envs
 analysis/*/histos
+analysis/topeft_run2/vine-run-info/
+analysis/topeft_run2/proxy.pem
+analysis/topeft_run2/.__afs*
 conda_spec.yml
 topeft-envs/
+histos/
+reports/*.log
+reports/*.driver.log
+reports/*.exit_marker
+reports/*.shell_rc
+!reports/*.md
+!reports/*.patch
 
 # Project files
 .ropeproject
