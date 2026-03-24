@@ -68,6 +68,8 @@ config resolution. This is informational only and helps auditing resolved values
 
 ## Related references
 
+- [Run analysis configuration flow](run_analysis_configuration.md) – Detailed
+  YAML, CLI, and troubleshooting guide once the wrapper contract is clear.
 - [Schema reference](schemas.md)
 - [DDR preprocess/proxy policy](ddr_preprocess_proxy_policy.md)
 - [Analysis processor data flow](analysis_processor_data_flow.md)

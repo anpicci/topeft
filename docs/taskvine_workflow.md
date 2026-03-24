@@ -1,7 +1,7 @@
 # TaskVine workflow quickstart
 
-TaskVine is the default distributed executor for `topeft`.  This guide threads
-together the full workflow so new analysts can bootstrap the Coffea 2025.7
+TaskVine is the default distributed executor for `topeft`. This guide covers
+the distributed-execution setup so analysts can bootstrap the Coffea 2025.7
 environment, package the tarball consumed by remote workers, and submit a
 matching worker pool.
 
