@@ -59,11 +59,11 @@ load a different file.
 
 | Metadata key | Controls | Processor impact |
 | --- | --- | --- |
-| ``channels.groups[].regions`` | Channel labels, subchannels, jet bins, tags, and application assignments. | Guides :class:`ChannelPlanner` when enumerating signal/control regions and annotating each Coffea task. |
-| ``channels.groups[].histogram_variables`` | Per-region include/exclude rules for histogram names. | Filters the :class:`HistogramPlanner` combinations so only approved variables are scheduled. |
-| ``variables`` | Histogram axis definitions, binning, and callable expressions. | Becomes the histogram catalogue consumed by :class:`AnalysisProcessor`. |
+| ``channels.groups[].regions`` | Channel labels, subchannels, jet bins, tags, and application assignments. | Guides `ChannelPlanner` when enumerating signal/control regions and annotating each Coffea task. |
+| ``channels.groups[].histogram_variables`` | Per-region include/exclude rules for histogram names. | Filters the `HistogramPlanner` combinations so only approved variables are scheduled. |
+| ``variables`` | Histogram axis definitions, binning, and callable expressions. | Becomes the histogram catalogue consumed by `AnalysisProcessor`. |
 | ``scenarios`` | Friendly scenario names mapped to channel groups. | Powers the ``--scenario`` CLI flag and YAML ``scenarios`` lists. |
-| ``systematics`` | Weight, object, and theory variations (with optional year or feature guards). | Supplies :func:`weight_variations_from_metadata` and the systematic helper with the variations to evaluate when ``do_systs`` is enabled. |
+| ``systematics`` | Weight, object, and theory variations (with optional year or feature guards). | Supplies `weight_variations_from_metadata(...)` and the systematic helper with the variations to evaluate when ``do_systs`` is enabled. |
 | ``golden_jsons`` | Year-indexed data-quality JSON files. | Enables automated golden JSON lookups when running over data samples. |
 
 When customising an analysis, clone the file rather than editing the baseline in
@@ -83,18 +83,18 @@ tweaking the Run 2 configuration knows where each dial is sourced.
 ## Overview of the configuration pipeline
 
 ``run_analysis.py`` executes the steps below when launched from the repository
-root::
+root:
 
     python analysis/topeft_run2/run_analysis.py \
         input_samples/sample_jsons/test_samples/UL17_private_ttH_for_CI.json \
         --options analysis/topeft_run2/configs/fullR2_run.yml:sr
 
-1. **Argument parsing** – :func:`analysis.topeft_run2.run_analysis.build_parser`
+1. **Argument parsing** – `analysis.topeft_run2.run_analysis.build_parser(...)`
    defines the CLI options that downstream helpers understand.  The parser keeps
    backwards compatibility with the historical ``jsonFiles`` positional argument
    while advertising the YAML-driven ``--options`` knob, which accepts either
    ``path.yml`` or ``path.yml:profile`` when you need a specific preset.
-2. **YAML overrides** – :class:`analysis.topeft_run2.run_analysis_helpers.RunConfigBuilder`
+2. **YAML overrides** – `analysis.topeft_run2.run_analysis_helpers.RunConfigBuilder`
    reads the options file (if provided) before evaluating CLI values.  The YAML
    supports three blocks:
 
@@ -120,24 +120,24 @@ root::
        the Run‑2 presets on your behalf.
 
 3. **Configuration normalization** – the builder converts all inputs into a
-   :class:`analysis.topeft_run2.run_analysis_helpers.RunConfig` dataclass.  The
+   `analysis.topeft_run2.run_analysis_helpers.RunConfig` dataclass.  The
    dataclass mirrors the traditional CLI options but guarantees consistent types
    (lists instead of comma separated strings, ``None`` for unset values, etc.).
-4. **Sample discovery** – :class:`analysis.topeft_run2.run_analysis_helpers.SampleLoader`
+4. **Sample discovery** – `analysis.topeft_run2.run_analysis_helpers.SampleLoader`
    expands positional inputs into concrete JSON files, parsing ``.cfg`` bundles
    and directories when necessary.  The loader attaches redirectors, validates
    files, and normalizes numeric metadata.  See the
    [sample metadata reference](sample_metadata_reference.md) for a manifest
    checklist and troubleshooting advice tailored to this stage.
-5. **Metadata planning** – :class:`analysis.topeft_run2.workflow.ChannelPlanner`
-   and :class:`analysis.topeft_run2.workflow.HistogramPlanner` translate the
+5. **Metadata planning** – `analysis.topeft_run2.workflow.ChannelPlanner`
+   and `analysis.topeft_run2.workflow.HistogramPlanner` translate the
    selected metadata scenarios and variable definitions into the list of
    histogram tasks.  This is where ``--scenario``, ``--skip-sr`` and similar
    knobs take effect.
-6. **Execution** – :class:`analysis.topeft_run2.workflow.ExecutorFactory`
+6. **Execution** – `analysis.topeft_run2.workflow.ExecutorFactory`
    instantiates the selected backend (``futures``, ``iterative`` or
    ``taskvine``).  Each histogram task yields an
-   :class:`analysis.topeft_run2.analysis_processor.AnalysisProcessor` instance
+   `analysis.topeft_run2.analysis_processor.AnalysisProcessor` instance
    configured for the corresponding sample and channel.  Progress is summarized
    according to ``summary_verbosity``—``"brief"`` prints bullet lists of the
    unique samples, channel/application pairs, variables, and systematics that
@@ -146,9 +146,9 @@ root::
    ``split_lep_flavor`` is active).  These details are optionally mirrored in
    the single-line ``log_tasks`` messages.
 
-The helpers are designed so that the resulting :class:`RunConfig` can be stored
+The helpers are designed so that the resulting `RunConfig` can be stored
 or passed around.  For example, the quickstart workflow returns the configuration
-it used so that you can plug the same object into :func:`run_workflow` later.
+it used so that you can plug the same object into `run_workflow(...)` later.
 
 ## CLI highlights
 
@@ -250,22 +250,22 @@ Systematic switches are managed collaboratively by the helpers:
 
 * ``RunConfig.do_systs`` enables systematic planning.  The builder honours YAML
   booleans (``true``/``false``) and CLI flags.
-* :func:`analysis.topeft_run2.run_analysis_helpers.weight_variations_from_metadata`
+* `analysis.topeft_run2.run_analysis_helpers.weight_variations_from_metadata(...)`
   inspects ``analysis/metadata/metadata.yml`` to identify all available sum-of-weight
   variations.  Supplying a YAML options file with a ``systematics`` block lets
   you add or restrict variations on a per-profile basis.
-* :class:`SampleLoader` makes the variations available on each sample entry so
-  that :class:`analysis.topeft_run2.workflow.RunWorkflow` can validate the
+* `SampleLoader` makes the variations available on each sample entry so
+  that `analysis.topeft_run2.workflow.RunWorkflow` can validate the
   metadata before any Coffea tasks are submitted.
-* :class:`analysis.topeft_run2.workflow.SystematicsHelper` (instantiated inside
+* `analysis.topeft_run2.workflow.SystematicsHelper` (instantiated inside
   the workflow) cross-references the metadata with the scenario-provided feature
   flags and the requested year, building the final structure that
-  :class:`AnalysisProcessor` consumes.
+  `AnalysisProcessor` consumes.
 
 When ``--do-renormfact-envelope`` is enabled, the workflow enforces the presence
 of ``--do-systs`` and ``--do-np`` because the renormalization/factorization
 envelope is only meaningful after the non-prompt application integrals are
-available.  These checks happen in :meth:`RunWorkflow._validate_config` so that
+available.  These checks happen in `RunWorkflow._validate_config(...)` so that
 misconfigurations fail fast.
 
 ## Key helpers and extension points
@@ -274,24 +274,24 @@ The table below summarises the most common extension hooks:
 
 | Helper | Responsibility | How to extend |
 | ------ | -------------- | ------------- |
-| :class:`RunConfigBuilder` | Merge CLI, defaults, and YAML into a :class:`RunConfig`. | Subclass the builder and override :meth:`build` to recognise additional YAML keys (for example, executor-specific settings).  The CLI parser can expose the same flag so that existing scripts keep working. |
-| :class:`SampleLoader` | Resolve JSON/CFG inputs and normalize metadata. | Provide a custom ``SampleLoader`` to support other manifest formats (for example, CSV).  The replacement object must offer ``collect`` and ``load`` methods returning the same structures. |
-| :class:`analysis.topeft_run2.workflow.ChannelPlanner` | Activate channels according to metadata scenarios. | Extend :class:`topeft.modules.channel_metadata.ChannelMetadataHelper` or wrap the planner to insert additional filters (for example, dropping jet categories). |
-| :class:`analysis.topeft_run2.workflow.HistogramPlanner` | Enumerate histogram combinations for execution. | Pass a custom planner that rewrites the histogram list (for example, sampling only a subset of variables) before the workflow starts the executor. |
-| :class:`analysis.topeft_run2.workflow.ExecutorFactory` | Configure the execution backend. | Supply a factory that sets up distributed resources (for example, a site-specific TaskVine profile).  The factory only needs to return an object with a ``create_runner`` method. |
-| :func:`analysis.topeft_run2.workflow.run_workflow` | Convenience wrapper mirroring the CLI. | Import the function and feed it the :class:`RunConfig` returned by the quickstart helpers when you want to programmatically drive the workflow from notebooks or scripts. |
+| `RunConfigBuilder` | Merge CLI, defaults, and YAML into a `RunConfig`. | Subclass the builder and override `build(...)` to recognise additional YAML keys (for example, executor-specific settings).  The CLI parser can expose the same flag so that existing scripts keep working. |
+| `SampleLoader` | Resolve JSON/CFG inputs and normalize metadata. | Provide a custom ``SampleLoader`` to support other manifest formats (for example, CSV).  The replacement object must offer ``collect`` and ``load`` methods returning the same structures. |
+| `analysis.topeft_run2.workflow.ChannelPlanner` | Activate channels according to metadata scenarios. | Extend `topeft.modules.channel_metadata.ChannelMetadataHelper` or wrap the planner to insert additional filters (for example, dropping jet categories). |
+| `analysis.topeft_run2.workflow.HistogramPlanner` | Enumerate histogram combinations for execution. | Pass a custom planner that rewrites the histogram list (for example, sampling only a subset of variables) before the workflow starts the executor. |
+| `analysis.topeft_run2.workflow.ExecutorFactory` | Configure the execution backend. | Supply a factory that sets up distributed resources (for example, a site-specific TaskVine profile).  The factory only needs to return an object with a ``create_runner`` method. |
+| `analysis.topeft_run2.workflow.run_workflow(...)` | Convenience wrapper mirroring the CLI. | Import the function and feed it the `RunConfig` returned by the quickstart helpers when you want to programmatically drive the workflow from notebooks or scripts. |
 
 ### Adding new configuration values
 
 1. Extend the CLI parser in ``run_analysis.py`` with the new flag.
-2. Update the ``field_specs`` mapping in :class:`RunConfigBuilder` so that the
-   value is recorded inside :class:`RunConfig`.  Reuse the existing coercion
+2. Update the ``field_specs`` mapping in `RunConfigBuilder` so that the
+   value is recorded inside `RunConfig`.  Reuse the existing coercion
    helpers when possible (``coerce_bool``, ``coerce_int`` or
    ``normalize_sequence``).
 3. Add documentation for the new key to the YAML options file used in your team
    and mention the knob in the quickstart walkthrough if it helps new users.
-4. Use the value in either :class:`RunWorkflow` or
-   :class:`AnalysisProcessor`.  Because :class:`RunConfig` is a dataclass, adding
+4. Use the value in either `RunWorkflow` or
+   `AnalysisProcessor`.  Because `RunConfig` is a dataclass, adding
    optional attributes is backwards compatible and automatically reflected in the
    quickstart return value.
 
@@ -314,7 +314,7 @@ switching executors once the run is ready to scale beyond the local machine.
   an error because only the local ``futures`` backend is configured for fast
   validation runs.  Drop the flag or switch executors when performing smoke tests
   on remote resources.
-* ``FileNotFoundError`` from :class:`SampleLoader` usually means that relative
+* ``FileNotFoundError`` from `SampleLoader` usually means that relative
   paths were provided.  Always invoke ``run_analysis.py`` from the repository
   root or supply absolute paths.
 * If histogram handling fails with an ``ImportError`` noting that

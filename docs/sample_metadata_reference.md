@@ -11,9 +11,9 @@ dataclasses used by the workflow, see the
 ## Required keys
 
 Every JSON manifest must provide the fields listed below.  The
-:class:`analysis.topeft_run2.run_analysis_helpers.SampleLoader` enforces types and
-fills defaults where appropriate during :func:`collect` and
-:func:`load`. 【F:analysis/topeft_run2/run_analysis_helpers.py†L183-L242】
+`analysis.topeft_run2.run_analysis_helpers.SampleLoader` enforces types and
+fills defaults where appropriate during `collect(...)` and
+`load(...)` (source: `analysis/topeft_run2/run_analysis_helpers.py`).
 
 | Key | Type | Purpose | Notes |
 | --- | ---- | ------- | ----- |
@@ -36,9 +36,9 @@ helpers or downstream plotting tools.
 When ``isData`` is ``false`` the loader will look for extra ``nSumOfWeights_*``
 entries that correspond to metadata-driven systematic variations.  The keys must
 match the variations extracted from ``analysis/metadata/metadata.yml`` via
-:func:`analysis.topeft_run2.run_analysis_helpers.weight_variations_from_metadata`.
+`analysis.topeft_run2.run_analysis_helpers.weight_variations_from_metadata(...)`.
 Any variation found in the JSON is converted to ``float`` before being attached
-to the sample record. 【F:analysis/topeft_run2/run_analysis_helpers.py†L232-L241】
+to the sample record (source: `analysis/topeft_run2/run_analysis_helpers.py`).
 The resulting payload is carried directly into the histogram planning
 dataclasses described in the
 [Run configuration dataclasses and metadata overview](dataclasses_and_metadata.md).
@@ -82,7 +82,7 @@ the variation from the metadata scenario or record the corresponding
 ``run_analysis.py`` and the quickstart helper accept ``--prefix`` (aliased as
 ``--redirector``) to prepend a URI before each file.  The loader stores the value
 under ``redirector`` and concatenates it with each entry in ``files`` when
-building the job list. 【F:analysis/topeft_run2/run_analysis_helpers.py†L198-L224】
+building the job list (source: `analysis/topeft_run2/run_analysis_helpers.py`).
 Use this mechanism whenever the JSON lists EOS or site-local paths that require
 XRootD access.
 
@@ -101,7 +101,7 @@ signal_samples.json
 
 Set ``isData`` to ``true`` for collision data.  In this mode the loader skips the
 optional systematic sums of weights and relies on the nominal ``nSumOfWeights``
-to be identical to ``nEvents``. 【F:analysis/topeft_run2/run_analysis_helpers.py†L232-L235】【F:input_samples/sample_jsons/data_samples/2018/MuonEG_A-UL2018_NDSkim.json†L1-L19】
+to be identical to ``nEvents`` (sources: `analysis/topeft_run2/run_analysis_helpers.py`, `input_samples/sample_jsons/data_samples/2018/MuonEG_A-UL2018_NDSkim.json`).
 A representative data manifest looks like:
 
 ```json
@@ -130,7 +130,7 @@ below outlines frequent failures and the quickest way to recover.
 
 | Error message | Root cause | Fix |
 | ------------- | ---------- | --- |
-| ``FileNotFoundError: Input file /path/to/sample.json not found!`` | The manifest path is relative to a different working directory or contains a typo. | Run the command from the repository root or switch to an absolute path.  When using ``.cfg`` bundles, prefer paths relative to the bundle itself. 【F:analysis/topeft_run2/run_analysis_helpers.py†L209-L228】 |
+| ``FileNotFoundError: Input file /path/to/sample.json not found!`` | The manifest path is relative to a different working directory or contains a typo. | Run the command from the repository root or switch to an absolute path.  When using ``.cfg`` bundles, prefer paths relative to the bundle itself (source: `analysis/topeft_run2/run_analysis_helpers.py`). |
 | ``Missing weight variation: nSumOfWeights_ISRUp`` | The metadata scenario requests ISR variations but the JSON omits the matching sum of weights. | Add the ``nSumOfWeights_ISRUp`` (and corresponding ``Down``) entries to the manifest or drop the variation from ``systematics`` in the metadata file. |
 | ``ValueError: Unsupported input type`` | A ``.cfg`` file references a non-JSON asset (for example, a TXT list). | Convert the list into JSON manifests or expand the ``.cfg`` to point directly at the ``.json`` files. |
 
