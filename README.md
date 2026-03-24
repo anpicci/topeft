@@ -4,216 +4,62 @@
 [![codecov](https://codecov.io/gh/TopEFT/topcoffea/branch/master/graph/badge.svg?token=U2DMI1C22F)](https://codecov.io/gh/TopEFT/topcoffea)
 
 # topeft
-Top quark EFT analyses using the Coffea framework
+
+`topeft` is the analysis and workflow repository for TopEFT Coffea-based runs.
+If you are a newcomer, analyst, or day-to-day operator, this is the repository
+to start with.
+
+`topeft` builds on the shared `topcoffea` library for corrections, executors,
+and common utilities. If you need shared-library internals, corrections logic,
+or cross-repository compatibility guidance, use the
+[`topcoffea` docs hub](https://github.com/TopEFT/topcoffea/blob/main/docs/index.md)
+and
+[`topcoffea/docs/topeft_integration.md`](https://github.com/TopEFT/topcoffea/blob/main/docs/topeft_integration.md).
 
 ## Start here
 
-New to the project? Start with the [workflow and YAML hub](docs/workflow_and_yaml_hub.md).  
-For day-to-day execution, use [How to run an analysis workflow](docs/how_to_run_analysis_workflow.md), which documents the options-only `full_run.sh` entrypoint and TaskVine DDR-first defaults. Consult [docs/index.md](docs/index.md) for the full documentation map.
+`docs/index.md` is the canonical documentation hub for this repository. For a
+newcomer, follow this path:
 
-## Repository contents
+1. [Workflow and YAML hub](docs/workflow_and_yaml_hub.md)
+2. [Run 2 quickstart pipeline](docs/quickstart_run2.md)
+3. [TaskVine workflow quickstart](docs/taskvine_workflow.md) for distributed
+   execution, or [How to run an analysis workflow](docs/how_to_run_analysis_workflow.md)
+   for the wrapper entrypoint
+4. [Run analysis configuration flow](docs/run_analysis_configuration.md) when
+   you need to tune YAML or CLI behavior
+5. [`run_analysis.py` CLI and YAML reference](docs/run_analysis_cli_reference.md)
 
-The `topeft/topeft` directory is installable as a Python package:
+## Choose your next guide
 
-- `topeft/topeft`: Core modules shipped with the package.
-- `pyproject.toml`: PEP 517 metadata describing dependencies and bundled data.
-- `topeft/setup.py`: Minimal shim for invoking the package build.
-- `topeft/analysis`: Analysis- and workflow-specific scripts (e.g. `analysis/topeft_run2`).
-- `topeft/tests`: Pytest suites (see [docs/developer/testing.md](docs/developer/testing.md) for details).
-- `topeft/input_samples`: Sample manifests and CFG bundles used by the workflows.
+- First run / newcomer: [Workflow and YAML hub](docs/workflow_and_yaml_hub.md)
+  and [Run 2 quickstart pipeline](docs/quickstart_run2.md)
+- Distributed execution / TaskVine: [TaskVine workflow quickstart](docs/taskvine_workflow.md)
+  and [Environment packaging](docs/environment_packaging.md)
+- Wrapper-driven execution: [How to run an analysis workflow](docs/how_to_run_analysis_workflow.md)
+- Configuration and workflow knobs: [Run analysis configuration flow](docs/run_analysis_configuration.md)
+  and [`run_analysis.py` CLI and YAML reference](docs/run_analysis_cli_reference.md)
+- Troubleshooting outputs, metadata, or schemas:
+  [Run analysis configuration flow](docs/run_analysis_configuration.md#troubleshooting-checklist),
+  [Sample metadata reference](docs/sample_metadata_reference.md), and
+  [DDR outputs and pickle structure](docs/ddr_outputs_and_pkl.md)
+- Architecture / maintainer context: [Workflow and processor reference](docs/analysis_processing.md)
+  and [Workflow module chain](docs/workflow_module_chain.md)
+- Developer verification: [Testing guide](docs/developer/testing.md)
+- Legacy / archival context: [Run 2 legacy notes](docs/run2_legacy_notes.md),
+  [TOP-22-006 script walkthrough](docs/quickstart_top22_006.md), and
+  [Run and plot quickstart](docs/run_and_plot_quickstart.md). These are not
+  part of the primary newcomer path.
 
-## Environment & dependencies
+## Documentation map
 
-The analysis relies on the shared `coffea2025` Conda environment and a sibling
-[`topcoffea`](https://github.com/TopEFT/topcoffea) checkout. The start-here hub
-summarises the setup steps and links to the TaskVine environment packaging guide.
-All CLI entry points validate that the installed `topcoffea` ref matches the
-coordinated ref expected for your run; for policy details, see
-`docs/topeft_integration.md` in the `topcoffea` repository.
+Use [docs/index.md](docs/index.md) as the authoritative docs map. The README is
+intentionally a landing page; detailed workflow, metadata, configuration,
+Troubleshooting, and archival material lives in the docs pages linked above.
 
-### HistEFT support
-
-The repository now expects the `topcoffea` package to be installed in the active
-environment instead of shipping a partial vendor copy. The upstream project still
-exposes `HistEFT` via `topcoffea.modules.histEFT`, so existing
-imports keep working once the dependency is installed. CI includes a smoke test
-that asserts `import topcoffea` resolves outside the `topeft` checkout—remove any
-stray `topcoffea/` directories under this repository and reinstall the sibling
-package (for example via `pip install -e /path/to/topcoffea`) if that guard
-triggers.
-
-## Related docs
-
-Explore the rest of the documentation via:
-
-- [Workflow & YAML hub](docs/workflow_and_yaml_hub.md) – start here.
-- [How to run an analysis workflow](docs/how_to_run_analysis_workflow.md) – options-first `full_run.sh` usage.
-- [Documentation index](docs/index.md) – curated doc tracks.
-- [Schema reference](docs/schemas.md) – canonical tuple/flat contracts and DDR flattening rules.
-- [TaskVine workflow quickstart](docs/taskvine_workflow.md) – distributed execution focus.
-- [Datacard fitting workflow](docs/fitting.md) – canonical datacard/fit handoff.
-- [Run 2 metadata scenarios](docs/run2_scenarios.md) – scenario definitions and validators.
-toggles, output names, and executor settings in a single place.
-
-#### Supported metadata scenarios
-
-The default metadata bundle matches the TOP-22-006 reinterpretation categories,
-but the YAML and CLI entry points can target additional scenarios defined in
-`analysis/metadata/metadata.yml`:
-
-- `TOP_22_006` – Baseline Run 2 reinterpretation with the shared control suite.
-- `tau_analysis` – Adds the tau-enriched signal/control regions needed for the
-  dedicated tau study.
-- `fwd_analysis` – Enables the forward-jet categories while reusing the common
-  control regions.
-
-Channel activation is controlled entirely by these scenario selections.  Scenarios
-can be combined by copying the relevant blocks in your YAML profile or—when
-running without `--options`—by passing `--scenario` multiple times on the CLI.
-Detailed instructions for running each bundle
-individually and mixing them in YAML are provided in the
-[Run 2 metadata scenarios guide](docs/run2_scenarios.md).  For a guided
-walkthrough of the Run 2 workflow—including environment setup, metadata
-bundles, and extended examples—see the [TOP-22-006 quickstart
-guide](docs/quickstart_top22_006.md) and the [Run 2 quickstart
-overview](docs/quickstart_run2.md).
-
-Additional reference material for the module structure and configuration helpers
-is available in the [analysis processing primer](docs/analysis_processing.md),
-the [YAML configuration guide](docs/run_analysis_configuration.md), and the
-[`run_analysis.py` CLI/YAML reference](docs/run_analysis_cli_reference.md).
-
-### Metadata configuration
-
-The Run 2 helpers, quickstarts, and processors all read from
-`analysis/metadata/metadata.yml`.  This YAML file is the single source of truth for
-which regions run, which histogram variables are kept, and which systematic
-variations are evaluated.  Key sections include:
-
-| Metadata key | Controls | Processor impact |
-| --- | --- | --- |
-| `channels.groups[].regions` | Channel definitions, lepton/jet binning, and application tags. | Drives channel activation inside `ChannelPlanner` and the per-task metadata passed to the Coffea processor. |
-| `channels.groups[].histogram_variables` | Include/exclude lists for variables per region. | Filters the histogram catalogue built by `HistogramPlanner` so the processor only schedules the variables you request. |
-| `variables` | Bin edges, labels, and callable definitions for histograms. | Supplies the axis configuration for every histogram task. |
-| `scenarios` | Scenario bundles that map friendly names to channel groups. | Enables CLI/YAML `--scenario` toggles and the quickstart presets. |
-| `systematics` | Weight and object variations (with optional year/scenario guards). | Determines which sum-of-weights keys and shape variations the processor evaluates when `--do-systs` is set. |
-| `golden_jsons` | Year-tagged certified-luminosity files. | Guides data-quality filtering when running over data JSONs. |
-
-When you need a custom configuration, copy the metadata file to a new name (for
-example `analysis/topeft_run2/configs/metadata_myteam.yml`) so your edits stay
-isolated.  Quickstart helpers can still consume the clone directly via their own
-`--metadata` flag, but `run_analysis.py` now resolves metadata solely through
-the scenario registry or YAML options files.  Add a `metadata:` entry to the
-profile you launch with `--options` so the override lives alongside the rest of
-your configuration knobs.  A minimal example profile looks like:
-
-```yaml
-# analysis/topeft_run2/configs/fullR2_run_myteam.yml
-metadata: configs/metadata_myteam.yml
-jsonFiles:
-  - ../../input_samples/sample_jsons/test_samples/UL17_private_ttH_for_CI.json
-scenarios:
-  - TOP_22_006
-```
-
-Run the custom configuration with:
-
-```bash
-python run_analysis.py --options analysis/topeft_run2/configs/fullR2_run_myteam.yml
-```
-
-The [metadata configuration guide](docs/run_analysis_configuration.md#metadata-configuration)
-expands on the available keys and shows how the planners consume them.
-
-### Migration note: scenario-only channel activation
-
-As of this release, the ``--channel-feature`` flag has been retired.  Channel
-activation is now driven entirely by the metadata scenarios documented in
-``analysis/metadata/metadata.yml``.  Use ``--scenario`` (either repeated on the
-command line or listed in a YAML profile) to enable the tau, forward, or other
-specialised selections.  The [Run 2 metadata scenarios guide](docs/run2_scenarios.md)
-collects end-to-end examples of the recommended combinations.
-
-If you prefer a minimal smoke test before running the full configuration,
-consider the quickstart helper:
-
-```bash
-python -m topeft.quickstart input_samples/sample_jsons/test_samples/UL17_private_ttH_for_CI.json \
-    --prefix root://cmsxrootd.fnal.gov/ \
-    --output quickstart-output
-```
-
-The helper resolves your samples, validates the requested scenario, and launches
-a short futures-based run.  Detailed explanations of each switch are covered in
-[docs/quickstart_run2.md](docs/quickstart_run2.md).  When you are ready to scale
-out, switch to the TaskVine executor described above so the packaged environment
-can be reused across distributed resources. See
-[docs/taskvine_workflow.md](docs/taskvine_workflow.md) for distributed-execution
-details.
-
-For local futures runs the CLI now exposes dedicated knobs for staging and
-recovery: ``--futures-prefetch`` limits the number of ROOT files staged per
-sample, ``--futures-retries``/``--futures-retry-wait`` control automatic
-resubmission, and ``--futures-status`` or ``--futures-tail-timeout`` let you
-adjust progress logging.  YAML profiles accept the same keys with underscores.
-See [docs/run_analysis_cli_reference.md](docs/run_analysis_cli_reference.md) and
-[docs/run_analysis_configuration.md](docs/run_analysis_configuration.md) for
-the canonical options reference and workflow recipes before handing jobs off to
-TaskVine.
-
-
-## How to contribute
-
-If you would like to push changes to the repo, please make a branch and open a PR and ensure that the CI passes. Note that if you are developing on a fork, the CodeCov CI will fail.
-
-Note, if your branch gets out of date as other PRs are merged into the master branch, you may need to merge those changes into your brnach and fix any conflicts prior to your PR being merged. 
-
-If your branch changes anything that is expected to causes the yields to change, please run the following to updated the reference yields:
-```bash
-cd analysis/topEFT/
-sh remake_ci_ref_yields.sh
-sh remake_ci_ref_datacard.sh
-```
-The first script remakes the reference `json` file for the yields, and the second remakes the reference `txt` file for the datacar maker. If you are sure these change are expected, commit and push them to the PR.
-
-## Testing
+## Testing and contributing
 
 Testing instructions are centralized in
-[docs/developer/testing.md](docs/developer/testing.md), which is the canonical
-source of truth for wrapper usage, pytest invocation, TaskVine-related test
-notes, and optional coverage flags.
-
-The file [tests/README.md](tests/README.md) is a stub that points to the same
-canonical page.
-
-
-
-## To reproduce the TOP-22-006 histograms and datacards
-
-The [v0.5 tag](https://github.com/TopEFT/topcoffea/releases/tag/v0.5) was used to produce the results in the TOP-22-006 paper.
-
-1. Run the processor to obtain the histograms (from the skimmed naod files).
-   The preserved presets live in ``analysis/topeft_run2/configs/fullR2_run.yml``;
-   launch them through the unified wrapper:
-
-    ```bash
-    cd analysis/topeft_run2
-    ./full_run.sh --options configs/fullR2_run.yml:cr
-    ```
-
-2. Run the datacard maker to obtain the cards and templates from SM (from the pickled histogram file produced in Step 1, be sure to use the version with the nonprompt estimation, i.e. the one with `_np` appended to the configured output stem). This step would also produce scalings-preselect.json file which the later version is necessary for IM workspace making. Note that command option `--wc-scalings` is not mandatory but to enforce the ordering of wcs in scalings. Add command `-A` to include all EFT templates in datacards for previous AAC model. Add option `-C` to run on condor.
-    ```
-    time python make_cards.py /path/to/your/examplename_np.pkl.gz --do-nuisance --var-lst lj0pt ptz -d /scratch365/you/somedir --unblind --do-mc-stat --wc-scalings cQQ1 cQei cQl3i cQlMi cQq11 cQq13 cQq81 cQq83 cQt1 cQt8 cbW cpQ3 cpQM cpt cptb ctG ctW ctZ ctei ctlSi ctlTi ctli ctp ctq1 ctq8 ctt1
-    ```
-
-3. Run the post-processing checks on the cards to look for any unexpected errors, to grab the right set of ptz and lj0pt templates/cards used in TOP-22-006, and to get final version of scalings.json file. The script will copy the relevant cards/templates/ and create the json file to a directory called `ptz-lj0pt_withSys` that it makes inside of the directory you pass that points to the cards and templates made in Step 2. This `ptz-lj0pt_withSys` is the directory that can be copied to wherever you plan to run the `combine` steps (e.g. PSI). Can also run this on condor with `-c`.
-    ```
-    time python datacards_post_processing.py /scratch365/you/somedir -s
-    ```
-
-4. Check the yields with `get_datacard_yields.py` script. This scrip will read the datacards in the directory produced in Step 3 and will dump the SM yields (summed over jet bins) to the screen (the text is formatted as a latex table). Use the `--unblind` option if you want to also see the data numbers.
-    ```
-    python get_datacard_yields.py /scratch365/you/somedir/ptz-lj0pt_withSys/ --unblind
-    ```
-
-5. Proceed to the [Steps for reproducing the "official" TOP-22-006 workspace](https://github.com/TopEFT/EFTFit#steps-for-reproducing-the-official-top-22-006-workspace) steps listed in the EFTFit Readme. Remember that in addition to the files cards and templates, you will also need the `selectedWCs.txt` file. 
+[docs/developer/testing.md](docs/developer/testing.md). For code changes, keep
+the `topeft` and `topcoffea` refs aligned, run the documented verification
+steps, and open a PR against the coordinated branch you are working on.

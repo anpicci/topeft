@@ -1,6 +1,13 @@
 # How to run an analysis workflow
 
-This is the operator-facing guide for current Run-2 execution.
+Use this page when you already know you want the
+`analysis/topeft_run2/full_run.sh` wrapper entrypoint. This is the
+wrapper/operator recipe for current Run-2 execution, not the primary newcomer
+quickstart and not the detailed configuration manual.
+
+If you are still orienting yourself, start with
+[workflow_and_yaml_hub.md](workflow_and_yaml_hub.md) or
+[quickstart_run2.md](quickstart_run2.md) first.
 
 ## Wrapper contract
 
@@ -61,6 +68,8 @@ config resolution. This is informational only and helps auditing resolved values
 
 ## Related references
 
+- [Run analysis configuration flow](run_analysis_configuration.md) – Detailed
+  YAML, CLI, and troubleshooting guide once the wrapper contract is clear.
 - [Schema reference](schemas.md)
 - [DDR preprocess/proxy policy](ddr_preprocess_proxy_policy.md)
 - [Analysis processor data flow](analysis_processor_data_flow.md)
