@@ -3,7 +3,7 @@
 Changes to `environment.yml` affect both local development setups and the
 archived environment shipped to remote workers. After editing the specification
 make sure the companion [`topcoffea`](https://github.com/TopEFT/topcoffea)
-package remains importable::
+package remains importable:
 
        python -c "import topcoffea"
 
@@ -64,14 +64,14 @@ Then run:
 These keep the wrapper's environment cleanup intact while still allowing
 one-line invocations for CI and local debugging.
 
-1. Recreate the local Conda environment so the lock file matches the new pins::
+1. Recreate the local Conda environment so the lock file matches the new pins:
 
        conda env update -f environment.yml --prune
 
    This command updates the existing `coffea2025` environment in-place and
    removes packages that are no longer required.
 
-2. Regenerate the packaged tarball that workflows submit to remote resources::
+2. Regenerate the packaged tarball that workflows submit to remote resources:
 
        python -m topcoffea.modules.remote_environment
 

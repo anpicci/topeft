@@ -13,19 +13,19 @@ The workflow persists configuration in the `RunConfig` dataclass introduced by
 default settings into immutable attributes (per [PEP 557](https://peps.python.org/pep-0557/))
 so downstream helpers can rely on consistent types and defaults.  Key fields
 capture input discovery, metadata switches, executor choices, and futures-tuning
-knobs that mirror the CLI flags. 【F:analysis/topeft_run2/run_analysis_helpers.py†L330-L371】
+knobs that mirror the CLI flags (source: `analysis/topeft_run2/run_analysis_helpers.py`).
 
 `RunConfigBuilder` is responsible for merging CLI namespaces, YAML option files,
 and default values.  The builder maps user-facing keys such as `--scenarios` or
 `metadata:` entries to the corresponding dataclass attributes, applying
 normalisation helpers (`coerce_bool`, `normalize_sequence`, etc.) before storing
-them. 【F:analysis/topeft_run2/run_analysis_helpers.py†L374-L467】  When the
+them (source: `analysis/topeft_run2/run_analysis_helpers.py`).  When the
 `--options` argument references a YAML document, the builder evaluates the
 `defaults`, `profiles`, and pass-through keys in order, making profile overlays
-behave predictably. 【F:analysis/topeft_run2/run_analysis_helpers.py†L491-L539】
+behave predictably (source: `analysis/topeft_run2/run_analysis_helpers.py`).
 If no YAML is provided, the builder falls back to CLI overrides, deduplicating
 scenario and Wilson-coefficient selections before returning the final
-configuration. 【F:analysis/topeft_run2/run_analysis_helpers.py†L541-L599】
+configuration (source: `analysis/topeft_run2/run_analysis_helpers.py`).
 
 Because `RunConfig` is a dataclass, existing code can call `dataclasses.asdict`
 for auditing or serialization, and new optional attributes can be added without
@@ -40,15 +40,15 @@ Histogram orchestration relies on a trio of frozen dataclasses declared in
 
 - `HistogramTask` captures the per-job inputs (sample name, clean channel,
   application, metadata and systematic availability) that will be fed into the
-  Coffea processor. 【F:analysis/topeft_run2/workflow.py†L293-L307】
+  Coffea processor (source: `analysis/topeft_run2/workflow.py`).
 - `HistogramCombination` records the `(sample, channel, variable, application,
-  systematic)` tuple for human-readable summaries. 【F:analysis/topeft_run2/workflow.py†L309-L317】
+  systematic)` tuple for human-readable summaries (source: `analysis/topeft_run2/workflow.py`).
 - `HistogramPlan` packages the final task list, the histogram names that were
-  activated, and the flattened summary for logging. 【F:analysis/topeft_run2/workflow.py†L320-L326】
+  activated, and the flattened summary for logging (source: `analysis/topeft_run2/workflow.py`).
 
 `HistogramPlanner` assembles these structures by crossing the selected metadata
 channels with variable definitions, available systematics, and sample-specific
-variations. 【F:analysis/topeft_run2/workflow.py†L329-L494】  During planning the
+variations (source: `analysis/topeft_run2/workflow.py`).  During planning the
 class honours channel-specific whitelists/blacklists, handles optional flavour
 splitting, and ensures that each combination is represented once in the summary.
 The resulting `HistogramPlan` is consumed by the executor factory, which keeps
@@ -60,14 +60,14 @@ Per-sample manifests are loaded via the `SampleLoader` helper.  During
 `load(...)` the helper enforces the required keys (`xsec`, `nEvents`,
 `nGenEvents`, `nSumOfWeights`, `files`, `histAxisName`, `treeName`, `year`, and
 `isData`) and coerces each value into the expected Python type before attaching a
-redirector prefix. 【F:analysis/topeft_run2/run_analysis_helpers.py†L202-L248】
+redirector prefix (source: `analysis/topeft_run2/run_analysis_helpers.py`).
 Any metadata-driven weight variations listed in the manifest are also coerced to
 floats so downstream code can perform numeric comparisons without additional
-parsing. 【F:analysis/topeft_run2/run_analysis_helpers.py†L243-L247】
+parsing (source: `analysis/topeft_run2/run_analysis_helpers.py`).
 
 The optional variation keys themselves are derived from the metadata YAML via
 `weight_variations_from_metadata`, which scans the `systematics` section for
-`sum_of_weights` entries. 【F:analysis/topeft_run2/run_analysis_helpers.py†L294-L327】
+`sum_of_weights` entries (source: `analysis/topeft_run2/run_analysis_helpers.py`).
 Supplying `--options` profiles that disable systematics or editing the metadata
 file therefore changes both the JSON validation rules and the systematic
 combinations enumerated later by `HistogramPlanner`.
@@ -81,10 +81,10 @@ The canonical metadata bundle (`analysis/metadata/metadata.yml`) contains severa
 sections that drive channel discovery and systematic planning:
 
 - `golden_jsons` maps each year to the luminosity mask used when running on
-  collision data. 【F:analysis/metadata/metadata.yml†L1-L7】
+  collision data (source: `analysis/metadata/metadata.yml`).
 - `channels.groups` defines scenario-specific region lists, including jet-bin
   expansions, histogram include/exclude lists, and separate application tags for
-  data vs. MC. 【F:analysis/metadata/metadata.yml†L9-L111】
+  data vs. MC (source: `analysis/metadata/metadata.yml`).
 - `variables` (further down in the file) describes histogram axes, binning, and
   callable expressions that populate the planner’s `variable_info` payloads.
 - Run‑2 scenario definitions live in `analysis/metadata/run2_scenarios.yaml` and
@@ -95,7 +95,7 @@ sections that drive channel discovery and systematic planning:
 
 `ChannelPlanner` resolves the requested scenarios into concrete region and
 feature selections, preserving metadata that the processor needs later.
-【F:analysis/topeft_run2/workflow.py†L76-L275】  The planner records per-channel
+(source: `analysis/topeft_run2/workflow.py`).  The planner records per-channel
 whitelists, blacklists, application tags, and flavour metadata, which are then
 consumed by `HistogramPlanner` when building each `HistogramTask`.
 
