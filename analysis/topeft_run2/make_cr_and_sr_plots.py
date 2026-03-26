@@ -1729,7 +1729,15 @@ def _apply_secondary_ticks(ax, axis="x"):
     axis_obj.set_minor_locator(FixedLocator(sorted(minor_ticks)))
 
 
-def _integrate_category(histogram, hist_cat, axes_to_integrate):
+def _integrate_category(
+    histogram,
+    hist_cat,
+    axes_to_integrate,
+    *,
+    region_name=None,
+    var_name=None,
+    hist_label="histogram",
+):
     """Integrate a histogram over the provided axes, returning None on failure."""
 
     if histogram is None:
@@ -1738,7 +1746,16 @@ def _integrate_category(histogram, hist_cat, axes_to_integrate):
     try:
         integrated = yt.integrate_out_appl(histogram, hist_cat)
         integrated = yt.integrate_out_cats(integrated, axes_to_integrate)[{"channel": sum}]
-    except Exception:
+    except Exception as exc:
+        logger.warning(
+            "Failed to integrate %s: region=%s hist_cat=%s var_name=%s axes=%s error=%s",
+            hist_label,
+            region_name,
+            hist_cat,
+            var_name,
+            sorted(axes_to_integrate.keys()),
+            exc,
+        )
         return None
 
     return integrated
@@ -2625,16 +2642,41 @@ def _render_variable_category(
             print(f"\n\tCategory: {hist_cat}")
 
         axes_to_integrate_dict = {"channel": channel_bins}
-        hist_mc_integrated = _integrate_category(hist_mc, hist_cat, axes_to_integrate_dict)
+        hist_mc_integrated = _integrate_category(
+            hist_mc,
+            hist_cat,
+            axes_to_integrate_dict,
+            region_name=region_ctx.name,
+            var_name=var_name,
+            hist_label="mc histogram",
+        )
         hist_data_integrated = _integrate_category(
-            hist_data, hist_cat, axes_to_integrate_dict
+            hist_data,
+            hist_cat,
+            axes_to_integrate_dict,
+            region_name=region_ctx.name,
+            var_name=var_name,
+            hist_label="data histogram",
         )
         if hist_mc_integrated is None or hist_data_integrated is None:
+            logger.warning(
+                "Skipping plot after integration failure: region=%s hist_cat=%s var_name=%s mode=aggregate mc_integrated=%s data_integrated=%s",
+                region_ctx.name,
+                hist_cat,
+                var_name,
+                hist_mc_integrated is not None,
+                hist_data_integrated is not None,
+            )
             return 0, 0, html_dirs
         hist_mc_sumw2_integrated = None
         if hist_mc_sumw2_orig is not None:
             hist_mc_sumw2_integrated = _integrate_category(
-                hist_mc_sumw2_orig, hist_cat, axes_to_integrate_dict
+                hist_mc_sumw2_orig,
+                hist_cat,
+                axes_to_integrate_dict,
+                region_name=region_ctx.name,
+                var_name=var_name,
+                hist_label="mc sumw2 histogram",
             )
 
         samples_to_rm = _collect_samples_to_remove(
