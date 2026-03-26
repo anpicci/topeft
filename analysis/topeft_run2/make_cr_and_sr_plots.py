@@ -746,6 +746,12 @@ def _resolve_channel_axis_labels(histogram):
         return tuple(axis)
 
 
+def _channel_axis_has_njet_suffixes(channel_labels):
+    """Return ``True`` when any channel label retains a trailing njet suffix."""
+
+    return any(_extract_njet_suffix(label) for label in channel_labels or ())
+
+
 def _resolve_process_axis_labels(histogram):
     """Return the tuple of process labels defined on *histogram*."""
 
@@ -2356,14 +2362,26 @@ def _prepare_variable_payload(
         )
         is_sparse2d = False
 
+    available_channels = _resolve_channel_axis_labels(histo)
     channel_transformations = _resolve_channel_transformations(region_ctx, var_name)
+    preserve_njets_for_payload = bool(region_ctx.preserve_njets_bins)
+    if (
+        var_name == "njets"
+        and preserve_njets_for_payload
+        and available_channels
+        and not _channel_axis_has_njet_suffixes(available_channels)
+    ):
+        # Some CR njets histograms are already producer-aggregated on the channel
+        # axis, so there are no per-njet channel labels left to preserve.
+        preserve_njets_for_payload = False
+        if "njets" not in channel_transformations:
+            channel_transformations = [*channel_transformations, "njets"]
+
     channel_dict = _apply_channel_dict_transformations(
         region_ctx.channel_map, channel_transformations
     )
     channel_dict = _deduplicate_channel_bins(channel_dict)
     channel_dict = _prune_unsplit_flavour_entries(channel_dict, region_ctx)
-
-    available_channels = _resolve_channel_axis_labels(histo)
 
     channel_dict = _augment_split_channel_entries(
         channel_dict,
@@ -2376,7 +2394,7 @@ def _prepare_variable_payload(
 
     channel_dict = _maybe_preserve_njet_bins(
         channel_dict,
-        preserve=region_ctx.preserve_njets_bins,
+        preserve=preserve_njets_for_payload,
         available_channels=available_channels,
     )
     channel_dict = _deduplicate_channel_bins(channel_dict)
@@ -2387,7 +2405,7 @@ def _prepare_variable_payload(
     if region_ctx.channel_mode == "per-channel":
         channel_dict, channel_display_labels = _group_channels_by_yearless_label(
             channel_dict,
-            preserve_njets=region_ctx.preserve_njets_bins,
+            preserve_njets=preserve_njets_for_payload,
             available_channels=available_channels,
             region_name=region_ctx.name,
             is_lepton_flavor_in_pkl=region_ctx.is_lepton_flavor_in_pkl,
