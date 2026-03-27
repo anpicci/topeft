@@ -808,7 +808,9 @@ if __name__ == "__main__":
         nargs="+",
         help=(
             "Filter the resolved ch_lst.json category block(s) to one or more named groups. "
+            "Names are validated in run_analysis.py against the active SR/CR block selection before downstream processing starts. "
             "Accepts multiple group names and preserves user order after deduplication. "
+            "When both SR and CR are active, a requested group may match only one region and leave the other region empty. "
             "When omitted, all groups in each resolved block are used."
         ),
     )

@@ -7,6 +7,8 @@ from unittest import mock
 import coffea.processor as processor
 import pytest
 
+from analysis.topeft_run2 import analysis_processor as ap
+
 
 _SAMPLE_JSON = Path("input_samples/sample_jsons/test_samples/UL17_private_ttH_for_CI.json")
 _SCRIPT_PATH = Path("analysis/topeft_run2/run_analysis.py")
@@ -176,6 +178,33 @@ def test_category_groups_no_option_uses_all_groups(monkeypatch, tmp_path, capsys
     stdout = capsys.readouterr().out
     assert "no --category-groups filter requested" in stdout
     assert "Selected SR category groups: all (2l, 3l, 4l)" in stdout
+
+
+def test_category_groups_mixed_sr_cr_allows_sr_only_match(monkeypatch, tmp_path, capsys):
+    sr_block_name, cr_block_name = ap.resolve_category_dict_names(False, False, False, False)
+    category_config = ap.load_category_config()
+
+    assert "4l" in category_config[sr_block_name]
+    assert "4l" not in category_config[cr_block_name]
+
+    processor_instance = _run_run_analysis_cli(
+        monkeypatch,
+        tmp_path,
+        ["--category-groups", "4l"],
+        outname="category-groups-mixed-sr-cr",
+    )
+
+    assert processor_instance.sr_category_dict_name == sr_block_name
+    assert processor_instance.cr_category_dict_name == cr_block_name
+    assert list(processor_instance.sr_category_dict.keys()) == ["4l"]
+    assert processor_instance.cr_category_dict == {}
+
+    stdout = capsys.readouterr().out
+    assert "Requested category groups (deduplicated user order): 4l" in stdout
+    assert f"Resolved SR ch_lst.json block: {sr_block_name}" in stdout
+    assert f"Resolved CR ch_lst.json block: {cr_block_name}" in stdout
+    assert "Selected SR category groups: 4l" in stdout
+    assert "Selected CR category groups: <none>" in stdout
 
 
 def test_category_groups_filter_downstream_active_blocks(monkeypatch, tmp_path, capsys):
