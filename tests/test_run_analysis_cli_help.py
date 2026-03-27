@@ -27,6 +27,7 @@ def test_cli_help_shows_canonical_analysis_mode_flags(capsys):
     assert "--tau-h-analysis" in help_text
     assert "--fwd-analysis" in help_text
     assert "--all-analysis" in help_text
+    assert "--category-groups" in help_text
 
     assert "--offZ-split" not in help_text
     assert "--tau_h_analysis" not in help_text
