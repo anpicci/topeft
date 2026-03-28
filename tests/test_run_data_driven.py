@@ -4,7 +4,11 @@ import json
 from pathlib import Path
 
 import cloudpickle
+import hist
+import numpy as np
 import pytest
+
+from topcoffea.modules.sparseHist import SparseHist
 
 
 def _load_run_data_driven_module():
@@ -87,6 +91,24 @@ def _write_metadata(tmp_path: Path, *, input_path: Path, output_path: Path) -> P
 def _load_pkl(pkl_path: Path):
     with gzip.open(pkl_path, "rb") as stream:
         return cloudpickle.load(stream)
+
+
+def _build_data_driven_input_hist():
+    return SparseHist(
+        hist.axis.StrCategory([], name="process", growth=True),
+        hist.axis.StrCategory([], name="channel", growth=True),
+        hist.axis.StrCategory([], name="systematic", growth=True),
+        hist.axis.StrCategory([], name="appl", growth=True),
+        hist.axis.Regular(1, 0.0, 1.0, name="met"),
+        storage="Double",
+    )
+
+
+def _single_bin_total(histo, process_name):
+    values = histo.integrate("process", [process_name]).integrate("systematic", "nominal").values(
+        flow=True
+    )[()]
+    return float(np.asarray(values).sum())
 
 
 def test_run_data_driven_from_metadata(tmp_path, monkeypatch):
@@ -213,6 +235,50 @@ def test_run_data_driven_legacy_dict_mode(tmp_path, monkeypatch):
     assert DummyProducer.iter_calls == 0
     result = _load_pkl(output_path)
     assert list(result["njets"].axes["process"]) == ["flipsUL18", "ttbarUL18"]
+
+
+def test_data_driven_preserves_sumw2_companions_for_prompt_subtraction():
+    base_hist = _build_data_driven_input_hist()
+    sumw2_hist = _build_data_driven_input_hist()
+
+    for histo, data_weight, prompt_weight in (
+        (base_hist, 5.0, 2.0),
+        (sumw2_hist, 25.0, 4.0),
+    ):
+        histo.fill(
+            process="dataUL18",
+            channel="2lss",
+            systematic="nominal",
+            appl="isAR_2lSS",
+            met=np.array([0.5], dtype=float),
+            weight=np.array([data_weight], dtype=float),
+        )
+        histo.fill(
+            process="ttbarUL18",
+            channel="2lss",
+            systematic="nominal",
+            appl="isAR_2lSS",
+            met=np.array([0.5], dtype=float),
+            weight=np.array([prompt_weight], dtype=float),
+        )
+
+    producer = run_data_driven.DataDrivenProducer(
+        {"met": base_hist, "met_sumw2": sumw2_hist},
+        "unused-output.pkl.gz",
+        iterator_mode=True,
+    )
+    producer.promptSubtractionSamples = {"ttbar"}
+
+    result = dict(producer.iter_data_driven_histograms())
+
+    assert "met" in result
+    assert "met_sumw2" in result
+    assert list(result["met"].axes["systematic"]) == ["nominal"]
+    assert list(result["met_sumw2"].axes["systematic"]) == ["nominal"]
+    assert list(result["met"].axes["process"]) == ["nonpromptUL18"]
+    assert list(result["met_sumw2"].axes["process"]) == ["nonpromptUL18"]
+    assert _single_bin_total(result["met"], "nonpromptUL18") == pytest.approx(3.0)
+    assert _single_bin_total(result["met_sumw2"], "nonpromptUL18") == pytest.approx(29.0)
 
 
 def test_run_data_driven_metadata_can_force_legacy_mode(tmp_path, monkeypatch):
