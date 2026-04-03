@@ -100,10 +100,18 @@ CR_CHAN_DICT:
     - 1l_e_1tau_CR_0j
     - 1l_e_1tau_CR_1j
     - 1l_e_1tau_CR_2j
+    - 1l_e_1tau_CR_3j
+    - 1l_e_1tau_CR_4j
+    - 1l_e_1tau_CR_5j
+    - 1l_e_1tau_CR_6j
     - 1l_m_1tau_CR_0j
     - 1l_m_1tau_CR_1j
     - 1l_m_1tau_CR_2j
-    alias: cr_1l_1tau
+    - 1l_m_1tau_CR_3j
+    - 1l_m_1tau_CR_4j
+    - 1l_m_1tau_CR_5j
+    - 1l_m_1tau_CR_6j
+    alias: cr_1l_1tau_tt
   1l_dy_tautau_CR:
     leaves:
     - 1l_e_dy_tautau_CR_0j

@@ -513,10 +513,7 @@ class AnalysisProcessor(processor.ProcessorABC):
 
         # Initialize objects
 
-        if is_run3:
-            met  = events.PuppiMET
-        else:
-            met  = events.MET
+        met  = events.MET
         ele  = events.Electron
         mu   = events.Muon
         tau  = events.Tau
