@@ -93,6 +93,10 @@ def _load_pkl(pkl_path: Path):
         return cloudpickle.load(stream)
 
 
+def _read_text(path: Path) -> str:
+    return path.read_text(encoding="utf-8")
+
+
 def _build_data_driven_input_hist():
     return SparseHist(
         hist.axis.StrCategory([], name="process", growth=True),
@@ -540,6 +544,117 @@ def test_run_data_driven_dd_report_verbose_implies_report_and_adds_details(tmp_p
     assert "prompt_sub_systematics: kept=FFUp,nominal dropped=JESUp" in captured
 
 
+def test_run_data_driven_dd_report_markdown_writes_compact_file(tmp_path, capsys):
+    histogram = _fill_data_driven_histogram(
+        [
+            {
+                "process": "dataUL18",
+                "channel": "3l",
+                "appl": "isAR_3l",
+                "weight": 5.0,
+            },
+            {
+                "process": "TTTo2L2Nu_centralUL18",
+                "channel": "3l",
+                "appl": "isAR_3l",
+                "weight": 2.0,
+            },
+            {
+                "process": "TTTo2L2Nu_centralUL18",
+                "channel": "3l",
+                "appl": "isSR_3l",
+                "weight": 1.0,
+            },
+        ]
+    )
+    report_path = tmp_path / "reports" / "dd_report.md"
+
+    _run_histograms(
+        tmp_path,
+        {"met": histogram},
+        "--dd-report-md",
+        str(report_path),
+    )
+
+    captured = capsys.readouterr().out
+    assert "[dd-report]" not in captured
+    assert report_path.is_file()
+
+    markdown = _read_text(report_path)
+    assert "# Data-driven report" in markdown
+    assert "## Histogram: `met`" in markdown
+    assert "### Channel: `3l`" in markdown
+    assert "- SR region `isSR_3l` retained total: `1`" in markdown
+    assert "- nonprompt region `isAR_3l` output `nonpromptUL18`" in markdown
+    assert "  - data used: `5`" in markdown
+    assert "  - prompt subtraction used: `2`" in markdown
+    assert "  - result: `3`" in markdown
+    assert "prompt subtraction sources" not in markdown
+
+
+def test_run_data_driven_dd_report_markdown_verbose_is_file_only_and_prefilter(tmp_path, capsys):
+    histogram = _fill_data_driven_histogram(
+        [
+            {
+                "process": "dataUL18",
+                "channel": "2lss",
+                "appl": "isAR_2lSS",
+                "weight": 5.0,
+            },
+            {
+                "process": "TTTo2L2Nu_centralUL18",
+                "channel": "2lss",
+                "appl": "isAR_2lSS",
+                "weight": 2.0,
+            },
+            {
+                "process": "TTTo2L2Nu_centralUL18",
+                "channel": "2lss",
+                "appl": "isAR_2lSS",
+                "systematic": "FFUp",
+                "weight": 2.5,
+            },
+            {
+                "process": "TTTo2L2Nu_centralUL18",
+                "channel": "2lss",
+                "appl": "isAR_2lSS",
+                "systematic": "JESUp",
+                "weight": 9.0,
+            },
+            {
+                "process": "dataUL18",
+                "channel": "2lss",
+                "appl": "isAR_2lSS_OS",
+                "weight": 4.0,
+            },
+        ]
+    )
+    report_path = tmp_path / "dd_report_verbose.md"
+
+    output_path = _run_histograms(
+        tmp_path,
+        {"met": histogram},
+        "--dd-report-md",
+        str(report_path),
+        "--dd-report-verbose",
+        "--only-flips",
+    )
+
+    captured = capsys.readouterr().out
+    assert "[dd-report]" not in captured
+    markdown = _read_text(report_path)
+    assert "- nonprompt region `isAR_2lSS` output `nonpromptUL18`" in markdown
+    assert "  - prompt subtraction sources: `TTTo2L2Nu_centralUL18=2`" in markdown
+    assert (
+        "  - prompt subtraction systematics: `kept=FFUp,nominal`; `dropped=JESUp`"
+        in markdown
+    )
+    assert "- flips region `isAR_2lSS_OS` output `flipsUL18`" in markdown
+
+    result = _load_pkl(output_path)
+    assert list(result["met"].axes["process"]) == ["flipsUL18"]
+
+
 def test_run_data_driven_dd_report_zero_used_total(tmp_path, capsys):
     histogram = _fill_data_driven_histogram(
         [
@@ -633,3 +748,41 @@ def test_run_data_driven_dd_report_is_emitted_before_renormfact_envelope(tmp_pat
     assert captured.index("[dd-report] hist=met channel=3l") < captured.index(
         "before get_renormfact_envelope()"
     )
+
+
+def test_run_data_driven_dd_report_markdown_works_with_metadata(tmp_path):
+    histogram = _fill_data_driven_histogram(
+        [
+            {
+                "process": "dataUL18",
+                "channel": "3l",
+                "appl": "isAR_3l",
+                "weight": 5.0,
+            },
+            {
+                "process": "TTTo2L2Nu_centralUL18",
+                "channel": "3l",
+                "appl": "isAR_3l",
+                "weight": 2.0,
+            },
+        ]
+    )
+    input_path = tmp_path / "input.pkl.gz"
+    output_path = tmp_path / "output.pkl.gz"
+    report_path = tmp_path / "reports" / "metadata_dd_report.md"
+    _write_histograms(input_path, {"met": histogram})
+    metadata_path = _write_metadata(tmp_path, input_path=input_path, output_path=output_path)
+
+    run_data_driven.main(
+        [
+            "--metadata-json",
+            str(metadata_path),
+            "--dd-report-md",
+            str(report_path),
+            "--quiet",
+        ]
+    )
+
+    markdown = _read_text(report_path)
+    assert "## Histogram: `met`" in markdown
+    assert "- nonprompt region `isAR_3l` output `nonpromptUL18`" in markdown
