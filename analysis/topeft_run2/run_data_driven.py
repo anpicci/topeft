@@ -92,6 +92,14 @@ def _build_argument_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--dd-report-verbose",
+        action="store_true",
+        help=(
+            "Extend --dd-report with prompt-subtraction sample breakdowns and "
+            "systematic-retention notes. Implies --dd-report."
+        ),
+    )
+    parser.add_argument(
         "--heartbeat-seconds",
         type=float,
         default=30.0,
@@ -363,6 +371,20 @@ def _format_dd_total(value: float) -> str:
     return format(value, ".12g")
 
 
+def _format_dd_labels(labels: Optional[Iterable[str]]) -> str:
+    label_values = [str(label) for label in (labels or ())]
+    return "<none>" if not label_values else ",".join(label_values)
+
+
+def _format_dd_breakdown(entries: Optional[Iterable[Dict[str, Any]]]) -> str:
+    entry_list = list(entries or ())
+    if not entry_list:
+        return "<none>"
+    return ", ".join(
+        f"{entry['process']}={_format_dd_total(entry['total'])}" for entry in entry_list
+    )
+
+
 def _dd_row_sort_key(row: Dict[str, Any]) -> Tuple[int, str, str]:
     return (
         _DD_REPORT_FAMILY_ORDER.get(row.get("family"), 99),
@@ -371,13 +393,102 @@ def _dd_row_sort_key(row: Dict[str, Any]) -> Tuple[int, str, str]:
     )
 
 
-def _emit_dd_report(report: Optional[Dict[str, Any]]) -> None:
+def _emit_dd_report_note(message: str) -> None:
+    print(f"    note: {message}")
+
+
+def _emit_dd_report_row(row: Dict[str, Any], *, verbose: bool) -> None:
+    family_name = row.get("family")
+    if family_name == "sr":
+        suffix = " zero_used_total" if _dd_is_zero(row["retained_total"]) else ""
+        print(
+            "  sr"
+            f" region={row['region']}"
+            f" retained_total={_format_dd_total(row['retained_total'])}{suffix}"
+        )
+        if verbose and _dd_is_zero(row["retained_total"]):
+            _emit_dd_report_note("nominal retained total is zero.")
+        return
+
+    if family_name == "nonprompt":
+        suffix = " zero_used_total" if _dd_is_zero(row["result"]) else ""
+        print(
+            "  nonprompt"
+            f" region={row['region']}"
+            f" out={row['output_process']}"
+            f" data_used={_format_dd_total(row['data_used'])}"
+            f" prompt_sub_used={_format_dd_total(row['prompt_sub_used'])}"
+            f" result={_format_dd_total(row['result'])}{suffix}"
+        )
+        if not verbose:
+            return
+        print(f"    data_sources: {_format_dd_breakdown(row.get('data_sources'))}")
+        print(
+            "    prompt_sub_sources:"
+            f" {_format_dd_breakdown(row.get('prompt_sub_sources'))}"
+        )
+        prompt_sub_systematics = row.get("prompt_sub_systematics") or {}
+        print(
+            "    prompt_sub_systematics:"
+            f" kept={_format_dd_labels(prompt_sub_systematics.get('kept'))}"
+            f" dropped={_format_dd_labels(prompt_sub_systematics.get('dropped'))}"
+        )
+        if _dd_is_zero(row["result"]):
+            _emit_dd_report_note(
+                "nominal result is zero after data minus prompt subtraction."
+            )
+        return
+
+    if family_name == "flips":
+        suffix = " zero_used_total" if _dd_is_zero(row["result"]) else ""
+        print(
+            "  flips"
+            f" region={row['region']}"
+            f" out={row['output_process']}"
+            f" data_used={_format_dd_total(row['data_used'])}"
+            f" result={_format_dd_total(row['result'])}{suffix}"
+        )
+        if not verbose:
+            return
+        print(f"    data_sources: {_format_dd_breakdown(row.get('data_sources'))}")
+        systematics = row.get("systematics") or {}
+        print(
+            "    systematics:"
+            f" kept={_format_dd_labels(systematics.get('kept'))}"
+            f" dropped={_format_dd_labels(systematics.get('dropped'))}"
+        )
+        if _dd_is_zero(row["result"]):
+            _emit_dd_report_note("nominal flips result is zero.")
+
+
+def _emit_dd_report_absent_region(
+    report: Dict[str, Any],
+    family_name: str,
+    region_name: str,
+    *,
+    channel_name: Optional[str],
+    verbose: bool,
+) -> None:
+    print(f"  {family_name} region={region_name} absent")
+    if not verbose:
+        return
+    _emit_dd_report_note(
+        f"expected appl region {region_name} is missing for channel={_dd_channel_label(channel_name)}; "
+        f"available_regions={_format_dd_labels(report.get('regions'))}"
+    )
+
+
+def _emit_dd_report(report: Optional[Dict[str, Any]], *, verbose: bool = False) -> None:
     if not report:
         return
 
     key = report.get("key", "<unknown>")
     if report.get("empty"):
         print(f"[dd-report] hist={key} status=empty")
+        if verbose:
+            _emit_dd_report_note(
+                "input histogram has no populated bins before appl integration."
+            )
         return
 
     rows = list(report.get("rows") or [])
@@ -406,69 +517,24 @@ def _emit_dd_report(report: Optional[Dict[str, Any]]) -> None:
                 if row.get("family") == family_name and row.get("region") == region_name
             ]
             if not matching_rows:
-                print(f"  {family_name} region={region_name} absent")
+                _emit_dd_report_absent_region(
+                    report,
+                    family_name,
+                    region_name,
+                    channel_name=channel_name,
+                    verbose=verbose,
+                )
                 continue
 
             for row in sorted(matching_rows, key=_dd_row_sort_key):
                 covered_row_ids.add(id(row))
-                if family_name == "sr":
-                    suffix = " zero_used_total" if _dd_is_zero(row["retained_total"]) else ""
-                    print(
-                        "  sr"
-                        f" region={row['region']}"
-                        f" retained_total={_format_dd_total(row['retained_total'])}{suffix}"
-                    )
-                elif family_name == "nonprompt":
-                    suffix = " zero_used_total" if _dd_is_zero(row["result"]) else ""
-                    print(
-                        "  nonprompt"
-                        f" region={row['region']}"
-                        f" out={row['output_process']}"
-                        f" data_used={_format_dd_total(row['data_used'])}"
-                        f" prompt_sub_used={_format_dd_total(row['prompt_sub_used'])}"
-                        f" result={_format_dd_total(row['result'])}{suffix}"
-                    )
-                elif family_name == "flips":
-                    suffix = " zero_used_total" if _dd_is_zero(row["result"]) else ""
-                    print(
-                        "  flips"
-                        f" region={row['region']}"
-                        f" out={row['output_process']}"
-                        f" data_used={_format_dd_total(row['data_used'])}"
-                        f" result={_format_dd_total(row['result'])}{suffix}"
-                    )
+                _emit_dd_report_row(row, verbose=verbose)
 
         extra_rows = [
             row for row in channel_rows if id(row) not in covered_row_ids
         ]
         for row in sorted(extra_rows, key=_dd_row_sort_key):
-            family_name = row.get("family")
-            if family_name == "sr":
-                suffix = " zero_used_total" if _dd_is_zero(row["retained_total"]) else ""
-                print(
-                    "  sr"
-                    f" region={row['region']}"
-                    f" retained_total={_format_dd_total(row['retained_total'])}{suffix}"
-                )
-            elif family_name == "nonprompt":
-                suffix = " zero_used_total" if _dd_is_zero(row["result"]) else ""
-                print(
-                    "  nonprompt"
-                    f" region={row['region']}"
-                    f" out={row['output_process']}"
-                    f" data_used={_format_dd_total(row['data_used'])}"
-                    f" prompt_sub_used={_format_dd_total(row['prompt_sub_used'])}"
-                    f" result={_format_dd_total(row['result'])}{suffix}"
-                )
-            elif family_name == "flips":
-                suffix = " zero_used_total" if _dd_is_zero(row["result"]) else ""
-                print(
-                    "  flips"
-                    f" region={row['region']}"
-                    f" out={row['output_process']}"
-                    f" data_used={_format_dd_total(row['data_used'])}"
-                    f" result={_format_dd_total(row['result'])}{suffix}"
-                )
+            _emit_dd_report_row(row, verbose=verbose)
 
 
 def _finalize_histograms(
@@ -478,6 +544,7 @@ def _finalize_histograms(
     only_flips: bool,
     apply_envelope: bool,
     dd_report: bool = False,
+    dd_report_verbose: bool = False,
     iterator_mode: bool = True,
     heartbeat_seconds: float = 30.0,
     quiet: bool = False,
@@ -496,7 +563,10 @@ def _finalize_histograms(
     try:
         memory_reporter.mark("start")
         memory_reporter.mark("before DataDrivenProducer(...)")
-        ddp = DataDrivenProducer(input_pkl, output_pkl, iterator_mode=iterator_mode)
+        ddp_kwargs: Dict[str, Any] = {"iterator_mode": iterator_mode}
+        if dd_report:
+            ddp_kwargs["dd_report"] = True
+        ddp = DataDrivenProducer(input_pkl, output_pkl, **ddp_kwargs)
         memory_reporter.mark("after DataDrivenProducer(...)", include_top=mem_tracemalloc)
         os.makedirs(os.path.dirname(output_pkl) or ".", exist_ok=True)
 
@@ -524,7 +594,7 @@ def _finalize_histograms(
                     )
 
                     if dd_report:
-                        _emit_dd_report(ddp.get_dd_report(key))
+                        _emit_dd_report(ddp.get_dd_report(key), verbose=dd_report_verbose)
                     working_histo = _filter_to_flips(histo) if only_flips else histo
                     if apply_envelope:
                         working_histo = _envelope_single_histogram(key, working_histo)
@@ -562,7 +632,7 @@ def _finalize_histograms(
                 )
 
                 if dd_report:
-                    _emit_dd_report(ddp.get_dd_report(key))
+                    _emit_dd_report(ddp.get_dd_report(key), verbose=dd_report_verbose)
                 if only_flips:
                     assert filtered is not None
                     filtered[key] = _filter_to_flips(histo)
@@ -598,6 +668,7 @@ def _finalize_histograms(
 def main(argv: Optional[List[str]] = None) -> int:
     parser = _build_argument_parser()
     args = parser.parse_args(argv)
+    dd_report_enabled = args.dd_report or args.dd_report_verbose
 
     metadata: Dict[str, Any] = {}
     metadata_dir: Optional[str] = None
@@ -627,7 +698,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         output_pkl,
         only_flips=args.only_flips,
         apply_envelope=apply_envelope,
-        dd_report=args.dd_report,
+        dd_report=dd_report_enabled,
+        dd_report_verbose=args.dd_report_verbose,
         iterator_mode=not args.legacy_dict_mode,
         heartbeat_seconds=args.heartbeat_seconds,
         quiet=args.quiet,

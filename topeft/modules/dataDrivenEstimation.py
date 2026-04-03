@@ -1,6 +1,5 @@
 import argparse
 import gzip
-import logging
 import re
 from collections import defaultdict
 
@@ -8,28 +7,26 @@ import cloudpickle
 import numpy as np
 from topcoffea.modules.hist_utils import iterate_hist_from_pkl
 
-from topeft.modules.paths import topeft_path
-from topcoffea.modules.utils import canonicalize_process_name
 from topcoffea.modules.get_param_from_jsons import GetParam
+from topcoffea.modules.utils import canonicalize_process_name
+from topeft.modules.paths import topeft_path
 get_te_param = GetParam(topeft_path("params/params.json"))
-
-
-logger = logging.getLogger(__name__)
 
 class DataDrivenProducer:
     _NAME_REGEX = r"^(?P<process>.*?)(?:UL)?(?P<year>(?:\d{2}(?:APV|EE|BPix)?|\d{4}(?:EE|BPix)?))$"
     _KNOWN_YEARS = {"16APV", "16", "17", "18", "2022", "2022EE", "2023", "2023BPix"}
 
-    def __init__(self, inputHist, outputName, iterator_mode=False):
+    def __init__(self, inputHist, outputName, iterator_mode=False, dd_report=False):
         self._input_source = inputHist
         self.outputName=outputName
         self.verbose=False
         self.dataName='data'
         self.outHist=None
         self.iterator_mode = iterator_mode
+        self._dd_report_enabled = dd_report
         self.promptSubtractionSamples=get_te_param('prompt_subtraction_samples')
         self._name_pattern = re.compile(self._NAME_REGEX)
-        self._dd_report_by_key = {}
+        self._dd_report_by_key = {} if dd_report else None
         if not self.iterator_mode:
             self.DDFakes()
 
@@ -178,11 +175,22 @@ class DataDrivenProducer:
         return channels or [None]
 
     @staticmethod
+    def _sorted_string_labels(labels):
+        return tuple(sorted(str(label) for label in labels))
+
+    @staticmethod
+    def _is_effectively_zero(value):
+        return abs(float(value)) < 1e-12
+
+    @staticmethod
     def _init_dd_report(key, histo, *, empty=False):
         return {
             "key": key,
             "empty": empty,
             "channels": DataDrivenProducer._channel_labels_for_report(histo),
+            "regions": DataDrivenProducer._sorted_string_labels(
+                DataDrivenProducer._axis_labels(histo, "appl")
+            ),
             "rows": [],
         }
 
@@ -202,15 +210,35 @@ class DataDrivenProducer:
             raw_name = f"flipsUL{year}"
         return canonicalize_process_name(raw_name)
 
-    def _report_process_names(self, hAR, process_metadata, family_name):
-        process_names = set()
-        for process_name in self._axis_labels(hAR, "process"):
-            _, year = process_metadata[process_name]
-            if family_name == "flips":
-                process_names.add(self._flips_process_name(year))
-            else:
-                process_names.add(self._nonprompt_process_name(year))
-        return sorted(process_names)
+    @classmethod
+    def _systematic_summary(cls, source_hist, used_hist):
+        source_labels = cls._sorted_string_labels(cls._axis_labels(source_hist, "systematic"))
+        used_labels = cls._sorted_string_labels(cls._axis_labels(used_hist, "systematic"))
+        used_label_set = set(used_labels)
+        dropped_labels = tuple(label for label in source_labels if label not in used_label_set)
+        return {
+            "kept": used_labels,
+            "dropped": dropped_labels,
+        }
+
+    def _process_breakdown(self, histo, process_names, *, channel_name=None, systematic="nominal"):
+        breakdown = []
+        for process_name in sorted(process_names):
+            total = self._total_for_selection(
+                histo,
+                channel_name=channel_name,
+                process_name=process_name,
+                systematic=systematic,
+            )
+            if self._is_effectively_zero(total):
+                continue
+            breakdown.append(
+                {
+                    "process": process_name,
+                    "total": total,
+                }
+            )
+        return breakdown
 
     def _record_sr_report(self, report, ident, hAR):
         for channel_name in report["channels"]:
@@ -231,20 +259,29 @@ class DataDrivenProducer:
                 }
             )
 
-    def _record_flips_report(self, report, ident, hFlips, output_process_names):
+    def _record_flips_report(
+        self,
+        report,
+        ident,
+        hAR,
+        hFlipsRaw,
+        hFlipsUsed,
+        output_process_names,
+        source_processes_by_output,
+    ):
         for channel_name in report["channels"]:
             if not self._region_matches_channel(ident, channel_name):
                 continue
             for output_process in output_process_names:
                 if not self._has_selected_entries(
-                    hFlips,
+                    hFlipsUsed,
                     channel_name=channel_name,
                     process_name=output_process,
                     systematic="nominal",
                 ):
                     continue
                 result_total = self._total_for_selection(
-                    hFlips,
+                    hFlipsUsed,
                     channel_name=channel_name,
                     process_name=output_process,
                     systematic="nominal",
@@ -257,6 +294,12 @@ class DataDrivenProducer:
                         "output_process": output_process,
                         "data_used": result_total,
                         "result": result_total,
+                        "data_sources": self._process_breakdown(
+                            hAR,
+                            source_processes_by_output.get(output_process, []),
+                            channel_name=channel_name,
+                        ),
+                        "systematics": self._systematic_summary(hFlipsRaw, hFlipsUsed),
                     }
                 )
 
@@ -264,10 +307,14 @@ class DataDrivenProducer:
         self,
         report,
         ident,
+        hAR,
         hDataUsed,
+        hPromptSubRaw,
         hPromptSubScaled,
         hResult,
         output_process_names,
+        data_source_processes_by_output,
+        prompt_source_processes_by_output,
     ):
         for channel_name in report["channels"]:
             if not self._region_matches_channel(ident, channel_name):
@@ -311,19 +358,33 @@ class DataDrivenProducer:
                             process_name=output_process,
                             systematic="nominal",
                         ),
+                        "data_sources": self._process_breakdown(
+                            hAR,
+                            data_source_processes_by_output.get(output_process, []),
+                            channel_name=channel_name,
+                        ),
+                        "prompt_sub_sources": self._process_breakdown(
+                            hAR,
+                            prompt_source_processes_by_output.get(output_process, []),
+                            channel_name=channel_name,
+                        ),
+                        "prompt_sub_systematics": self._systematic_summary(
+                            hPromptSubRaw,
+                            hPromptSubScaled,
+                        ),
                     }
                 )
 
     def _build_data_driven_histogram(self, key, histo):
         if histo.empty():  # histo is empty, so we just integrate over appl and keep an empty histo
-            if not key.endswith("_sumw2"):
+            if self._dd_report_enabled and not key.endswith("_sumw2"):
                 self._dd_report_by_key[key] = self._init_dd_report(key, histo, empty=True)
             print(f"[W]: Histogram {key} is empty, returning an empty histo")
             return histo.integrate("appl")
 
         process_metadata = self._build_process_metadata(histo)
         report = None
-        if not key.endswith("_sumw2"):
+        if self._dd_report_enabled and not key.endswith("_sumw2"):
             report = self._init_dd_report(key, histo)
 
         # now for each year we actually perform the subtraction and integrate out the application regions
@@ -345,13 +406,11 @@ class DataDrivenProducer:
                 newNameDictData = defaultdict(list)
                 for process_name in hAR.axes["process"]:
                     sampleName, year = process_metadata[process_name]
-                    raw_flips_name = self._flips_process_name(year)
-                    flips_name = raw_flips_name
-                    if raw_flips_name == flips_name:
-                        logger.debug("Process name '%s' already canonical", raw_flips_name)
+                    flips_name = self._flips_process_name(year)
                     if self.dataName == sampleName:
                         newNameDictData[flips_name].append(process_name)
                 hFlips = hAR.group("process", newNameDictData)
+                hFlipsRaw = hFlips
 
                 # remove any up/down FF variations from the flip histo since we don't use that info
                 syst_var_idet_rm_lst = []
@@ -362,12 +421,18 @@ class DataDrivenProducer:
                 hFlips = hFlips.remove("systematic", syst_var_idet_rm_lst)
 
                 if report is not None:
-                    output_process_names = self._report_process_names(
-                        hAR,
-                        process_metadata,
-                        "flips",
+                    output_process_names = self._sorted_string_labels(
+                        self._axis_labels(hFlips, "process")
                     )
-                    self._record_flips_report(report, ident, hFlips, output_process_names)
+                    self._record_flips_report(
+                        report,
+                        ident,
+                        hAR,
+                        hFlipsRaw,
+                        hFlips,
+                        output_process_names,
+                        newNameDictData,
+                    )
 
                 # now adding them to the list of processes:
                 if newhist is None:
@@ -384,10 +449,7 @@ class DataDrivenProducer:
                 for process_name in hAR.axes["process"]:
                     sampleName, year = process_metadata[process_name]
 
-                    raw_nonprompt_name = self._nonprompt_process_name(year)
-                    nonprompt_name = raw_nonprompt_name
-                    if raw_nonprompt_name == nonprompt_name:
-                        logger.debug("Process name '%s' already canonical", raw_nonprompt_name)
+                    nonprompt_name = self._nonprompt_process_name(year)
                     if self.dataName == sampleName:
                         newNameDictData[nonprompt_name].append(process_name)
                     elif sampleName in self.promptSubtractionSamples:
@@ -398,6 +460,7 @@ class DataDrivenProducer:
                 hFakes = hAR.group("process", newNameDictData)
                 # now we take all the stuff that is not data in the AR to make the prompt subtraction and assign them to nonprompt.
                 hPromptSub = hAR.group("process", newNameDictNoData)
+                hPromptSubRaw = hPromptSub
 
                 # remove the up/down variations (if any) from the prompt subtraction histo
                 # but keep FFUp and FFDown, as these are the nonprompt up and down variations
@@ -415,18 +478,20 @@ class DataDrivenProducer:
                 hFakes += hPromptSub
 
                 if report is not None:
-                    output_process_names = self._report_process_names(
-                        hAR,
-                        process_metadata,
-                        "nonprompt",
+                    output_process_names = self._sorted_string_labels(
+                        self._axis_labels(hFakes, "process")
                     )
                     self._record_nonprompt_report(
                         report,
                         ident,
+                        hAR,
                         hAR.group("process", newNameDictData),
+                        hPromptSubRaw,
                         hPromptSub,
                         hFakes,
                         output_process_names,
+                        newNameDictData,
+                        newNameDictNoData,
                     )
                 # now adding them to the list of processes:
                 if newhist is None:
@@ -465,7 +530,9 @@ class DataDrivenProducer:
         return self.outHist
 
     def get_dd_report(self, key):
-        return self._dd_report_by_key.get(key)
+        if not self._dd_report_enabled:
+            return None
+        return self._dd_report_by_key.pop(key, None)
 
 
 if __name__ == "__main__":

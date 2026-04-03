@@ -264,6 +264,132 @@ def test_dd_report_matches_between_iterator_and_legacy_modes(tmp_path, capsys):
     assert _extract_dd_report(iterator_output) == _extract_dd_report(legacy_output)
 
 
+def test_dd_report_verbose_matches_between_iterator_and_legacy_modes(tmp_path, capsys):
+    histogram = _fill_data_driven_histogram(
+        [
+            {
+                "process": "dataUL18",
+                "channel": "2lss",
+                "appl": "isAR_2lSS",
+                "weight": 5.0,
+            },
+            {
+                "process": "TTTo2L2Nu_centralUL18",
+                "channel": "2lss",
+                "appl": "isAR_2lSS",
+                "weight": 2.0,
+            },
+            {
+                "process": "TTTo2L2Nu_centralUL18",
+                "channel": "2lss",
+                "appl": "isAR_2lSS",
+                "systematic": "FFUp",
+                "weight": 2.5,
+            },
+            {
+                "process": "dataUL18",
+                "channel": "2lss",
+                "appl": "isAR_2lSS_OS",
+                "weight": 4.0,
+            },
+        ]
+    )
+
+    input_path = tmp_path / "input.pkl.gz"
+    _write_with_cloudpickle(str(input_path), {"met": histogram})
+
+    run_data_driven.main(
+        [
+            "--input-pkl",
+            str(input_path),
+            "--output-pkl",
+            str(tmp_path / "iterator_verbose.pkl.gz"),
+            "--dd-report",
+            "--dd-report-verbose",
+            "--quiet",
+        ]
+    )
+    iterator_output = capsys.readouterr().out
+
+    run_data_driven.main(
+        [
+            "--input-pkl",
+            str(input_path),
+            "--output-pkl",
+            str(tmp_path / "legacy_verbose.pkl.gz"),
+            "--dd-report",
+            "--dd-report-verbose",
+            "--quiet",
+            "--legacy-dict-mode",
+        ]
+    )
+    legacy_output = capsys.readouterr().out
+
+    assert _extract_dd_report(iterator_output) == _extract_dd_report(legacy_output)
+
+
+def test_dd_report_verbose_keeps_hist_output_identical(tmp_path):
+    histogram = _fill_data_driven_histogram(
+        [
+            {
+                "process": "dataUL18",
+                "channel": "2lss",
+                "appl": "isAR_2lSS",
+                "weight": 5.0,
+            },
+            {
+                "process": "TTTo2L2Nu_centralUL18",
+                "channel": "2lss",
+                "appl": "isAR_2lSS",
+                "weight": 2.0,
+            },
+            {
+                "process": "dataUL18",
+                "channel": "2lss",
+                "appl": "isAR_2lSS_OS",
+                "weight": 4.0,
+            },
+            {
+                "process": "TTTo2L2Nu_centralUL18",
+                "channel": "2lss",
+                "appl": "isSR_2lSS",
+                "weight": 1.0,
+            },
+        ]
+    )
+
+    input_path = tmp_path / "input.pkl.gz"
+    compact_output_path = tmp_path / "compact.pkl.gz"
+    verbose_output_path = tmp_path / "verbose.pkl.gz"
+    _write_with_cloudpickle(str(input_path), {"met": histogram})
+
+    run_data_driven.main(
+        [
+            "--input-pkl",
+            str(input_path),
+            "--output-pkl",
+            str(compact_output_path),
+            "--dd-report",
+            "--quiet",
+        ]
+    )
+
+    run_data_driven.main(
+        [
+            "--input-pkl",
+            str(input_path),
+            "--output-pkl",
+            str(verbose_output_path),
+            "--dd-report",
+            "--dd-report-verbose",
+            "--quiet",
+        ]
+    )
+
+    comparison = compare_histogram_pickles(compact_output_path, verbose_output_path)
+    assert comparison["bitwise_equal"] is True
+
+
 def compare_histogram_pickles(reference_path: Path, candidate_path: Path, *, rtol=1e-12, atol=1e-12):
     reference = _load_pkl(reference_path)
     candidate = _load_pkl(candidate_path)

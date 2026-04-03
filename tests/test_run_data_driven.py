@@ -123,7 +123,7 @@ def _write_histograms(path: Path, payload):
         cloudpickle.dump(payload, stream)
 
 
-def _run_with_dd_report(tmp_path, histograms, *extra_args):
+def _run_histograms(tmp_path, histograms, *extra_args):
     input_path = tmp_path / "input.pkl.gz"
     output_path = tmp_path / "output.pkl.gz"
     _write_histograms(input_path, histograms)
@@ -133,12 +133,15 @@ def _run_with_dd_report(tmp_path, histograms, *extra_args):
             str(input_path),
             "--output-pkl",
             str(output_path),
-            "--dd-report",
             "--quiet",
             *extra_args,
         ]
     )
     return output_path
+
+
+def _run_with_dd_report(tmp_path, histograms, *extra_args):
+    return _run_histograms(tmp_path, histograms, "--dd-report", *extra_args)
 
 
 def _single_bin_total(histo, process_name):
@@ -492,6 +495,51 @@ def test_run_data_driven_dd_report_empty_histogram(tmp_path, capsys):
     assert "[dd-report] hist=met status=empty" in captured
 
 
+def test_run_data_driven_dd_report_verbose_implies_report_and_adds_details(tmp_path, capsys):
+    histogram = _fill_data_driven_histogram(
+        [
+            {
+                "process": "dataUL18",
+                "channel": "3l",
+                "appl": "isAR_3l",
+                "weight": 5.0,
+            },
+            {
+                "process": "TTTo2L2Nu_centralUL18",
+                "channel": "3l",
+                "appl": "isAR_3l",
+                "weight": 2.0,
+            },
+            {
+                "process": "TTTo2L2Nu_centralUL18",
+                "channel": "3l",
+                "appl": "isAR_3l",
+                "systematic": "FFUp",
+                "weight": 2.5,
+            },
+            {
+                "process": "TTTo2L2Nu_centralUL18",
+                "channel": "3l",
+                "appl": "isAR_3l",
+                "systematic": "JESUp",
+                "weight": 9.0,
+            },
+        ]
+    )
+
+    _run_histograms(tmp_path, {"met": histogram}, "--dd-report-verbose")
+
+    captured = capsys.readouterr().out
+    assert "[dd-report] hist=met channel=3l" in captured
+    assert (
+        "nonprompt region=isAR_3l out=nonpromptUL18 data_used=5 prompt_sub_used=2 result=3"
+        in captured
+    )
+    assert "data_sources: dataUL18=5" in captured
+    assert "prompt_sub_sources: TTTo2L2Nu_centralUL18=2" in captured
+    assert "prompt_sub_systematics: kept=FFUp,nominal dropped=JESUp" in captured
+
+
 def test_run_data_driven_dd_report_zero_used_total(tmp_path, capsys):
     histogram = _fill_data_driven_histogram(
         [
@@ -552,3 +600,36 @@ def test_run_data_driven_dd_report_is_emitted_before_only_flips(tmp_path, capsys
 
     result = _load_pkl(output_path)
     assert list(result["met"].axes["process"]) == ["flipsUL18"]
+
+
+def test_run_data_driven_dd_report_is_emitted_before_renormfact_envelope(tmp_path, capsys):
+    histogram = _fill_data_driven_histogram(
+        [
+            {
+                "process": "dataUL18",
+                "channel": "3l",
+                "appl": "isAR_3l",
+                "weight": 5.0,
+            },
+            {
+                "process": "TTTo2L2Nu_centralUL18",
+                "channel": "3l",
+                "appl": "isAR_3l",
+                "weight": 2.0,
+            },
+        ]
+    )
+
+    _run_with_dd_report(
+        tmp_path,
+        {"met": histogram},
+        "--dd-report-verbose",
+        "--legacy-dict-mode",
+        "--apply-renormfact-envelope",
+        "--mem-report",
+    )
+
+    captured = capsys.readouterr().out
+    assert captured.index("[dd-report] hist=met channel=3l") < captured.index(
+        "before get_renormfact_envelope()"
+    )
