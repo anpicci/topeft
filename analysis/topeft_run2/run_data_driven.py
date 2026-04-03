@@ -92,19 +92,10 @@ def _build_argument_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
-        "--dd-report-verbose",
-        action="store_true",
-        help=(
-            "Extend enabled DD report outputs with prompt-subtraction sample "
-            "breakdowns and systematic-retention notes. When used without "
-            "--dd-report-md, implies stdout --dd-report."
-        ),
-    )
-    parser.add_argument(
         "--dd-report-md",
         help=(
-            "Write the DD report to a Markdown file. Does not print to stdout "
-            "unless --dd-report is also passed."
+            "Write a detailed DD report to a Markdown file. Does not print to "
+            "stdout unless --dd-report is also passed."
         ),
     )
     parser.add_argument(
@@ -485,18 +476,13 @@ def _iter_dd_report_channel_entries(
         yield channel_name, entries
 
 
-def _dd_report_stdout_lines(
-    report: Optional[Dict[str, Any]], *, verbose: bool = False
-) -> List[str]:
+def _dd_report_stdout_lines(report: Optional[Dict[str, Any]]) -> List[str]:
     if not report:
         return []
 
     key = report.get("key", "<unknown>")
     if report.get("empty"):
-        lines = [f"[dd-report] hist={key} status=empty"]
-        if verbose:
-            lines.append("    note: input histogram has no populated bins before appl integration.")
-        return lines
+        return [f"[dd-report] hist={key} status=empty"]
 
     lines: List[str] = []
     for channel_name, entries in _iter_dd_report_channel_entries(report):
@@ -506,15 +492,6 @@ def _dd_report_stdout_lines(
                 family_name = entry["family"]
                 region_name = entry["region"]
                 lines.append(f"  {family_name} region={region_name} absent")
-                if verbose:
-                    lines.append(
-                        "    note: "
-                        + _dd_report_absent_note(
-                            report,
-                            region_name=region_name,
-                            channel_name=channel_name,
-                        )
-                    )
                 continue
 
             row = entry["row"]
@@ -536,20 +513,6 @@ def _dd_report_stdout_lines(
                     f" prompt_sub_used={_format_dd_total(row['prompt_sub_used'])}"
                     f" result={_format_dd_total(row['result'])}{suffix}"
                 )
-                if verbose:
-                    lines.append(
-                        f"    data_sources: {_format_dd_breakdown(row.get('data_sources'))}"
-                    )
-                    lines.append(
-                        "    prompt_sub_sources:"
-                        f" {_format_dd_breakdown(row.get('prompt_sub_sources'))}"
-                    )
-                    prompt_sub_systematics = row.get("prompt_sub_systematics") or {}
-                    lines.append(
-                        "    prompt_sub_systematics:"
-                        f" kept={_format_dd_labels(prompt_sub_systematics.get('kept'))}"
-                        f" dropped={_format_dd_labels(prompt_sub_systematics.get('dropped'))}"
-                    )
             elif family_name == "flips":
                 suffix = " zero_used_total" if _dd_is_zero(row["result"]) else ""
                 lines.append(
@@ -559,31 +522,16 @@ def _dd_report_stdout_lines(
                     f" data_used={_format_dd_total(row['data_used'])}"
                     f" result={_format_dd_total(row['result'])}{suffix}"
                 )
-                if verbose:
-                    lines.append(
-                        f"    data_sources: {_format_dd_breakdown(row.get('data_sources'))}"
-                    )
-                    systematics = row.get("systematics") or {}
-                    lines.append(
-                        "    systematics:"
-                        f" kept={_format_dd_labels(systematics.get('kept'))}"
-                        f" dropped={_format_dd_labels(systematics.get('dropped'))}"
-                    )
-            for note in _dd_report_row_notes(row):
-                if verbose:
-                    lines.append(f"    note: {note}")
 
     return lines
 
 
-def _emit_dd_report(report: Optional[Dict[str, Any]], *, verbose: bool = False) -> None:
-    for line in _dd_report_stdout_lines(report, verbose=verbose):
+def _emit_dd_report(report: Optional[Dict[str, Any]]) -> None:
+    for line in _dd_report_stdout_lines(report):
         print(line)
 
 
-def _dd_report_markdown_lines(
-    report: Optional[Dict[str, Any]], *, verbose: bool = False
-) -> List[str]:
+def _dd_report_markdown_lines(report: Optional[Dict[str, Any]]) -> List[str]:
     if not report:
         return []
 
@@ -592,8 +540,7 @@ def _dd_report_markdown_lines(
 
     if report.get("empty"):
         lines.append("- Status: empty input histogram before appl integration.")
-        if verbose:
-            lines.append("  - Note: input histogram has no populated bins before appl integration.")
+        lines.append("  - Note: input histogram has no populated bins before appl integration.")
         return lines
 
     for channel_name, entries in _iter_dd_report_channel_entries(report):
@@ -604,15 +551,14 @@ def _dd_report_markdown_lines(
                 family_name = _dd_report_family_label(entry["family"])
                 region_name = entry["region"]
                 lines.append(f"- {family_name} region `{region_name}`: absent")
-                if verbose:
-                    lines.append(
-                        "  - Note: "
-                        + _dd_report_absent_note(
-                            report,
-                            region_name=region_name,
-                            channel_name=channel_name,
-                        )
+                lines.append(
+                    "  - Note: "
+                    + _dd_report_absent_note(
+                        report,
+                        region_name=region_name,
+                        channel_name=channel_name,
                     )
+                )
                 continue
 
             row = entry["row"]
@@ -631,20 +577,19 @@ def _dd_report_markdown_lines(
                     f"  - prompt subtraction used: `{_format_dd_total(row['prompt_sub_used'])}`"
                 )
                 lines.append(f"  - result: `{_format_dd_total(row['result'])}`")
-                if verbose:
-                    lines.append(
-                        f"  - data sources: `{_format_dd_breakdown(row.get('data_sources'))}`"
-                    )
-                    lines.append(
-                        "  - prompt subtraction sources: "
-                        f"`{_format_dd_breakdown(row.get('prompt_sub_sources'))}`"
-                    )
-                    prompt_sub_systematics = row.get("prompt_sub_systematics") or {}
-                    lines.append(
-                        "  - prompt subtraction systematics: "
-                        f"`kept={_format_dd_labels(prompt_sub_systematics.get('kept'))}`; "
-                        f"`dropped={_format_dd_labels(prompt_sub_systematics.get('dropped'))}`"
-                    )
+                lines.append(
+                    f"  - data sources: `{_format_dd_breakdown(row.get('data_sources'))}`"
+                )
+                lines.append(
+                    "  - prompt subtraction sources: "
+                    f"`{_format_dd_breakdown(row.get('prompt_sub_sources'))}`"
+                )
+                prompt_sub_systematics = row.get("prompt_sub_systematics") or {}
+                lines.append(
+                    "  - prompt subtraction systematics: "
+                    f"`kept={_format_dd_labels(prompt_sub_systematics.get('kept'))}`; "
+                    f"`dropped={_format_dd_labels(prompt_sub_systematics.get('dropped'))}`"
+                )
             elif family_name == "flips":
                 suffix = " (zero used total)" if _dd_is_zero(row["result"]) else ""
                 lines.append(
@@ -652,19 +597,17 @@ def _dd_report_markdown_lines(
                 )
                 lines.append(f"  - data used: `{_format_dd_total(row['data_used'])}`")
                 lines.append(f"  - result: `{_format_dd_total(row['result'])}`")
-                if verbose:
-                    lines.append(
-                        f"  - data sources: `{_format_dd_breakdown(row.get('data_sources'))}`"
-                    )
-                    systematics = row.get("systematics") or {}
-                    lines.append(
-                        "  - systematics: "
-                        f"`kept={_format_dd_labels(systematics.get('kept'))}`; "
-                        f"`dropped={_format_dd_labels(systematics.get('dropped'))}`"
-                    )
+                lines.append(
+                    f"  - data sources: `{_format_dd_breakdown(row.get('data_sources'))}`"
+                )
+                systematics = row.get("systematics") or {}
+                lines.append(
+                    "  - systematics: "
+                    f"`kept={_format_dd_labels(systematics.get('kept'))}`; "
+                    f"`dropped={_format_dd_labels(systematics.get('dropped'))}`"
+                )
             for note in _dd_report_row_notes(row):
-                if verbose:
-                    lines.append(f"  - Note: {note}")
+                lines.append(f"  - Note: {note}")
         lines.append("")
 
     if lines and lines[-1] == "":
@@ -673,9 +616,8 @@ def _dd_report_markdown_lines(
 
 
 class _DDReportMarkdownWriter:
-    def __init__(self, path: str, *, verbose: bool) -> None:
+    def __init__(self, path: str) -> None:
         self.path = path
-        self.verbose = verbose
         self._stream = None
 
     def open(self) -> None:
@@ -686,7 +628,7 @@ class _DDReportMarkdownWriter:
     def write_report(self, report: Optional[Dict[str, Any]]) -> None:
         if self._stream is None:
             raise RuntimeError("Markdown DD report writer is not open.")
-        lines = _dd_report_markdown_lines(report, verbose=self.verbose)
+        lines = _dd_report_markdown_lines(report)
         if not lines:
             return
         self._stream.write("\n".join(lines))
@@ -706,7 +648,6 @@ def _finalize_histograms(
     apply_envelope: bool,
     dd_report_stdout: bool = False,
     dd_report_md: Optional[str] = None,
-    dd_report_verbose: bool = False,
     iterator_mode: bool = True,
     heartbeat_seconds: float = 30.0,
     quiet: bool = False,
@@ -722,7 +663,7 @@ def _finalize_histograms(
         top_n=mem_top_n,
     )
     markdown_writer = (
-        _DDReportMarkdownWriter(dd_report_md, verbose=dd_report_verbose)
+        _DDReportMarkdownWriter(dd_report_md)
         if dd_report_md
         else None
     )
@@ -765,7 +706,7 @@ def _finalize_histograms(
 
                     report = ddp.get_dd_report(key) if collect_dd_report else None
                     if dd_report_stdout:
-                        _emit_dd_report(report, verbose=dd_report_verbose)
+                        _emit_dd_report(report)
                     if markdown_writer is not None:
                         markdown_writer.write_report(report)
                     working_histo = _filter_to_flips(histo) if only_flips else histo
@@ -806,7 +747,7 @@ def _finalize_histograms(
 
                 report = ddp.get_dd_report(key) if collect_dd_report else None
                 if dd_report_stdout:
-                    _emit_dd_report(report, verbose=dd_report_verbose)
+                    _emit_dd_report(report)
                 if markdown_writer is not None:
                     markdown_writer.write_report(report)
                 if only_flips:
@@ -846,7 +787,7 @@ def _finalize_histograms(
 def main(argv: Optional[List[str]] = None) -> int:
     parser = _build_argument_parser()
     args = parser.parse_args(argv)
-    dd_report_stdout = args.dd_report or (args.dd_report_verbose and not args.dd_report_md)
+    dd_report_stdout = args.dd_report
     dd_report_md = args.dd_report_md
 
     metadata: Dict[str, Any] = {}
@@ -879,7 +820,6 @@ def main(argv: Optional[List[str]] = None) -> int:
         apply_envelope=apply_envelope,
         dd_report_stdout=dd_report_stdout,
         dd_report_md=dd_report_md,
-        dd_report_verbose=args.dd_report_verbose,
         iterator_mode=not args.legacy_dict_mode,
         heartbeat_seconds=args.heartbeat_seconds,
         quiet=args.quiet,

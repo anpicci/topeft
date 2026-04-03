@@ -411,6 +411,19 @@ def test_run_data_driven_quiet(tmp_path, monkeypatch, capsys):
     assert "[run_data_driven]" not in captured
 
 
+def test_run_data_driven_help_exposes_simplified_dd_report_contract():
+    parser = run_data_driven._build_argument_parser()
+    help_text = parser.format_help()
+
+    assert "--dd-report" in help_text
+    assert "--dd-report-md" in help_text
+    assert "--dd-report-verbose" not in help_text
+
+    with pytest.raises(SystemExit) as excinfo:
+        parser.parse_args(["--dd-report-verbose"])
+    assert excinfo.value.code == 2
+
+
 def test_run_data_driven_dd_report_nonprompt_and_sr(tmp_path, capsys):
     histogram = _fill_data_driven_histogram(
         [
@@ -499,7 +512,7 @@ def test_run_data_driven_dd_report_empty_histogram(tmp_path, capsys):
     assert "[dd-report] hist=met status=empty" in captured
 
 
-def test_run_data_driven_dd_report_verbose_implies_report_and_adds_details(tmp_path, capsys):
+def test_run_data_driven_dd_report_markdown_only_writes_detailed_file(tmp_path, capsys):
     histogram = _fill_data_driven_histogram(
         [
             {
@@ -530,43 +543,6 @@ def test_run_data_driven_dd_report_verbose_implies_report_and_adds_details(tmp_p
             },
         ]
     )
-
-    _run_histograms(tmp_path, {"met": histogram}, "--dd-report-verbose")
-
-    captured = capsys.readouterr().out
-    assert "[dd-report] hist=met channel=3l" in captured
-    assert (
-        "nonprompt region=isAR_3l out=nonpromptUL18 data_used=5 prompt_sub_used=2 result=3"
-        in captured
-    )
-    assert "data_sources: dataUL18=5" in captured
-    assert "prompt_sub_sources: TTTo2L2Nu_centralUL18=2" in captured
-    assert "prompt_sub_systematics: kept=FFUp,nominal dropped=JESUp" in captured
-
-
-def test_run_data_driven_dd_report_markdown_writes_compact_file(tmp_path, capsys):
-    histogram = _fill_data_driven_histogram(
-        [
-            {
-                "process": "dataUL18",
-                "channel": "3l",
-                "appl": "isAR_3l",
-                "weight": 5.0,
-            },
-            {
-                "process": "TTTo2L2Nu_centralUL18",
-                "channel": "3l",
-                "appl": "isAR_3l",
-                "weight": 2.0,
-            },
-            {
-                "process": "TTTo2L2Nu_centralUL18",
-                "channel": "3l",
-                "appl": "isSR_3l",
-                "weight": 1.0,
-            },
-        ]
-    )
     report_path = tmp_path / "reports" / "dd_report.md"
 
     _run_histograms(
@@ -584,15 +560,21 @@ def test_run_data_driven_dd_report_markdown_writes_compact_file(tmp_path, capsys
     assert "# Data-driven report" in markdown
     assert "## Histogram: `met`" in markdown
     assert "### Channel: `3l`" in markdown
-    assert "- SR region `isSR_3l` retained total: `1`" in markdown
     assert "- nonprompt region `isAR_3l` output `nonpromptUL18`" in markdown
     assert "  - data used: `5`" in markdown
     assert "  - prompt subtraction used: `2`" in markdown
     assert "  - result: `3`" in markdown
-    assert "prompt subtraction sources" not in markdown
+    assert "  - data sources: `dataUL18=5`" in markdown
+    assert "  - prompt subtraction sources: `TTTo2L2Nu_centralUL18=2`" in markdown
+    assert (
+        "  - prompt subtraction systematics: `kept=FFUp,nominal`; `dropped=JESUp`"
+        in markdown
+    )
 
 
-def test_run_data_driven_dd_report_markdown_verbose_is_file_only_and_prefilter(tmp_path, capsys):
+def test_run_data_driven_dd_report_stdout_is_compact_when_markdown_is_also_requested(
+    tmp_path, capsys
+):
     histogram = _fill_data_driven_histogram(
         [
             {
@@ -629,19 +611,25 @@ def test_run_data_driven_dd_report_markdown_verbose_is_file_only_and_prefilter(t
             },
         ]
     )
-    report_path = tmp_path / "dd_report_verbose.md"
+    report_path = tmp_path / "dd_report_detailed.md"
 
     output_path = _run_histograms(
         tmp_path,
         {"met": histogram},
+        "--dd-report",
         "--dd-report-md",
         str(report_path),
-        "--dd-report-verbose",
         "--only-flips",
     )
 
     captured = capsys.readouterr().out
-    assert "[dd-report]" not in captured
+    assert "[dd-report] hist=met channel=2lss" in captured
+    assert (
+        "nonprompt region=isAR_2lSS out=nonpromptUL18 data_used=5 prompt_sub_used=2 result=3"
+        in captured
+    )
+    assert "prompt_sub_sources" not in captured
+    assert "data_sources:" not in captured
     markdown = _read_text(report_path)
     assert "- nonprompt region `isAR_2lSS` output `nonpromptUL18`" in markdown
     assert "  - prompt subtraction sources: `TTTo2L2Nu_centralUL18=2`" in markdown
@@ -738,7 +726,6 @@ def test_run_data_driven_dd_report_is_emitted_before_renormfact_envelope(tmp_pat
     _run_with_dd_report(
         tmp_path,
         {"met": histogram},
-        "--dd-report-verbose",
         "--legacy-dict-mode",
         "--apply-renormfact-envelope",
         "--mem-report",
