@@ -104,6 +104,43 @@ def _build_data_driven_input_hist():
     )
 
 
+def _fill_data_driven_histogram(entries):
+    histo = _build_data_driven_input_hist()
+    for entry in entries:
+        histo.fill(
+            process=entry["process"],
+            channel=entry["channel"],
+            systematic=entry.get("systematic", "nominal"),
+            appl=entry["appl"],
+            met=np.array([entry.get("met", 0.5)], dtype=float),
+            weight=np.array([entry["weight"]], dtype=float),
+        )
+    return histo
+
+
+def _write_histograms(path: Path, payload):
+    with gzip.open(path, "wb") as stream:
+        cloudpickle.dump(payload, stream)
+
+
+def _run_with_dd_report(tmp_path, histograms, *extra_args):
+    input_path = tmp_path / "input.pkl.gz"
+    output_path = tmp_path / "output.pkl.gz"
+    _write_histograms(input_path, histograms)
+    run_data_driven.main(
+        [
+            "--input-pkl",
+            str(input_path),
+            "--output-pkl",
+            str(output_path),
+            "--dd-report",
+            "--quiet",
+            *extra_args,
+        ]
+    )
+    return output_path
+
+
 def _single_bin_total(histo, process_name):
     values = histo.integrate("process", [process_name]).integrate("systematic", "nominal").values(
         flow=True
@@ -365,3 +402,153 @@ def test_run_data_driven_quiet(tmp_path, monkeypatch, capsys):
 
     captured = capsys.readouterr().out
     assert "[run_data_driven]" not in captured
+
+
+def test_run_data_driven_dd_report_nonprompt_and_sr(tmp_path, capsys):
+    histogram = _fill_data_driven_histogram(
+        [
+            {
+                "process": "dataUL18",
+                "channel": "3l",
+                "appl": "isAR_3l",
+                "weight": 5.0,
+            },
+            {
+                "process": "TTTo2L2Nu_centralUL18",
+                "channel": "3l",
+                "appl": "isAR_3l",
+                "weight": 2.0,
+            },
+            {
+                "process": "TTTo2L2Nu_centralUL18",
+                "channel": "3l",
+                "appl": "isSR_3l",
+                "weight": 1.0,
+            },
+        ]
+    )
+
+    _run_with_dd_report(tmp_path, {"met": histogram})
+
+    captured = capsys.readouterr().out
+    assert "[dd-report] hist=met channel=3l" in captured
+    assert "sr region=isSR_3l retained_total=1" in captured
+    assert (
+        "nonprompt region=isAR_3l out=nonpromptUL18 data_used=5 prompt_sub_used=2 result=3"
+        in captured
+    )
+
+
+def test_run_data_driven_dd_report_flips_and_absent_regions(tmp_path, capsys):
+    histogram = _fill_data_driven_histogram(
+        [
+            {
+                "process": "dataUL18",
+                "channel": "2lss",
+                "appl": "isAR_2lSS_OS",
+                "weight": 4.0,
+            },
+        ]
+    )
+
+    _run_with_dd_report(tmp_path, {"met": histogram})
+
+    captured = capsys.readouterr().out
+    assert "[dd-report] hist=met channel=2lss" in captured
+    assert "sr region=isSR_2lSS absent" in captured
+    assert "nonprompt region=isAR_2lSS absent" in captured
+    assert "flips region=isAR_2lSS_OS out=flipsUL18 data_used=4 result=4" in captured
+
+
+def test_run_data_driven_dd_report_missing_flips_region(tmp_path, capsys):
+    histogram = _fill_data_driven_histogram(
+        [
+            {
+                "process": "dataUL18",
+                "channel": "2lss",
+                "appl": "isAR_2lSS",
+                "weight": 5.0,
+            },
+            {
+                "process": "TTTo2L2Nu_centralUL18",
+                "channel": "2lss",
+                "appl": "isAR_2lSS",
+                "weight": 2.0,
+            },
+        ]
+    )
+
+    _run_with_dd_report(tmp_path, {"met": histogram})
+
+    captured = capsys.readouterr().out
+    assert "nonprompt region=isAR_2lSS out=nonpromptUL18 data_used=5 prompt_sub_used=2 result=3" in captured
+    assert "flips region=isAR_2lSS_OS absent" in captured
+
+
+def test_run_data_driven_dd_report_empty_histogram(tmp_path, capsys):
+    _run_with_dd_report(tmp_path, {"met": _build_data_driven_input_hist()})
+
+    captured = capsys.readouterr().out
+    assert "[dd-report] hist=met status=empty" in captured
+
+
+def test_run_data_driven_dd_report_zero_used_total(tmp_path, capsys):
+    histogram = _fill_data_driven_histogram(
+        [
+            {
+                "process": "dataUL18",
+                "channel": "3l",
+                "appl": "isAR_3l",
+                "weight": 2.0,
+            },
+            {
+                "process": "TTTo2L2Nu_centralUL18",
+                "channel": "3l",
+                "appl": "isAR_3l",
+                "weight": 2.0,
+            },
+        ]
+    )
+
+    _run_with_dd_report(tmp_path, {"met": histogram})
+
+    captured = capsys.readouterr().out
+    assert "sr region=isSR_3l absent" in captured
+    assert (
+        "nonprompt region=isAR_3l out=nonpromptUL18 data_used=2 prompt_sub_used=2 result=0 zero_used_total"
+        in captured
+    )
+
+
+def test_run_data_driven_dd_report_is_emitted_before_only_flips(tmp_path, capsys):
+    histogram = _fill_data_driven_histogram(
+        [
+            {
+                "process": "dataUL18",
+                "channel": "2lss",
+                "appl": "isAR_2lSS",
+                "weight": 5.0,
+            },
+            {
+                "process": "TTTo2L2Nu_centralUL18",
+                "channel": "2lss",
+                "appl": "isAR_2lSS",
+                "weight": 2.0,
+            },
+            {
+                "process": "dataUL18",
+                "channel": "2lss",
+                "appl": "isAR_2lSS_OS",
+                "weight": 4.0,
+            },
+        ]
+    )
+
+    output_path = _run_with_dd_report(tmp_path, {"met": histogram}, "--only-flips")
+
+    captured = capsys.readouterr().out
+    assert "nonprompt region=isAR_2lSS out=nonpromptUL18 data_used=5 prompt_sub_used=2 result=3" in captured
+    assert "flips region=isAR_2lSS_OS out=flipsUL18 data_used=4 result=4" in captured
+
+    result = _load_pkl(output_path)
+    assert list(result["met"].axes["process"]) == ["flipsUL18"]

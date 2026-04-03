@@ -37,6 +37,7 @@ from topeft.modules.get_renormfact_envelope import (
 _STREAMING_PICKLE_PROTOCOL = 3
 _STREAMING_MEMO_CLEAR_INTERVAL = 1
 _LIBC = None
+_DD_REPORT_FAMILY_ORDER = {"sr": 0, "nonprompt": 1, "flips": 2}
 
 
 def _build_argument_parser() -> argparse.ArgumentParser:
@@ -81,6 +82,14 @@ def _build_argument_parser() -> argparse.ArgumentParser:
         "--only-flips",
         action="store_true",
         help="Drop nonprompt processes so only flips contributions remain in the output histograms.",
+    )
+    parser.add_argument(
+        "--dd-report",
+        action="store_true",
+        help=(
+            "Print a compact text report of the raw data-driven inputs and outputs "
+            "before only-flips filtering and renorm/fact-envelope postprocessing."
+        ),
     )
     parser.add_argument(
         "--heartbeat-seconds",
@@ -340,12 +349,135 @@ def _envelope_single_histogram(key: str, histo: Any) -> Any:
     )
 
 
+def _dd_channel_label(channel_name: Optional[str]) -> str:
+    return "<all>" if channel_name is None else str(channel_name)
+
+
+def _dd_is_zero(value: float) -> bool:
+    return abs(value) < 1e-12
+
+
+def _format_dd_total(value: float) -> str:
+    if _dd_is_zero(value):
+        value = 0.0
+    return format(value, ".12g")
+
+
+def _dd_row_sort_key(row: Dict[str, Any]) -> Tuple[int, str, str]:
+    return (
+        _DD_REPORT_FAMILY_ORDER.get(row.get("family"), 99),
+        str(row.get("region") or ""),
+        str(row.get("output_process") or ""),
+    )
+
+
+def _emit_dd_report(report: Optional[Dict[str, Any]]) -> None:
+    if not report:
+        return
+
+    key = report.get("key", "<unknown>")
+    if report.get("empty"):
+        print(f"[dd-report] hist={key} status=empty")
+        return
+
+    rows = list(report.get("rows") or [])
+    rows_by_channel: Dict[Optional[str], List[Dict[str, Any]]] = {}
+    for row in rows:
+        rows_by_channel.setdefault(row.get("channel"), []).append(row)
+
+    channels = sorted(
+        report.get("channels") or rows_by_channel.keys(),
+        key=lambda channel_name: _dd_channel_label(channel_name),
+    )
+
+    for channel_name in channels:
+        channel_rows = rows_by_channel.get(channel_name, [])
+        print(f"[dd-report] hist={key} channel={_dd_channel_label(channel_name)}")
+
+        expected_regions = DataDrivenProducer.dd_report_expected_regions_for_channel(
+            channel_name
+        )
+        covered_row_ids = set()
+
+        for family_name, region_name in expected_regions:
+            matching_rows = [
+                row
+                for row in channel_rows
+                if row.get("family") == family_name and row.get("region") == region_name
+            ]
+            if not matching_rows:
+                print(f"  {family_name} region={region_name} absent")
+                continue
+
+            for row in sorted(matching_rows, key=_dd_row_sort_key):
+                covered_row_ids.add(id(row))
+                if family_name == "sr":
+                    suffix = " zero_used_total" if _dd_is_zero(row["retained_total"]) else ""
+                    print(
+                        "  sr"
+                        f" region={row['region']}"
+                        f" retained_total={_format_dd_total(row['retained_total'])}{suffix}"
+                    )
+                elif family_name == "nonprompt":
+                    suffix = " zero_used_total" if _dd_is_zero(row["result"]) else ""
+                    print(
+                        "  nonprompt"
+                        f" region={row['region']}"
+                        f" out={row['output_process']}"
+                        f" data_used={_format_dd_total(row['data_used'])}"
+                        f" prompt_sub_used={_format_dd_total(row['prompt_sub_used'])}"
+                        f" result={_format_dd_total(row['result'])}{suffix}"
+                    )
+                elif family_name == "flips":
+                    suffix = " zero_used_total" if _dd_is_zero(row["result"]) else ""
+                    print(
+                        "  flips"
+                        f" region={row['region']}"
+                        f" out={row['output_process']}"
+                        f" data_used={_format_dd_total(row['data_used'])}"
+                        f" result={_format_dd_total(row['result'])}{suffix}"
+                    )
+
+        extra_rows = [
+            row for row in channel_rows if id(row) not in covered_row_ids
+        ]
+        for row in sorted(extra_rows, key=_dd_row_sort_key):
+            family_name = row.get("family")
+            if family_name == "sr":
+                suffix = " zero_used_total" if _dd_is_zero(row["retained_total"]) else ""
+                print(
+                    "  sr"
+                    f" region={row['region']}"
+                    f" retained_total={_format_dd_total(row['retained_total'])}{suffix}"
+                )
+            elif family_name == "nonprompt":
+                suffix = " zero_used_total" if _dd_is_zero(row["result"]) else ""
+                print(
+                    "  nonprompt"
+                    f" region={row['region']}"
+                    f" out={row['output_process']}"
+                    f" data_used={_format_dd_total(row['data_used'])}"
+                    f" prompt_sub_used={_format_dd_total(row['prompt_sub_used'])}"
+                    f" result={_format_dd_total(row['result'])}{suffix}"
+                )
+            elif family_name == "flips":
+                suffix = " zero_used_total" if _dd_is_zero(row["result"]) else ""
+                print(
+                    "  flips"
+                    f" region={row['region']}"
+                    f" out={row['output_process']}"
+                    f" data_used={_format_dd_total(row['data_used'])}"
+                    f" result={_format_dd_total(row['result'])}{suffix}"
+                )
+
+
 def _finalize_histograms(
     input_pkl: str,
     output_pkl: str,
     *,
     only_flips: bool,
     apply_envelope: bool,
+    dd_report: bool = False,
     iterator_mode: bool = True,
     heartbeat_seconds: float = 30.0,
     quiet: bool = False,
@@ -391,6 +523,8 @@ def _finalize_histograms(
                         quiet=quiet,
                     )
 
+                    if dd_report:
+                        _emit_dd_report(ddp.get_dd_report(key))
                     working_histo = _filter_to_flips(histo) if only_flips else histo
                     if apply_envelope:
                         working_histo = _envelope_single_histogram(key, working_histo)
@@ -427,6 +561,8 @@ def _finalize_histograms(
                     quiet=quiet,
                 )
 
+                if dd_report:
+                    _emit_dd_report(ddp.get_dd_report(key))
                 if only_flips:
                     assert filtered is not None
                     filtered[key] = _filter_to_flips(histo)
@@ -491,6 +627,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         output_pkl,
         only_flips=args.only_flips,
         apply_envelope=apply_envelope,
+        dd_report=args.dd_report,
         iterator_mode=not args.legacy_dict_mode,
         heartbeat_seconds=args.heartbeat_seconds,
         quiet=args.quiet,

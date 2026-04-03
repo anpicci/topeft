@@ -5,6 +5,7 @@ import re
 from collections import defaultdict
 
 import cloudpickle
+import numpy as np
 from topcoffea.modules.hist_utils import iterate_hist_from_pkl
 
 from topeft.modules.paths import topeft_path
@@ -28,6 +29,7 @@ class DataDrivenProducer:
         self.iterator_mode = iterator_mode
         self.promptSubtractionSamples=get_te_param('prompt_subtraction_samples')
         self._name_pattern = re.compile(self._NAME_REGEX)
+        self._dd_report_by_key = {}
         if not self.iterator_mode:
             self.DDFakes()
 
@@ -68,12 +70,261 @@ class DataDrivenProducer:
             process_metadata[process_name] = self._parse_process(process_name)
         return process_metadata
 
+    @staticmethod
+    def _axis_labels(histo, axis_name):
+        try:
+            return list(histo.axes[axis_name])
+        except Exception:
+            return []
+
+    @classmethod
+    def dd_report_expected_regions_for_channel(cls, channel_name):
+        if channel_name is None:
+            return ()
+        channel_label = str(channel_name or "").lower()
+        if "2lss" in channel_label:
+            return (
+                ("sr", "isSR_2lSS"),
+                ("nonprompt", "isAR_2lSS"),
+                ("flips", "isAR_2lSS_OS"),
+            )
+        if "2los" in channel_label:
+            return (
+                ("sr", "isSR_2lOS"),
+                ("nonprompt", "isAR_2lOS"),
+            )
+        if "1l" in channel_label:
+            return (
+                ("sr", "isSR_1l"),
+                ("nonprompt", "isAR_1l"),
+            )
+        if "3l" in channel_label:
+            return (
+                ("sr", "isSR_3l"),
+                ("nonprompt", "isAR_3l"),
+            )
+        if "4l" in channel_label:
+            return (("sr", "isSR_4l"),)
+        return ()
+
+    @classmethod
+    def _region_matches_channel(cls, region_name, channel_name):
+        expected_regions = cls.dd_report_expected_regions_for_channel(channel_name)
+        if not expected_regions:
+            return True
+        return any(region_name == expected_region for _, expected_region in expected_regions)
+
+    def _select_histogram(self, histo, *, channel_name=None, process_name=None, systematic="nominal"):
+        selected = histo
+        if channel_name is not None:
+            channel_axis = self._axis_labels(selected, "channel")
+            if channel_axis and channel_name not in channel_axis:
+                return None
+            if channel_axis:
+                selected = selected.integrate("channel", channel_name)
+        if process_name is not None:
+            process_axis = self._axis_labels(selected, "process")
+            if process_axis and process_name not in process_axis:
+                return None
+            if process_axis:
+                selected = selected.integrate("process", [process_name])
+        if systematic is not None:
+            systematic_axis = self._axis_labels(selected, "systematic")
+            if systematic_axis and systematic not in systematic_axis:
+                return None
+            if systematic_axis:
+                selected = selected.integrate("systematic", systematic)
+        return selected
+
+    @staticmethod
+    def _selected_total(selected):
+        if selected is None:
+            return 0.0
+        values = selected.values(flow=True)
+        try:
+            values = values[()]
+        except Exception:
+            pass
+        return float(np.asarray(values).sum())
+
+    def _total_for_selection(self, histo, *, channel_name=None, process_name=None, systematic="nominal"):
+        selected = self._select_histogram(
+            histo,
+            channel_name=channel_name,
+            process_name=process_name,
+            systematic=systematic,
+        )
+        return self._selected_total(selected)
+
+    def _has_selected_entries(self, histo, *, channel_name=None, process_name=None, systematic="nominal"):
+        selected = self._select_histogram(
+            histo,
+            channel_name=channel_name,
+            process_name=process_name,
+            systematic=systematic,
+        )
+        if selected is None:
+            return False
+        if hasattr(selected, "view"):
+            try:
+                return bool(selected.view(as_dict=True, flow=True))
+            except Exception:
+                pass
+        return self._selected_total(selected) != 0.0
+
+    @staticmethod
+    def _channel_labels_for_report(histo):
+        channels = DataDrivenProducer._axis_labels(histo, "channel")
+        return channels or [None]
+
+    @staticmethod
+    def _init_dd_report(key, histo, *, empty=False):
+        return {
+            "key": key,
+            "empty": empty,
+            "channels": DataDrivenProducer._channel_labels_for_report(histo),
+            "rows": [],
+        }
+
+    @staticmethod
+    def _nonprompt_process_name(year):
+        if ("2022" in year) or ("2023" in year):
+            raw_name = f"nonprompt{year}"
+        else:
+            raw_name = f"nonpromptUL{year}"
+        return canonicalize_process_name(raw_name)
+
+    @staticmethod
+    def _flips_process_name(year):
+        if year.startswith("202"):
+            raw_name = f"flips{year}"
+        else:
+            raw_name = f"flipsUL{year}"
+        return canonicalize_process_name(raw_name)
+
+    def _report_process_names(self, hAR, process_metadata, family_name):
+        process_names = set()
+        for process_name in self._axis_labels(hAR, "process"):
+            _, year = process_metadata[process_name]
+            if family_name == "flips":
+                process_names.add(self._flips_process_name(year))
+            else:
+                process_names.add(self._nonprompt_process_name(year))
+        return sorted(process_names)
+
+    def _record_sr_report(self, report, ident, hAR):
+        for channel_name in report["channels"]:
+            if not self._region_matches_channel(ident, channel_name):
+                continue
+            if not self._has_selected_entries(hAR, channel_name=channel_name, systematic="nominal"):
+                continue
+            report["rows"].append(
+                {
+                    "channel": channel_name,
+                    "family": "sr",
+                    "region": ident,
+                    "retained_total": self._total_for_selection(
+                        hAR,
+                        channel_name=channel_name,
+                        systematic="nominal",
+                    ),
+                }
+            )
+
+    def _record_flips_report(self, report, ident, hFlips, output_process_names):
+        for channel_name in report["channels"]:
+            if not self._region_matches_channel(ident, channel_name):
+                continue
+            for output_process in output_process_names:
+                if not self._has_selected_entries(
+                    hFlips,
+                    channel_name=channel_name,
+                    process_name=output_process,
+                    systematic="nominal",
+                ):
+                    continue
+                result_total = self._total_for_selection(
+                    hFlips,
+                    channel_name=channel_name,
+                    process_name=output_process,
+                    systematic="nominal",
+                )
+                report["rows"].append(
+                    {
+                        "channel": channel_name,
+                        "family": "flips",
+                        "region": ident,
+                        "output_process": output_process,
+                        "data_used": result_total,
+                        "result": result_total,
+                    }
+                )
+
+    def _record_nonprompt_report(
+        self,
+        report,
+        ident,
+        hDataUsed,
+        hPromptSubScaled,
+        hResult,
+        output_process_names,
+    ):
+        for channel_name in report["channels"]:
+            if not self._region_matches_channel(ident, channel_name):
+                continue
+            for output_process in output_process_names:
+                has_data = self._has_selected_entries(
+                    hDataUsed,
+                    channel_name=channel_name,
+                    process_name=output_process,
+                    systematic="nominal",
+                )
+                has_prompt = self._has_selected_entries(
+                    hPromptSubScaled,
+                    channel_name=channel_name,
+                    process_name=output_process,
+                    systematic="nominal",
+                )
+                if not (has_data or has_prompt):
+                    continue
+                report["rows"].append(
+                    {
+                        "channel": channel_name,
+                        "family": "nonprompt",
+                        "region": ident,
+                        "output_process": output_process,
+                        "data_used": self._total_for_selection(
+                            hDataUsed,
+                            channel_name=channel_name,
+                            process_name=output_process,
+                            systematic="nominal",
+                        ),
+                        "prompt_sub_used": self._total_for_selection(
+                            hPromptSubScaled,
+                            channel_name=channel_name,
+                            process_name=output_process,
+                            systematic="nominal",
+                        ) * -1.0,
+                        "result": self._total_for_selection(
+                            hResult,
+                            channel_name=channel_name,
+                            process_name=output_process,
+                            systematic="nominal",
+                        ),
+                    }
+                )
+
     def _build_data_driven_histogram(self, key, histo):
         if histo.empty():  # histo is empty, so we just integrate over appl and keep an empty histo
+            if not key.endswith("_sumw2"):
+                self._dd_report_by_key[key] = self._init_dd_report(key, histo, empty=True)
             print(f"[W]: Histogram {key} is empty, returning an empty histo")
             return histo.integrate("appl")
 
         process_metadata = self._build_process_metadata(histo)
+        report = None
+        if not key.endswith("_sumw2"):
+            report = self._init_dd_report(key, histo)
 
         # now for each year we actually perform the subtraction and integrate out the application regions
         newhist = None
@@ -83,6 +334,8 @@ class DataDrivenProducer:
             if "isAR" not in ident:
                 # if we are in the signal region, we just take the
                 # whole histogram integrating out the application region axis
+                if report is not None:
+                    self._record_sr_report(report, ident, hAR)
                 if newhist is None:
                     newhist = hAR
                 else:
@@ -92,11 +345,8 @@ class DataDrivenProducer:
                 newNameDictData = defaultdict(list)
                 for process_name in hAR.axes["process"]:
                     sampleName, year = process_metadata[process_name]
-                    if year.startswith("202"):
-                        raw_flips_name = f"flips{year}"
-                    else:
-                        raw_flips_name = f"flipsUL{year}"
-                    flips_name = canonicalize_process_name(raw_flips_name)
+                    raw_flips_name = self._flips_process_name(year)
+                    flips_name = raw_flips_name
                     if raw_flips_name == flips_name:
                         logger.debug("Process name '%s' already canonical", raw_flips_name)
                     if self.dataName == sampleName:
@@ -110,6 +360,14 @@ class DataDrivenProducer:
                     if syst_var_idet != "nominal":
                         syst_var_idet_rm_lst.append(syst_var_idet)
                 hFlips = hFlips.remove("systematic", syst_var_idet_rm_lst)
+
+                if report is not None:
+                    output_process_names = self._report_process_names(
+                        hAR,
+                        process_metadata,
+                        "flips",
+                    )
+                    self._record_flips_report(report, ident, hFlips, output_process_names)
 
                 # now adding them to the list of processes:
                 if newhist is None:
@@ -126,11 +384,8 @@ class DataDrivenProducer:
                 for process_name in hAR.axes["process"]:
                     sampleName, year = process_metadata[process_name]
 
-                    if ("2022" in year) or ("2023" in year):
-                        raw_nonprompt_name = f"nonprompt{year}"
-                    else:
-                        raw_nonprompt_name = f"nonpromptUL{year}"
-                    nonprompt_name = canonicalize_process_name(raw_nonprompt_name)
+                    raw_nonprompt_name = self._nonprompt_process_name(year)
+                    nonprompt_name = raw_nonprompt_name
                     if raw_nonprompt_name == nonprompt_name:
                         logger.debug("Process name '%s' already canonical", raw_nonprompt_name)
                     if self.dataName == sampleName:
@@ -158,12 +413,29 @@ class DataDrivenProducer:
                 if not key.endswith("_sumw2"):
                     hPromptSub.scale(-1)
                 hFakes += hPromptSub
+
+                if report is not None:
+                    output_process_names = self._report_process_names(
+                        hAR,
+                        process_metadata,
+                        "nonprompt",
+                    )
+                    self._record_nonprompt_report(
+                        report,
+                        ident,
+                        hAR.group("process", newNameDictData),
+                        hPromptSub,
+                        hFakes,
+                        output_process_names,
+                    )
                 # now adding them to the list of processes:
                 if newhist is None:
                     newhist = hFakes
                 else:
                     newhist += hFakes
 
+        if report is not None:
+            self._dd_report_by_key[key] = report
         return newhist
 
     def iter_data_driven_histograms(self):
@@ -191,6 +463,9 @@ class DataDrivenProducer:
         if self.outHist is None:
             self.DDFakes()
         return self.outHist
+
+    def get_dd_report(self, key):
+        return self._dd_report_by_key.get(key)
 
 
 if __name__ == "__main__":
