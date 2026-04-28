@@ -80,6 +80,10 @@ info = {
         "regular": (30, -3, 3),
         "label": r"Leading jet  $\eta$ "
     },
+    "fwd0eta": {
+        "regular": (50, -5, 5),
+        "label": r"Leading forward jet $\eta$ "
+    },
     "ht": {
         "regular": (100, 0, 1000),
         "variable": [0, 300, 500, 800],

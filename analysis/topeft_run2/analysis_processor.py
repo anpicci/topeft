@@ -885,6 +885,7 @@ class AnalysisProcessor(processor.ProcessorABC):
             nfwdj = ak.num(fwdJets)
             ht = ak.sum(goodJets.pt,axis=-1)
             j0 = goodJets[ak.argmax(goodJets.pt,axis=-1,keepdims=True)]
+            fwd0 = fwdJets[ak.argmax(fwdJets.pt,axis=-1,keepdims=True)]
 
             if btagAlgo == "btagDeepFlavB":
                 btagRef = ""
@@ -1406,6 +1407,7 @@ class AnalysisProcessor(processor.ProcessorABC):
             varnames["l1eta"]   = l1.eta
             varnames["j0pt"]    = ak.flatten(j0.pt)
             varnames["j0eta"]   = ak.flatten(j0.eta)
+            varnames["fwd0eta"] = ak.flatten(fwd0.eta)
             varnames["njets"]   = njets
             varnames["nbtagsl"] = nbtagsl
             varnames["nbtagsm"] = nbtagsm
