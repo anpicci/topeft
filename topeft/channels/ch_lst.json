@@ -759,8 +759,7 @@
                     "2l_nozeeveto",
                     "2los",
                     "2lem",
-                    "bmask_exactly2m",
-                    "fwdjet_mask"
+                    "bmask_exactly2m"
                 ]
             ],
             "lep_flav_lst": [
