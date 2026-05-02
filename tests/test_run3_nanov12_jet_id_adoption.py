@@ -24,6 +24,8 @@ def test_diboson_processor_run3_uses_nanov12_tight_jet_id_for_central_and_forwar
     assert 'abs(cleanedJets.eta) > get_te_param("eta_j_cut")) & jet_id_mask' in source
     assert 'else:\n                cleanedJets["isGood"] = tc_os.is_tight_jet' in source
     assert 'cleanedJets["isFwd"] = te_os.isFwdJet' in source
+    assert "jetPtCut=50." in source
+    assert "jetPtCut=40." not in source
 
 
 def test_btag_mceff_aligns_run3_to_nanov12_tight_jet_id_and_preserves_run2_id_cut():
