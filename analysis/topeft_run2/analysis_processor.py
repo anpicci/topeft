@@ -22,7 +22,7 @@ import topcoffea.modules.corrections as tc_cor
 from topeft.modules.axes import info as axes_info
 from topeft.modules.axes import info_2d as axes_info_2d
 from topeft.modules.paths import topeft_path
-from topeft.modules.corrections import ApplyJetCorrections, GetBtagEff, AttachMuonSF, AttachElectronSF, AttachElectronCorrections, AttachTauSF, ApplyTES, ApplyTESSystematic, ApplyFESSystematic, AttachPerLeptonFR, ApplyRochesterCorrections, ApplyJetSystematics, GetTriggerSF, ApplyJetVetoMaps, get_supported_jet_systematics
+from topeft.modules.corrections import ApplyJetCorrections, ApplyMETSystematics, GetBtagEff, AttachMuonSF, AttachElectronSF, AttachElectronCorrections, AttachTauSF, ApplyTES, ApplyTESSystematic, ApplyFESSystematic, AttachPerLeptonFR, ApplyRochesterCorrections, ApplyJetSystematics, GetTriggerSF, ApplyJetVetoMaps, get_selected_met, get_supported_jet_systematics, get_supported_met_systematics, is_met_unclustered_systematic
 import topeft.modules.event_selection as te_es
 import topeft.modules.object_selection as te_os
 from topcoffea.modules.get_param_from_jsons import GetParam
@@ -514,7 +514,7 @@ class AnalysisProcessor(processor.ProcessorABC):
 
         # Initialize objects
 
-        met  = events.MET
+        met  = get_selected_met(events, year)
         ele  = events.Electron
         mu   = events.Muon
         tau  = events.Tau
@@ -542,7 +542,7 @@ class AnalysisProcessor(processor.ProcessorABC):
 
         # An array of lenght events that is just 1 for each event
         # Probably there's a better way to do this, but we use this method elsewhere so I guess why not..
-        events.nom = ak.ones_like(events.MET.pt)
+        events.nom = ak.ones_like(met.pt)
 
         ele["idEmu"] = te_os.ttH_idEmu_cuts_E3(ele.hoe, ele.eta, ele.deltaEtaSC, ele.eInvMinusPInv, ele.sieie)
         ele["conept"] = leptonSelection.coneptElec(ele)
@@ -758,6 +758,9 @@ class AnalysisProcessor(processor.ProcessorABC):
         obj_correction_syst_lst = get_supported_jet_systematics(
             year, isData=isData, era=run_era
         )
+        obj_correction_syst_lst.extend(
+            get_supported_met_systematics(year, isData=isData, era=run_era)
+        )
         if self.enable_tau_blocks:
             obj_correction_syst_lst.append("TESUp")
             obj_correction_syst_lst.append("TESDown")
@@ -882,6 +885,8 @@ class AnalysisProcessor(processor.ProcessorABC):
             ).build(cleanedJets, lazy_cache=events_cache)  #Run3 ready
             cleanedJets = ApplyJetSystematics(year,cleanedJets,syst_var)
             met = ApplyJetCorrections(year, corr_type='met', isData=isData, era=run_era, run=run).build(met_raw, cleanedJets, lazy_cache=events_cache)
+            if is_met_unclustered_systematic(syst_var):
+                met = ApplyMETSystematics(met, syst_var)
 
             if is_run3:
                 jet_id_mask = tc_os.run3_nanoV12_ak4puppi_jet_id(cleanedJets, year, working_point="tight")

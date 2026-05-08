@@ -174,6 +174,38 @@ def get_supported_jet_systematics(year, isData=False, era=None):
         systs.append(f"JES_{base}Down")
     return systs
 
+
+MET_UNCLUSTERED_ENERGY = "MET_UnclusteredEnergy"
+
+
+def get_selected_met(events, year):
+    met_collection_name = "PuppiMET" if str(year).startswith("202") else "MET"
+    if not hasattr(events, met_collection_name):
+        raise RuntimeError(
+            f"Run {year} processing requires events.{met_collection_name}; "
+            "no fallback MET collection is used."
+        )
+    return getattr(events, met_collection_name)
+
+
+def get_supported_met_systematics(year, isData=False, era=None):
+    if isData:
+        return []
+    return [f"{MET_UNCLUSTERED_ENERGY}Up", f"{MET_UNCLUSTERED_ENERGY}Down"]
+
+
+def is_met_unclustered_systematic(syst_var):
+    return syst_var in get_supported_met_systematics(year=None, isData=False)
+
+
+def ApplyMETSystematics(met, syst_var):
+    if syst_var == f"{MET_UNCLUSTERED_ENERGY}Up":
+        return getattr(met, MET_UNCLUSTERED_ENERGY).up
+    if syst_var == f"{MET_UNCLUSTERED_ENERGY}Down":
+        return getattr(met, MET_UNCLUSTERED_ENERGY).down
+    return met
+
+
 def get_corr_inputs(objs, corr_obj, name_map):
     """
     Helper function for getting values of input variables
@@ -1856,7 +1888,7 @@ def ApplyJetSystematics(year,cleanedJets,syst_var):
         return cleanedJets.JES_jes.down
     elif (syst_var == 'nominal'):
         return cleanedJets
-    elif (syst_var in ['nominal','MuonESUp','MuonESDown', 'TESUp', 'TESDown', 'FESUp', 'FESDown']):
+    elif (syst_var in ['nominal','MuonESUp','MuonESDown', 'TESUp', 'TESDown', 'FESUp', 'FESDown']) or is_met_unclustered_systematic(syst_var):
         return cleanedJets
     elif ('JES_FlavorQCD' in syst_var):
         # Overwrite FlavorQCD with the proper jet flavor uncertainty

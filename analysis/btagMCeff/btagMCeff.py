@@ -16,7 +16,7 @@ from topeft.modules.paths import topeft_path
 from topcoffea.modules.get_param_from_jsons import GetParam
 get_te_param = GetParam(topeft_path("params/params.json"))
 
-from topeft.modules.corrections import ApplyJetCorrections, ApplyJetSystematics
+from topeft.modules.corrections import ApplyJetCorrections, ApplyJetSystematics, get_selected_met
 
 #coffea.deprecations_as_errors = True
 
@@ -81,7 +81,7 @@ class AnalysisProcessor(processor.ProcessorABC):
                 run_era = self._samples[dataset]["path"].split("/")[2].split("-")[0][-1]
 
         # Initialize objects
-        met = events.MET
+        met = get_selected_met(events, year)
         e   = events.Electron
         mu  = events.Muon
         j   = events.Jet
