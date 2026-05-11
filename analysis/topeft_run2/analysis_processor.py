@@ -155,7 +155,7 @@ class AnalysisProcessor(processor.ProcessorABC):
 
         return bool(fill_sumw2_hist) and wgt_fluct == "nominal"
 
-    def __init__(self, samples, wc_names_lst=[], hist_lst=None, ecut_threshold=None, fill_sumw2_hist=True, do_systematics=False, split_by_lepton_flavor=False, skip_signal_regions=False, skip_control_regions=False, muonSyst='nominal', dtype=np.float32, rebin=False, offZ_split=False, tau_h_analysis=False, fwd_analysis=False, all_analysis=False, useRun3MVA=True, tau_run_mode="standard", sr_category_dict=None, cr_category_dict=None, suppress_forward_eta_stochastic_jer=False):
+    def __init__(self, samples, wc_names_lst=[], hist_lst=None, ecut_threshold=None, fill_sumw2_hist=True, do_systematics=False, split_by_lepton_flavor=False, skip_signal_regions=False, skip_control_regions=False, muonSyst='nominal', dtype=np.float32, rebin=False, offZ_split=False, tau_h_analysis=False, fwd_analysis=False, all_analysis=False, useRun3MVA=True, tau_run_mode="standard", sr_category_dict=None, cr_category_dict=None, suppress_forward_eta_stochastic_jer=False, fwd_eta_band_pt_apply="auto"):
 
         self._samples = samples
         self._wc_names_lst = wc_names_lst
@@ -206,6 +206,7 @@ class AnalysisProcessor(processor.ProcessorABC):
         self.useRun3MVA = useRun3MVA #can be switched to False use the alternative cuts
         self.tau_run_mode = tau_run_mode
         self.suppress_forward_eta_stochastic_jer = suppress_forward_eta_stochastic_jer
+        self.fwd_eta_band_pt_apply = fwd_eta_band_pt_apply
         # self._tau_wp_checked = False
 
         self._fill_sumw2_hist = bool(fill_sumw2_hist)  # Whether to fill the w**2 companion histograms
@@ -891,10 +892,20 @@ class AnalysisProcessor(processor.ProcessorABC):
             if is_run3:
                 jet_id_mask = tc_os.run3_nanoV12_ak4puppi_jet_id(cleanedJets, year, working_point="tight")
                 cleanedJets["isGood"] = ((getattr(cleanedJets, jetptname) > 30.) & (abs(cleanedJets.eta) < get_te_param("eta_j_cut")) & jet_id_mask)
-                cleanedJets["isFwd"] = ((getattr(cleanedJets, jetptname) > 50.) & (abs(cleanedJets.eta) > get_te_param("eta_j_cut")) & jet_id_mask)
             else:
+                jet_id_mask = True
                 cleanedJets["isGood"] = tc_os.is_tight_jet(getattr(cleanedJets, jetptname), cleanedJets.eta, cleanedJets.jetId, pt_cut=30., eta_cut=get_te_param("eta_j_cut"), id_cut=get_te_param("jet_id_cut"))
-                cleanedJets["isFwd"] = ((getattr(cleanedJets, jetptname) > 50.) & (abs(cleanedJets.eta) > get_te_param("eta_j_cut"))) #te_os.isFwdJet(getattr(cleanedJets, jetptname), cleanedJets.eta, cleanedJets.jetId, jetPtCut=50.)
+            cleanedJets["isFwd"] = te_os.is_forward_jet_eta_banded(
+                getattr(cleanedJets, jetptname),
+                cleanedJets.eta,
+                eta_cut=get_te_param("eta_j_cut"),
+                baseline_pt_cut=get_te_param("fwd_jet_pt_cut"),
+                apply_eta_band_pt=te_os.resolve_fwd_eta_band_pt_apply(year, self.fwd_eta_band_pt_apply),
+                eta_band_min=get_te_param("fwd_jet_eta_band_min"),
+                eta_band_max=get_te_param("fwd_jet_eta_band_max"),
+                eta_band_pt_cut=get_te_param("fwd_jet_eta_band_pt_cut"),
+                quality_mask=jet_id_mask,
+            )
             goodJets = cleanedJets[cleanedJets.isGood]
             fwdJets  = cleanedJets[cleanedJets.isFwd]
 

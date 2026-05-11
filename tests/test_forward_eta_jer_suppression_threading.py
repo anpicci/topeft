@@ -15,7 +15,7 @@ from topeft.modules import corrections as cor
 _RUN_ANALYSIS_PATH = Path("analysis/topeft_run2/run_analysis.py")
 
 
-def test_apply_jet_corrections_threads_forward_eta_suppression_to_factory(monkeypatch):
+def test_apply_jet_corrections_gates_forward_eta_suppression_to_run3(monkeypatch):
     calls = []
 
     class DummyJECStack:
@@ -51,9 +51,27 @@ def test_apply_jet_corrections_threads_forward_eta_suppression_to_factory(monkey
         run=123,
         suppress_forward_eta_stochastic_jer=True,
     )
+    cor.ApplyJetCorrections(
+        "2018",
+        corr_type="jets",
+        isData=False,
+        era=None,
+        run=123,
+        suppress_forward_eta_stochastic_jer=True,
+    )
+    cor.ApplyJetCorrections(
+        "2022",
+        corr_type="jets",
+        isData=False,
+        era=None,
+        run=123,
+        suppress_forward_eta_stochastic_jer=False,
+    )
 
     assert calls[0]["kwargs"]["suppress_forward_eta_stochastic_jer"] is False
     assert calls[1]["kwargs"]["suppress_forward_eta_stochastic_jer"] is True
+    assert calls[2]["kwargs"]["suppress_forward_eta_stochastic_jer"] is False
+    assert calls[3]["kwargs"]["suppress_forward_eta_stochastic_jer"] is False
 
 
 def test_main_processor_stores_forward_eta_suppression_option_default_false():
@@ -120,6 +138,7 @@ def test_run_analysis_help_exposes_forward_eta_suppression_flag(capsys):
 
     assert "--suppress-forward-eta-stochastic-jer" in help_text
     assert "requires JME/JERC approval" in help_text
+    assert "--fwd-eta-band-pt-apply" in help_text
 
 
 def test_run_analysis_threads_forward_eta_suppression_to_main_processor():
@@ -131,3 +150,6 @@ def test_run_analysis_threads_forward_eta_suppression_to_main_processor():
         "suppress_forward_eta_stochastic_jer=suppress_forward_eta_stochastic_jer"
         in source
     )
+    assert "fwd_eta_band_pt_apply = args.fwd_eta_band_pt_apply" in source
+    assert '"fwd_eta_band_pt_apply"' in source
+    assert "fwd_eta_band_pt_apply=fwd_eta_band_pt_apply" in source

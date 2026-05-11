@@ -735,6 +735,15 @@ if __name__ == "__main__":
         ),
     )
     parser.add_argument(
+        "--fwd-eta-band-pt-apply",
+        choices=("auto", "on", "off"),
+        default="auto",
+        help=(
+            "Control the forward-jet eta-band pT tightening. auto applies it for "
+            "Run 3 only, on applies it for all years, and off disables it for all years."
+        ),
+    )
+    parser.add_argument(
         "--split-lep-flavor",
         action="store_true",
         help="Split up categories by lepton flavor",
@@ -917,6 +926,7 @@ if __name__ == "__main__":
     fill_sumw2 = not args.no_sumw2
     do_systs = args.do_systs
     suppress_forward_eta_stochastic_jer = args.suppress_forward_eta_stochastic_jer
+    fwd_eta_band_pt_apply = args.fwd_eta_band_pt_apply
     split_lep_flavor = args.split_lep_flavor
     offZ_split = args.offZ_3l_split
     tau_h_analysis = args.tau_h_analysis
@@ -966,6 +976,7 @@ if __name__ == "__main__":
             "suppress_forward_eta_stochastic_jer",
             suppress_forward_eta_stochastic_jer,
         )
+        fwd_eta_band_pt_apply = ops.pop("fwd_eta_band_pt_apply", fwd_eta_band_pt_apply)
         split_lep_flavor = ops.pop("split_lep_flavor", split_lep_flavor)
         offZ_split = ops.pop("offZ_split", offZ_split)
         tau_h_analysis = ops.pop("tau_h_analysis", tau_h_analysis)
@@ -1487,6 +1498,7 @@ if __name__ == "__main__":
                 "skip_sr": skip_sr,
                 "skip_cr": skip_cr,
                 "do_systs": do_systs,
+                "fwd_eta_band_pt_apply": fwd_eta_band_pt_apply,
                 "fill_sumw2": fill_sumw2,
                 "useRun3MVA": useRun3MVA,
             },
@@ -1576,6 +1588,7 @@ if __name__ == "__main__":
         sr_category_dict=category_group_selection["sr_category_dict"],
         cr_category_dict=category_group_selection["cr_category_dict"],
         suppress_forward_eta_stochastic_jer=suppress_forward_eta_stochastic_jer,
+        fwd_eta_band_pt_apply=fwd_eta_band_pt_apply,
     )
 
     if executor_name in ["work_queue", "taskvine"]:

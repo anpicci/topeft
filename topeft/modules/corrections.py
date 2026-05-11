@@ -1785,6 +1785,9 @@ def ApplyJetCorrections(
     suppress_forward_eta_stochastic_jer=False,
 ):
     usejecstack = not useclib
+    effective_suppress_forward_eta_stochastic_jer = (
+        suppress_forward_eta_stochastic_jer and not str(year).startswith("201")
+    )
 
     if year not in clib_year_map.keys():
         raise Exception(f"Error: Unknown year \"{year}\".")
@@ -1874,7 +1877,7 @@ def ApplyJetCorrections(
         name_map,
         jec_stack,
         run,
-        suppress_forward_eta_stochastic_jer=suppress_forward_eta_stochastic_jer,
+        suppress_forward_eta_stochastic_jer=effective_suppress_forward_eta_stochastic_jer,
     )
 
 def ApplyJetSystematics(year,cleanedJets,syst_var):
