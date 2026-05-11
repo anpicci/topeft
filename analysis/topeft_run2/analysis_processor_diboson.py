@@ -20,7 +20,7 @@ import topcoffea.modules.corrections as tc_cor
 
 from topeft.modules.axes import info as axes_info
 from topeft.modules.paths import topeft_path
-from topeft.modules.corrections import ApplyJetCorrections, ApplyMETSystematics, GetBtagEff, AttachMuonSF, AttachElectronSF, AttachElectronCorrections, AttachTauSF, ApplyTES, ApplyTESSystematic, ApplyFESSystematic, AttachPerLeptonFR, ApplyRochesterCorrections, ApplyJetSystematics, GetTriggerSF, ApplyJetVetoMaps, get_selected_met, get_supported_met_systematics, is_met_unclustered_systematic
+from topeft.modules.corrections import ApplyJetCorrections, ApplyMETSystematics, GetBtagEff, AttachMuonSF, AttachElectronSF, AttachElectronCorrections, AttachTauSF, ApplyTES, ApplyTESSystematic, ApplyFESSystematic, AttachPerLeptonFR, ApplyRochesterCorrections, ApplyJetSystematics, GetTriggerSF, ApplyJetVetoMaps, get_selected_met, get_supported_met_systematics, is_met_unclustered_systematic, resolve_forward_eta_stochastic_jer_suppression
 import topeft.modules.event_selection as te_es
 import topeft.modules.object_selection as te_os
 from topcoffea.modules.get_param_from_jsons import GetParam
@@ -158,6 +158,10 @@ class AnalysisProcessor(processor.ProcessorABC):
         if year.startswith("202"):
             is_run3 = True
         is_run2 = not is_run3
+        effective_suppress_forward_eta_stochastic_jer = resolve_forward_eta_stochastic_jer_suppression(
+            is_run3,
+            self.suppress_forward_eta_stochastic_jer,
+        )
 
         run_era = None
         if isData:
@@ -528,7 +532,7 @@ class AnalysisProcessor(processor.ProcessorABC):
                 isData=isData,
                 era=run_era,
                 run=run,
-                suppress_forward_eta_stochastic_jer=self.suppress_forward_eta_stochastic_jer,
+                suppress_forward_eta_stochastic_jer=effective_suppress_forward_eta_stochastic_jer,
             ).build(cleanedJets, lazy_cache=events_cache)  #Run3 ready
             cleanedJets = ApplyJetSystematics(year,cleanedJets,syst_var)
             met = ApplyJetCorrections(year, corr_type='met', isData=isData, era=run_era, run=run).build(met_raw, cleanedJets, lazy_cache=events_cache)
@@ -546,7 +550,7 @@ class AnalysisProcessor(processor.ProcessorABC):
                 cleanedJets.eta,
                 eta_cut=get_te_param("eta_j_cut"),
                 baseline_pt_cut=get_te_param("fwd_jet_pt_cut"),
-                apply_eta_band_pt=te_os.resolve_fwd_eta_band_pt_apply(year, self.fwd_eta_band_pt_apply),
+                apply_eta_band_pt=te_os.resolve_fwd_eta_band_pt_apply(is_run3, self.fwd_eta_band_pt_apply),
                 eta_band_min=get_te_param("fwd_jet_eta_band_min"),
                 eta_band_max=get_te_param("fwd_jet_eta_band_max"),
                 eta_band_pt_cut=get_te_param("fwd_jet_eta_band_pt_cut"),

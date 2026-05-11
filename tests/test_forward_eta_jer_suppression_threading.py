@@ -15,7 +15,7 @@ from topeft.modules import corrections as cor
 _RUN_ANALYSIS_PATH = Path("analysis/topeft_run2/run_analysis.py")
 
 
-def test_apply_jet_corrections_gates_forward_eta_suppression_to_run3(monkeypatch):
+def test_apply_jet_corrections_forwards_resolved_forward_eta_suppression(monkeypatch):
     calls = []
 
     class DummyJECStack:
@@ -70,8 +70,24 @@ def test_apply_jet_corrections_gates_forward_eta_suppression_to_run3(monkeypatch
 
     assert calls[0]["kwargs"]["suppress_forward_eta_stochastic_jer"] is False
     assert calls[1]["kwargs"]["suppress_forward_eta_stochastic_jer"] is True
-    assert calls[2]["kwargs"]["suppress_forward_eta_stochastic_jer"] is False
+    assert calls[2]["kwargs"]["suppress_forward_eta_stochastic_jer"] is True
     assert calls[3]["kwargs"]["suppress_forward_eta_stochastic_jer"] is False
+
+
+@pytest.mark.parametrize(
+    "is_run3, requested, expected",
+    [
+        (True, True, True),
+        (True, False, False),
+        (False, True, False),
+        (False, False, False),
+    ],
+)
+def test_resolve_forward_eta_stochastic_jer_suppression(is_run3, requested, expected):
+    assert (
+        cor.resolve_forward_eta_stochastic_jer_suppression(is_run3, requested)
+        is expected
+    )
 
 
 def test_main_processor_stores_forward_eta_suppression_option_default_false():
@@ -95,18 +111,33 @@ def test_main_processor_can_store_forward_eta_suppression_option_true():
     assert processor.suppress_forward_eta_stochastic_jer is True
 
 
-def test_processors_pass_forward_eta_suppression_to_apply_jet_corrections():
+def test_processors_pass_effective_forward_eta_suppression_to_apply_jet_corrections():
     main_source = inspect.getsource(analysis_processor.AnalysisProcessor.process)
     diboson_source = inspect.getsource(analysis_processor_diboson.AnalysisProcessor.process)
     btag_source = inspect.getsource(btagMCeff.AnalysisProcessor.process)
 
-    expected = (
-        "suppress_forward_eta_stochastic_jer="
-        "self.suppress_forward_eta_stochastic_jer"
+    expected_resolver = (
+        "effective_suppress_forward_eta_stochastic_jer = "
+        "resolve_forward_eta_stochastic_jer_suppression("
     )
-    assert expected in main_source
-    assert expected in diboson_source
-    assert expected in btag_source
+    expected_forward = (
+        "suppress_forward_eta_stochastic_jer="
+        "effective_suppress_forward_eta_stochastic_jer"
+    )
+    for source in (main_source, diboson_source, btag_source):
+        assert expected_resolver in source
+        assert expected_forward in source
+        assert 'startswith("201")' not in source
+        assert "startswith('201')" not in source
+
+
+def test_policy_paths_do_not_use_run2_year_string_heuristic():
+    resolver_source = inspect.getsource(cor.resolve_forward_eta_stochastic_jer_suppression)
+    apply_jec_source = inspect.getsource(cor.ApplyJetCorrections)
+
+    for source in (resolver_source, apply_jec_source):
+        assert 'startswith("201")' not in source
+        assert "startswith('201')" not in source
 
 
 def test_secondary_processors_default_forward_eta_suppression_false():

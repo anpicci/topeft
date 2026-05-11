@@ -12,7 +12,7 @@ def test_main_processor_run3_uses_nanov12_tight_jet_id_for_central_and_forward_j
     assert 'abs(cleanedJets.eta) < get_te_param("eta_j_cut")) & jet_id_mask' in source
     assert 'cleanedJets["isFwd"] = te_os.is_forward_jet_eta_banded' in source
     assert 'baseline_pt_cut=get_te_param("fwd_jet_pt_cut")' in source
-    assert 'apply_eta_band_pt=te_os.resolve_fwd_eta_band_pt_apply(year, self.fwd_eta_band_pt_apply)' in source
+    assert 'apply_eta_band_pt=te_os.resolve_fwd_eta_band_pt_apply(is_run3, self.fwd_eta_band_pt_apply)' in source
     assert 'quality_mask=jet_id_mask' in source
     assert 'else:\n                jet_id_mask = True' in source
     assert 'cleanedJets["isGood"] = tc_os.is_tight_jet' in source
@@ -27,7 +27,7 @@ def test_diboson_processor_run3_uses_nanov12_tight_jet_id_for_central_and_forwar
     assert 'abs(cleanedJets.eta) < get_te_param("eta_j_cut")) & jet_id_mask' in source
     assert 'cleanedJets["isFwd"] = te_os.is_forward_jet_eta_banded' in source
     assert 'baseline_pt_cut=get_te_param("fwd_jet_pt_cut")' in source
-    assert 'apply_eta_band_pt=te_os.resolve_fwd_eta_band_pt_apply(year, self.fwd_eta_band_pt_apply)' in source
+    assert 'apply_eta_band_pt=te_os.resolve_fwd_eta_band_pt_apply(is_run3, self.fwd_eta_band_pt_apply)' in source
     assert 'quality_mask=jet_id_mask' in source
     assert 'else:\n                jet_id_mask = True' in source
     assert 'cleanedJets["isGood"] = tc_os.is_tight_jet' in source

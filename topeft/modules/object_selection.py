@@ -139,7 +139,7 @@ def isFwdJet(pt, eta, jet_id, jetPtCut=25.0):
     mask = ((pt>jetPtCut) & (abs(eta)>get_te_param("eta_j_cut")) & (get_te_param("jet_id_cut")))
     return mask
 
-def resolve_fwd_eta_band_pt_apply(year, policy):
+def resolve_fwd_eta_band_pt_apply(is_run3, policy):
     if policy not in ("auto", "on", "off"):
         raise ValueError(
             f"Unsupported forward eta-band pT policy '{policy}'. "
@@ -149,7 +149,7 @@ def resolve_fwd_eta_band_pt_apply(year, policy):
         return True
     if policy == "off":
         return False
-    return not str(year).startswith("201")
+    return bool(is_run3)
 
 def is_forward_jet_eta_banded(
     pt,

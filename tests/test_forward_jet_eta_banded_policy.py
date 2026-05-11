@@ -75,26 +75,29 @@ def test_forward_eta_banded_policy_quality_mask_rejects_passing_jets():
 
 
 @pytest.mark.parametrize(
-    "policy, year, expected",
+    "is_run3, policy, expected",
     [
-        ("auto", "2022", True),
-        ("auto", "2022EE", True),
-        ("auto", "2023", True),
-        ("auto", "2023BPix", True),
-        ("auto", "2016APV", False),
-        ("auto", "2016", False),
-        ("auto", "2017", False),
-        ("auto", "2018", False),
-        ("on", "2018", True),
-        ("on", "2022", True),
-        ("off", "2018", False),
-        ("off", "2022", False),
+        (True, "auto", True),
+        (False, "auto", False),
+        (True, "on", True),
+        (False, "on", True),
+        (True, "off", False),
+        (False, "off", False),
     ],
 )
-def test_resolve_fwd_eta_band_pt_apply(policy, year, expected):
-    assert te_os.resolve_fwd_eta_band_pt_apply(year, policy) is expected
+def test_resolve_fwd_eta_band_pt_apply(is_run3, policy, expected):
+    assert te_os.resolve_fwd_eta_band_pt_apply(is_run3, policy) is expected
 
 
 def test_resolve_fwd_eta_band_pt_apply_rejects_invalid_policy():
     with pytest.raises(ValueError, match="Unsupported forward eta-band pT policy"):
-        te_os.resolve_fwd_eta_band_pt_apply("2022", "sometimes")
+        te_os.resolve_fwd_eta_band_pt_apply(True, "sometimes")
+
+
+def test_resolve_fwd_eta_band_pt_apply_does_not_infer_from_year_strings():
+    import inspect
+
+    source = inspect.getsource(te_os.resolve_fwd_eta_band_pt_apply)
+
+    assert 'startswith("201")' not in source
+    assert "startswith('201')" not in source
