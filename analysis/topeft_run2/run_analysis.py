@@ -271,7 +271,7 @@ def _resolve_environment_file(env_override, use_remote_env, extra_pip_local=None
 
 
 def _prepare_work_queue_staging_directory(filepath_override=None):
-    requested_path = filepath_override or f"/scratch365/{os.environ.get('USER', 'user')}/workers"
+    requested_path = filepath_override or f"/groups/klannon/{os.environ.get('USER', 'user')}/workers"
     path_preexisted = os.path.exists(requested_path)
 
     try:
