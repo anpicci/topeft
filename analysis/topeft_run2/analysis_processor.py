@@ -22,7 +22,7 @@ import topcoffea.modules.corrections as tc_cor
 from topeft.modules.axes import info as axes_info
 from topeft.modules.axes import info_2d as axes_info_2d
 from topeft.modules.paths import topeft_path
-from topeft.modules.corrections import ApplyJetCorrections, ApplyMETSystematics, GetBtagEff, AttachMuonSF, AttachElectronSF, AttachElectronCorrections, AttachTauSF, ApplyTES, ApplyTESSystematic, ApplyFESSystematic, AttachPerLeptonFR, ApplyRochesterCorrections, ApplyJetSystematics, GetTriggerSF, ApplyJetVetoMaps, get_selected_met, get_supported_jet_systematics, get_supported_met_systematics, is_met_unclustered_systematic, resolve_forward_eta_stochastic_jer_suppression
+from topeft.modules.corrections import ApplyJetCorrections, ApplyMETSystematics, GetBtagEff, AttachMuonSF, AttachElectronSF, AttachElectronCorrections, AttachTauSF, ApplyTES, ApplyTESSystematic, ApplyFESSystematic, AttachPerLeptonFR, ApplyRochesterCorrections, ApplyJetSystematics, GetTriggerSF, ApplyJetVetoMaps, get_selected_met, get_selected_raw_met, get_corr_t1_met_jets, get_supported_jet_systematics, get_supported_met_systematics, is_met_unclustered_systematic, resolve_forward_eta_stochastic_jer_suppression, use_run3_type1_met
 import topeft.modules.event_selection as te_es
 import topeft.modules.object_selection as te_os
 from topcoffea.modules.get_param_from_jsons import GetParam
@@ -520,6 +520,7 @@ class AnalysisProcessor(processor.ProcessorABC):
         # Initialize objects
 
         met  = get_selected_met(events, year)
+        raw_met = get_selected_raw_met(events, year) if use_run3_type1_met(year) else met
         ele  = events.Electron
         mu   = events.Muon
         tau  = events.Tau
@@ -836,6 +837,42 @@ class AnalysisProcessor(processor.ProcessorABC):
         # Otherwise loop juse once, for nominal
         else: syst_var_list = ['nominal']
 
+        # Build the Run 3 Type-1 MET correction from the full NanoAOD Jet
+        # collection. The analysis-cleaned jet path below remains separate.
+        events_cache = events.caches[0]
+        type1_met = None
+        if use_run3_type1_met(year):
+            type1Jets = copy.copy(jets)
+            type1Jets["pt_raw"] = (1 - type1Jets.rawFactor)*type1Jets.pt
+            type1Jets["mass_raw"] = (1 - type1Jets.rawFactor)*type1Jets.mass
+            type1Jets["rho"] = ak.broadcast_arrays(jetsRho, type1Jets.pt)[0]
+            if not isData:
+                type1Jets["pt_gen"] = ak.values_astype(ak.fill_none(type1Jets.matched_gen.pt, 0), np.float32)
+            type1Jets = ApplyJetCorrections(
+                year,
+                corr_type='jets',
+                isData=isData,
+                era=run_era,
+                run=run,
+                suppress_forward_eta_stochastic_jer=effective_suppress_forward_eta_stochastic_jer,
+            ).build(type1Jets, lazy_cache=events_cache)
+
+            corrT1METJets = copy.copy(get_corr_t1_met_jets(events, year))
+            corrT1METJets["rho"] = ak.broadcast_arrays(jetsRho, corrT1METJets.rawPt)[0]
+            type1_met = ApplyJetCorrections(
+                year,
+                corr_type='type1_met',
+                isData=isData,
+                era=run_era,
+                run=run,
+            ).build(
+                met,
+                raw_met,
+                type1Jets,
+                corrT1METJets,
+                lazy_cache=events_cache,
+            )
+
         # Loop over the list of systematic variations we've constructed
         met_raw=met
         
@@ -879,7 +916,6 @@ class AnalysisProcessor(processor.ProcessorABC):
                     tau["pt"], tau["mass"]      = ApplyTESSystematic(year, tau, isData, syst_var, tau_T_tag)
                     tau["pt"], tau["mass"]      = ApplyFESSystematic(year, tau, isData, syst_var, tau_T_tag)
 
-            events_cache = events.caches[0]
             cleanedJets = ApplyJetCorrections(
                 year,
                 corr_type='jets',
@@ -889,9 +925,12 @@ class AnalysisProcessor(processor.ProcessorABC):
                 suppress_forward_eta_stochastic_jer=effective_suppress_forward_eta_stochastic_jer,
             ).build(cleanedJets, lazy_cache=events_cache)  #Run3 ready
             cleanedJets = ApplyJetSystematics(year,cleanedJets,syst_var)
-            met = ApplyJetCorrections(year, corr_type='met', isData=isData, era=run_era, run=run).build(met_raw, cleanedJets, lazy_cache=events_cache)
-            if is_met_unclustered_systematic(syst_var):
-                met = ApplyMETSystematics(met, syst_var)
+            if use_run3_type1_met(year):
+                met = ApplyMETSystematics(type1_met, syst_var)
+            else:
+                met = ApplyJetCorrections(year, corr_type='met', isData=isData, era=run_era, run=run).build(met_raw, cleanedJets, lazy_cache=events_cache)
+                if is_met_unclustered_systematic(syst_var):
+                    met = ApplyMETSystematics(met, syst_var)
 
             if is_run3:
                 jet_id_mask = tc_os.run3_nanoV12_ak4puppi_jet_id(cleanedJets, year, working_point="tight")
