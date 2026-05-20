@@ -136,6 +136,8 @@ def test_processor_type1_met_passes_full_jets_corrt1_and_correction_options():
 
     assert "type1Jets = jets" in block
     assert "corrT1METJets = get_corr_t1_met_jets(events, year)" in block
+    assert "CorrT1METJet has no per-object rho branch" in block
+    assert "ak.broadcast_arrays(jetsRho, corrT1METJets.rawPt)[0]" in block
     assert "met,\n                raw_met,\n                type1Jets,\n                corrT1METJets" in block
     assert "suppress_forward_eta_stochastic_jer=effective_suppress_forward_eta_stochastic_jer" in block
     assert "del type1Jets" in block

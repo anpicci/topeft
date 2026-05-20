@@ -854,6 +854,9 @@ class AnalysisProcessor(processor.ProcessorABC):
                 )
 
             corrT1METJets = get_corr_t1_met_jets(events, year)
+            # CorrT1METJet has no per-object rho branch. Broadcast the event-level rho
+            # used for Jet JECs to the CorrT1METJet jagged structure because the
+            # correctionlib L1/full JEC evaluators can require Rho, e.g. L1FastJet.
             corrT1METJets = ak.with_field(
                 corrT1METJets,
                 ak.broadcast_arrays(jetsRho, corrT1METJets.rawPt)[0],
