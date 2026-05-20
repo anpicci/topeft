@@ -842,29 +842,30 @@ class AnalysisProcessor(processor.ProcessorABC):
         events_cache = events.caches[0]
         type1_met = None
         if use_run3_type1_met(year):
-            type1Jets = copy.copy(jets)
-            type1Jets["pt_raw"] = (1 - type1Jets.rawFactor)*type1Jets.pt
-            type1Jets["mass_raw"] = (1 - type1Jets.rawFactor)*type1Jets.mass
-            type1Jets["rho"] = ak.broadcast_arrays(jetsRho, type1Jets.pt)[0]
+            type1Jets = jets
+            type1Jets = ak.with_field(type1Jets, (1 - type1Jets.rawFactor)*type1Jets.pt, "pt_raw")
+            type1Jets = ak.with_field(type1Jets, (1 - type1Jets.rawFactor)*type1Jets.mass, "mass_raw")
+            type1Jets = ak.with_field(type1Jets, ak.broadcast_arrays(jetsRho, type1Jets.pt)[0], "rho")
             if not isData:
-                type1Jets["pt_gen"] = ak.values_astype(ak.fill_none(type1Jets.matched_gen.pt, 0), np.float32)
-            type1Jets = ApplyJetCorrections(
-                year,
-                corr_type='jets',
-                isData=isData,
-                era=run_era,
-                run=run,
-                suppress_forward_eta_stochastic_jer=effective_suppress_forward_eta_stochastic_jer,
-            ).build(type1Jets, lazy_cache=events_cache)
+                type1Jets = ak.with_field(
+                    type1Jets,
+                    ak.values_astype(ak.fill_none(type1Jets.matched_gen.pt, 0), np.float32),
+                    "pt_gen",
+                )
 
-            corrT1METJets = copy.copy(get_corr_t1_met_jets(events, year))
-            corrT1METJets["rho"] = ak.broadcast_arrays(jetsRho, corrT1METJets.rawPt)[0]
+            corrT1METJets = get_corr_t1_met_jets(events, year)
+            corrT1METJets = ak.with_field(
+                corrT1METJets,
+                ak.broadcast_arrays(jetsRho, corrT1METJets.rawPt)[0],
+                "rho",
+            )
             type1_met = ApplyJetCorrections(
                 year,
                 corr_type='type1_met',
                 isData=isData,
                 era=run_era,
                 run=run,
+                suppress_forward_eta_stochastic_jer=effective_suppress_forward_eta_stochastic_jer,
             ).build(
                 met,
                 raw_met,
@@ -872,6 +873,8 @@ class AnalysisProcessor(processor.ProcessorABC):
                 corrT1METJets,
                 lazy_cache=events_cache,
             )
+            del type1Jets
+            del corrT1METJets
 
         # Loop over the list of systematic variations we've constructed
         met_raw=met

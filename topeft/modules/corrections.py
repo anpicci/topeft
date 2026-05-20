@@ -1937,7 +1937,12 @@ def ApplyJetCorrections(
     if corr_type == 'met':
         return CorrectedMETFactory(name_map)
     if corr_type == 'type1_met':
-        return Type1CorrectedMETFactory(name_map, jec_stack, run=run)
+        return Type1CorrectedMETFactory(
+            name_map,
+            jec_stack,
+            run=run,
+            suppress_forward_eta_stochastic_jer=suppress_forward_eta_stochastic_jer,
+        )
     return CorrectedJetsFactory(
         name_map,
         jec_stack,

@@ -14,6 +14,23 @@ from topeft.modules.corrections import (
 )
 
 
+def _processor_source():
+    return (
+        Path(__file__).parents[1]
+        / "analysis"
+        / "topeft_run2"
+        / "analysis_processor.py"
+    ).read_text()
+
+
+def _processor_type1_block():
+    source = _processor_source()
+    return source[
+        source.index("# Build the Run 3 Type-1 MET correction"):
+        source.index("# Loop over the list of systematic variations")
+    ]
+
+
 def test_run2_selected_met_uses_legacy_met():
     events = SimpleNamespace(MET=object(), PuppiMET=object())
 
@@ -104,13 +121,38 @@ def test_apply_met_systematics_selects_type1_jet_variations_when_present():
     assert ApplyMETSystematics(nominal, "JES_TotalUp") is nominal
 
 
+def test_processor_type1_met_does_not_precorrect_temporary_jets():
+    block = _processor_type1_block()
+
+    assert "type1Jets = copy.copy" not in block
+    assert "corrT1METJets = copy.copy" not in block
+    assert "ak.with_field" in block
+    assert "corr_type='jets'" not in block
+    assert "corr_type='type1_met'" in block
+
+
+def test_processor_type1_met_passes_full_jets_corrt1_and_correction_options():
+    block = _processor_type1_block()
+
+    assert "type1Jets = jets" in block
+    assert "corrT1METJets = get_corr_t1_met_jets(events, year)" in block
+    assert "met,\n                raw_met,\n                type1Jets,\n                corrT1METJets" in block
+    assert "suppress_forward_eta_stochastic_jer=effective_suppress_forward_eta_stochastic_jer" in block
+    assert "del type1Jets" in block
+    assert "del corrT1METJets" in block
+
+
+def test_processor_keeps_cleaned_analysis_jets_separate():
+    source = _processor_source()
+
+    assert "cleanedJets = jets[~ak.any(tmp.slot0 == tmp.slot1, axis=-1)]" in source
+    assert "cleanedJets = ApplyJetCorrections(" in source
+    assert "goodJets = cleanedJets[cleanedJets.isGood]" in source
+    assert "fwdJets  = cleanedJets[cleanedJets.isFwd]" in source
+
+
 def test_processor_keeps_public_met_and_lt_semantics():
-    processor_source = (
-        Path(__file__).parents[1]
-        / "analysis"
-        / "topeft_run2"
-        / "analysis_processor.py"
-    ).read_text()
+    processor_source = _processor_source()
 
     assert "type1_met = ApplyJetCorrections(" in processor_source
     assert "corr_type='type1_met'" in processor_source
