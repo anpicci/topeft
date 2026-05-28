@@ -172,7 +172,38 @@ def test_2lss_1tau_onz_channels_require_onz_tau_selection():
             assert "onZ_tau" not in channel
 
 
-def test_plain_ptz_cr_policy_is_deferred():
+@pytest.mark.parametrize("all_analysis", [False, True])
+def test_plain_ptz_cr_policy_fills_explicit_zll_crs(all_analysis):
+    processor = ap.AnalysisProcessor(
+        samples={},
+        wc_names_lst=[],
+        hist_lst=[],
+        tau_h_analysis=not all_analysis,
+        all_analysis=all_analysis,
+    )
+
+    for lep_chan in ("2los_CRZ", "2lss_CRflip"):
+        assert (
+            processor._should_skip_histogram_fill(
+                dense_axis_name="ptz",
+                ch_name=f"{lep_chan}_0j",
+                lep_chan=lep_chan,
+            )
+            is False
+        )
+
+
+@pytest.mark.parametrize("lep_chan", [
+    "2lss_CR",
+    "2los_CRtt",
+    "1l_1tau_CR",
+    "1l_dy_tautau_CR",
+    "2los_1tau_Ftau",
+    "2los_1tau_Ttau",
+    "2los_1tau_0b",
+    "3l_CR",
+])
+def test_plain_ptz_cr_policy_skips_non_zll_crs(lep_chan):
     processor = ap.AnalysisProcessor(
         samples={},
         wc_names_lst=[],
@@ -183,19 +214,86 @@ def test_plain_ptz_cr_policy_is_deferred():
     assert (
         processor._should_skip_histogram_fill(
             dense_axis_name="ptz",
-            ch_name="2los_CRZ_0j",
-            lep_chan="2los_CRZ",
+            ch_name=f"{lep_chan}_0j",
+            lep_chan=lep_chan,
+        )
+        is True
+    )
+
+
+def test_plain_ptz_sr_policy_preserves_existing_onz_and_offz_decisions():
+    tau_processor = ap.AnalysisProcessor(
+        samples={},
+        wc_names_lst=[],
+        hist_lst=[],
+        tau_h_analysis=True,
+    )
+    all_processor = ap.AnalysisProcessor(
+        samples={},
+        wc_names_lst=[],
+        hist_lst=[],
+        all_analysis=True,
+    )
+
+    assert (
+        tau_processor._should_skip_histogram_fill(
+            dense_axis_name="ptz",
+            ch_name="3l_onZ_1b_2j",
+            lep_chan="3l_onZ_1b",
+        )
+        is False
+    )
+    assert (
+        tau_processor._should_skip_histogram_fill(
+            dense_axis_name="ptz",
+            ch_name="2los_onZ_1tau_3j",
+            lep_chan="2los_onZ_1tau",
+        )
+        is False
+    )
+    assert (
+        tau_processor._should_skip_histogram_fill(
+            dense_axis_name="ptz",
+            ch_name="3l_m_offZ_1b_2j",
+            lep_chan="3l_m_offZ_1b",
         )
         is True
     )
     assert (
-        processor._should_skip_histogram_fill(
+        all_processor._should_skip_histogram_fill(
             dense_axis_name="ptz",
-            ch_name="2lss_CRflip_0j",
-            lep_chan="2lss_CRflip",
+            ch_name="3l_m_offZ_low_1b_2j",
+            lep_chan="3l_m_offZ_low_1b",
+        )
+        is False
+    )
+    assert (
+        all_processor._should_skip_histogram_fill(
+            dense_axis_name="ptz",
+            ch_name="3l_m_offZ_none_1b_2j",
+            lep_chan="3l_m_offZ_none_1b",
         )
         is True
     )
+
+
+def test_plain_ptz_zll_cr_channel_definitions_are_explicitly_onz():
+    channel_path = Path(__file__).resolve().parents[1] / "topeft" / "channels" / "ch_lst.json"
+    channel_data = json.loads(channel_path.read_text())
+
+    for block_name in ("CH_LST_CR", "TAU_CH_LST_CR"):
+        assert "2l_onZ_as" in channel_data[block_name]["2l_CRflip"]["lep_chan_lst"][0]
+        assert "2l_onZ" in channel_data[block_name]["2los_CRZ"]["lep_chan_lst"][0]
+
+
+def test_ptz_wtau_regression_for_crz_still_skips_non_tau_zll_cr():
+    processor = ap.AnalysisProcessor(
+        samples={},
+        wc_names_lst=[],
+        hist_lst=[],
+        tau_h_analysis=True,
+    )
+
     assert (
         processor._should_skip_histogram_fill(
             dense_axis_name="ptz_wtau",
