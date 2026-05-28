@@ -1,4 +1,6 @@
+import json
 import re
+from pathlib import Path
 
 import pytest
 
@@ -104,26 +106,101 @@ def test_all_mode_keeps_offz_split_ptz_histograms():
     assert should_skip is False
 
 
-def test_tau_mode_ptz_wtau_gating_is_strict():
+@pytest.mark.parametrize("all_analysis", [False, True])
+def test_ptz_wtau_gating_allows_only_tau_onz_and_dy_tautau_cr(all_analysis):
+    processor = ap.AnalysisProcessor(
+        samples={},
+        wc_names_lst=[],
+        hist_lst=[],
+        tau_h_analysis=not all_analysis,
+        all_analysis=all_analysis,
+    )
+
+    fill_channels = [
+        "2lss_p_1tau_onZ",
+        "2lss_m_1tau_onZ",
+        "1l_dy_tautau_CR",
+    ]
+    skip_channels = [
+        "2lss_p_1tau_offZ",
+        "2lss_m_1tau_offZ",
+        "1l_1tau_CR",
+        "2los_1tau_Ftau",
+        "2los_1tau_Ttau",
+        "2los_1tau_0b",
+        "3l_1tau_1b",
+    ]
+
+    for lep_chan in fill_channels:
+        assert (
+            processor._should_skip_histogram_fill(
+                dense_axis_name="ptz_wtau",
+                ch_name=lep_chan,
+                lep_chan=lep_chan,
+            )
+            is False
+        )
+
+    for lep_chan in skip_channels:
+        assert (
+            processor._should_skip_histogram_fill(
+                dense_axis_name="ptz_wtau",
+                ch_name=lep_chan,
+                lep_chan=lep_chan,
+            )
+            is True
+        )
+
+
+def test_2lss_1tau_onz_channels_require_onz_tau_selection():
+    channel_path = Path(__file__).resolve().parents[1] / "topeft" / "channels" / "ch_lst.json"
+    channel_data = json.loads(channel_path.read_text())
+
+    for block_name in ("TAU_CH_LST_SR", "ALL_CH_LST_SR"):
+        channels = channel_data[block_name]["2lss_1tau"]["lep_chan_lst"]
+
+        onz_channels = [channel for channel in channels if channel[0].endswith("_onZ")]
+        offz_channels = [channel for channel in channels if channel[0].endswith("_offZ")]
+
+        assert onz_channels
+        assert offz_channels
+        for channel in onz_channels:
+            assert "onZ_tau" in channel
+            assert "offZ_tau" not in channel
+        for channel in offz_channels:
+            assert "offZ_tau" in channel
+            assert "onZ_tau" not in channel
+
+
+def test_plain_ptz_cr_policy_is_deferred():
     processor = ap.AnalysisProcessor(
         samples={},
         wc_names_lst=[],
         hist_lst=[],
         tau_h_analysis=True,
     )
+
     assert (
         processor._should_skip_histogram_fill(
-            dense_axis_name="ptz_wtau",
-            ch_name="2l_channel",
-            lep_chan="2lss_p_1tau_onZ",
+            dense_axis_name="ptz",
+            ch_name="2los_CRZ_0j",
+            lep_chan="2los_CRZ",
         )
-        is False
+        is True
+    )
+    assert (
+        processor._should_skip_histogram_fill(
+            dense_axis_name="ptz",
+            ch_name="2lss_CRflip_0j",
+            lep_chan="2lss_CRflip",
+        )
+        is True
     )
     assert (
         processor._should_skip_histogram_fill(
             dense_axis_name="ptz_wtau",
-            ch_name="2l_channel",
-            lep_chan="2lss_p_1tau_offZ",
+            ch_name="2los_CRZ_0j",
+            lep_chan="2los_CRZ",
         )
         is True
     )
