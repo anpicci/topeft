@@ -128,6 +128,8 @@ def test_ptz_wtau_gating_allows_only_tau_onz_and_dy_tautau_cr(all_analysis):
         "2los_1tau_Ftau",
         "2los_1tau_Ttau",
         "2los_1tau_0b",
+        "2los_CRZ",
+        "2lss_CRflip",
         "3l_1tau_1b",
     ]
 
@@ -173,7 +175,7 @@ def test_2lss_1tau_onz_channels_require_onz_tau_selection():
 
 
 @pytest.mark.parametrize("all_analysis", [False, True])
-def test_plain_ptz_cr_policy_fills_explicit_zll_crs(all_analysis):
+def test_plain_ptz_cr_policy_fills_zll_and_diagnostic_crs(all_analysis):
     processor = ap.AnalysisProcessor(
         samples={},
         wc_names_lst=[],
@@ -182,7 +184,13 @@ def test_plain_ptz_cr_policy_fills_explicit_zll_crs(all_analysis):
         all_analysis=all_analysis,
     )
 
-    for lep_chan in ("2los_CRZ", "2lss_CRflip"):
+    for lep_chan in (
+        "2los_CRZ",
+        "2lss_CRflip",
+        "2los_1tau_Ftau",
+        "2los_1tau_Ttau",
+        "2los_1tau_0b",
+    ):
         assert (
             processor._should_skip_histogram_fill(
                 dense_axis_name="ptz",
@@ -198,9 +206,6 @@ def test_plain_ptz_cr_policy_fills_explicit_zll_crs(all_analysis):
     "2los_CRtt",
     "1l_1tau_CR",
     "1l_dy_tautau_CR",
-    "2los_1tau_Ftau",
-    "2los_1tau_Ttau",
-    "2los_1tau_0b",
     "3l_CR",
 ])
 def test_plain_ptz_cr_policy_skips_non_zll_crs(lep_chan):
@@ -251,6 +256,23 @@ def test_plain_ptz_sr_policy_preserves_existing_onz_and_offz_decisions():
         )
         is False
     )
+    for lep_chan in ("2lss_m_1tau_onZ", "2lss_p_1tau_onZ"):
+        assert (
+            tau_processor._should_skip_histogram_fill(
+                dense_axis_name="ptz",
+                ch_name=f"{lep_chan}_3j",
+                lep_chan=lep_chan,
+            )
+            is True
+        )
+        assert (
+            tau_processor._should_skip_histogram_fill(
+                dense_axis_name="ptz_wtau",
+                ch_name=f"{lep_chan}_3j",
+                lep_chan=lep_chan,
+            )
+            is False
+        )
     assert (
         tau_processor._should_skip_histogram_fill(
             dense_axis_name="ptz",
@@ -286,7 +308,29 @@ def test_plain_ptz_zll_cr_channel_definitions_are_explicitly_onz():
         assert "2l_onZ" in channel_data[block_name]["2los_CRZ"]["lep_chan_lst"][0]
 
 
-def test_ptz_wtau_regression_for_crz_still_skips_non_tau_zll_cr():
+def test_plain_ptz_diagnostic_2los_1tau_crs_are_not_category_onz():
+    channel_path = Path(__file__).resolve().parents[1] / "topeft" / "channels" / "ch_lst.json"
+    channel_data = json.loads(channel_path.read_text())
+    channels = channel_data["TAU_CH_LST_CR"]["2los_1tau"]["lep_chan_lst"]
+
+    assert {channel[0] for channel in channels} == {
+        "2los_1tau_Ftau",
+        "2los_1tau_Ttau",
+        "2los_1tau_0b",
+    }
+    for channel in channels:
+        assert "2los" in channel
+        assert "2l_onZ" not in channel
+
+
+@pytest.mark.parametrize("lep_chan", [
+    "2los_CRZ",
+    "2lss_CRflip",
+    "2los_1tau_Ftau",
+    "2los_1tau_Ttau",
+    "2los_1tau_0b",
+])
+def test_ptz_wtau_regression_still_skips_plain_zll_and_diagnostic_crs(lep_chan):
     processor = ap.AnalysisProcessor(
         samples={},
         wc_names_lst=[],
@@ -297,8 +341,8 @@ def test_ptz_wtau_regression_for_crz_still_skips_non_tau_zll_cr():
     assert (
         processor._should_skip_histogram_fill(
             dense_axis_name="ptz_wtau",
-            ch_name="2los_CRZ_0j",
-            lep_chan="2los_CRZ",
+            ch_name=f"{lep_chan}_0j",
+            lep_chan=lep_chan,
         )
         is True
     )

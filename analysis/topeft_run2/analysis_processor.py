@@ -376,7 +376,16 @@ class AnalysisProcessor(processor.ProcessorABC):
             "2los_CRZ",
             "2lss_CRflip",
         }
+        # Diagnostic Z-candidate observable for the SFOS on-Z subset of these
+        # selected 2lOS+tau CR events; the categories are not globally on-Z.
+        diagnostic_zll_cr_channels = {
+            "2los_1tau_Ftau",
+            "2los_1tau_Ttau",
+            "2los_1tau_0b",
+        }
         if lep_chan in explicit_zll_cr_channels:
+            return True
+        if lep_chan in diagnostic_zll_cr_channels:
             return True
         if ("onZ" in lep_chan) and ("2lss" not in lep_chan):
             return True
