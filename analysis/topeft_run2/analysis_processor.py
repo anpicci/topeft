@@ -591,9 +591,9 @@ class AnalysisProcessor(processor.ProcessorABC):
             event_numbers=events.event,
             luminosity_blocks=events.luminosityBlock,
         )
-        mu = te_os.prepare_muons_for_selection(
-            mu, corrected_muon_pt, leptonSelection
-        )
+        mu["pt_raw"] = mu.pt
+        mu["pt"] = corrected_muon_pt
+        mu["conept"] = leptonSelection.coneptMuon(mu)
 
         if not isData:
             ele["gen_pdgId"] = ak.fill_none(ele.matched_gen.pdgId, 0)

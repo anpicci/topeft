@@ -4,7 +4,6 @@ import awkward as ak
 import pytest
 
 from topeft.modules import corrections
-from topeft.modules import object_selection
 
 
 class _ThresholdSelection:
@@ -38,10 +37,10 @@ def _processor_source(name):
 
 def test_corrected_pt_is_used_for_conept_and_selection_threshold():
     muons = _muons()
-    prepared = object_selection.prepare_muons_for_selection(
-        muons,
-        muons.pt + 1.0,
-        _ThresholdSelection(),
+    prepared = ak.with_field(muons, muons.pt, "pt_raw")
+    prepared = ak.with_field(prepared, muons.pt + 1.0, "pt")
+    prepared = ak.with_field(
+        prepared, _ThresholdSelection().coneptMuon(prepared), "conept"
     )
 
     assert ak.to_list(prepared.pt_raw) == [[9.5]]
@@ -90,11 +89,17 @@ def test_processors_prepare_corrected_muons_before_selection(processor_name):
     correction = source.index(
         "corrected_muon_pt = apply_muon_momentum_corrections"
     )
-    preparation = source.index("mu = te_os.prepare_muons_for_selection")
+    preserve_raw = source.index('mu["pt_raw"] = mu.pt')
+    install_corrected_pt = source.index('mu["pt"] = corrected_muon_pt')
+    compute_conept = source.index(
+        'mu["conept"] = leptonSelection.coneptMuon(mu)'
+    )
     selection = source.index('mu["isPres"] = leptonSelection.isPresMuon(mu)')
 
-    assert correction < preparation < selection
-    assert 'mu["conept"] = leptonSelection.coneptMuon(mu)' not in source
+    assert correction < preserve_raw < install_corrected_pt
+    assert install_corrected_pt < compute_conept < selection
+    removed_helper = "prepare_" + "muons_for_selection"
+    assert removed_helper not in source
 
 
 @pytest.mark.parametrize(

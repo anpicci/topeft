@@ -257,15 +257,6 @@ def get_medium_btag_foryear(year,btagger="btagDeepFlavB"):
         raise Exception(f"Error: Unknown year \"{year}\". Exiting...")
 
 
-def prepare_muons_for_selection(muons, corrected_pt, lepton_selection):
-    """Preserve raw pt and compute cone pt from corrected muon momentum."""
-    muons = ak.with_field(muons, muons.pt, "pt_raw")
-    muons = ak.with_field(muons, corrected_pt, "pt")
-    return ak.with_field(
-        muons, lepton_selection.coneptMuon(muons), "conept"
-    )
-
-
 class run2leptonselection:
 
     def __init__(self, btagger="btagDeepFlavB"):
