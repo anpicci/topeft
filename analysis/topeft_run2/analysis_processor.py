@@ -22,7 +22,7 @@ import topcoffea.modules.corrections as tc_cor
 from topeft.modules.axes import info as axes_info
 from topeft.modules.axes import info_2d as axes_info_2d
 from topeft.modules.paths import topeft_path
-from topeft.modules.corrections import ApplyJetCorrections, ApplyMETSystematics, GetBtagEff, AttachMuonSF, AttachElectronSF, AttachElectronCorrections, AttachTauSF, ApplyTES, ApplyTESSystematic, ApplyFESSystematic, AttachPerLeptonFR, ApplyRochesterCorrections, ApplyJetSystematics, GetTriggerSF, ApplyJetVetoMaps, get_selected_met, get_selected_raw_met, get_corr_t1_met_jets, get_supported_jet_systematics, get_supported_met_systematics, is_met_unclustered_systematic, resolve_forward_eta_stochastic_jer_suppression, use_type1_met
+from topeft.modules.corrections import ApplyJetCorrections, ApplyMETSystematics, GetBtagEff, AttachMuonSF, AttachElectronSF, AttachElectronCorrections, AttachTauSF, ApplyTES, ApplyTESSystematic, ApplyFESSystematic, AttachPerLeptonFR, apply_muon_momentum_corrections, ApplyJetSystematics, GetTriggerSF, ApplyJetVetoMaps, get_selected_met, get_selected_raw_met, get_corr_t1_met_jets, get_supported_jet_systematics, get_supported_met_systematics, is_met_unclustered_systematic, resolve_forward_eta_stochastic_jer_suppression, use_type1_met
 import topeft.modules.event_selection as te_es
 import topeft.modules.object_selection as te_os
 from topcoffea.modules.get_param_from_jsons import GetParam
@@ -584,7 +584,16 @@ class AnalysisProcessor(processor.ProcessorABC):
 
         ele["idEmu"] = te_os.ttH_idEmu_cuts_E3(ele.hoe, ele.eta, ele.deltaEtaSC, ele.eInvMinusPInv, ele.sieie)
         ele["conept"] = leptonSelection.coneptElec(ele)
-        mu["conept"] = leptonSelection.coneptMuon(mu)
+        corrected_muon_pt = apply_muon_momentum_corrections(
+            year,
+            mu,
+            isData,
+            event_numbers=events.event,
+            luminosity_blocks=events.luminosityBlock,
+        )
+        mu = te_os.prepare_muons_for_selection(
+            mu, corrected_muon_pt, leptonSelection
+        )
 
         if not isData:
             ele["gen_pdgId"] = ak.fill_none(ele.matched_gen.pdgId, 0)
@@ -634,8 +643,6 @@ class AnalysisProcessor(processor.ProcessorABC):
             ele["pt_raw"] = ele.pt
         ################### Muon selection ####################
 
-        mu["pt_raw"] = mu.pt
-        mu["pt"] = ApplyRochesterCorrections(year, mu, isData) # Run3 ones are not available
         mu["isPres"] = leptonSelection.isPresMuon(mu)
         mu["isLooseM"] = leptonSelection.isLooseMuon(mu)
         mu["isFO"] = leptonSelection.isFOMuon(mu, year)
