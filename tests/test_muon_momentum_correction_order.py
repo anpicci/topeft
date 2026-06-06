@@ -1,6 +1,7 @@
 from pathlib import Path
 
 import awkward as ak
+import numpy as np
 import pytest
 
 from topeft.modules import corrections
@@ -30,6 +31,44 @@ def _muons(pt=9.5):
     )
 
 
+def _run3_muons():
+    return ak.Array(
+        [
+            [
+                {
+                    "pt": 30.0,
+                    "eta": 0.2,
+                    "phi": 0.1,
+                    "charge": 1,
+                    "nTrackerLayers": 12,
+                },
+                {
+                    "pt": 45.0,
+                    "eta": -1.1,
+                    "phi": -0.4,
+                    "charge": -1,
+                    "nTrackerLayers": 14,
+                },
+            ],
+            [],
+            [
+                {
+                    "pt": 60.0,
+                    "eta": 1.3,
+                    "phi": 2.0,
+                    "charge": 1,
+                    "nTrackerLayers": 10,
+                }
+            ],
+        ]
+    )
+
+
+def _assert_finite_run3_shape(corrected):
+    assert ak.to_list(ak.num(corrected)) == [2, 0, 1]
+    assert np.all(np.isfinite(ak.to_numpy(ak.flatten(corrected))))
+
+
 def _processor_source(name):
     repo = Path(__file__).resolve().parents[1]
     return (repo / "analysis" / "topeft_run2" / name).read_text()
@@ -49,7 +88,8 @@ def test_corrected_pt_is_used_for_conept_and_selection_threshold():
     assert ak.to_list(_ThresholdSelection().isPresMuon(prepared)) == [[True]]
 
 
-def test_run2_dispatch_preserves_rochester_path(monkeypatch):
+@pytest.mark.parametrize("year", ["2016APV", "2016", "2017", "2018"])
+def test_run2_dispatch_preserves_rochester_path(monkeypatch, year):
     calls = []
 
     def _fake_rochester(year, muons, is_data):
@@ -61,21 +101,62 @@ def test_run2_dispatch_preserves_rochester_path(monkeypatch):
     )
 
     corrected = corrections.apply_muon_momentum_corrections(
-        "2018", _muons(), False
+        year, _muons(), False
     )
 
-    assert calls == [("2018", False)]
+    assert calls == [(year, False)]
     assert ak.to_list(corrected) == [[10.0]]
 
 
-def test_run3_does_not_silently_return_identity_without_payload():
-    with pytest.raises(RuntimeError, match="correction_set or payload_directory"):
+@pytest.mark.parametrize("year", ["2022", "2022EE", "2023", "2023BPix"])
+def test_run3_nominal_data_uses_default_backend_and_payload(year):
+    corrected = corrections.apply_muon_momentum_corrections(
+        year,
+        _run3_muons(),
+        True,
+    )
+
+    _assert_finite_run3_shape(corrected)
+
+
+@pytest.mark.parametrize("year", ["2022", "2022EE", "2023", "2023BPix"])
+def test_run3_nominal_mc_uses_default_backend_and_payload(year):
+    muons = _run3_muons()
+    data_corrected = corrections.apply_muon_momentum_corrections(
+        year,
+        muons,
+        True,
+    )
+    corrected = corrections.apply_muon_momentum_corrections(
+        year,
+        muons,
+        False,
+        event_numbers=ak.Array([1001, 1002, 1003]),
+        luminosity_blocks=ak.Array([11, 12, 13]),
+    )
+
+    _assert_finite_run3_shape(corrected)
+    assert not np.allclose(
+        ak.to_numpy(ak.flatten(data_corrected)),
+        ak.to_numpy(ak.flatten(corrected)),
+    )
+
+
+def test_run3_mc_requires_event_and_lumi_inputs():
+    with pytest.raises(ValueError, match="event_numbers and luminosity_blocks"):
         corrections.apply_muon_momentum_corrections(
             "2022",
-            _muons(),
+            _run3_muons(),
             False,
-            event_numbers=ak.Array([1]),
-            luminosity_blocks=ak.Array([2]),
+        )
+
+
+def test_unsupported_year_fails_loudly():
+    with pytest.raises(ValueError, match="Unsupported Run 3.*2024"):
+        corrections.apply_muon_momentum_corrections(
+            "2024",
+            _run3_muons(),
+            True,
         )
 
 
