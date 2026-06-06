@@ -6,6 +6,13 @@ import pytest
 
 from topeft.modules import corrections
 
+_RUN3_VARIATIONS = [
+    "MuonScaleUp",
+    "MuonScaleDown",
+    "MuonResolutionUp",
+    "MuonResolutionDown",
+]
+
 
 class _ThresholdSelection:
     def coneptMuon(self, muons):
@@ -142,6 +149,42 @@ def test_run3_nominal_mc_uses_default_backend_and_payload(year):
     )
 
 
+@pytest.mark.parametrize("variation", _RUN3_VARIATIONS)
+def test_run3_mc_variations_use_default_backend_and_payload(variation):
+    corrected = corrections.apply_muon_momentum_corrections(
+        "2022",
+        _run3_muons(),
+        False,
+        event_numbers=ak.Array([1001, 1002, 1003]),
+        luminosity_blocks=ak.Array([11, 12, 13]),
+        variation=variation,
+    )
+
+    _assert_finite_run3_shape(corrected)
+
+
+@pytest.mark.parametrize("variation", _RUN3_VARIATIONS)
+def test_run3_data_rejects_muon_momentum_variations(variation):
+    with pytest.raises(ValueError, match="not applicable to data"):
+        corrections.apply_muon_momentum_corrections(
+            "2022",
+            _run3_muons(),
+            True,
+            variation=variation,
+        )
+
+
+@pytest.mark.parametrize("variation", _RUN3_VARIATIONS)
+def test_run2_variation_requests_remain_unsupported(variation):
+    with pytest.raises(ValueError, match="Run 2 Rochester.*does not support"):
+        corrections.apply_muon_momentum_corrections(
+            "2018",
+            _muons(),
+            False,
+            variation=variation,
+        )
+
+
 def test_run3_mc_requires_event_and_lumi_inputs():
     with pytest.raises(ValueError, match="event_numbers and luminosity_blocks"):
         corrections.apply_muon_momentum_corrections(
@@ -158,6 +201,16 @@ def test_unsupported_year_fails_loudly():
             _run3_muons(),
             True,
         )
+
+
+def test_muon_momentum_systematic_list_is_run3_mc_only():
+    assert corrections.RUN3_MUON_MOMENTUM_SYSTEMATICS == tuple(_RUN3_VARIATIONS)
+    assert (
+        corrections.get_supported_muon_momentum_systematics("2022", isData=False)
+        == _RUN3_VARIATIONS
+    )
+    assert corrections.get_supported_muon_momentum_systematics("2022", isData=True) == []
+    assert corrections.get_supported_muon_momentum_systematics("2018", isData=False) == []
 
 
 @pytest.mark.parametrize(
@@ -187,12 +240,50 @@ def test_processors_prepare_corrected_muons_before_selection(processor_name):
     "processor_name",
     ["analysis_processor.py", "analysis_processor_diboson.py"],
 )
-def test_muon_object_systematics_are_not_activated_without_rebuild(
-    processor_name,
-):
+def test_processors_rebuild_muon_objects_for_muon_systematics(processor_name):
     source = _processor_source(processor_name)
 
-    assert "MuonScaleUp" not in source
-    assert "MuonScaleDown" not in source
-    assert "MuonResolutionUp" not in source
-    assert "MuonResolutionDown" not in source
+    activation = source.index("get_supported_muon_momentum_systematics")
+    syst_loop = source.index("for syst_var in syst_var_list:")
+    rebuild = source.index("if is_muon_momentum_systematic(syst_var):")
+    jet_cleaning = source.index("tmp = ak.cartesian", rebuild)
+    event_leptons = source.index(
+        'events["l_fo_conept_sorted"] = l_fo_conept_sorted_for_syst',
+        rebuild,
+    )
+    event_selection = source.index("te_es.add", event_leptons)
+
+    assert activation < syst_loop < rebuild < jet_cleaning < event_leptons
+    assert event_leptons < event_selection
+
+    for snippet in [
+        'varied_mu = ak.with_field(mu, mu.pt_raw, "pt")',
+        "varied_corrected_muon_pt = apply_muon_momentum_corrections",
+        "variation=syst_var",
+        'varied_mu["pt_raw"] = varied_mu.pt',
+        'varied_mu["pt"] = varied_corrected_muon_pt',
+        'varied_mu["conept"] = leptonSelection.coneptMuon(varied_mu)',
+        'varied_mu["isPres"] = leptonSelection.isPresMuon(varied_mu)',
+        'varied_mu["isLooseM"] = leptonSelection.isLooseMuon(varied_mu)',
+        'varied_mu["isFO"] = leptonSelection.isFOMuon(varied_mu, year)',
+        'varied_mu["isTightLep"]= leptonSelection.tightSelMuon(varied_mu)',
+        "m_loose_for_syst = varied_mu",
+        "l_loose_for_syst = ak.with_name",
+        "min_mll_afas_for_syst = ak.min",
+        "m_fo_for_syst = varied_mu",
+        "AttachMuonSF(m_fo_for_syst",
+        "AttachPerLeptonFR(m_fo_for_syst",
+        "l_fo_for_syst = ak.with_name",
+        "l_fo_conept_sorted_for_syst =",
+    ]:
+        assert source.index(snippet, rebuild) < event_selection
+
+    local_leptons = source.index(
+        "l_fo_conept_sorted_padded = ak.pad_none(l_fo_conept_sorted_for_syst",
+        event_leptons,
+    )
+    assert event_leptons < local_leptons
+
+    rebuild_block = source[rebuild:jet_cleaning]
+    assert "ApplyMETSystematics" not in rebuild_block
+    assert "get_selected_met" not in rebuild_block

@@ -6,6 +6,7 @@
 from coffea import lookup_tools
 from topcoffea.modules.paths import topcoffea_path
 from topcoffea.modules.muon_momentum_corrections import (
+    MUON_MOMENTUM_VARIATIONS,
     apply_muon_momentum_corrections as apply_run3_muon_momentum_corrections,
 )
 from topeft.modules.paths import topeft_path
@@ -37,6 +38,21 @@ get_te_param = GetParam(topeft_path("params/params.json"))
 from collections import OrderedDict
 
 basepathFromTTH = 'data/fromTTH/'
+
+RUN3_MUON_MOMENTUM_SYSTEMATICS = tuple(
+    variation for variation in MUON_MOMENTUM_VARIATIONS
+    if variation != "nominal"
+)
+
+
+def is_muon_momentum_systematic(syst_var):
+    return syst_var in RUN3_MUON_MOMENTUM_SYSTEMATICS
+
+
+def get_supported_muon_momentum_systematics(year, isData=False):
+    if isData or str(year).startswith("201"):
+        return []
+    return list(RUN3_MUON_MOMENTUM_SYSTEMATICS)
 
 ###### Lepton scale factors
 ################################################################
