@@ -1,3 +1,4 @@
+import inspect
 from pathlib import Path
 
 import awkward as ak
@@ -213,77 +214,303 @@ def test_muon_momentum_systematic_list_is_run3_mc_only():
     assert corrections.get_supported_muon_momentum_systematics("2018", isData=False) == []
 
 
+def test_run3_mc_attachment_adds_nominal_and_all_variation_fields(monkeypatch):
+    calls = []
+    offsets = {
+        "nominal": 1.0,
+        "MuonScaleUp": 2.0,
+        "MuonScaleDown": 3.0,
+        "MuonResolutionUp": 4.0,
+        "MuonResolutionDown": 5.0,
+    }
+
+    def _fake_apply(
+        year,
+        muons,
+        is_data,
+        *,
+        event_numbers=None,
+        luminosity_blocks=None,
+        variation="nominal",
+    ):
+        calls.append(
+            (
+                year,
+                is_data,
+                variation,
+                ak.to_list(event_numbers),
+                ak.to_list(luminosity_blocks),
+            )
+        )
+        return muons.pt + offsets[variation]
+
+    monkeypatch.setattr(
+        corrections, "apply_muon_momentum_corrections", _fake_apply
+    )
+    attached = corrections.AttachMuonMomentumCorrections(
+        "2022",
+        _muons(),
+        False,
+        event_numbers=ak.Array([101]),
+        luminosity_blocks=ak.Array([7]),
+    )
+
+    assert [call[2] for call in calls] == [
+        "nominal",
+        *_RUN3_VARIATIONS,
+    ]
+    assert ak.to_list(attached.pt_nom) == [[10.5]]
+    for variation in _RUN3_VARIATIONS:
+        field = corrections.MUON_MOMENTUM_PT_FIELDS[variation]
+        assert field in ak.fields(attached)
+        assert ak.to_list(attached[field]) == [[9.5 + offsets[variation]]]
+
+
+def test_data_attachment_only_adds_nominal_field(monkeypatch):
+    calls = []
+
+    def _fake_apply(year, muons, is_data, **kwargs):
+        calls.append((year, is_data, kwargs["variation"]))
+        return muons.pt + 1.0
+
+    monkeypatch.setattr(
+        corrections, "apply_muon_momentum_corrections", _fake_apply
+    )
+    attached = corrections.AttachMuonMomentumCorrections(
+        "2022", _muons(), True
+    )
+
+    assert calls == [("2022", True, "nominal")]
+    assert "pt_nom" in ak.fields(attached)
+    for variation in _RUN3_VARIATIONS:
+        assert corrections.MUON_MOMENTUM_PT_FIELDS[variation] not in ak.fields(
+            attached
+        )
+
+
+def test_run2_attachment_only_adds_rochester_nominal_field(monkeypatch):
+    calls = []
+
+    def _fake_apply(year, muons, is_data, **kwargs):
+        calls.append((year, is_data, kwargs["variation"]))
+        return muons.pt + 0.5
+
+    monkeypatch.setattr(
+        corrections, "apply_muon_momentum_corrections", _fake_apply
+    )
+    attached = corrections.AttachMuonMomentumCorrections(
+        "2018", _muons(), False
+    )
+
+    assert calls == [("2018", False, "nominal")]
+    assert ak.to_list(attached.pt_nom) == [[10.0]]
+    assert set(ak.fields(attached)).isdisjoint(
+        {
+            corrections.MUON_MOMENTUM_PT_FIELDS[variation]
+            for variation in _RUN3_VARIATIONS
+        }
+    )
+
+
+def _muons_with_attached_pt_fields():
+    muons = ak.with_field(_muons(), ak.Array([[999.0]]), "pt")
+    muons = ak.with_field(muons, ak.Array([[10.0]]), "pt_nom")
+    for idx, variation in enumerate(_RUN3_VARIATIONS, start=1):
+        muons = ak.with_field(
+            muons,
+            ak.Array([[10.0 + idx]]),
+            corrections.MUON_MOMENTUM_PT_FIELDS[variation],
+        )
+    return muons
+
+
+@pytest.mark.parametrize(
+    ("syst_var", "expected"),
+    [
+        ("nominal", 10.0),
+        ("JES_TotalUp", 10.0),
+        ("MuonScaleUp", 11.0),
+        ("MuonScaleDown", 12.0),
+        ("MuonResolutionUp", 13.0),
+        ("MuonResolutionDown", 14.0),
+    ],
+)
+def test_muon_systematic_selector_uses_attached_fields(syst_var, expected):
+    selected = corrections.ApplyMuonMomentumSystematics(
+        "2022", _muons_with_attached_pt_fields(), syst_var
+    )
+
+    assert ak.to_list(selected.pt) == [[expected]]
+
+
+def test_muon_systematic_selector_fails_when_requested_field_is_missing():
+    with pytest.raises(ValueError, match="pt_MuonScaleUp.*not attached"):
+        corrections.ApplyMuonMomentumSystematics(
+            "2022",
+            ak.with_field(_muons(), ak.Array([[10.0]]), "pt_nom"),
+            "MuonScaleUp",
+        )
+
+
+def test_run2_muon_systematic_selector_rejects_variations():
+    with pytest.raises(ValueError, match="Run 2 Rochester.*does not support"):
+        corrections.ApplyMuonMomentumSystematics(
+            "2018",
+            ak.with_field(_muons(), ak.Array([[10.0]]), "pt_nom"),
+            "MuonScaleDown",
+        )
+
+
+def test_nominal_attachment_selector_matches_previous_direct_path():
+    muons = _run3_muons()
+    events = ak.Array([1001, 1002, 1003])
+    lumis = ak.Array([11, 12, 13])
+    direct = corrections.apply_muon_momentum_corrections(
+        "2022",
+        muons,
+        False,
+        event_numbers=events,
+        luminosity_blocks=lumis,
+    )
+    muons = ak.with_field(muons, muons.pt, "pt_raw")
+    attached = corrections.AttachMuonMomentumCorrections(
+        "2022",
+        muons,
+        False,
+        event_numbers=events,
+        luminosity_blocks=lumis,
+    )
+    selected = corrections.ApplyMuonMomentumSystematics(
+        "2022", attached, "nominal"
+    )
+
+    assert ak.to_list(selected.pt_raw) == ak.to_list(muons.pt_raw)
+    assert np.allclose(
+        ak.to_numpy(ak.flatten(selected.pt)),
+        ak.to_numpy(ak.flatten(direct)),
+    )
+
+
+@pytest.mark.parametrize("variation", _RUN3_VARIATIONS)
+def test_muon_systematics_are_jet_noops(variation):
+    jets = object()
+    assert corrections.ApplyJetSystematics("2022", jets, variation) is jets
+
+
 @pytest.mark.parametrize(
     "processor_name",
     ["analysis_processor.py", "analysis_processor_diboson.py"],
 )
-def test_processors_prepare_corrected_muons_before_selection(processor_name):
+def test_processors_attach_muon_variations_before_systematic_loop(processor_name):
     source = _processor_source(processor_name)
 
-    correction = source.index(
-        "corrected_muon_pt = apply_muon_momentum_corrections"
-    )
     preserve_raw = source.index('mu["pt_raw"] = mu.pt')
-    install_corrected_pt = source.index('mu["pt"] = corrected_muon_pt')
-    compute_conept = source.index(
-        'mu["conept"] = leptonSelection.coneptMuon(mu)'
-    )
-    selection = source.index('mu["isPres"] = leptonSelection.isPresMuon(mu)')
+    attachment = source.index("mu = AttachMuonMomentumCorrections(")
+    syst_loop = source.index("for syst_var in syst_var_list:")
 
-    assert correction < preserve_raw < install_corrected_pt
-    assert install_corrected_pt < compute_conept < selection
-    removed_helper = "prepare_" + "muons_for_selection"
-    assert removed_helper not in source
+    assert preserve_raw < attachment < syst_loop
+    assert "mu_base = mu" not in source
+    assert "apply_muon_momentum_corrections" not in source
 
 
 @pytest.mark.parametrize(
     "processor_name",
     ["analysis_processor.py", "analysis_processor_diboson.py"],
 )
-def test_processors_rebuild_muon_objects_for_muon_systematics(processor_name):
+def test_processors_build_loop_local_lepton_state(processor_name):
     source = _processor_source(processor_name)
-
-    activation = source.index("get_supported_muon_momentum_systematics")
     syst_loop = source.index("for syst_var in syst_var_list:")
-    rebuild = source.index("if is_muon_momentum_systematic(syst_var):")
-    jet_cleaning = source.index("tmp = ak.cartesian", rebuild)
+    selector = source.index(
+        "mu = ApplyMuonMomentumSystematics(year, mu, syst_var)", syst_loop
+    )
+    compute_conept = source.index(
+        'mu["conept"] = leptonSelection.coneptMuon(mu)', selector
+    )
+    mu_pres = source.index(
+        'mu["isPres"] = leptonSelection.isPresMuon(mu)', compute_conept
+    )
+    mu_fo = source.index(
+        'mu["isFO"] = leptonSelection.isFOMuon(mu, year)', mu_pres
+    )
+    electron_selection = source.index(
+        'ele["isPres"] = leptonSelection.isPresElec(ele)', mu_fo
+    )
+    m_loose = source.index("m_loose = mu[", electron_selection)
+    l_loose = source.index("l_loose = ak.with_name(", m_loose)
+    min_mll = source.index("min_mll_afas = ak.min(", l_loose)
+    m_fo = source.index("m_fo = mu[", min_mll)
+    l_fo = source.index("l_fo = ak.with_name(", m_fo)
+    l_fo_sorted = source.index("l_fo_conept_sorted = l_fo[", l_fo)
+    jet_cleaning = source.index("tmp = ak.cartesian", l_fo_sorted)
     event_leptons = source.index(
-        'events["l_fo_conept_sorted"] = l_fo_conept_sorted_for_syst',
-        rebuild,
+        'events["l_fo_conept_sorted"] = l_fo_conept_sorted',
+        jet_cleaning,
     )
     event_selection = source.index("te_es.add", event_leptons)
 
-    assert activation < syst_loop < rebuild < jet_cleaning < event_leptons
-    assert event_leptons < event_selection
+    assert syst_loop < selector < compute_conept < mu_pres < mu_fo
+    assert mu_fo < electron_selection < m_loose < l_loose < min_mll
+    assert min_mll < m_fo < l_fo < l_fo_sorted < jet_cleaning
+    assert jet_cleaning < event_leptons < event_selection
+    assert source.index("AttachMuonSF(m_fo", m_fo) < l_fo
+    assert source.index("AttachPerLeptonFR(m_fo", m_fo) < l_fo
 
-    for snippet in [
-        'varied_mu = ak.with_field(mu, mu.pt_raw, "pt")',
-        "varied_corrected_muon_pt = apply_muon_momentum_corrections",
-        "variation=syst_var",
-        'varied_mu["pt_raw"] = varied_mu.pt',
-        'varied_mu["pt"] = varied_corrected_muon_pt',
-        'varied_mu["conept"] = leptonSelection.coneptMuon(varied_mu)',
-        'varied_mu["isPres"] = leptonSelection.isPresMuon(varied_mu)',
-        'varied_mu["isLooseM"] = leptonSelection.isLooseMuon(varied_mu)',
-        'varied_mu["isFO"] = leptonSelection.isFOMuon(varied_mu, year)',
-        'varied_mu["isTightLep"]= leptonSelection.tightSelMuon(varied_mu)',
-        "m_loose_for_syst = varied_mu",
-        "l_loose_for_syst = ak.with_name",
-        "min_mll_afas_for_syst = ak.min",
-        "m_fo_for_syst = varied_mu",
-        "AttachMuonSF(m_fo_for_syst",
-        "AttachPerLeptonFR(m_fo_for_syst",
-        "l_fo_for_syst = ak.with_name",
-        "l_fo_conept_sorted_for_syst =",
-    ]:
-        assert source.index(snippet, rebuild) < event_selection
+    forbidden_names = [
+        "varied_mu",
+        "varied_tau",
+        "m_loose_for_syst",
+        "m_fo_for_syst",
+        "l_loose_for_syst",
+        "l_fo_for_syst",
+        "l_fo_conept_sorted_for_syst",
+        "min_mll_afas_for_syst",
+    ]
+    for name in forbidden_names:
+        assert name not in source
+    assert "if is_muon_momentum_systematic(syst_var):" not in source
 
-    local_leptons = source.index(
-        "l_fo_conept_sorted_padded = ak.pad_none(l_fo_conept_sorted_for_syst",
-        event_leptons,
+    muon_selection_block = source[selector:l_fo_sorted]
+    assert "ApplyMETSystematics" not in muon_selection_block
+    assert "get_selected_met" not in muon_selection_block
+
+
+@pytest.mark.parametrize(
+    "processor_name",
+    ["analysis_processor.py", "analysis_processor_diboson.py"],
+)
+def test_processors_apply_tau_shifts_before_loop_local_selection(processor_name):
+    source = _processor_source(processor_name)
+    syst_loop = source.index("for syst_var in syst_var_list:")
+    tau_reset = source.index("tau = events.Tau", syst_loop)
+    nominal_tes = source.index(
+        'tau["pt"], tau["mass"] = ApplyTES(', tau_reset
     )
-    assert event_leptons < local_leptons
+    tes_syst = source.index(
+        'tau["pt"], tau["mass"] = ApplyTESSystematic(', nominal_tes
+    )
+    fes_syst = source.index(
+        'tau["pt"], tau["mass"] = ApplyFESSystematic(', tes_syst
+    )
+    tau_pres = source.index('tau["isPres', fes_syst)
+    tau_clean = source.index(
+        'tau["isClean"] = te_os.isClean(tau, l_fo', tau_pres
+    )
+    tau_good = source.index('tau["isGood"]', tau_clean)
+    tau_select = source.index("tau = tau[tau.isGood]", tau_good)
+    jet_cleaning = source.index("tmp = ak.cartesian", tau_select)
 
-    rebuild_block = source[rebuild:jet_cleaning]
-    assert "ApplyMETSystematics" not in rebuild_block
-    assert "get_selected_met" not in rebuild_block
+    assert syst_loop < tau_reset < nominal_tes < tes_syst < fes_syst
+    assert fes_syst < tau_pres < tau_clean < tau_good < tau_select
+    assert tau_select < jet_cleaning
+
+
+def test_tau_correction_function_signatures_are_unchanged():
+    assert str(inspect.signature(corrections.ApplyTES)) == (
+        "(year, taus, isData, vsJetWP='Loose')"
+    )
+    assert str(inspect.signature(corrections.ApplyTESSystematic)) == (
+        "(year, taus, isData, syst_name, vsJetWP='Loose')"
+    )
+    assert str(inspect.signature(corrections.ApplyFESSystematic)) == (
+        "(year, taus, isData, syst_name, vsJetWP='Loose')"
+    )

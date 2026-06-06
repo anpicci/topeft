@@ -43,6 +43,13 @@ RUN3_MUON_MOMENTUM_SYSTEMATICS = tuple(
     variation for variation in MUON_MOMENTUM_VARIATIONS
     if variation != "nominal"
 )
+MUON_MOMENTUM_PT_FIELDS = {
+    "nominal": "pt_nom",
+    **{
+        variation: f"pt_{variation}"
+        for variation in RUN3_MUON_MOMENTUM_SYSTEMATICS
+    },
+}
 
 
 def is_muon_momentum_systematic(syst_var):
@@ -2009,7 +2016,19 @@ def ApplyJetSystematics(year,cleanedJets,syst_var):
         return cleanedJets.JES_jes.down
     elif (syst_var == 'nominal'):
         return cleanedJets
-    elif (syst_var in ['nominal','MuonESUp','MuonESDown', 'TESUp', 'TESDown', 'FESUp', 'FESDown']) or is_met_unclustered_systematic(syst_var):
+    elif (
+        syst_var in [
+            'nominal',
+            'MuonESUp',
+            'MuonESDown',
+            'TESUp',
+            'TESDown',
+            'FESUp',
+            'FESDown',
+        ]
+        or is_muon_momentum_systematic(syst_var)
+        or is_met_unclustered_systematic(syst_var)
+    ):
         return cleanedJets
     elif ('JES_FlavorQCD' in syst_var):
         # Overwrite FlavorQCD with the proper jet flavor uncertainty
@@ -2121,6 +2140,54 @@ def apply_muon_momentum_corrections(
         event_numbers=event_numbers,
         luminosity_blocks=luminosity_blocks,
     )
+
+
+def AttachMuonMomentumCorrections(
+    year,
+    mu,
+    is_data,
+    *,
+    event_numbers=None,
+    luminosity_blocks=None,
+):
+    """Attach nominal and available varied muon pt fields once per event chunk."""
+    variations = ["nominal"]
+    if not is_data and not str(year).startswith("201"):
+        variations.extend(RUN3_MUON_MOMENTUM_SYSTEMATICS)
+
+    for variation in variations:
+        corrected_pt = apply_muon_momentum_corrections(
+            year,
+            mu,
+            is_data,
+            event_numbers=event_numbers,
+            luminosity_blocks=luminosity_blocks,
+            variation=variation,
+        )
+        mu = ak.with_field(
+            mu,
+            corrected_pt,
+            MUON_MOMENTUM_PT_FIELDS[variation],
+        )
+    return mu
+
+
+def ApplyMuonMomentumSystematics(year, mu, syst_var):
+    """Select active muon pt from fields attached before the systematic loop."""
+    variation = syst_var if is_muon_momentum_systematic(syst_var) else "nominal"
+    if str(year).startswith("201") and variation != "nominal":
+        raise ValueError(
+            "Run 2 Rochester uncertainty handling does not support object "
+            f'variation "{variation}" here.'
+        )
+
+    field = MUON_MOMENTUM_PT_FIELDS[variation]
+    if field not in ak.fields(mu):
+        raise ValueError(
+            f'Muon momentum field "{field}" required for variation '
+            f'"{variation}" is not attached.'
+        )
+    return ak.with_field(mu, mu[field], "pt")
 
 ###### Trigger SFs
 ################################################################
