@@ -307,7 +307,7 @@ class AnalysisProcessor(processor.ProcessorABC):
 
         if self.tau_h_analysis:
             tau_energy_wp = "Loose" if is_run2 else "Medium"
-            tau_energy_views = AttachTauEnergyCorrections(
+            taus = AttachTauEnergyCorrections(
                 year, tau, isData, vsJetWP=tau_energy_wp
             )
 
@@ -449,7 +449,7 @@ class AnalysisProcessor(processor.ProcessorABC):
             #################### Taus ####################
 
             if self.tau_h_analysis:
-                tau = ApplyTauEnergySystematics(tau_energy_views, syst_var)
+                tau = ApplyTauEnergySystematics(taus, syst_var)
             else:
                 tau = events.Tau
 

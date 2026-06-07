@@ -5,10 +5,8 @@ import awkward as ak
 import numpy as np
 import pytest
 
+import topeft.modules.corrections as corrections
 from topeft.modules.corrections import (
-    ApplyFESSystematic,
-    ApplyTES,
-    ApplyTESSystematic,
     ApplyTauEnergySystematics,
     AttachTauEnergyCorrections,
     TAU_ENERGY_FIELDS,
@@ -61,7 +59,7 @@ def _base_records():
     ]
 
 
-def test_attaches_all_complete_tau_energy_views_and_preserves_raw_fields():
+def test_attaches_all_complete_tau_energy_fields_and_preserves_raw_fields():
     tau = _taus(_base_records())
     attached = AttachTauEnergyCorrections(
         "2022", tau, False, vsJetWP="Medium"
@@ -75,33 +73,34 @@ def test_attaches_all_complete_tau_energy_views_and_preserves_raw_fields():
     _assert_close(attached.mass_raw, tau.mass)
 
 
-def test_complete_views_preserve_nominal_correction_for_untargeted_category():
+def test_complete_views_apply_only_the_targeted_category_variation():
     tau = _taus(_base_records())
     attached = AttachTauEnergyCorrections(
         "2022", tau, False, vsJetWP="Medium"
     )
-    nominal_pt, nominal_mass = ApplyTES(
-        "2022", tau, False, vsJetWP="Medium"
-    )
-    direct_tes_up_pt, _ = ApplyTESSystematic(
-        "2022", tau, False, "TESUp", vsJetWP="Medium"
-    )
-    direct_fes_up_pt, _ = ApplyFESSystematic(
-        "2022", tau, False, "FESUp", vsJetWP="Medium"
-    )
-
-    _assert_close(attached.pt_nom, nominal_pt)
-    _assert_close(attached.mass_nom, nominal_mass)
 
     # Genuine tau: varied TES; fake tau: nominal FES; unmatched: raw.
-    _assert_close(attached.pt_TESUp[:, 0], direct_tes_up_pt[:, 0])
+    assert attached.pt_TESUp[0, 0] != pytest.approx(attached.pt_nom[0, 0])
     _assert_close(attached.pt_TESUp[:, 1], attached.pt_nom[:, 1])
     _assert_close(attached.pt_TESUp[:, 2], attached.pt_raw[:, 2])
 
     # Genuine tau: nominal TES; fake tau: varied FES; unmatched: raw.
     _assert_close(attached.pt_FESUp[:, 0], attached.pt_nom[:, 0])
-    _assert_close(attached.pt_FESUp[:, 1], direct_fes_up_pt[:, 1])
+    assert attached.pt_FESUp[0, 1] != pytest.approx(attached.pt_nom[0, 1])
     _assert_close(attached.pt_FESUp[:, 2], attached.pt_raw[:, 2])
+
+    for variation in ("nominal",) + TAU_ENERGY_SYSTEMATICS:
+        pt_field, mass_field = TAU_ENERGY_FIELDS[variation]
+        _assert_close(
+            attached[mass_field] / attached.mass_raw,
+            attached[pt_field] / attached.pt_raw,
+        )
+
+
+def test_legacy_tau_energy_helpers_are_not_public():
+    assert not hasattr(corrections, "ApplyTES")
+    assert not hasattr(corrections, "ApplyTESSystematic")
+    assert not hasattr(corrections, "ApplyFESSystematic")
 
 
 def test_selector_uses_attached_views_and_resets_from_nominal():
@@ -228,7 +227,7 @@ def test_run3_fes_variations_cover_all_payload_supported_decay_modes(year):
         )
 
 
-def test_raw_based_threshold_case_avoids_sequential_composition():
+def test_raw_based_threshold_case_keeps_tes_up_independent_of_nominal():
     tau = _taus(
         [
             {
@@ -243,19 +242,11 @@ def test_raw_based_threshold_case_avoids_sequential_composition():
     attached = AttachTauEnergyCorrections(
         "2022", tau, False, vsJetWP="Medium"
     )
-    nominal_pt, nominal_mass = ApplyTES(
-        "2022", tau, False, vsJetWP="Medium"
-    )
-    nominal_tau = ak.with_field(tau, nominal_pt, "pt")
-    nominal_tau = ak.with_field(nominal_tau, nominal_mass, "mass")
-    sequential_pt, _ = ApplyTESSystematic(
-        "2022", nominal_tau, False, "TESUp", vsJetWP="Medium"
-    )
 
     assert attached.pt_nom[0, 0] < 20
     assert attached.pt_TESUp[0, 0] > 20
-    assert sequential_pt[0, 0] < 20
-    assert attached.pt_TESUp[0, 0] != pytest.approx(sequential_pt[0, 0])
+    assert attached.pt_nom[0, 0] == pytest.approx(19.869549933075906)
+    assert attached.pt_TESUp[0, 0] == pytest.approx(20.170300841331482)
 
 
 def test_correction_applicability_uses_strict_raw_pt_range():
@@ -351,10 +342,10 @@ def test_processors_attach_once_and_select_before_tau_acceptance():
         source = (PROCESSOR_DIR / processor_name).read_text()
         syst_loop = source.index("for syst_var in syst_var_list:")
         attach = source.index(
-            "tau_energy_views = AttachTauEnergyCorrections("
+            "taus = AttachTauEnergyCorrections("
         )
         selector = source.index(
-            "tau = ApplyTauEnergySystematics(tau_energy_views, syst_var)",
+            "tau = ApplyTauEnergySystematics(taus, syst_var)",
             syst_loop,
         )
         tau_pres = source.index('tau["isPres', selector)
@@ -369,7 +360,8 @@ def test_processors_attach_once_and_select_before_tau_acceptance():
         assert attach < syst_loop < selector < tau_pres
         assert selector < tau_pres < tau_clean < tau_good < tau_select
         assert tau_select < dm_flag < dm_select < tau_sf < jet_cleaning
-        assert "ApplyTES(" not in source
-        assert "ApplyTESSystematic(" not in source
-        assert "ApplyFESSystematic(" not in source
+        assert "ApplyTES" not in source
+        assert "ApplyTESSystematic" not in source
+        assert "ApplyFESSystematic" not in source
+        assert "tau_energy_views" not in source
         assert "ApplyMETSystematics" not in source[selector:tau_pres]

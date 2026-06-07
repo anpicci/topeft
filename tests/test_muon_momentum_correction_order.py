@@ -1,4 +1,3 @@
-import inspect
 from pathlib import Path
 
 import awkward as ak
@@ -481,9 +480,9 @@ def test_processors_build_loop_local_lepton_state(processor_name):
 def test_processors_apply_tau_shifts_before_loop_local_selection(processor_name):
     source = _processor_source(processor_name)
     syst_loop = source.index("for syst_var in syst_var_list:")
-    attach = source.index("tau_energy_views = AttachTauEnergyCorrections(")
+    attach = source.index("taus = AttachTauEnergyCorrections(")
     selector = source.index(
-        "tau = ApplyTauEnergySystematics(tau_energy_views, syst_var)",
+        "tau = ApplyTauEnergySystematics(taus, syst_var)",
         syst_loop,
     )
     tau_pres = source.index('tau["isPres', selector)
@@ -497,19 +496,13 @@ def test_processors_apply_tau_shifts_before_loop_local_selection(processor_name)
     assert attach < syst_loop < selector < tau_pres
     assert tau_pres < tau_clean < tau_good < tau_select
     assert tau_select < jet_cleaning
-    active_tau_block = source[selector:tau_pres]
-    assert "ApplyTES(" not in active_tau_block
-    assert "ApplyTESSystematic(" not in active_tau_block
-    assert "ApplyFESSystematic(" not in active_tau_block
+    assert "ApplyTES" not in source
+    assert "ApplyTESSystematic" not in source
+    assert "ApplyFESSystematic" not in source
+    assert "tau_energy_views" not in source
 
 
-def test_tau_correction_function_signatures_are_unchanged():
-    assert str(inspect.signature(corrections.ApplyTES)) == (
-        "(year, taus, isData, vsJetWP='Loose')"
-    )
-    assert str(inspect.signature(corrections.ApplyTESSystematic)) == (
-        "(year, taus, isData, syst_name, vsJetWP='Loose')"
-    )
-    assert str(inspect.signature(corrections.ApplyFESSystematic)) == (
-        "(year, taus, isData, syst_name, vsJetWP='Loose')"
-    )
+def test_legacy_tau_correction_helpers_are_removed():
+    assert not hasattr(corrections, "ApplyTES")
+    assert not hasattr(corrections, "ApplyTESSystematic")
+    assert not hasattr(corrections, "ApplyFESSystematic")

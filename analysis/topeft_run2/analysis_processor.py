@@ -635,7 +635,7 @@ class AnalysisProcessor(processor.ProcessorABC):
         if self.enable_tau_blocks:
             tau_fo_tag = "VLoose" if is_run2 else "Loose"
             tau_T_tag = "Loose" if is_run2 else "Medium"
-            tau_energy_views = AttachTauEnergyCorrections(
+            taus = AttachTauEnergyCorrections(
                 year, tau, isData, vsJetWP=tau_T_tag
             )
 
@@ -823,7 +823,7 @@ class AnalysisProcessor(processor.ProcessorABC):
             #################### Taus ####################
 
             if self.enable_tau_blocks:
-                tau = ApplyTauEnergySystematics(tau_energy_views, syst_var)
+                tau = ApplyTauEnergySystematics(taus, syst_var)
 
                 if is_run2:
                     vs_jet = tau.idDeepTau2017v2p1VSjet

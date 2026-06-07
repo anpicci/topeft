@@ -741,62 +741,6 @@ def _evaluate_tau_energy_components(
     }
 
 
-def ApplyTES(year, taus, isData, vsJetWP="Loose"):
-    if isData:
-        return (taus.pt, taus.mass)
-    components = _evaluate_tau_energy_components(
-        year,
-        taus.pt,
-        taus.eta,
-        taus.decayMode,
-        taus.genPartFlav,
-        isData,
-        vsJetWP,
-    )
-    factor = components["tes_nom"] * components["fes_nom"]
-    return (taus.pt * factor, taus.mass * factor)
-
-def ApplyTESSystematic(year, taus, isData, syst_name, vsJetWP="Loose"):
-    if not syst_name.startswith('TES') or isData:
-        return (taus.pt, taus.mass)
-    components = _evaluate_tau_energy_components(
-        year,
-        taus.pt,
-        taus.eta,
-        taus.decayMode,
-        taus.genPartFlav,
-        isData,
-        vsJetWP,
-    )
-    component = "tes_nom"
-    if syst_name.endswith("Up"):
-        component = "tes_up"
-    elif syst_name.endswith("Down"):
-        component = "tes_down"
-    factor = components[component]
-    return (taus.pt * factor, taus.mass * factor)
-
-def ApplyFESSystematic(year, taus, isData, syst_name, vsJetWP="Loose"):
-    if not syst_name.startswith('FES') or isData:
-        return (taus.pt, taus.mass)
-    components = _evaluate_tau_energy_components(
-        year,
-        taus.pt,
-        taus.eta,
-        taus.decayMode,
-        taus.genPartFlav,
-        isData,
-        vsJetWP,
-    )
-    component = "fes_nom"
-    if syst_name.endswith("Up"):
-        component = "fes_up"
-    elif syst_name.endswith("Down"):
-        component = "fes_down"
-    factor = components[component]
-    return (taus.pt * factor, taus.mass * factor)
-
-
 def AttachTauEnergyCorrections(year, taus, isData, vsJetWP="Medium"):
     """Attach complete nominal and varied tau pt/mass views from raw kinematics."""
     if "pt_raw" not in ak.fields(taus):
