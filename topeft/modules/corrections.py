@@ -50,6 +50,14 @@ MUON_MOMENTUM_PT_FIELDS = {
         for variation in RUN3_MUON_MOMENTUM_SYSTEMATICS
     },
 }
+TAU_ENERGY_SYSTEMATICS = ("TESUp", "TESDown", "FESUp", "FESDown")
+TAU_ENERGY_FIELDS = {
+    "nominal": ("pt_nom", "mass_nom"),
+    **{
+        variation: (f"pt_{variation}", f"mass_{variation}")
+        for variation in TAU_ENERGY_SYSTEMATICS
+    },
+}
 
 
 def is_muon_momentum_systematic(syst_var):
@@ -60,6 +68,16 @@ def get_supported_muon_momentum_systematics(year, isData=False):
     if isData or str(year).startswith("201"):
         return []
     return list(RUN3_MUON_MOMENTUM_SYSTEMATICS)
+
+
+def is_tau_energy_systematic(syst_var):
+    return syst_var in TAU_ENERGY_SYSTEMATICS
+
+
+def get_supported_tau_energy_systematics(year, isData=False):
+    if isData:
+        return []
+    return list(TAU_ENERGY_SYSTEMATICS)
 
 ###### Lepton scale factors
 ################################################################
@@ -611,236 +629,224 @@ SFevaluator = extLepSF.make_evaluator()
 
 ffSysts=['','_up','_down','_be1','_be2','_pt1','_pt2']
 
+
+def _evaluate_tau_energy_components(
+    year,
+    pt,
+    eta,
+    dm,
+    gen,
+    isData,
+    vsJetWP,
+):
+    """Return raw-kinematics TES/FES component factors."""
+    ones = ak.ones_like(pt, dtype=np.float32)
+    if isData:
+        return {
+            "tes_nom": ones,
+            "tes_up": ones,
+            "tes_down": ones,
+            "fes_nom": ones,
+            "fes_up": ones,
+            "fes_down": ones,
+        }
+
+    if year.startswith("201"):
+        tes_where = (
+            (pt > 20)
+            & (pt < 205)
+            & (gen == 5)
+            & ((dm == 0) | (dm == 1) | (dm == 10) | (dm == 11))
+        )
+        fes_where = (
+            (pt > 20)
+            & (pt < 205)
+            & (gen >= 1)
+            & (gen <= 4)
+            & ((dm == 0) | (dm == 1))
+        )
+        abs_eta = abs(eta)
+        return {
+            "tes_nom": ak.where(
+                tes_where, SFevaluator[f"TauTES_{year}"](dm, pt), 1.0
+            ),
+            "tes_up": ak.where(
+                tes_where, SFevaluator[f"TauTES_{year}_up"](dm, pt), 1.0
+            ),
+            "tes_down": ak.where(
+                tes_where, SFevaluator[f"TauTES_{year}_down"](dm, pt), 1.0
+            ),
+            "fes_nom": ak.where(
+                fes_where, SFevaluator[f"TauFES_{year}"](abs_eta, dm), 1.0
+            ),
+            "fes_up": ak.where(
+                fes_where, SFevaluator[f"TauFES_{year}_up"](abs_eta, dm), 1.0
+            ),
+            "fes_down": ak.where(
+                fes_where, SFevaluator[f"TauFES_{year}_down"](abs_eta, dm), 1.0
+            ),
+        }
+
+    clib_year = clib_year_map[year]
+    json_path = topcoffea_path(f"data/POG/TAU/{clib_year}/tau.json.gz")
+    corr = correctionlib.CorrectionSet.from_file(json_path)["tau_energy_scale"]
+
+    flat_pt = ak.flatten(ak.fill_none(pt, 0.0), axis=1)
+    flat_eta = ak.flatten(ak.fill_none(eta, 0.0), axis=1)
+    flat_dm = ak.flatten(ak.fill_none(dm, -1), axis=1)
+    flat_gen = ak.flatten(ak.fill_none(gen, 0), axis=1)
+    flat_pt_np = ak.to_numpy(flat_pt)
+    counts = ak.num(pt, axis=1)
+
+    in_range = (flat_pt > 20) & (flat_pt < 205)
+    tes_dm = (
+        (flat_dm == 0)
+        | (flat_dm == 1)
+        | (flat_dm == 10)
+        | (flat_dm == 11)
+    )
+    # The POG fake-tau branch defines DM2, while genuine TES does not.
+    fes_dm = tes_dm | (flat_dm == 2)
+    tes_where = in_range & tes_dm & (flat_gen == 5)
+    fes_where = (
+        in_range
+        & fes_dm
+        & (flat_gen >= 1)
+        & (flat_gen <= 4)
+    )
+
+    def evaluate(where, syst):
+        full = np.ones_like(flat_pt_np, dtype=np.float32)
+        indices = np.nonzero(ak.to_numpy(where))[0]
+        if len(indices) > 0:
+            full[indices] = corr.evaluate(
+                ak.to_numpy(flat_pt[where]),
+                ak.to_numpy(flat_eta[where]),
+                ak.to_numpy(flat_dm[where]),
+                ak.to_numpy(flat_gen[where]),
+                "DeepTau2018v2p5",
+                vsJetWP,
+                "VVLoose",
+                syst,
+            )
+        return ak.unflatten(full, counts)
+
+    return {
+        "tes_nom": evaluate(tes_where, "nom"),
+        "tes_up": evaluate(tes_where, "up"),
+        "tes_down": evaluate(tes_where, "down"),
+        "fes_nom": evaluate(fes_where, "nom"),
+        "fes_up": evaluate(fes_where, "up"),
+        "fes_down": evaluate(fes_where, "down"),
+    }
+
+
 def ApplyTES(year, taus, isData, vsJetWP="Loose"):
     if isData:
         return (taus.pt, taus.mass)
-
-    pt  = taus.pt
-    dm  = taus.decayMode
-    gen = taus.genPartFlav
-    eta = taus.eta
-
-    clib_year = clib_year_map[year]
-    is_run2 = False
-    if year.startswith("201"):
-        is_run2 = True
-
-    is_run3 = not is_run2
-
-    if is_run2:
-
-        kinFlag = (pt>20) & (pt<205) & (gen==5)
-        dmFlag = ((dm==0) | (dm==1) | (dm==10) | (dm==11))
-        whereFlag = kinFlag & dmFlag #((pt>20) & (pt<205) & (gen==5) & (dm==0 | dm==1 | dm==10 | dm==11))
-        tes = np.where(whereFlag, SFevaluator['TauTES_{year}'.format(year=year)](dm,pt), 1)
-
-        kinFlag = (pt>20) & (pt<205) & (gen>=1) & (gen<=4)
-        dmFlag = ((dm==0) | (dm==1))
-        whereFlag = kinFlag & dmFlag
-        fes = np.where(whereFlag, SFevaluator['TauFES_{year}'.format(year=year)](eta,dm), 1)
-
-    if is_run3:
-
-        json_path = topcoffea_path(f"data/POG/TAU/{clib_year}/tau.json.gz")
-        ceval = correctionlib.CorrectionSet.from_file(json_path)
-        corr = ceval["tau_energy_scale"]
-
-        flat_pt  = ak.flatten(ak.fill_none(pt, 0.0), axis=1)
-        flat_eta = ak.flatten(ak.fill_none(eta, 0.0), axis=1)
-        flat_dm  = ak.flatten(ak.fill_none(dm, -1), axis=1)
-        flat_gen = ak.flatten(ak.fill_none(gen, 0), axis=1)
-
-        flat_all_pt = ak.flatten(ak.fill_none(pt, 0.0), axis=1)
-        flat_all_pt_np = ak.to_numpy(flat_all_pt)
-        counts = ak.num(pt, axis=1)
-
-        # Genuine taus (genmatch==5) receive the TES weights
-        tes_kin = (flat_pt > 20) & (flat_pt < 205)
-        tes_dm  = (flat_dm == 0) | (flat_dm == 1) | (flat_dm == 10) | (flat_dm == 11)
-        tes_where = tes_kin & tes_dm & (flat_gen == 5)
-
-        full_tes = np.ones_like(flat_all_pt_np, dtype=np.float32)
-        tes_indices = np.nonzero(ak.to_numpy(tes_where))[0]
-        if len(tes_indices) > 0:
-            tes_values = corr.evaluate(
-                ak.to_numpy(flat_pt[tes_where]),
-                ak.to_numpy(flat_eta[tes_where]),
-                ak.to_numpy(flat_dm[tes_where]),
-                ak.to_numpy(flat_gen[tes_where]),
-                "DeepTau2018v2p5",
-                vsJetWP,
-                "VVLoose",
-                "nom",
-            )
-            full_tes = ak.to_numpy(full_tes)
-            full_tes[tes_indices] = tes_values
-        tes = ak.unflatten(full_tes, counts)
-
-        # Electron/muon fakes (genmatch 1-4) receive the FES weights
-        fes_kin = (flat_pt > 20) & (flat_pt < 205)
-        fes_dm  = (flat_dm == 0) | (flat_dm == 1) | (flat_dm == 10) | (flat_dm == 11)
-        fes_where = fes_kin & fes_dm & (flat_gen >= 1) & (flat_gen <= 4)
-
-        full_fes = np.ones_like(flat_all_pt_np, dtype=np.float32)
-        fes_indices = np.nonzero(ak.to_numpy(fes_where))[0]
-        if len(fes_indices) > 0:
-            fes_values = corr.evaluate(
-                ak.to_numpy(flat_pt[fes_where]),
-                ak.to_numpy(flat_eta[fes_where]),
-                ak.to_numpy(flat_dm[fes_where]),
-                ak.to_numpy(flat_gen[fes_where]),
-                "DeepTau2018v2p5",
-                vsJetWP,
-                "VVLoose",
-                "nom",
-            )
-            full_fes = ak.to_numpy(full_fes)
-            full_fes[fes_indices] = fes_values
-        fes = ak.unflatten(full_fes, counts)
-
-    return (taus.pt*tes*fes, taus.mass*tes*fes)
+    components = _evaluate_tau_energy_components(
+        year,
+        taus.pt,
+        taus.eta,
+        taus.decayMode,
+        taus.genPartFlav,
+        isData,
+        vsJetWP,
+    )
+    factor = components["tes_nom"] * components["fes_nom"]
+    return (taus.pt * factor, taus.mass * factor)
 
 def ApplyTESSystematic(year, taus, isData, syst_name, vsJetWP="Loose"):
     if not syst_name.startswith('TES') or isData:
         return (taus.pt, taus.mass)
-
-    pt  = taus.pt
-    dm  = taus.decayMode
-    gen = taus.genPartFlav
-    eta = taus.eta
-
-    clib_year = clib_year_map[year]
-    is_run2 = False
-    if year.startswith("201"):
-        is_run2 = True
-
-    is_run3 = not is_run2
-
-    syst_lab = f'TauTES_{year}'
-    syst = "nom"
+    components = _evaluate_tau_energy_components(
+        year,
+        taus.pt,
+        taus.eta,
+        taus.decayMode,
+        taus.genPartFlav,
+        isData,
+        vsJetWP,
+    )
+    component = "tes_nom"
     if syst_name.endswith("Up"):
-        syst = "up"
-        syst_lab += '_up'
+        component = "tes_up"
     elif syst_name.endswith("Down"):
-        syst = "down"
-        syst_lab += '_down'
-
-    if is_run2:
-
-        kinFlag = (pt>20) & (pt<205) & (gen==5)
-        dmFlag = ((dm==0) | (dm==1) | (dm==10) | (dm==11))
-        whereFlag = kinFlag & dmFlag
-
-        tes_syst = np.where(whereFlag, SFevaluator[syst_lab](dm,pt), 1)
-
-    if is_run3:
-        json_path = topcoffea_path(f"data/POG/TAU/{clib_year}/tau.json.gz")
-        ceval = correctionlib.CorrectionSet.from_file(json_path)
-        corr   = ceval['tau_energy_scale']
-
-        flat_pt  = ak.flatten(ak.fill_none(pt, 0.0), axis=1)
-        flat_eta = ak.flatten(ak.fill_none(eta, 0.0), axis=1)
-        flat_dm  = ak.flatten(ak.fill_none(dm, -1), axis=1)
-        flat_gen = ak.flatten(ak.fill_none(gen, 0), axis=1)
-
-        kinFlag = (flat_pt>20) & (flat_pt<205) & (flat_gen==5)
-        dmFlag = ((flat_dm==0) | (flat_dm==1) | (flat_dm==10) | (flat_dm==11))
-        whereFlag = kinFlag & dmFlag
-
-        flat_all_pt = ak.flatten(ak.fill_none(pt, 0.0), axis=1)
-        full_tes_syst = np.ones_like(flat_all_pt, dtype=np.float32)
-        indices = np.nonzero(ak.to_numpy(whereFlag))[0]
-
-        if len(indices) > 0:
-            tes_syst_values = corr.evaluate(
-                ak.to_numpy((flat_pt[whereFlag])),
-                ak.to_numpy((flat_eta[whereFlag])),
-                ak.to_numpy((flat_dm[whereFlag])),
-                ak.to_numpy((flat_gen[whereFlag])),
-                "DeepTau2018v2p5",
-                vsJetWP,
-                "VVLoose",
-                syst
-            )
-
-            full_tes_syst = ak.to_numpy(full_tes_syst)
-            full_tes_syst[indices] = tes_syst_values
-
-        counts = ak.num(pt,axis=1)
-        tes_syst = ak.unflatten(full_tes_syst, counts)
-
-    return (taus.pt*tes_syst, taus.mass*tes_syst)
+        component = "tes_down"
+    factor = components[component]
+    return (taus.pt * factor, taus.mass * factor)
 
 def ApplyFESSystematic(year, taus, isData, syst_name, vsJetWP="Loose"):
     if not syst_name.startswith('FES') or isData:
         return (taus.pt, taus.mass)
-
-    pt  = taus.pt
-    eta  = taus.eta
-    dm  = taus.decayMode
-    gen = taus.genPartFlav
-
-    clib_year = clib_year_map[year]
-    is_run2 = False
-    if year.startswith("201"):
-        is_run2 = True
-
-    is_run3 = not is_run2
-
-    syst_lab = f'TauFES_{year}'
-    syst = "nom"
-
+    components = _evaluate_tau_energy_components(
+        year,
+        taus.pt,
+        taus.eta,
+        taus.decayMode,
+        taus.genPartFlav,
+        isData,
+        vsJetWP,
+    )
+    component = "fes_nom"
     if syst_name.endswith("Up"):
-        syst = "up"
-        syst_lab += '_up'
+        component = "fes_up"
     elif syst_name.endswith("Down"):
-        syst = "down"
-        syst_lab += '_down'
+        component = "fes_down"
+    factor = components[component]
+    return (taus.pt * factor, taus.mass * factor)
 
-    if is_run2:
-        kinFlag = (pt>20) & (pt<205) & (gen>=1) & (gen<=4)
-        dmFlag = ((taus.decayMode==0) | (taus.decayMode==1))
-        whereFlag = kinFlag & dmFlag
 
-        fes_syst = np.where(whereFlag, SFevaluator[syst_lab](eta,dm), 1)
+def AttachTauEnergyCorrections(year, taus, isData, vsJetWP="Medium"):
+    """Attach complete nominal and varied tau pt/mass views from raw kinematics."""
+    if "pt_raw" not in ak.fields(taus):
+        taus = ak.with_field(taus, taus.pt, "pt_raw")
+    if "mass_raw" not in ak.fields(taus):
+        taus = ak.with_field(taus, taus.mass, "mass_raw")
 
-    if is_run3:
-        json_path = topcoffea_path(f"data/POG/TAU/{clib_year}/tau.json.gz")
-        ceval = correctionlib.CorrectionSet.from_file(json_path)
-        corr   = ceval['tau_energy_scale']
+    if isData:
+        components = _evaluate_tau_energy_components(
+            year, taus.pt_raw, None, None, None, True, vsJetWP
+        )
+    else:
+        components = _evaluate_tau_energy_components(
+            year,
+            taus.pt_raw,
+            taus.eta,
+            taus.decayMode,
+            taus.genPartFlav,
+            False,
+            vsJetWP,
+        )
+    complete_factors = {
+        "nominal": components["tes_nom"] * components["fes_nom"],
+        "TESUp": components["tes_up"] * components["fes_nom"],
+        "TESDown": components["tes_down"] * components["fes_nom"],
+        "FESUp": components["tes_nom"] * components["fes_up"],
+        "FESDown": components["tes_nom"] * components["fes_down"],
+    }
+    for variation, factor in complete_factors.items():
+        pt_field, mass_field = TAU_ENERGY_FIELDS[variation]
+        taus = ak.with_field(taus, taus.pt_raw * factor, pt_field)
+        taus = ak.with_field(taus, taus.mass_raw * factor, mass_field)
+    return taus
 
-        flat_pt  = ak.flatten(ak.fill_none(pt, 0.0), axis=1)
-        flat_eta = ak.flatten(ak.fill_none(eta, 0.0), axis=1)
-        flat_dm  = ak.flatten(ak.fill_none(dm, -1), axis=1)
-        flat_gen = ak.flatten(ak.fill_none(gen, 0), axis=1)
 
-        kinFlag = (flat_pt>20) & (flat_pt<205) & (flat_gen>=1) & (flat_gen<=4)
-        dmFlag = ((flat_dm==0) | (flat_dm==1))
-        whereFlag = kinFlag & dmFlag
-
-        flat_all_pt = ak.flatten(ak.fill_none(pt, 0.0), axis=1)
-        full_fes_syst = np.ones_like(flat_all_pt, dtype=np.float32)
-        indices = np.nonzero(ak.to_numpy(whereFlag))[0]
-
-        if len(indices) > 0:
-            fes_syst_values = corr.evaluate(
-                ak.to_numpy((flat_pt[whereFlag])),
-                ak.to_numpy((flat_eta[whereFlag])),
-                ak.to_numpy((flat_dm[whereFlag])),
-                ak.to_numpy((flat_gen[whereFlag])),
-                "DeepTau2018v2p5",
-                vsJetWP,
-                "VVLoose",
-                syst
-            )
-
-            full_fes_syst = ak.to_numpy(full_fes_syst)
-            full_fes_syst[indices] = fes_syst_values
-
-        counts = ak.num(pt,axis=1)
-        fes_syst = ak.unflatten(full_fes_syst, counts)
-
-    return (taus.pt*fes_syst, taus.mass*fes_syst)
+def ApplyTauEnergySystematics(taus, syst_var):
+    """Select active tau pt/mass from fields attached before the systematic loop."""
+    variation = syst_var if is_tau_energy_systematic(syst_var) else "nominal"
+    pt_field, mass_field = TAU_ENERGY_FIELDS[variation]
+    missing = [
+        field for field in (pt_field, mass_field)
+        if field not in ak.fields(taus)
+    ]
+    if missing:
+        raise ValueError(
+            "Tau energy field(s) required for variation "
+            f'"{variation}" are not attached: {", ".join(missing)}.'
+        )
+    taus = ak.with_field(taus, taus[pt_field], "pt")
+    return ak.with_field(taus, taus[mass_field], "mass")
 
 def AttachTauSF(events, taus, year, vsJetWP="Loose", run3_fake_split=False):
     pt   = taus.pt

@@ -22,7 +22,7 @@ import topcoffea.modules.corrections as tc_cor
 from topeft.modules.axes import info as axes_info
 from topeft.modules.axes import info_2d as axes_info_2d
 from topeft.modules.paths import topeft_path
-from topeft.modules.corrections import ApplyJetCorrections, ApplyMETSystematics, GetBtagEff, AttachMuonSF, AttachElectronSF, AttachElectronCorrections, AttachTauSF, ApplyTES, ApplyTESSystematic, ApplyFESSystematic, AttachPerLeptonFR, AttachMuonMomentumCorrections, ApplyMuonMomentumSystematics, get_supported_muon_momentum_systematics, ApplyJetSystematics, GetTriggerSF, ApplyJetVetoMaps, get_selected_met, get_selected_raw_met, get_corr_t1_met_jets, get_supported_jet_systematics, get_supported_met_systematics, is_met_unclustered_systematic, resolve_forward_eta_stochastic_jer_suppression, use_type1_met
+from topeft.modules.corrections import ApplyJetCorrections, ApplyMETSystematics, GetBtagEff, AttachMuonSF, AttachElectronSF, AttachElectronCorrections, AttachTauSF, AttachTauEnergyCorrections, ApplyTauEnergySystematics, AttachPerLeptonFR, AttachMuonMomentumCorrections, ApplyMuonMomentumSystematics, get_supported_muon_momentum_systematics, get_supported_tau_energy_systematics, ApplyJetSystematics, GetTriggerSF, ApplyJetVetoMaps, get_selected_met, get_selected_raw_met, get_corr_t1_met_jets, get_supported_jet_systematics, get_supported_met_systematics, is_met_unclustered_systematic, resolve_forward_eta_stochastic_jer_suppression, use_type1_met
 import topeft.modules.event_selection as te_es
 import topeft.modules.object_selection as te_os
 from topcoffea.modules.get_param_from_jsons import GetParam
@@ -635,6 +635,9 @@ class AnalysisProcessor(processor.ProcessorABC):
         if self.enable_tau_blocks:
             tau_fo_tag = "VLoose" if is_run2 else "Loose"
             tau_T_tag = "Loose" if is_run2 else "Medium"
+            tau_energy_views = AttachTauEnergyCorrections(
+                year, tau, isData, vsJetWP=tau_T_tag
+            )
 
         # Define the lists of systematics we include
         obj_correction_syst_lst = get_supported_jet_systematics(
@@ -647,10 +650,9 @@ class AnalysisProcessor(processor.ProcessorABC):
             get_supported_muon_momentum_systematics(year, isData=isData)
         )
         if self.enable_tau_blocks:
-            obj_correction_syst_lst.append("TESUp")
-            obj_correction_syst_lst.append("TESDown")
-            obj_correction_syst_lst.append("FESUp")
-            obj_correction_syst_lst.append("FESDown")
+            obj_correction_syst_lst.extend(
+                get_supported_tau_energy_systematics(year, isData=isData)
+            )
 
         wgt_correction_syst_lst = [
             "lepSF_muonUp","lepSF_muonDown","lepSF_elecUp","lepSF_elecDown",f"btagSFbc_{year}Up",f"btagSFbc_{year}Down","btagSFbc_corrUp","btagSFbc_corrDown",f"btagSFlight_{year}Up",f"btagSFlight_{year}Down","btagSFlight_corrUp","btagSFlight_corrDown","PUUp","PUDown","PreFiringUp","PreFiringDown",f"triggerSF_{year}Up",f"triggerSF_{year}Down", # Exp systs
@@ -821,16 +823,7 @@ class AnalysisProcessor(processor.ProcessorABC):
             #################### Taus ####################
 
             if self.enable_tau_blocks:
-                tau = events.Tau
-                tau["pt"], tau["mass"] = ApplyTES(
-                    year, tau, isData, tau_T_tag
-                )
-                tau["pt"], tau["mass"] = ApplyTESSystematic(
-                    year, tau, isData, syst_var, tau_T_tag
-                )
-                tau["pt"], tau["mass"] = ApplyFESSystematic(
-                    year, tau, isData, syst_var, tau_T_tag
-                )
+                tau = ApplyTauEnergySystematics(tau_energy_views, syst_var)
 
                 if is_run2:
                     vs_jet = tau.idDeepTau2017v2p1VSjet

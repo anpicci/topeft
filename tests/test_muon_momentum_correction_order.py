@@ -481,17 +481,12 @@ def test_processors_build_loop_local_lepton_state(processor_name):
 def test_processors_apply_tau_shifts_before_loop_local_selection(processor_name):
     source = _processor_source(processor_name)
     syst_loop = source.index("for syst_var in syst_var_list:")
-    tau_reset = source.index("tau = events.Tau", syst_loop)
-    nominal_tes = source.index(
-        'tau["pt"], tau["mass"] = ApplyTES(', tau_reset
+    attach = source.index("tau_energy_views = AttachTauEnergyCorrections(")
+    selector = source.index(
+        "tau = ApplyTauEnergySystematics(tau_energy_views, syst_var)",
+        syst_loop,
     )
-    tes_syst = source.index(
-        'tau["pt"], tau["mass"] = ApplyTESSystematic(', nominal_tes
-    )
-    fes_syst = source.index(
-        'tau["pt"], tau["mass"] = ApplyFESSystematic(', tes_syst
-    )
-    tau_pres = source.index('tau["isPres', fes_syst)
+    tau_pres = source.index('tau["isPres', selector)
     tau_clean = source.index(
         'tau["isClean"] = te_os.isClean(tau, l_fo', tau_pres
     )
@@ -499,9 +494,13 @@ def test_processors_apply_tau_shifts_before_loop_local_selection(processor_name)
     tau_select = source.index("tau = tau[tau.isGood]", tau_good)
     jet_cleaning = source.index("tmp = ak.cartesian", tau_select)
 
-    assert syst_loop < tau_reset < nominal_tes < tes_syst < fes_syst
-    assert fes_syst < tau_pres < tau_clean < tau_good < tau_select
+    assert attach < syst_loop < selector < tau_pres
+    assert tau_pres < tau_clean < tau_good < tau_select
     assert tau_select < jet_cleaning
+    active_tau_block = source[selector:tau_pres]
+    assert "ApplyTES(" not in active_tau_block
+    assert "ApplyTESSystematic(" not in active_tau_block
+    assert "ApplyFESSystematic(" not in active_tau_block
 
 
 def test_tau_correction_function_signatures_are_unchanged():
