@@ -19,6 +19,16 @@ CFG files. The only runner ergonomics change documented here is an opt-in
 `fullR3_run.sh` input override for tutorial-scale dry-runs and single-sample
 tests; production defaults are unchanged.
 
+## Companion API contract
+
+For the formal compatibility contract, implemented-vs-used feature matrix, EFT
+semantics, pkl compatibility requirements, and parity-test specification, see
+[`docs/histeft_api_contract.md`](histeft_api_contract.md).
+
+Read this tutorial first if you are learning how to run the processor and
+inspect pkls. Read the API contract next if you are planning a future replacement
+of HistEFT or writing parity tests.
+
 ## 2. Big picture: processor -> HistEFT/coffea output -> pkl -> plotting/inspection
 
 The current workflow has four layers:
@@ -1349,10 +1359,9 @@ What can be simplified if plotting migrates too:
 
 Tests to write before swapping implementation:
 
-CL007AB and CL007AC document these requirements, but they do not add formal
-parity tests. The next dedicated prompt should be CL007AD: extract a formal
-HistEFT API contract and add parity tests before implementing a
-`scikit-hist`-based replacement.
+CL007AB and CL007AC document these requirements at tutorial level. The formal
+implemented-vs-used matrix and parity-test specification now live in
+[`docs/histeft_api_contract.md`](histeft_api_contract.md).
 
 - fill one EFT sample and one non-EFT sample, then compare SM yields;
 - compare `eval({})` and several nonzero WC points against current `HistEFT`;
