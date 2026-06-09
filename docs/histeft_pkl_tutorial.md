@@ -530,20 +530,27 @@ real processing.
 `fullR3_run.sh` provides the safe dry-run switch and the tutorial input
 override:
 
-- `analysis/topeft_run2/fullR3_run.sh:4-25`: usage includes `--dry-run`,
-  `--cr`, `--sr`, `--hist-vars`, `--sample-json`, and `--cfg-override`.
-- `analysis/topeft_run2/fullR3_run.sh:53-138`: parses command-line options.
-- `analysis/topeft_run2/fullR3_run.sh:151-157`: requires exactly one of CR or
+- `analysis/topeft_run2/fullR3_run.sh:4-28`: usage includes `--dry-run`,
+  `--cr`, `--sr`, `--hist-vars`, `--sample-json`, `--cfg-override`, and
+  `-p/--outpath`.
+- `analysis/topeft_run2/fullR3_run.sh:59-144`: parses command-line options.
+- `analysis/topeft_run2/fullR3_run.sh:146-184`: detects user-provided
+  chunk-size and output-path overrides, so dry-runs do not print duplicate
+  `-p` options.
+- `analysis/topeft_run2/fullR3_run.sh:186-192`: requires exactly one of CR or
   SR mode.
-- `analysis/topeft_run2/fullR3_run.sh:193-206`: rejects conflicting or missing
+- `analysis/topeft_run2/fullR3_run.sh:228-241`: rejects conflicting or missing
   tutorial input override paths.
-- `analysis/topeft_run2/fullR3_run.sh:213-222`: forms the output name as
+- `analysis/topeft_run2/fullR3_run.sh:248-257`: forms the output name as
   `<YEAR_LABEL>CRs_<TAG>` or `<YEAR_LABEL>SRs_<TAG>`.
-- `analysis/topeft_run2/fullR3_run.sh:271-322`: uses a single JSON/CFG override
+- `analysis/topeft_run2/fullR3_run.sh:306-351`: uses a single JSON/CFG override
   when requested, otherwise uses the production CFG bundle.
-- `analysis/topeft_run2/fullR3_run.sh:331-338`: forwards `--hist-vars` as
+- `analysis/topeft_run2/fullR3_run.sh:366-377`: forwards `--hist-vars` as
   `--hist-list`; CR defaults to `cr`, SR defaults to `ana`.
-- `analysis/topeft_run2/fullR3_run.sh:373-385`: prints the `run_analysis.py`
+- `analysis/topeft_run2/fullR3_run.sh:379-420`: builds mode-specific
+  `run_analysis.py` options, adding the wrapper default output path only when
+  the student did not provide `-p/--outpath`.
+- `analysis/topeft_run2/fullR3_run.sh:422-428`: prints the `run_analysis.py`
   command and exits before running it when `--dry-run` is present.
 
 ## 9. Quick-run tutorial
@@ -565,20 +572,21 @@ Why this sample:
   `input_samples/sample_jsons/signal_samples/ND_SRskim2023/ttH_NDSkim_2023.json:1-40`.
 - It is an SR skim signal sample, matching the SR-oriented tutorial target.
 
-### Dry-run the one-sample SR command
+### Level 1: Recommended wrapper path
 
 This is the safe command shape derived from the commented SR block in
 `run_cr.sh` and the option parser in `fullR3_run.sh`. The explicit
 `--sample-json` option keeps the input to one Run 3 EFT signal JSON without
 editing production CFG files. It does not launch the processor because of
-`--dry-run`.
+`--dry-run`. This is the recommended tutorial path because it keeps the same
+wrapper semantics used by the broader Run 3 runner.
 
 ```bash
 cd /users/apiccine/work/correction-lib/topeft/analysis/topeft_run2
 
 ./fullR3_run.sh \
   -y 2023 \
-  -t CL007AB_single_ttH_2023_njets \
+  -t CL007AC_single_ttH_2023_njets \
   -s 1000 \
   --sr \
   --hist-vars njets \
@@ -586,7 +594,7 @@ cd /users/apiccine/work/correction-lib/topeft/analysis/topeft_run2
   --dry-run \
   --category-groups 2l \
   --all-analysis \
-  -p /tmp/cl007ab_histeft_demo \
+  -p /tmp/cl007ac_histeft_demo \
   -x futures \
   --nworkers 1 \
   --nchunks 1 \
@@ -598,15 +606,16 @@ cd /users/apiccine/work/correction-lib/topeft/analysis/topeft_run2
 Validated dry-run output in this workspace:
 
 ```text
-OUT_NAME: 2023SRs_CL007AB_single_ttH_2023_njets
+OUT_NAME: 2023SRs_CL007AC_single_ttH_2023_njets
 Resolved years: 2023
 Input override: sample JSON: ../../input_samples/sample_jsons/signal_samples/ND_SRskim2023/ttH_NDSkim_2023.json
 Resolved CFGS: ../../input_samples/sample_jsons/signal_samples/ND_SRskim2023/ttH_NDSkim_2023.json
 Resolved region: SR
 Resolved histogram list: njets
+Resolved output path: /tmp/cl007ac_histeft_demo
 
 Running the following command:
-python run_analysis.py ../../input_samples/sample_jsons/signal_samples/ND_SRskim2023/ttH_NDSkim_2023.json --years 2023 -p /groups/klannon/apiccine/ --hist-list njets --skip-cr --do-systs --do-np -o 2023SRs_CL007AB_single_ttH_2023_njets -s 1000 --category-groups 2l --all-analysis -p /tmp/cl007ab_histeft_demo -x futures --nworkers 1 --nchunks 1 --pretend --np-postprocess=skip --prefix root://cmsxrootd.crc.nd.edu/
+python run_analysis.py ../../input_samples/sample_jsons/signal_samples/ND_SRskim2023/ttH_NDSkim_2023.json --years 2023 --hist-list njets --skip-cr --do-systs --do-np -o 2023SRs_CL007AC_single_ttH_2023_njets -s 1000 --category-groups 2l --all-analysis -p /tmp/cl007ac_histeft_demo -x futures --nworkers 1 --nchunks 1 --pretend --np-postprocess=skip --prefix root://cmsxrootd.crc.nd.edu/
 ```
 
 Option notes:
@@ -626,19 +635,63 @@ Option notes:
   nonprompt post-processing in a one-signal-sample tutorial.
 - `--prefix root://cmsxrootd.crc.nd.edu/`: supplies the redirector that the
   source CFG normally provides before listing this sample JSON.
-- `-p /tmp/cl007ab_histeft_demo`: a tutorial output path. In the dry-run output
-  this appears after the default group output path, so argparse should use the
-  later value if the command is actually run.
+- `-p /tmp/cl007ac_histeft_demo`: a tutorial output path. When `-p` or
+  `--outpath` is provided, `fullR3_run.sh` suppresses its default group output
+  path, so the reconstructed command contains one output-path option.
 
 Expected pkl path for an authorized real run without `--dry-run` and without
 `--pretend`:
 
 ```text
-/tmp/cl007ab_histeft_demo/2023SRs_CL007AB_single_ttH_2023_njets.pkl.gz
+/tmp/cl007ac_histeft_demo/2023SRs_CL007AC_single_ttH_2023_njets.pkl.gz
 ```
 
-This path follows `fullR3_run.sh:213-222` for the output name and
+This path follows `fullR3_run.sh:248-257` for the output name and
 `run_analysis.py:1017-1019` plus `run_analysis.py:1715-1765` for the pkl write.
+
+### Level 2: Lightweight/tutorial helper path
+
+No separate helper script is needed for this cleanup. The
+`fullR3_run.sh --sample-json --dry-run` path already prints the exact
+one-json command without editing production CFG files, and adding a second
+wrapper would duplicate the same command-construction logic. Use Level 1 for
+the source-of-truth wrapper path, or Level 3 when you need to inspect or run the
+exact `run_analysis.py` command.
+
+### Level 3: Advanced/internal direct run_analysis.py path
+
+This path is for students who want to understand exactly what the wrapper
+dry-run reconstructs. It is an advanced/internal path derived from the wrapper
+dry-run, not the primary production workflow. Keep `--pretend` for the first
+direct run; remove both `--dry-run` from Level 1 and `--pretend` here only after
+the real one-sample run is authorized.
+
+```bash
+cd /users/apiccine/work/correction-lib/topeft/analysis/topeft_run2
+
+python run_analysis.py \
+  ../../input_samples/sample_jsons/signal_samples/ND_SRskim2023/ttH_NDSkim_2023.json \
+  --years 2023 \
+  --hist-list njets \
+  --skip-cr \
+  --do-systs \
+  --do-np \
+  -o 2023SRs_CL007AC_single_ttH_2023_njets \
+  -s 1000 \
+  --category-groups 2l \
+  --all-analysis \
+  -p /tmp/cl007ac_histeft_demo \
+  -x futures \
+  --nworkers 1 \
+  --nchunks 1 \
+  --pretend \
+  --np-postprocess=skip \
+  --prefix root://cmsxrootd.crc.nd.edu/
+```
+
+This direct command uses exactly one sample JSON and one output-path option.
+The explicit `--prefix` is important because the one-json direct path bypasses
+the source CFG line that normally supplies the redirector.
 
 ### Prove the old CFG-bundle default still resolves
 
@@ -650,14 +703,14 @@ cd /users/apiccine/work/correction-lib/topeft/analysis/topeft_run2
 
 ./fullR3_run.sh \
   -y 2023 \
-  -t CL007AB_default_dryrun \
+  -t CL007AC_default_dryrun \
   -s 1000 \
   --sr \
   --hist-vars njets \
   --dry-run \
   --category-groups 2l \
   --all-analysis \
-  -p /tmp/cl007ab_default \
+  -p /tmp/cl007ac_default \
   -x futures \
   --nworkers 1 \
   --nchunks 1 \
@@ -673,6 +726,10 @@ This dry-run should print the standard 2023 SR CFG bundle:
 ../../input_samples/cfgs/NDSkim_2023_mc_signal_samples_sr.cfg
 ```
 
+It should also print `Resolved output path: /tmp/cl007ac_default`, and the
+reconstructed command should contain exactly one output-path option:
+`-p /tmp/cl007ac_default`.
+
 ### If you temporarily edit `run_cr.sh` for a broader tutorial
 
 Do not commit such edits unless the analysis conveners request them. The active
@@ -685,7 +742,7 @@ change modeled on the commented SR scaffold around
 - pkl_base_tag="CR_muonres"
 - vars=(invmass tau0Tpt l0ptcorr)
 + years=(2023)
-+ pkl_base_tag="CL007AB_SR_tutorial_ttH"
++ pkl_base_tag="CL007AC_SR_tutorial_ttH"
 + vars=(njets)
 ```
 
@@ -1292,6 +1349,11 @@ What can be simplified if plotting migrates too:
 
 Tests to write before swapping implementation:
 
+CL007AB and CL007AC document these requirements, but they do not add formal
+parity tests. The next dedicated prompt should be CL007AD: extract a formal
+HistEFT API contract and add parity tests before implementing a
+`scikit-hist`-based replacement.
+
 - fill one EFT sample and one non-EFT sample, then compare SM yields;
 - compare `eval({})` and several nonzero WC points against current `HistEFT`;
 - verify category, process, systematic, and `appl` labels after pickle round
@@ -1410,14 +1472,16 @@ Runner:
 - `analysis/topeft_run2/run_cr.sh:72-119`: active CR block.
 - `analysis/topeft_run2/run_cr.sh:125-130`: active main CR loop.
 - `analysis/topeft_run2/run_cr.sh:177-220`: commented SR scaffold.
-- `analysis/topeft_run2/fullR3_run.sh:4-25`: usage and options.
-- `analysis/topeft_run2/fullR3_run.sh:53-138`: option parsing.
-- `analysis/topeft_run2/fullR3_run.sh:151-206`: CR/SR, year, and input-override
+- `analysis/topeft_run2/fullR3_run.sh:4-28`: usage and options.
+- `analysis/topeft_run2/fullR3_run.sh:59-144`: option parsing.
+- `analysis/topeft_run2/fullR3_run.sh:146-184`: pass-through chunk-size and
+  output-path override detection.
+- `analysis/topeft_run2/fullR3_run.sh:186-241`: CR/SR, year, and input-override
   validation.
-- `analysis/topeft_run2/fullR3_run.sh:213-222`: output-name construction.
-- `analysis/topeft_run2/fullR3_run.sh:226-322`: CFG selection and
+- `analysis/topeft_run2/fullR3_run.sh:248-257`: output-name construction.
+- `analysis/topeft_run2/fullR3_run.sh:261-351`: CFG selection and
   `--sample-json`/`--cfg-override` handling.
-- `analysis/topeft_run2/fullR3_run.sh:331-385`: hist-list forwarding,
+- `analysis/topeft_run2/fullR3_run.sh:366-428`: hist-list forwarding,
   command construction, and dry-run exit.
 - `analysis/topeft_run2/run_analysis.py:639-860`: CLI arguments.
 - `analysis/topeft_run2/run_analysis.py:1017-1051`: output paths and test

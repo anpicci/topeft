@@ -18,6 +18,8 @@ PrintUsage() {
   echo "             Use one sample JSON instead of the default CFG bundle"
   echo "  --cfg-override CFG"
   echo "             Use one CFG file instead of the default CFG bundle"
+  echo "  -p, --outpath PATH"
+  echo "             Override the run_analysis.py output directory"
   echo "  --dry-run  Print the resolved run_analysis.py command and exit"
   echo "  -h, --help Show this help message"
   echo
@@ -46,6 +48,10 @@ main() {
   local -a EXPANDED_YEARS=()
   local -a RESOLVED_YEARS=()
   local USER_CHUNK_OVERRIDE=false
+  local USER_OUTPATH_OVERRIDE=false
+  local USER_OUTPATH_OPTION_COUNT=0
+  local DEFAULT_OUTPATH="/groups/klannon/$USER/"
+  local RESOLVED_OUTPATH="$DEFAULT_OUTPATH"
   local TAG=""
   local SAMPLE_JSON=""
   local CFG_OVERRIDE=""
@@ -139,14 +145,43 @@ main() {
 
   # Detect if a user-specified chunk size was provided
   local ARG
-  for ARG in "${EXTRA_ARGS[@]}"; do
+  local EXTRA_INDEX
+  for ((EXTRA_INDEX=0; EXTRA_INDEX<${#EXTRA_ARGS[@]}; EXTRA_INDEX++)); do
+    ARG="${EXTRA_ARGS[$EXTRA_INDEX]}"
     case "$ARG" in
       -s|--chunksize|--chunksize=*)
         USER_CHUNK_OVERRIDE=true
-        break
+        ;;
+    esac
+
+    case "$ARG" in
+      -p|--outpath)
+        USER_OUTPATH_OPTION_COUNT=$((USER_OUTPATH_OPTION_COUNT + 1))
+        if (( EXTRA_INDEX + 1 >= ${#EXTRA_ARGS[@]} )) || [[ "${EXTRA_ARGS[$((EXTRA_INDEX + 1))]}" == -* ]]; then
+          echo "Error: $ARG requires an output path"
+          return 1
+        fi
+        RESOLVED_OUTPATH="${EXTRA_ARGS[$((EXTRA_INDEX + 1))]}"
+        ;;
+      --outpath=*)
+        USER_OUTPATH_OPTION_COUNT=$((USER_OUTPATH_OPTION_COUNT + 1))
+        RESOLVED_OUTPATH="${ARG#--outpath=}"
+        if [[ -z "$RESOLVED_OUTPATH" ]]; then
+          echo "Error: --outpath requires an output path"
+          return 1
+        fi
         ;;
     esac
   done
+
+  if (( USER_OUTPATH_OPTION_COUNT > 1 )); then
+    echo "Error: provide only one output path option (-p or --outpath)." >&2
+    return 1
+  fi
+
+  if (( USER_OUTPATH_OPTION_COUNT == 1 )); then
+    USER_OUTPATH_OVERRIDE=true
+  fi
 
   # Ensure exactly one mode is chosen
   if [[ "$FLAG_CR" == "false" && "$FLAG_SR" == "false" ]] || [[ "$FLAG_CR" == "true" && "$FLAG_SR" == "true" ]]; then
@@ -339,6 +374,7 @@ main() {
 
   echo "Resolved region: $REGION_LABEL"
   echo "Resolved histogram list: ${HIST_LIST_ARGS[*]:1}"
+  echo "Resolved output path: $RESOLVED_OUTPATH"
 
   # Define options based on mode
   local -a OPTIONS
@@ -350,20 +386,24 @@ main() {
     if [[ "$USER_CHUNK_OVERRIDE" == "false" ]]; then
       OPTIONS+=(-s 100000)
     fi
+    if [[ "$USER_OUTPATH_OVERRIDE" == "false" ]]; then
+      OPTIONS+=(-p "$RESOLVED_OUTPATH")
+    fi
     OPTIONS+=(
       #--split-lep-flavor
-      -p "/groups/klannon/$USER/"
       -o "$OUT_NAME"
       -x work_queue
     )
   else
     OPTIONS=(
-      -p "/groups/klannon/$USER/"
       "${HIST_LIST_ARGS[@]}"
       --skip-cr
       --do-systs
       --do-np
     )
+    if [[ "$USER_OUTPATH_OVERRIDE" == "false" ]]; then
+      OPTIONS+=(-p "$RESOLVED_OUTPATH")
+    fi
     if [[ "$USER_CHUNK_OVERRIDE" == "false" ]]; then
       OPTIONS+=(-s 100000)
     fi
