@@ -25,6 +25,9 @@ from topeft.modules.paths import topeft_path
 from topeft.modules.corrections import ApplyJetCorrections, ApplyMETSystematics, GetBtagEff, AttachMuonSF, AttachElectronSF, AttachElectronCorrections, AttachTauSF, AttachTauEnergyCorrections, ApplyTauEnergySystematics, AttachPerLeptonFR, AttachMuonMomentumCorrections, ApplyMuonMomentumSystematics, get_supported_muon_momentum_systematics, get_supported_tau_energy_systematics, ApplyJetSystematics, GetTriggerSF, ApplyJetVetoMaps, get_selected_met, get_selected_raw_met, get_corr_t1_met_jets, get_supported_jet_systematics, get_supported_met_systematics, is_met_unclustered_systematic, resolve_forward_eta_stochastic_jer_suppression, use_type1_met
 import topeft.modules.event_selection as te_es
 import topeft.modules.object_selection as te_os
+from topeft.modules.ttgamma_photon_history import (
+    attach_photon_history_diagnostics,
+)
 from topcoffea.modules.get_param_from_jsons import GetParam
 get_tc_param = GetParam(topcoffea_path("params/params.json"))
 get_te_param = GetParam(topeft_path("params/params.json"))
@@ -819,6 +822,11 @@ class AnalysisProcessor(processor.ProcessorABC):
             l_fo_conept_sorted = l_fo[
                 ak.argsort(l_fo.conept, axis=-1, ascending=False)
             ]
+            l_fo_conept_sorted, _ = attach_photon_history_diagnostics(
+                events,
+                l_fo_conept_sorted,
+                None if isData else events.GenPart,
+            )
 
             #################### Taus ####################
 

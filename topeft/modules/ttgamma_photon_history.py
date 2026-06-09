@@ -1,0 +1,436 @@
+"""Diagnostics for photons matched to selected conversion-like leptons."""
+
+import awkward as ak
+import numpy as np
+
+
+NOT_CONVERSION = 0
+DECAY_LEPTON = 1
+DECAY_W_OR_B_WITH_TOP_ANCESTOR = 2
+DECAY_TOP_COPY_CONDITION = 3
+PRODUCTION_ISR = 4
+PRODUCTION_OFFSHELL_TOP = 5
+HADRON_ANCESTOR = 6
+AMBIGUOUS = 7
+NO_PHOTON_FOUND = 8
+INVALID_MATCH = 9
+
+CATEGORY_NAMES = {
+    NOT_CONVERSION: "not_conversion",
+    DECAY_LEPTON: "decay_lepton",
+    DECAY_W_OR_B_WITH_TOP_ANCESTOR: "decay_w_or_b_with_top_ancestor",
+    DECAY_TOP_COPY_CONDITION: "decay_top_copy_condition",
+    PRODUCTION_ISR: "production_isr",
+    PRODUCTION_OFFSHELL_TOP: "production_offshell_top",
+    HADRON_ANCESTOR: "hadron_ancestor",
+    AMBIGUOUS: "ambiguous_no_mother_or_malformed_chain",
+    NO_PHOTON_FOUND: "no_photon_found",
+    INVALID_MATCH: "invalid_match",
+}
+
+DECAY_CATEGORIES = (
+    DECAY_LEPTON,
+    DECAY_W_OR_B_WITH_TOP_ANCESTOR,
+    DECAY_TOP_COPY_CONDITION,
+)
+PRODUCTION_CATEGORIES = (PRODUCTION_ISR, PRODUCTION_OFFSHELL_TOP)
+
+EVENT_DIAGNOSTIC_PREFIX = "ttgamma_photon_history_"
+DEFAULT_MAX_ANCESTRY_DEPTH = 64
+
+
+def _zeros_like_objects(selected_leptons, dtype):
+    return ak.values_astype(
+        ak.zeros_like(ak.local_index(selected_leptons, axis=1)),
+        dtype,
+    )
+
+
+def _full_like_objects(selected_leptons, value, dtype=np.int64):
+    return _zeros_like_objects(selected_leptons, dtype) + value
+
+
+def _zeros_like_events(selected_leptons, dtype):
+    return ak.values_astype(
+        ak.zeros_like(ak.num(selected_leptons, axis=1)),
+        dtype,
+    )
+
+
+def _full_like_events(selected_leptons, value, dtype=np.bool_):
+    return _zeros_like_events(selected_leptons, dtype) + value
+
+
+def _has_required_fields(genparts, selected_leptons):
+    if genparts is None or selected_leptons is None:
+        return False
+    return (
+        {"pdgId", "genPartIdxMother"} <= set(ak.fields(genparts))
+        and {"genPartFlav", "genPartIdx"} <= set(ak.fields(selected_leptons))
+    )
+
+
+def _broadcast_genpart_count(genparts, indices):
+    return ak.broadcast_arrays(ak.num(genparts, axis=1), indices)[0]
+
+
+def _valid_index(genparts, indices):
+    return (indices >= 0) & (indices < _broadcast_genpart_count(genparts, indices))
+
+
+def _take_genpart_field(genparts, indices, field, default):
+    valid = _valid_index(genparts, indices)
+    masked_indices = ak.mask(indices, valid)
+    return ak.fill_none(genparts[masked_indices][field], default)
+
+
+def _category_mask(categories, accepted):
+    mask = ak.zeros_like(categories, dtype=np.bool_)
+    for category in accepted:
+        mask = mask | (categories == category)
+    return mask
+
+
+def _repeated_index(history, current, active):
+    if history is None:
+        return ak.zeros_like(active)
+    return active & ak.any(
+        history == current,
+        axis=2,
+    )
+
+
+def _append_history(history, current):
+    current_step = ak.singletons(current)
+    if history is None:
+        return current_step
+    return ak.concatenate([history, current_step], axis=2)
+
+
+def _empty_result(selected_leptons, missing_branches):
+    categories = _full_like_objects(selected_leptons, NOT_CONVERSION)
+    indices = _full_like_objects(selected_leptons, -1)
+    false_objects = _zeros_like_objects(selected_leptons, np.bool_)
+    false_events = _zeros_like_events(selected_leptons, np.bool_)
+    zero_counts = _zeros_like_events(selected_leptons, np.int64)
+
+    return {
+        "lepton": {
+            "category": categories,
+            "matched_photon_index": indices,
+            "first_copy_photon_index": indices,
+            "is_selected_conversion_lepton": false_objects,
+            "has_matched_conversion_photon": false_objects,
+        },
+        "event": {
+            "diagnostic_missing_branches": _full_like_events(
+                selected_leptons, missing_branches
+            ),
+            "has_selected_conversion_lepton": false_events,
+            "has_matched_conversion_photon": false_events,
+            "has_decay_origin_conversion_photon": false_events,
+            "has_production_origin_conversion_photon": false_events,
+            "has_hadron_ancestor_conversion_photon": false_events,
+            "has_ambiguous_conversion_photon": false_events,
+            "has_no_photon_found_conversion_lepton": false_events,
+            "has_invalid_match_conversion_lepton": false_events,
+            "n_selected_conversion_leptons": zero_counts,
+            "n_matched_conversion_photons": zero_counts,
+            "n_decay_origin_conversion_photons": zero_counts,
+            "n_production_origin_conversion_photons": zero_counts,
+            "n_hadron_ancestor_conversion_photons": zero_counts,
+            "n_ambiguous_conversion_photons": zero_counts,
+            "n_no_photon_found_conversion_leptons": zero_counts,
+            "n_invalid_match_conversion_leptons": zero_counts,
+        },
+    }
+
+
+def _recover_photon_indices(genparts, selected_leptons, max_depth):
+    is_conversion = selected_leptons.genPartFlav == 22
+    initial_indices = selected_leptons.genPartIdx
+    initial_valid = _valid_index(genparts, initial_indices)
+
+    current = ak.where(initial_valid, initial_indices, -1)
+    found = _full_like_objects(selected_leptons, -1)
+    malformed = is_conversion & ~initial_valid
+    active = is_conversion & initial_valid
+    history = None
+
+    for _ in range(max_depth):
+        if not bool(ak.any(active)):
+            break
+        repeated = _repeated_index(history, current, active)
+        malformed = malformed | repeated
+        active = active & ~repeated
+
+        valid = _valid_index(genparts, current)
+        invalid = active & (current != -1) & ~valid
+        malformed = malformed | invalid
+        active = active & valid
+
+        pdg_id = _take_genpart_field(genparts, current, "pdgId", 0)
+        found_now = active & (abs(pdg_id) == 22)
+        found = ak.where(found_now, current, found)
+        active = active & ~found_now
+
+        history = _append_history(history, current)
+        mother = _take_genpart_field(
+            genparts, current, "genPartIdxMother", -1
+        )
+        active = active & (mother != -1)
+        current = mother
+
+    malformed = malformed | active
+    return is_conversion, found, malformed
+
+
+def _first_photon_copy(genparts, photon_indices, max_depth):
+    first_copy = photon_indices
+    active = photon_indices >= 0
+    malformed = ak.zeros_like(active)
+    history = None
+
+    for _ in range(max_depth):
+        if not bool(ak.any(active)):
+            break
+        repeated = _repeated_index(history, first_copy, active)
+        malformed = malformed | repeated
+        active = active & ~repeated
+
+        mother = _take_genpart_field(
+            genparts, first_copy, "genPartIdxMother", -1
+        )
+        mother_valid = _valid_index(genparts, mother)
+        invalid = active & (mother != -1) & ~mother_valid
+        malformed = malformed | invalid
+
+        mother_pdg_id = _take_genpart_field(genparts, mother, "pdgId", 0)
+        same_pdg_mother = active & mother_valid & (abs(mother_pdg_id) == 22)
+        history = _append_history(history, first_copy)
+        first_copy = ak.where(same_pdg_mother, mother, first_copy)
+        active = same_pdg_mother
+
+    malformed = malformed | active
+    return first_copy, malformed
+
+
+def _photon_ancestry(genparts, photon_indices, max_depth):
+    mother = _take_genpart_field(
+        genparts, photon_indices, "genPartIdxMother", -1
+    )
+    mother_valid = _valid_index(genparts, mother)
+    mother_pdg_id = _take_genpart_field(genparts, mother, "pdgId", 0)
+    grandmother = _take_genpart_field(
+        genparts, mother, "genPartIdxMother", -1
+    )
+    grandmother_pdg_id = _take_genpart_field(
+        genparts, grandmother, "pdgId", 0
+    )
+
+    active = (photon_indices >= 0) & mother_valid
+    malformed = (photon_indices >= 0) & (mother != -1) & ~mother_valid
+    has_top = ak.zeros_like(active)
+    has_hadron = ak.zeros_like(active)
+    current = mother
+    history = None
+
+    for _ in range(max_depth):
+        if not bool(ak.any(active)):
+            break
+        repeated = _repeated_index(history, current, active)
+        malformed = malformed | repeated
+        active = active & ~repeated
+
+        valid = _valid_index(genparts, current)
+        invalid = active & (current != -1) & ~valid
+        malformed = malformed | invalid
+        active = active & valid
+
+        pdg_id = abs(_take_genpart_field(genparts, current, "pdgId", 0))
+        has_top = has_top | (active & (pdg_id == 6))
+        has_hadron = has_hadron | (
+            active & (pdg_id > 37) & (pdg_id != 2212)
+        )
+
+        history = _append_history(history, current)
+        next_mother = _take_genpart_field(
+            genparts, current, "genPartIdxMother", -1
+        )
+        active = active & (next_mother != -1)
+        current = next_mother
+
+    malformed = malformed | active
+    no_mother = (photon_indices >= 0) & (mother == -1)
+    return {
+        "mother_pdg_id": mother_pdg_id,
+        "grandmother_pdg_id": grandmother_pdg_id,
+        "has_top": has_top,
+        "has_hadron": has_hadron,
+        "malformed": malformed,
+        "no_mother": no_mother,
+    }
+
+
+def _classify_photons(
+    genparts,
+    is_conversion,
+    matched_photon_indices,
+    recovery_malformed,
+    max_depth,
+):
+    categories = _full_like_objects(is_conversion, NOT_CONVERSION)
+    no_match = is_conversion & (matched_photon_indices < 0)
+    categories = ak.where(
+        no_match & recovery_malformed, INVALID_MATCH, categories
+    )
+    categories = ak.where(
+        no_match & ~recovery_malformed, NO_PHOTON_FOUND, categories
+    )
+
+    first_copy, first_copy_malformed = _first_photon_copy(
+        genparts, matched_photon_indices, max_depth
+    )
+    ancestry = _photon_ancestry(genparts, first_copy, max_depth)
+    matched = is_conversion & (matched_photon_indices >= 0)
+    ambiguous = matched & (
+        first_copy_malformed
+        | ancestry["malformed"]
+        | ancestry["no_mother"]
+    )
+
+    mother_abs = abs(ancestry["mother_pdg_id"])
+    decay_lepton = matched & (
+        (mother_abs == 11) | (mother_abs == 13) | (mother_abs == 15)
+    )
+    decay_w_or_b = (
+        matched
+        & ((mother_abs == 24) | (mother_abs == 5))
+        & ancestry["has_top"]
+    )
+    decay_top_copy = (
+        matched
+        & (mother_abs == 6)
+        & (
+            ancestry["grandmother_pdg_id"]
+            == ancestry["mother_pdg_id"]
+        )
+    )
+    offshell_top = matched & (
+        ((mother_abs == 6) & ~decay_top_copy) | (mother_abs == 21)
+    )
+    decay_any = decay_lepton | decay_w_or_b | decay_top_copy
+    production_isr = matched & ~decay_any & ~offshell_top
+
+    categories = ak.where(production_isr, PRODUCTION_ISR, categories)
+    categories = ak.where(offshell_top, PRODUCTION_OFFSHELL_TOP, categories)
+    categories = ak.where(
+        decay_top_copy, DECAY_TOP_COPY_CONDITION, categories
+    )
+    categories = ak.where(
+        decay_w_or_b, DECAY_W_OR_B_WITH_TOP_ANCESTOR, categories
+    )
+    categories = ak.where(decay_lepton, DECAY_LEPTON, categories)
+    categories = ak.where(
+        matched & ancestry["has_hadron"], HADRON_ANCESTOR, categories
+    )
+    categories = ak.where(ambiguous, AMBIGUOUS, categories)
+    return categories, first_copy
+
+
+def _event_reduction(selected_leptons, categories, missing_branches=False):
+    is_conversion = selected_leptons.genPartFlav == 22
+    matched = is_conversion & ~_category_mask(
+        categories, (NO_PHOTON_FOUND, INVALID_MATCH)
+    )
+    decay = _category_mask(categories, DECAY_CATEGORIES)
+    production = _category_mask(categories, PRODUCTION_CATEGORIES)
+    hadron = categories == HADRON_ANCESTOR
+    ambiguous = categories == AMBIGUOUS
+    no_photon = categories == NO_PHOTON_FOUND
+    invalid = categories == INVALID_MATCH
+
+    return {
+        "diagnostic_missing_branches": _full_like_events(
+            selected_leptons, missing_branches
+        ),
+        "has_selected_conversion_lepton": ak.any(is_conversion, axis=1),
+        "has_matched_conversion_photon": ak.any(matched, axis=1),
+        "has_decay_origin_conversion_photon": ak.any(decay, axis=1),
+        "has_production_origin_conversion_photon": ak.any(
+            production, axis=1
+        ),
+        "has_hadron_ancestor_conversion_photon": ak.any(hadron, axis=1),
+        "has_ambiguous_conversion_photon": ak.any(ambiguous, axis=1),
+        "has_no_photon_found_conversion_lepton": ak.any(no_photon, axis=1),
+        "has_invalid_match_conversion_lepton": ak.any(invalid, axis=1),
+        "n_selected_conversion_leptons": ak.sum(is_conversion, axis=1),
+        "n_matched_conversion_photons": ak.sum(matched, axis=1),
+        "n_decay_origin_conversion_photons": ak.sum(decay, axis=1),
+        "n_production_origin_conversion_photons": ak.sum(
+            production, axis=1
+        ),
+        "n_hadron_ancestor_conversion_photons": ak.sum(hadron, axis=1),
+        "n_ambiguous_conversion_photons": ak.sum(ambiguous, axis=1),
+        "n_no_photon_found_conversion_leptons": ak.sum(no_photon, axis=1),
+        "n_invalid_match_conversion_leptons": ak.sum(invalid, axis=1),
+    }
+
+
+def classify_selected_conversion_photon_history(
+    genparts,
+    selected_leptons,
+    max_depth=DEFAULT_MAX_ANCESTRY_DEPTH,
+):
+    """Classify gen-photon history for selected FO conversion-like leptons.
+
+    The result contains jagged lepton-level arrays and flat event-level
+    diagnostic reductions. It does not make or apply an event-selection
+    decision.
+    """
+
+    if max_depth < 1:
+        raise ValueError("max_depth must be at least 1")
+    if selected_leptons is None:
+        raise ValueError("selected_leptons is required")
+    if not _has_required_fields(genparts, selected_leptons):
+        return _empty_result(selected_leptons, missing_branches=True)
+
+    is_conversion, matched_photon_indices, recovery_malformed = (
+        _recover_photon_indices(genparts, selected_leptons, max_depth)
+    )
+    categories, first_copy_indices = _classify_photons(
+        genparts,
+        is_conversion,
+        matched_photon_indices,
+        recovery_malformed,
+        max_depth,
+    )
+    has_matched_photon = is_conversion & (matched_photon_indices >= 0)
+
+    return {
+        "lepton": {
+            "category": categories,
+            "matched_photon_index": matched_photon_indices,
+            "first_copy_photon_index": first_copy_indices,
+            "is_selected_conversion_lepton": is_conversion,
+            "has_matched_conversion_photon": has_matched_photon,
+        },
+        "event": _event_reduction(selected_leptons, categories),
+    }
+
+
+def attach_photon_history_diagnostics(events, selected_leptons, genparts=None):
+    """Attach diagnostic-only photon-history fields to leptons and events."""
+
+    result = classify_selected_conversion_photon_history(
+        genparts, selected_leptons
+    )
+    leptons = selected_leptons
+    for field, values in result["lepton"].items():
+        leptons = ak.with_field(
+            leptons, values, f"conversion_photon_history_{field}"
+        )
+    for field, values in result["event"].items():
+        events[f"{EVENT_DIAGNOSTIC_PREFIX}{field}"] = values
+    return leptons, result

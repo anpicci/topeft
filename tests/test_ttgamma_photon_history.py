@@ -1,0 +1,265 @@
+from pathlib import Path
+
+import awkward as ak
+
+from topeft.modules.ttgamma_photon_history import (
+    AMBIGUOUS,
+    DECAY_LEPTON,
+    DECAY_TOP_COPY_CONDITION,
+    DECAY_W_OR_B_WITH_TOP_ANCESTOR,
+    HADRON_ANCESTOR,
+    INVALID_MATCH,
+    NO_PHOTON_FOUND,
+    NOT_CONVERSION,
+    PRODUCTION_ISR,
+    PRODUCTION_OFFSHELL_TOP,
+    attach_photon_history_diagnostics,
+    classify_selected_conversion_photon_history,
+)
+
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
+def _genpart(pdg_id, mother=-1):
+    return {"pdgId": pdg_id, "genPartIdxMother": mother}
+
+
+def _lepton(gen_part_idx, gen_part_flav=22):
+    return {"genPartIdx": gen_part_idx, "genPartFlav": gen_part_flav}
+
+
+def _classify(genparts, leptons, max_depth=64):
+    return classify_selected_conversion_photon_history(
+        ak.Array(genparts),
+        ak.Array(leptons),
+        max_depth=max_depth,
+    )
+
+
+def _categories(result):
+    return ak.to_list(result["lepton"]["category"])
+
+
+def _event(result, field):
+    return ak.to_list(result["event"][field])
+
+
+def test_non_conversion_lepton_is_not_a_candidate():
+    result = _classify(
+        [[_genpart(22)]],
+        [[_lepton(0, gen_part_flav=1)]],
+    )
+
+    assert _categories(result) == [[NOT_CONVERSION]]
+    assert _event(result, "has_selected_conversion_lepton") == [False]
+    assert _event(result, "n_matched_conversion_photons") == [0]
+
+
+def test_direct_photon_match_and_decay_lepton_classification():
+    result = _classify(
+        [[_genpart(11), _genpart(22, 0)]],
+        [[_lepton(1)]],
+    )
+
+    assert _categories(result) == [[DECAY_LEPTON]]
+    assert ak.to_list(result["lepton"]["matched_photon_index"]) == [[1]]
+    assert ak.to_list(result["lepton"]["first_copy_photon_index"]) == [[1]]
+    assert _event(result, "has_decay_origin_conversion_photon") == [True]
+
+
+def test_recovers_photon_from_immediate_mother():
+    result = _classify(
+        [[_genpart(1), _genpart(22, 0), _genpart(11, 1)]],
+        [[_lepton(2)]],
+    )
+
+    assert _categories(result) == [[PRODUCTION_ISR]]
+    assert ak.to_list(result["lepton"]["matched_photon_index"]) == [[1]]
+
+
+def test_recovers_photon_from_bounded_ancestor_chain():
+    result = _classify(
+        [[
+            _genpart(1),
+            _genpart(22, 0),
+            _genpart(11, 1),
+            _genpart(11, 2),
+        ]],
+        [[_lepton(3)]],
+    )
+
+    assert _categories(result) == [[PRODUCTION_ISR]]
+    assert ak.to_list(result["lepton"]["matched_photon_index"]) == [[1]]
+
+
+def test_invalid_initial_match_and_no_photon_found_are_distinct():
+    result = _classify(
+        [[_genpart(11, -1)]],
+        [[_lepton(9), _lepton(0)]],
+    )
+
+    assert _categories(result) == [[INVALID_MATCH, NO_PHOTON_FOUND]]
+    assert _event(result, "has_invalid_match_conversion_lepton") == [True]
+    assert _event(result, "has_no_photon_found_conversion_lepton") == [True]
+
+
+def test_first_copy_normalization_walks_same_pdg_photon_mothers():
+    result = _classify(
+        [[_genpart(1), _genpart(22, 0), _genpart(22, 1)]],
+        [[_lepton(2)]],
+    )
+
+    assert _categories(result) == [[PRODUCTION_ISR]]
+    assert ak.to_list(result["lepton"]["matched_photon_index"]) == [[2]]
+    assert ak.to_list(result["lepton"]["first_copy_photon_index"]) == [[1]]
+
+
+def test_decay_w_or_b_requires_a_top_ancestor():
+    result = _classify(
+        [[_genpart(6), _genpart(24, 0), _genpart(22, 1)]],
+        [[_lepton(2)]],
+    )
+
+    assert _categories(result) == [[DECAY_W_OR_B_WITH_TOP_ANCESTOR]]
+
+
+def test_decay_top_copy_condition_uses_signed_top_copy():
+    result = _classify(
+        [[_genpart(-6), _genpart(-6, 0), _genpart(22, 1)]],
+        [[_lepton(2)]],
+    )
+
+    assert _categories(result) == [[DECAY_TOP_COPY_CONDITION]]
+
+
+def test_production_isr_and_offshell_top_categories():
+    result = _classify(
+        [[
+            _genpart(1),
+            _genpart(22, 0),
+            _genpart(21),
+            _genpart(6, 2),
+            _genpart(22, 3),
+        ]],
+        [[_lepton(1), _lepton(4)]],
+    )
+
+    assert _categories(result) == [[PRODUCTION_ISR, PRODUCTION_OFFSHELL_TOP]]
+    assert _event(result, "n_production_origin_conversion_photons") == [2]
+
+
+def test_gluon_mother_is_offshell_top_production_category():
+    result = _classify(
+        [[_genpart(21), _genpart(22, 0)]],
+        [[_lepton(1)]],
+    )
+
+    assert _categories(result) == [[PRODUCTION_OFFSHELL_TOP]]
+
+
+def test_hadron_ancestor_has_precedence_over_origin_category():
+    result = _classify(
+        [[_genpart(111), _genpart(22, 0)]],
+        [[_lepton(1)]],
+    )
+
+    assert _categories(result) == [[HADRON_ANCESTOR]]
+    assert _event(result, "has_hadron_ancestor_conversion_photon") == [True]
+    assert _event(result, "has_production_origin_conversion_photon") == [False]
+
+
+def test_no_mother_and_malformed_cycle_are_ambiguous():
+    result = _classify(
+        [
+            [_genpart(22, -1)],
+            [_genpart(22, 1), _genpart(22, 0)],
+        ],
+        [
+            [_lepton(0)],
+            [_lepton(0)],
+        ],
+        max_depth=4,
+    )
+
+    assert _categories(result) == [[AMBIGUOUS], [AMBIGUOUS]]
+    assert _event(result, "has_ambiguous_conversion_photon") == [True, True]
+
+
+def test_multiple_conversion_leptons_reduce_to_event_counts():
+    result = _classify(
+        [[
+            _genpart(11),
+            _genpart(22, 0),
+            _genpart(1),
+            _genpart(22, 2),
+        ]],
+        [[_lepton(1), _lepton(3), _lepton(0, gen_part_flav=1)]],
+    )
+
+    assert _categories(result) == [
+        [DECAY_LEPTON, PRODUCTION_ISR, NOT_CONVERSION]
+    ]
+    assert _event(result, "n_selected_conversion_leptons") == [2]
+    assert _event(result, "n_matched_conversion_photons") == [2]
+    assert _event(result, "n_decay_origin_conversion_photons") == [1]
+    assert _event(result, "n_production_origin_conversion_photons") == [1]
+
+
+def test_empty_event_is_supported():
+    result = _classify(
+        [[], [_genpart(1), _genpart(22, 0)]],
+        [[], [_lepton(1)]],
+    )
+
+    assert _categories(result) == [[], [PRODUCTION_ISR]]
+    assert _event(result, "n_selected_conversion_leptons") == [0, 1]
+
+
+def test_missing_gen_or_lepton_branches_returns_false_diagnostics():
+    leptons = ak.Array([[{"pt": 25.0}], []])
+    result = classify_selected_conversion_photon_history(None, leptons)
+
+    assert _categories(result) == [[NOT_CONVERSION], []]
+    assert _event(result, "diagnostic_missing_branches") == [True, True]
+    assert _event(result, "has_selected_conversion_lepton") == [False, False]
+    assert _event(result, "n_selected_conversion_leptons") == [0, 0]
+
+
+def test_attachment_path_handles_data_like_missing_gen_fields():
+    events = {}
+    leptons = ak.Array([[{"pt": 25.0}], []])
+
+    attached, result = attach_photon_history_diagnostics(
+        events,
+        leptons,
+        genparts=None,
+    )
+
+    assert "conversion_photon_history_category" in ak.fields(attached)
+    assert ak.to_list(
+        events["ttgamma_photon_history_diagnostic_missing_branches"]
+    ) == [True, True]
+    assert ak.to_list(
+        result["event"]["has_selected_conversion_lepton"]
+    ) == [False, False]
+
+
+def test_processor_attaches_diagnostics_without_event_selection_consuming_them():
+    processor_source = (
+        REPO_ROOT / "analysis" / "topeft_run2" / "analysis_processor.py"
+    ).read_text()
+    selection_source = (
+        REPO_ROOT / "topeft" / "modules" / "event_selection.py"
+    ).read_text()
+
+    attach_position = processor_source.index(
+        "attach_photon_history_diagnostics("
+    )
+    selection_position = processor_source.index(
+        "te_es.add1lMaskAndSFs(", attach_position
+    )
+
+    assert attach_position < selection_position
+    assert "ttgamma_photon_history_" not in selection_source
+    assert "conversion_photon_history_" not in selection_source
