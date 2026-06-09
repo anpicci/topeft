@@ -14,8 +14,10 @@ student autonomous enough to inspect pkl files and understand the current
 contracts before planning a future `scikit-hist` EFT-aware replacement.
 
 This guide does not change any physics behavior. It does not redesign HistEFT,
-the processor, `run_cr.sh`, `fullR3_run.sh`, `run_analysis.py`, plotting code,
-sample JSONs, or CFG files.
+the processor, `run_cr.sh`, `run_analysis.py`, plotting code, sample JSONs, or
+CFG files. The only runner ergonomics change documented here is an opt-in
+`fullR3_run.sh` input override for tutorial-scale dry-runs and single-sample
+tests; production defaults are unchanged.
 
 ## 2. Big picture: processor -> HistEFT/coffea output -> pkl -> plotting/inspection
 
@@ -266,7 +268,135 @@ faster loading:
 
 - `analysis/topeft_run2/make_cr_and_sr_plots.py:55-110`.
 
-## 6. How the analysis processor fills histograms
+## 6. EFT parametrization through the analysis pipeline
+
+This section follows the EFT information, not the generic event selection.
+
+### What the stored polynomial means
+
+For each event and each analysis bin, `HistEFT` stores the coefficients of a
+quadratic polynomial in the Wilson coefficients. Conceptually, the evaluated
+weight is:
+
+```text
+yield(WC) = c(sm,sm)
+          + sum_i c(wc_i,sm) * wc_i
+          + sum_i c(wc_i,wc_i) * wc_i * wc_i
+          + sum_{i>j} c(wc_i,wc_j) * wc_i * wc_j
+```
+
+The `sm*sm` term is the Standard Model contribution. Terms with one `sm` and
+one WC are linear EFT terms. Terms with two non-SM WCs are quadratic or cross
+terms. The actual coefficient order is lower triangular after prepending `SM`
+to the WC list: `SM*SM`, `wc0*SM`, `wc0*wc0`, `wc1*SM`, `wc1*wc0`,
+`wc1*wc1`, and so on. This ordering is implemented in
+`topcoffea/topcoffea/modules/quad_fit_tools.py:217-240` and the lower-triangle
+helpers in `topcoffea/topcoffea/modules/eft_helper.py:41-99`.
+
+`HistEFT.eval({})` evaluates that polynomial at all WCs equal to zero, so it
+returns the SM prediction. A nonzero point such as `eval({"ctG": 1.0})` uses the
+same stored coefficient arrays and substitutes the requested WC values.
+
+### Input metadata and WC names
+
+The Run 3 EFT signal sample JSON supplies the sample-level WC order:
+
+- `input_samples/sample_jsons/signal_samples/ND_SRskim2023/ttH_NDSkim_2023.json:1-40`:
+  `histAxisName`, `year`, and `WCnames`.
+- `input_samples/cfgs/NDSkim_2023_mc_signal_samples_sr.cfg:7-12`: the 2023 SR
+  signal CFG lists the same JSON.
+
+`run_analysis.py` loads JSONs directly or through CFG files:
+
+- `analysis/topeft_run2/run_analysis.py:1206-1260`: loads one JSON payload,
+  validates required keys, records `histAxisName`, and attaches the active
+  redirector prefix.
+- `analysis/topeft_run2/run_analysis.py:1279-1314`: parses CFG files, resolving
+  JSON paths relative to the CFG file when possible.
+- `analysis/topeft_run2/run_analysis.py:1349-1415`: applies the requested year
+  filter before processing.
+- `analysis/topeft_run2/run_analysis.py:1539-1556`: if `--wc-list` was not
+  supplied, aggregates the processor WC list from sample JSON `WCnames`.
+
+That aggregate WC list is passed into `AnalysisProcessor` at
+`analysis/topeft_run2/run_analysis.py:1575-1595`.
+
+### Event-level coefficient arrays
+
+The event files provide the per-event `EFTfitCoefficients` branch. The processor
+reads and remaps it:
+
+- `analysis/topeft_run2/analysis_processor.py:620-631`: reads
+  `events["EFTfitCoefficients"]`; if the sample WC list differs from the
+  processor WC list, calls `efth.remap_coeffs(...)`.
+- `topcoffea/topcoffea/modules/eft_helper.py:208-266`: `remap_coeffs` prepends
+  `SM`, maps old lower-triangle terms into the target WC order, drops omitted
+  WCs, and fills coefficients for missing target WCs with zero.
+
+The same event mask used for the dense histogram variable and event weight is
+also applied to the EFT coefficient array:
+
+- `analysis/topeft_run2/analysis_processor.py:1771-1817`: applies category,
+  njet, application-region, lepton-channel, and lepton-flavor masks.
+- `analysis/topeft_run2/analysis_processor.py:1866-1873`: applies any combined
+  axis finite-value mask to the weights and `eft_coeffs_cut`.
+
+### Filling HistEFT
+
+One-dimensional analysis histograms are instantiated as `HistEFT` with the
+processor WC list:
+
+- `analysis/topeft_run2/analysis_processor.py:245-292`: creates base and
+  `_sumw2` `HistEFT` objects and marks them as requiring EFT coefficients.
+
+The fill call passes categorical labels, dense values, nominal or shifted event
+weights, and `eft_coeff`:
+
+- `analysis/topeft_run2/analysis_processor.py:1900-1911`: base histogram fill
+  uses `weight=weights_flat` and `eft_coeff=eft_coeffs_cut`.
+- `analysis/topeft_run2/analysis_processor.py:1913-1924`: `_sumw2` companion
+  fills only for nominal systematics, uses `weight=np.square(weights_flat)`, and
+  passes the same `eft_coeffs_cut`.
+
+Inside `HistEFT.fill`, dense values and event weights are repeated once per
+quadratic term, the coefficient array is flattened, and the event weight is
+multiplied into every coefficient before filling the hidden `quadratic_term`
+axis. Source: `topcoffea/topcoffea/modules/histEFT.py:197-249`.
+
+If `eft_coeff` is absent or `None`, `HistEFT.fill` uses SM-only coefficients
+`[1, 0, 0, ...]` for every event. This behavior matters for non-EFT samples and
+for defensive inspection of partial outputs. Source:
+`topcoffea/topcoffea/modules/histEFT.py:214-224`.
+
+### Evaluation, systematics, and sumw2
+
+Systematics are not separate EFT polynomials. They are separate categorical
+labels on the same `systematic` axis, each filled with its own selected event
+weights and object variations:
+
+- `analysis/topeft_run2/analysis_processor.py:642-719`: systematic labels and
+  object/weight variation loops.
+- `analysis/topeft_run2/analysis_processor.py:1744-1760`: chooses the active
+  nominal or shifted weight.
+
+For a nominal SM yield, select `systematic="nominal"` and call `eval({})`. For a
+nonzero WC point, call `eval({"wc_name": value})` after the same category,
+process, and systematic selections. Unknown WC names raise a `LookupError` in
+`HistEFT._wc_for_eval`; source:
+`topcoffea/topcoffea/modules/histEFT.py:251-284`.
+
+The `_sumw2` companion histograms are filled with squared event weights and the
+same EFT coefficient arrays. They are a codebase convention for uncertainty
+handling. The plotter and datacard utilities expect base and `_sumw2` keys to
+remain compatible, so a future implementation must either preserve this
+convention or migrate the consumers at the same time:
+
+- `topeft/modules/datacard_tools.py:175-302`: validates base and `_sumw2`
+  companions during pkl loading/merging.
+- `analysis/topeft_run2/make_cr_and_sr_plots.py:6231-6277`: evaluates HistEFT
+  values at the SM point for plotting.
+
+## 7. How the analysis processor fills histograms
 
 ### Histogram declaration
 
@@ -365,12 +495,12 @@ The processor marks an event sample as Run 2 or Run 3 from the sample JSON
 
 The runner expands year aliases:
 
-- `analysis/topeft_run2/fullR3_run.sh:143-156`: `run3` expands to
+- `analysis/topeft_run2/fullR3_run.sh:165-178`: `run3` expands to
   `2022 2022EE 2023 2023BPix`.
-- `analysis/topeft_run2/fullR3_run.sh:190-270`: chooses CFG files by year and
+- `analysis/topeft_run2/fullR3_run.sh:226-316`: chooses CFG files by year and
   CR/SR mode.
 
-## 7. `run_cr.sh` as the source-of-truth runner
+## 8. `run_cr.sh` as the source-of-truth runner
 
 The source-of-truth student runner is:
 
@@ -397,21 +527,26 @@ tutorial, treat `run_cr.sh` as the source of the command shape, then use
 `fullR3_run.sh --dry-run` to source-validate the downstream command before any
 real processing.
 
-`fullR3_run.sh` provides the safe dry-run switch:
+`fullR3_run.sh` provides the safe dry-run switch and the tutorial input
+override:
 
-- `analysis/topeft_run2/fullR3_run.sh:4-21`: usage includes `--dry-run`,
-  `--cr`, `--sr`, and `--hist-vars`.
-- `analysis/topeft_run2/fullR3_run.sh:48-116`: parses command-line options.
-- `analysis/topeft_run2/fullR3_run.sh:129-135`: requires exactly one of CR or
+- `analysis/topeft_run2/fullR3_run.sh:4-25`: usage includes `--dry-run`,
+  `--cr`, `--sr`, `--hist-vars`, `--sample-json`, and `--cfg-override`.
+- `analysis/topeft_run2/fullR3_run.sh:53-138`: parses command-line options.
+- `analysis/topeft_run2/fullR3_run.sh:151-157`: requires exactly one of CR or
   SR mode.
-- `analysis/topeft_run2/fullR3_run.sh:176-185`: forms the output name as
+- `analysis/topeft_run2/fullR3_run.sh:193-206`: rejects conflicting or missing
+  tutorial input override paths.
+- `analysis/topeft_run2/fullR3_run.sh:213-222`: forms the output name as
   `<YEAR_LABEL>CRs_<TAG>` or `<YEAR_LABEL>SRs_<TAG>`.
-- `analysis/topeft_run2/fullR3_run.sh:282-289`: forwards `--hist-vars` as
+- `analysis/topeft_run2/fullR3_run.sh:271-322`: uses a single JSON/CFG override
+  when requested, otherwise uses the production CFG bundle.
+- `analysis/topeft_run2/fullR3_run.sh:331-338`: forwards `--hist-vars` as
   `--hist-list`; CR defaults to `cr`, SR defaults to `ana`.
-- `analysis/topeft_run2/fullR3_run.sh:325-337`: prints the `run_analysis.py`
+- `analysis/topeft_run2/fullR3_run.sh:373-385`: prints the `run_analysis.py`
   command and exits before running it when `--dry-run` is present.
 
-## 8. Quick-run tutorial
+## 9. Quick-run tutorial
 
 ### Choose a Run 3 EFT signal sample
 
@@ -430,42 +565,48 @@ Why this sample:
   `input_samples/sample_jsons/signal_samples/ND_SRskim2023/ttH_NDSkim_2023.json:1-40`.
 - It is an SR skim signal sample, matching the SR-oriented tutorial target.
 
-### Dry-run the source-derived SR command
+### Dry-run the one-sample SR command
 
 This is the safe command shape derived from the commented SR block in
-`run_cr.sh` and the option parser in `fullR3_run.sh`. It does not launch the
-processor because of `--dry-run`.
+`run_cr.sh` and the option parser in `fullR3_run.sh`. The explicit
+`--sample-json` option keeps the input to one Run 3 EFT signal JSON without
+editing production CFG files. It does not launch the processor because of
+`--dry-run`.
 
 ```bash
 cd /users/apiccine/work/correction-lib/topeft/analysis/topeft_run2
 
 ./fullR3_run.sh \
   -y 2023 \
-  -t CL007AA_SR_tutorial_ttH_2023_njets \
+  -t CL007AB_single_ttH_2023_njets \
   -s 1000 \
   --sr \
   --hist-vars njets \
+  --sample-json ../../input_samples/sample_jsons/signal_samples/ND_SRskim2023/ttH_NDSkim_2023.json \
   --dry-run \
   --category-groups 2l \
   --all-analysis \
-  -p /tmp/cl007aa_histeft_demo \
+  -p /tmp/cl007ab_histeft_demo \
   -x futures \
   --nworkers 1 \
   --nchunks 1 \
-  --pretend
+  --pretend \
+  --np-postprocess=skip \
+  --prefix root://cmsxrootd.crc.nd.edu/
 ```
 
 Validated dry-run output in this workspace:
 
 ```text
-OUT_NAME: 2023SRs_CL007AA_SR_tutorial_ttH_2023_njets
+OUT_NAME: 2023SRs_CL007AB_single_ttH_2023_njets
 Resolved years: 2023
-Resolved CFGS: ../../input_samples/cfgs/NDSkim_2023_background_samples.cfg,../../input_samples/cfgs/NDSkim_2023_data_samples.cfg,../../input_samples/cfgs/NDSkim_2023_mc_signal_samples_sr.cfg
+Input override: sample JSON: ../../input_samples/sample_jsons/signal_samples/ND_SRskim2023/ttH_NDSkim_2023.json
+Resolved CFGS: ../../input_samples/sample_jsons/signal_samples/ND_SRskim2023/ttH_NDSkim_2023.json
 Resolved region: SR
 Resolved histogram list: njets
 
 Running the following command:
-python run_analysis.py ../../input_samples/cfgs/NDSkim_2023_background_samples.cfg,../../input_samples/cfgs/NDSkim_2023_data_samples.cfg,../../input_samples/cfgs/NDSkim_2023_mc_signal_samples_sr.cfg --years 2023 -p /groups/klannon/apiccine/ --hist-list njets --skip-cr --do-systs --do-np -o 2023SRs_CL007AA_SR_tutorial_ttH_2023_njets -s 1000 --category-groups 2l --all-analysis -p /tmp/cl007aa_histeft_demo -x futures --nworkers 1 --nchunks 1 --pretend
+python run_analysis.py ../../input_samples/sample_jsons/signal_samples/ND_SRskim2023/ttH_NDSkim_2023.json --years 2023 -p /groups/klannon/apiccine/ --hist-list njets --skip-cr --do-systs --do-np -o 2023SRs_CL007AB_single_ttH_2023_njets -s 1000 --category-groups 2l --all-analysis -p /tmp/cl007ab_histeft_demo -x futures --nworkers 1 --nchunks 1 --pretend --np-postprocess=skip --prefix root://cmsxrootd.crc.nd.edu/
 ```
 
 Option notes:
@@ -473,13 +614,19 @@ Option notes:
 - `-y 2023`: one Run 3 year, not the full `run3` alias.
 - `--sr`: selects SR mode and makes `fullR3_run.sh` choose SR CFG files.
 - `--hist-vars njets`: asks for one small histogram variable.
+- `--sample-json .../ttH_NDSkim_2023.json`: overrides the default SR CFG bundle
+  with one EFT signal JSON. This is the tutorial-only one-sample path.
 - `--category-groups 2l`: limits category construction to the 2l SR group.
 - `--dry-run`: prints the downstream command and exits before running Python.
 - `-x futures --nworkers 1 --nchunks 1 --pretend`: bounded internal
   `run_analysis.py` options, included in the printed command. `--pretend`
   would stop `run_analysis.py` after input discovery if the dry-run guard were
   removed.
-- `-p /tmp/cl007aa_histeft_demo`: a tutorial output path. In the dry-run output
+- `--np-postprocess=skip`: prevents the SR default `--do-np` from trying to run
+  nonprompt post-processing in a one-signal-sample tutorial.
+- `--prefix root://cmsxrootd.crc.nd.edu/`: supplies the redirector that the
+  source CFG normally provides before listing this sample JSON.
+- `-p /tmp/cl007ab_histeft_demo`: a tutorial output path. In the dry-run output
   this appears after the default group output path, so argparse should use the
   later value if the command is actually run.
 
@@ -487,23 +634,46 @@ Expected pkl path for an authorized real run without `--dry-run` and without
 `--pretend`:
 
 ```text
-/tmp/cl007aa_histeft_demo/2023SRs_CL007AA_SR_tutorial_ttH_2023_njets.pkl.gz
+/tmp/cl007ab_histeft_demo/2023SRs_CL007AB_single_ttH_2023_njets.pkl.gz
 ```
 
-This path follows `fullR3_run.sh:176-185` for the output name and
+This path follows `fullR3_run.sh:213-222` for the output name and
 `run_analysis.py:1017-1019` plus `run_analysis.py:1715-1765` for the pkl write.
 
-### Important limitation: one-sample-only running
+### Prove the old CFG-bundle default still resolves
 
-The source-of-truth runner does not currently expose a public option to run
-only one JSON from the SR CFG. The dry-run command above uses the 2023 SR CFG
-set, and the chosen `ttH_NDSkim_2023.json` is one of the EFT signal JSONs in
-that CFG. A truly one-sample run would require either a temporary one-entry CFG
-or an internal direct `run_analysis.py` call. That direct path is not the
-primary student workflow; treat it as an advanced path derived from the
-dry-run output and use it only after authorization.
+When changing runner options, first dry-run without `--sample-json` to confirm
+the production CFG bundle still resolves:
 
-### If you temporarily edit `run_cr.sh` for a tutorial
+```bash
+cd /users/apiccine/work/correction-lib/topeft/analysis/topeft_run2
+
+./fullR3_run.sh \
+  -y 2023 \
+  -t CL007AB_default_dryrun \
+  -s 1000 \
+  --sr \
+  --hist-vars njets \
+  --dry-run \
+  --category-groups 2l \
+  --all-analysis \
+  -p /tmp/cl007ab_default \
+  -x futures \
+  --nworkers 1 \
+  --nchunks 1 \
+  --pretend \
+  --np-postprocess=skip
+```
+
+This dry-run should print the standard 2023 SR CFG bundle:
+
+```text
+../../input_samples/cfgs/NDSkim_2023_background_samples.cfg,
+../../input_samples/cfgs/NDSkim_2023_data_samples.cfg,
+../../input_samples/cfgs/NDSkim_2023_mc_signal_samples_sr.cfg
+```
+
+### If you temporarily edit `run_cr.sh` for a broader tutorial
 
 Do not commit such edits unless the analysis conveners request them. The active
 file currently runs CR blocks. For an SR tutorial edit, make a temporary local
@@ -515,7 +685,7 @@ change modeled on the commented SR scaffold around
 - pkl_base_tag="CR_muonres"
 - vars=(invmass tau0Tpt l0ptcorr)
 + years=(2023)
-+ pkl_base_tag="CL007AA_SR_tutorial_ttH"
++ pkl_base_tag="CL007AB_SR_tutorial_ttH"
 + vars=(njets)
 ```
 
@@ -523,7 +693,7 @@ Then use the SR scaffold, add `--dry-run` first, and keep the output path in a
 scratch location. The point is to prove command construction before launching
 any real processing.
 
-## 9. How `make_cr_and_sr_plots.py` consumes pkl files
+## 10. How `make_cr_and_sr_plots.py` consumes pkl files
 
 The plotting script accepts one or more pkl files and merges them before
 plotting:
@@ -584,29 +754,32 @@ keys, base and `_sumw2` pairing, categorical axes named `process`, `channel`,
 `systematic`, and `appl`, and explicit HistEFT evaluation before using values
 as physics yields.
 
-## 10. Manual pkl inspection
+## 11. Manual pkl inspection
 
 ### Use the helper script
+
+Before running these commands, activate the analysis environment you normally
+use for `topeft` and `topcoffea`. Codex validation uses a workspace wrapper in
+reports, but students should not copy that machinery into ordinary inspection
+commands.
 
 The helper is read-only:
 
 ```bash
-WRAP=/users/apiccine/work/correction-lib/codex-run.sh
-PYTHON_ENV=/users/apiccine/work/miniconda3/envs/clib-env/bin/python
-
-$WRAP /bin/bash --noprofile --norc -c 'cd /users/apiccine/work/correction-lib/topeft && "$PYTHON_ENV" analysis/topeft_run2/inspect_histeft_pkl.py --help'
+cd /users/apiccine/work/correction-lib/topeft
+python analysis/topeft_run2/inspect_histeft_pkl.py --help
 ```
 
 Inspect a pkl:
 
 ```bash
-$WRAP /bin/bash --noprofile --norc -c 'cd /users/apiccine/work/correction-lib/topeft && "$PYTHON_ENV" analysis/topeft_run2/inspect_histeft_pkl.py /path/to/output.pkl.gz --max-labels 10'
+python analysis/topeft_run2/inspect_histeft_pkl.py /path/to/output.pkl.gz --max-labels 10
 ```
 
 Inspect one histogram and ask for a simple nominal total when discoverable:
 
 ```bash
-$WRAP /bin/bash --noprofile --norc -c 'cd /users/apiccine/work/correction-lib/topeft && "$PYTHON_ENV" analysis/topeft_run2/inspect_histeft_pkl.py /path/to/output.pkl.gz --hist njets --max-labels 10 --yield-summary'
+python analysis/topeft_run2/inspect_histeft_pkl.py /path/to/output.pkl.gz --hist njets --max-labels 10 --yield-summary
 ```
 
 The helper prints:
@@ -627,34 +800,31 @@ Use the same analysis environment when opening analysis pkls. A pkl may require
 List top-level keys:
 
 ```bash
-WRAP=/users/apiccine/work/correction-lib/codex-run.sh
-PYTHON_ENV=/users/apiccine/work/miniconda3/envs/clib-env/bin/python
-
-$WRAP /bin/bash --noprofile --norc -c 'cd /users/apiccine/work/correction-lib/topeft && "$PYTHON_ENV" -c "import gzip,pickle; p=\"/path/to/output.pkl.gz\"; f=gzip.open(p,\"rb\") if p.endswith(\".gz\") else open(p,\"rb\"); obj=pickle.load(f); print(type(obj)); print(list(obj)[:20])"'
+python -c 'import gzip,pickle; p="/path/to/output.pkl.gz"; f=gzip.open(p,"rb") if p.endswith(".gz") else open(p,"rb"); obj=pickle.load(f); print(type(obj)); print(list(obj)[:20])'
 ```
 
 List axes for one histogram:
 
 ```bash
-$WRAP /bin/bash --noprofile --norc -c 'cd /users/apiccine/work/correction-lib/topeft && "$PYTHON_ENV" -c "import gzip,pickle; p=\"/path/to/output.pkl.gz\"; obj=pickle.load(gzip.open(p,\"rb\")); h=obj[\"njets\"]; print(type(h)); print([ax.name for ax in h.axes])"'
+python -c 'import gzip,pickle; p="/path/to/output.pkl.gz"; obj=pickle.load(gzip.open(p,"rb")); h=obj["njets"]; print(type(h)); print([ax.name for ax in h.axes])'
 ```
 
 List labels on common categorical axes:
 
 ```bash
-$WRAP /bin/bash --noprofile --norc -c 'cd /users/apiccine/work/correction-lib/topeft && "$PYTHON_ENV" -c "import gzip,pickle; p=\"/path/to/output.pkl.gz\"; h=pickle.load(gzip.open(p,\"rb\"))[\"njets\"]; print(list(h.axes[\"process\"])[:20]); print(list(h.axes[\"channel\"])[:20]); print(list(h.axes[\"systematic\"])[:20])"'
+python -c 'import gzip,pickle; p="/path/to/output.pkl.gz"; h=pickle.load(gzip.open(p,"rb"))["njets"]; print(list(h.axes["process"])[:20]); print(list(h.axes["channel"])[:20]); print(list(h.axes["systematic"])[:20])'
 ```
 
 Evaluate a HistEFT at the SM point and sum all returned blocks:
 
 ```bash
-$WRAP /bin/bash --noprofile --norc -c 'cd /users/apiccine/work/correction-lib/topeft && "$PYTHON_ENV" -c "import gzip,pickle,numpy as np; p=\"/path/to/output.pkl.gz\"; h=pickle.load(gzip.open(p,\"rb\"))[\"njets\"]; vals=h.integrate(\"systematic\",\"nominal\").eval({}); print(sum(float(np.nansum(v)) for v in vals.values()))"'
+python -c 'import gzip,pickle,numpy as np; p="/path/to/output.pkl.gz"; h=pickle.load(gzip.open(p,"rb"))["njets"]; vals=h.integrate("systematic","nominal").eval({}); print(sum(float(np.nansum(v)) for v in vals.values()))'
 ```
 
 Compare nominal to one systematic label:
 
 ```bash
-$WRAP /bin/bash --noprofile --norc -c 'cd /users/apiccine/work/correction-lib/topeft && "$PYTHON_ENV" -c "import gzip,pickle,numpy as np; p=\"/path/to/output.pkl.gz\"; h=pickle.load(gzip.open(p,\"rb\"))[\"njets\"]; nom=h.integrate(\"systematic\",\"nominal\").eval({}); up=h.integrate(\"systematic\",\"JESUp\").eval({}); print(sum(float(np.nansum(up[k]-nom.get(k,0))) for k in up))"'
+python -c 'import gzip,pickle,numpy as np; p="/path/to/output.pkl.gz"; h=pickle.load(gzip.open(p,"rb"))["njets"]; nom=h.integrate("systematic","nominal").eval({}); up=h.integrate("systematic","JESUp").eval({}); print(sum(float(np.nansum(up[k]-nom.get(k,0))) for k in up))'
 ```
 
 The last snippet assumes `JESUp` exists. Always list systematic labels first.
@@ -665,7 +835,7 @@ For a quick manual table, select one histogram, integrate one systematic label,
 then loop over process labels:
 
 ```bash
-$WRAP /bin/bash --noprofile --norc -c 'cd /users/apiccine/work/correction-lib/topeft && "$PYTHON_ENV" -c "import gzip,pickle,numpy as np; p=\"/path/to/output.pkl.gz\"; h=pickle.load(gzip.open(p,\"rb\"))[\"njets\"].integrate(\"systematic\",\"nominal\"); procs=list(h.axes[\"process\"]); print(\"process yield\"); [print(proc, sum(float(np.nansum(v)) for v in h.integrate(\"process\",proc).eval({}).values())) for proc in procs[:20]]"'
+python -c 'import gzip,pickle,numpy as np; p="/path/to/output.pkl.gz"; h=pickle.load(gzip.open(p,"rb"))["njets"].integrate("systematic","nominal"); procs=list(h.axes["process"]); print("process yield"); [print(proc, sum(float(np.nansum(v)) for v in h.integrate("process",proc).eval({}).values())) for proc in procs[:20]]'
 ```
 
 This is deliberately simple. It does not group processes, handle overflow
@@ -677,18 +847,18 @@ a first sanity check, not as a publication number.
 For a `HistEFT`, inspect WC names:
 
 ```bash
-$WRAP /bin/bash --noprofile --norc -c 'cd /users/apiccine/work/correction-lib/topeft && "$PYTHON_ENV" -c "import gzip,pickle; p=\"/path/to/output.pkl.gz\"; h=pickle.load(gzip.open(p,\"rb\"))[\"njets\"]; print(getattr(h,\"wc_names\", getattr(h,\"_wc_names\", None)))"'
+python -c 'import gzip,pickle; p="/path/to/output.pkl.gz"; h=pickle.load(gzip.open(p,"rb"))["njets"]; print(getattr(h,"wc_names", getattr(h,"_wc_names", None)))'
 ```
 
 Evaluate a non-SM point if the WC exists:
 
 ```bash
-$WRAP /bin/bash --noprofile --norc -c 'cd /users/apiccine/work/correction-lib/topeft && "$PYTHON_ENV" -c "import gzip,pickle,numpy as np; p=\"/path/to/output.pkl.gz\"; h=pickle.load(gzip.open(p,\"rb\"))[\"njets\"].integrate(\"systematic\",\"nominal\"); vals=h.eval({\"ctG\": 1.0}); print(sum(float(np.nansum(v)) for v in vals.values()))"'
+python -c 'import gzip,pickle,numpy as np; p="/path/to/output.pkl.gz"; h=pickle.load(gzip.open(p,"rb"))["njets"].integrate("systematic","nominal"); vals=h.eval({"ctG": 1.0}); print(sum(float(np.nansum(v)) for v in vals.values()))'
 ```
 
 If this raises a `LookupError`, the histogram WC list does not include that WC.
 
-## 11. Debugging checklist
+## 12. Debugging checklist
 
 Missing pkl:
 
@@ -762,7 +932,261 @@ Pkl too large to inspect naively:
 - For many pkls, use the plotter merge-only path or a small custom inspector
   before loading every histogram into plotting.
 
-## 12. Mapping to a future scikit-hist EFT-aware replacement
+## 13. Detailed HistEFT API reference
+
+This section documents the public and practically relevant `HistEFT` API as it
+exists now. It is source-grounded in
+`topcoffea/topcoffea/modules/histEFT.py` and inherited behavior from
+`topcoffea/topcoffea/modules/sparseHist.py`.
+
+### Constructor and core attributes
+
+`HistEFT(*args, wc_names=None, **kwargs)`
+
+Source: `topcoffea/topcoffea/modules/histEFT.py:74-126`.
+
+- `*args`: histogram axes. All axes must be named. Categorical axes should come
+  first and use growth categories. The last user axis must be the one physics
+  dense axis and must be `Regular`, `Variable`, or `Integer`.
+- `wc_names`: list of Wilson coefficient names, without `SM`. If omitted or
+  falsey, the histogram has no non-SM WCs and stores only the SM coefficient
+  term.
+- `storage`: accepted through `kwargs`, but only `"Double"` is supported. If not
+  supplied, the constructor sets it to `"Double"`.
+- `rebin`: accepted in `kwargs` but rejected when true; current HistEFT does not
+  implement rebinning.
+- `quadratic_term`: if the last supplied axis is named `quadratic_term`, HistEFT
+  uses it as the coefficient axis. Otherwise it creates a hidden
+  `hist.axis.Integer(start=0, stop=n_quad_terms, name="quadratic_term")`.
+
+Important attributes:
+
+- `_wc_names`: ordered mapping from WC name to WC index.
+- `_wc_count`: number of non-SM WCs.
+- `_quad_count`: number of stored quadratic terms, from
+  `efth.n_quad_terms(n_wc)` at `eft_helper.py:41-46`.
+- `_coeff_axis`: hidden `quadratic_term` axis.
+- `_dense_axis`: user physics dense axis.
+- `_dense_hists`: inherited sparse storage dictionary mapping categorical keys
+  to dense `hist.Hist` blocks.
+- `_init_args_eft`: stores `wc_names` for copy/pickle reconstruction.
+
+Reserved axis names are `quadratic_term`, `sample`, `weight`, and `thread`.
+These are rejected at construction time.
+
+### WC metadata helpers
+
+`wc_names`
+
+Source: `histEFT.py:133-135`.
+
+Returns a list of WC names in the histogram order. The current implementation
+builds this from `_wc_names`; students should treat the returned order as the
+evaluation order for array-style WC values.
+
+`index_of_wc(wc)`
+
+Source: `histEFT.py:137-138`.
+
+Returns the integer index of one WC in `_wc_names`. Unknown names propagate a
+`KeyError`. This is mainly a helper for `quadratic_term_index`.
+
+`quadratic_term_index(*wcs)`
+
+Source: `histEFT.py:140-163`.
+
+Takes exactly two coefficient names and returns the lower-triangle coefficient
+index. `"sm"` maps to 0; non-SM names map to `index_of_wc(name) + 1`. The method
+orders the two factors internally, so `("sm", "ctG")` and `("ctG", "sm")`
+resolve to the same term. This method is public enough that a replacement should
+reproduce it unless all downstream coefficient-axis inspection is migrated.
+
+### Fill API
+
+`fill(eft_coeff=None, **values)`
+
+Source: `histEFT.py:197-249`.
+
+Expected keyword payload in this analysis:
+
+- scalar categorical labels: `process`, `channel`, `systematic`, and `appl`;
+- one dense variable array whose keyword is the physics variable name;
+- `weight`: one event weight per selected event;
+- `eft_coeff`: array shaped like `(n_events, n_quad_terms)`.
+
+If `eft_coeff` is `None`, HistEFT broadcasts SM-only coefficients
+`[1, 0, 0, ...]` for every event. During filling, the dense variable and event
+weight are repeated once per quadratic term, the coefficient array is flattened,
+and `weight` is multiplied into every coefficient. Then the inherited
+`SparseHist.fill` receives the repeated dense values, the repeated
+`quadratic_term` indices, scalar categories, and the flattened weighted
+coefficients as the dense histogram weight.
+
+The method annotation says it returns `Self`, but the implementation delegates
+to `super().fill(...)` without returning that result. Current processor code
+does not rely on a return value. A drop-in replacement should either preserve
+this benign behavior or audit all callers before changing it.
+
+Internal helpers used by `fill`:
+
+- `_fill_flatten(a, n_events)`, source `histEFT.py:172-188`: accepts scalar-like,
+  1D, or `(n_events, 1)` arrays and repeats event values over quadratic terms.
+  It raises `ValueError` for incompatible dimensions.
+- `_fill_indices(n_events)`, source `histEFT.py:190-195`: creates repeated
+  `quadratic_term` indices for all events.
+
+### Evaluation API
+
+`eval(values)`
+
+Source: `histEFT.py:271-284`.
+
+Evaluates every populated categorical block at one WC point and returns a
+dictionary from sparse categorical key tuples to NumPy arrays over the user
+dense axis, including flow bins. Accepted `values` are:
+
+- `None`: all WCs zero;
+- mapping such as `{"ctG": 1.0}`: unspecified WCs are zero;
+- array-like: interpreted in `wc_names` order.
+
+Internally, `eval` calls `self.view(flow=True, as_dict=True)` and passes the
+stored coefficient arrays, excluding the coefficient-axis flow columns with
+`hvs[..., 1:-1]`, to `efth.calc_eft_weights(...)`.
+
+`_wc_for_eval(values)`
+
+Source: `histEFT.py:251-269`.
+
+Normalizes mapping, array, or `None` inputs into a WC-value array. Unknown WC
+names raise `LookupError` with the known coefficient list. Plotting and manual
+inspection rely on this error being clear.
+
+`as_hist(values)`
+
+Source: `histEFT.py:286-305`.
+
+Evaluates the histogram and materializes a regular `hist.Hist` without the
+hidden `quadratic_term` axis. It is useful for plotting or for APIs that need a
+normal histogram after choosing one WC point.
+
+`calc_eft_weights(q_coeffs, wc_values)`
+
+Source: `histEFT.py:358-388`.
+
+Local method equivalent in spirit to `eft_helper.calc_eft_weights`, but adjusted
+for coefficient-axis flow columns. The comment says it should move to
+`eft_helper` once HistEFT is replaced. Current `eval` uses
+`efth.calc_eft_weights(...)`, so treat this method as a compatibility/internal
+helper unless a caller is found.
+
+### Values, variances, and views
+
+`HistEFT` does not define its own `variances(...)` method. The current analysis
+uses base histograms plus `_sumw2` companion histograms for uncertainty
+handling. A manual inspector should evaluate the base HistEFT for yields and use
+the matching `_sumw2` key when it needs the squared-weight convention used by
+the plotter/datacard code.
+
+Inherited from `SparseHist`:
+
+- `values(flow=False)`, source `sparseHist.py:327-350`: recursively returns dense
+  histogram `.values(...)` arrays over populated categorical keys as an awkward
+  structure. For raw HistEFT, this exposes stored coefficient-axis content, not
+  evaluated physics yields.
+- `counts(flow=False)`, source `sparseHist.py:352-353`: delegates to dense
+  histogram counts.
+- `view(flow=False, as_dict=True)`, source `sparseHist.py:362-371`: returns a
+  dictionary from categorical key tuple to dense histogram view. HistEFT
+  evaluation depends on `as_dict=True`.
+
+### Slicing, integration, grouping, and category management
+
+Inherited practical API from `SparseHist`:
+
+- `__getitem__(key)`, source `sparseHist.py:299-325`: supports mapping-style
+  selection such as `h[{"systematic": "nominal"}]`. Depending on what axes
+  collapse, it returns a new sparse histogram, a dense `hist.Hist`, or a scalar.
+- `__setitem__(key, value)`, source `sparseHist.py:273-297`: assigns into one
+  categorical key/dense selection. Plotting code can rely on assignment when
+  constructing derived histograms.
+- `integrate(name, value=None)`, source `sparseHist.py:373-376`: implemented as
+  slicing; `value=None` means sum over that axis.
+- `group(axis_name, groups)`, source `sparseHist.py:378-406`: creates a new
+  sparse histogram where selected categorical bins are merged into named groups.
+  Process grouping in plotting depends on this behavior.
+- `remove(axis_name, bins)` and `prune(axis, to_keep)`, source
+  `sparseHist.py:408-433`: remove categorical labels or keep only a subset.
+- `categorical_axes`, `dense_axes`, and `categorical_keys`, source
+  `sparseHist.py:111-122`: expose sparse/dense axis metadata and populated
+  categorical keys.
+
+### Copy, identity, arithmetic, and merging
+
+Inherited from `SparseHist`:
+
+- `empty_from_axes(...)`, source `histEFT.py:128-131` and `sparseHist.py:60-70`:
+  creates an empty histogram of the same class, preserving `wc_names`.
+- `__copy__` and `__deepcopy__`, source `sparseHist.py:75-83`: copy empty or
+  populated sparse histograms.
+- `reset()` and `empty()`, source `sparseHist.py:355-443`: reset dense blocks and
+  test whether all dense views are zero.
+- `scale(factor)`, source `sparseHist.py:435-437`: in-place scalar
+  multiplication and returns `self`.
+- arithmetic methods, source `sparseHist.py:445-522`: in-place and out-of-place
+  addition/multiplication/division delegate to dense histograms. SparseHist merge
+  requires categorical axis names and order to match.
+- `identity()`, source `sparseHist.py:524-529`: deprecated old-coffea
+  compatibility helper returning an empty copy.
+
+These methods are important for coffea accumulation, pkl merging, and plotting.
+A drop-in replacement must support compatible addition and in-place addition at
+minimum.
+
+### Pickle compatibility
+
+`HistEFT.__reduce__`
+
+Source: `histEFT.py:307-319`.
+
+Pickle state contains categorical axes, the user dense axis, initialization
+arguments including `wc_names`, and `_dense_hists`. `_read_from_reduce` delegates
+to `SparseHist` reconstruction at `histEFT.py:354-356` and
+`sparseHist.py:477-483`.
+
+The plotting script installs a compatibility fast loader for `SparseHist`
+reduce state:
+
+- `analysis/topeft_run2/make_cr_and_sr_plots.py:55-110`.
+
+Future replacements need a documented serialization story: either old HistEFT
+pkls remain readable, or a converter and a compatibility boundary must be
+provided before production outputs are migrated.
+
+### Public API versus implementation detail
+
+Treat these as current public or practically public:
+
+- constructor call pattern;
+- `wc_names`;
+- `quadratic_term_index`;
+- `fill(eft_coeff=..., weight=..., <axis names>=...)`;
+- `eval`, `as_hist`;
+- `.axes`, `.integrate`, `.group`, `.remove`, `.prune`, `.values`, `.view`;
+- arithmetic/add/merge behavior;
+- pickle load/save compatibility.
+
+Treat these as implementation details unless a caller is found:
+
+- `_wc_names`, `_quad_count`, `_coeff_axis`, `_dense_hists`;
+- `_fill_flatten`, `_fill_indices`, `_wc_for_eval`;
+- the local `HistEFT.calc_eft_weights` method;
+- exact internal awkward layout from `SparseHist.values`.
+
+The future replacement can hide or redesign the internal pieces only if the
+processor, plotter, yield tools, datacard tools, and pkl compatibility plan are
+updated together.
+
+## 14. Mapping to a future scikit-hist EFT-aware replacement
 
 A future `scikit-hist` EFT-aware histogram class must reproduce current
 behavior before it can replace `HistEFT` safely.
@@ -772,8 +1196,12 @@ Core histogram behavior:
 - accept named categorical axes and dense axes;
 - preserve sparse categorical behavior or provide an equivalent memory-safe
   representation;
+- preserve the current constructor call shape from `analysis_processor.py:245-292`
+  or provide a small adapter with identical behavior;
 - support fill calls with scalar categorical labels, dense arrays, event
   weights, and optional EFT coefficient arrays;
+- preserve the current "one user dense axis plus hidden EFT coefficient axis"
+  semantics unless the processor fill path is migrated at the same time;
 - support addition and in-place addition for merging pkl outputs;
 - support pruning, removal, grouping, slicing, projection, and integration
   patterns used by the processor and plotter.
@@ -805,7 +1233,10 @@ EFT coefficient storage and evaluation:
 - reproduce `fill(eft_coeff=...)` semantics from `histEFT.py:197-249`,
   including SM-only default coefficients for non-EFT samples;
 - reproduce `eval({})`, `eval({"wc": value})`, and unknown-WC error behavior;
-- support coefficient remapping or define a stricter common WC-list contract.
+- support coefficient remapping or define a stricter common WC-list contract;
+- keep coefficient evaluation independent of process/channel/systematic slicing,
+  because the current plotter first slices/group/integrates and then evaluates
+  the selected HistEFT object at the SM point.
 
 Systematic variation handling:
 
@@ -820,6 +1251,9 @@ Processor API assumptions:
   calls `HistEFT(...)`;
 - `fill` accepts `process=`, `channel=`, `systematic=`, `appl=`, dense variable
   keyword, `weight=`, and `eft_coeff=`;
+- `fill` tolerates `eft_coeff=None` by filling SM-only coefficients;
+- event weights multiply EFT coefficients during fill, not during later
+  evaluation;
 - histograms are pickleable and mergeable after coffea execution;
 - 2D non-EFT histograms can remain separate if the first replacement only
   targets 1D EFT-aware histograms.
@@ -831,7 +1265,10 @@ Plotting API assumptions:
   `.prune(...)`, `.values(...)`, and HistEFT-like `.eval(...)`;
 - process grouping and channel integration work with existing labels;
 - `load_and_merge_histogram_pkls` compatibility checks can validate axes,
-  dense binning, and WC metadata.
+  dense binning, and WC metadata;
+- `eval({})` returns a dictionary of arrays over dense bins, including a
+  flow-bin policy compatible with `_values_with_flow_or_overflow` in
+  `make_cr_and_sr_plots.py:6231-6277`.
 
 Serialization compatibility:
 
@@ -848,7 +1285,10 @@ What can be simplified if plotting migrates too:
 - sumw2 handling can be made explicit as variance storage instead of separate
   top-level keys;
 - WC evaluation can return regular `hist` or `scikit-hist` objects with a
-  documented flow-bin convention.
+  documented flow-bin convention;
+- old pkl support can be isolated in a converter rather than in the new runtime
+  class, if the migration plan includes converting or regenerating existing
+  outputs.
 
 Tests to write before swapping implementation:
 
@@ -862,7 +1302,7 @@ Tests to write before swapping implementation:
 - verify failure messages for unknown WCs, incompatible axes, and missing
   sumw2 companions.
 
-## 13. Glossary
+## 15. Glossary
 
 `HistEFT`
 : EFT-aware histogram class implemented in `topcoffea`. Stores quadratic EFT
@@ -903,7 +1343,7 @@ Tests to write before swapping implementation:
 `CFG`
 : Text file listing sample JSON files and optional redirector prefixes.
 
-## 14. Source map: relevant files and line ranges
+## 16. Source map: relevant files and line ranges
 
 HistEFT and sparse histogram implementation:
 
@@ -911,19 +1351,32 @@ HistEFT and sparse histogram implementation:
 - `topcoffea/topcoffea/modules/histEFT.py:74-126`: constructor restrictions,
   WC metadata, and `quadratic_term` axis.
 - `topcoffea/topcoffea/modules/histEFT.py:140-163`: quadratic-term indexing.
+- `topcoffea/topcoffea/modules/histEFT.py:172-195`: fill-shape helpers.
 - `topcoffea/topcoffea/modules/histEFT.py:197-249`: EFT-aware fill.
+- `topcoffea/topcoffea/modules/histEFT.py:251-269`: WC-value normalization.
 - `topcoffea/topcoffea/modules/histEFT.py:271-305`: `eval` and `as_hist`.
 - `topcoffea/topcoffea/modules/histEFT.py:307-319`: pickle reduce state.
+- `topcoffea/topcoffea/modules/histEFT.py:321-388`: scaling helper and local
+  EFT-weight evaluator.
 - `topcoffea/topcoffea/modules/sparseHist.py:15-39`: sparse/dense axis model.
 - `topcoffea/topcoffea/modules/sparseHist.py:124-139`: fill bookkeeping.
-- `topcoffea/topcoffea/modules/sparseHist.py:299-325`: slicing behavior.
+- `topcoffea/topcoffea/modules/sparseHist.py:273-325`: assignment and slicing
+  behavior.
 - `topcoffea/topcoffea/modules/sparseHist.py:349-406`: values, view,
   integrate, and group.
+- `topcoffea/topcoffea/modules/sparseHist.py:408-529`: remove, prune, scale,
+  arithmetic, pickle reconstruction, and identity.
 
 EFT helpers and pkl helpers:
 
 - `topcoffea/topcoffea/modules/quad_fit_tools.py:203-240`: coefficient
   extraction and ordering.
+- `topcoffea/topcoffea/modules/eft_helper.py:9-46`: EFT polynomial evaluation
+  and quadratic-term count.
+- `topcoffea/topcoffea/modules/eft_helper.py:80-99`: lower-triangle quadratic
+  term/factor mapping.
+- `topcoffea/topcoffea/modules/eft_helper.py:132-206`: quartic/squared-weight
+  coefficient helpers.
 - `topcoffea/topcoffea/modules/eft_helper.py:208-266`: coefficient remapping.
 - `topcoffea/topcoffea/modules/utils.py:399-405`: pkl writing helper.
 - `topcoffea/topcoffea/modules/compat.py:13-39`: HistEFT pickle compatibility
@@ -957,12 +1410,14 @@ Runner:
 - `analysis/topeft_run2/run_cr.sh:72-119`: active CR block.
 - `analysis/topeft_run2/run_cr.sh:125-130`: active main CR loop.
 - `analysis/topeft_run2/run_cr.sh:177-220`: commented SR scaffold.
-- `analysis/topeft_run2/fullR3_run.sh:4-21`: usage and options.
-- `analysis/topeft_run2/fullR3_run.sh:48-116`: option parsing.
-- `analysis/topeft_run2/fullR3_run.sh:129-156`: CR/SR and year resolution.
-- `analysis/topeft_run2/fullR3_run.sh:176-185`: output-name construction.
-- `analysis/topeft_run2/fullR3_run.sh:190-270`: CFG selection.
-- `analysis/topeft_run2/fullR3_run.sh:282-337`: hist-list forwarding,
+- `analysis/topeft_run2/fullR3_run.sh:4-25`: usage and options.
+- `analysis/topeft_run2/fullR3_run.sh:53-138`: option parsing.
+- `analysis/topeft_run2/fullR3_run.sh:151-206`: CR/SR, year, and input-override
+  validation.
+- `analysis/topeft_run2/fullR3_run.sh:213-222`: output-name construction.
+- `analysis/topeft_run2/fullR3_run.sh:226-322`: CFG selection and
+  `--sample-json`/`--cfg-override` handling.
+- `analysis/topeft_run2/fullR3_run.sh:331-385`: hist-list forwarding,
   command construction, and dry-run exit.
 - `analysis/topeft_run2/run_analysis.py:639-860`: CLI arguments.
 - `analysis/topeft_run2/run_analysis.py:1017-1051`: output paths and test

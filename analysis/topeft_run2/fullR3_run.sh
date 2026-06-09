@@ -2,7 +2,7 @@
 
 # PrintUsage: display script usage information
 PrintUsage() {
-  echo "Usage: $0 [-y YEAR [YEAR ...]] [-t TAG] --cr | --sr [--hist-vars HIST [HIST ...]] [run_analysis options]"
+  echo "Usage: $0 [-y YEAR [YEAR ...]] [-t TAG] --cr | --sr [--hist-vars HIST [HIST ...]] [--sample-json JSON | --cfg-override CFG] [run_analysis options]"
   echo
   echo "Options:"
   echo "  -y YEAR    Year identifier (repeat or list multiple years)"
@@ -14,6 +14,10 @@ PrintUsage() {
   echo "  --defer-np Defer nonprompt post-processing (adds --np-postprocess=defer)"
   echo "  --hist-vars HIST [HIST ...]"
   echo "             Override the histogram list while preserving --cr/--sr region behavior"
+  echo "  --sample-json JSON"
+  echo "             Use one sample JSON instead of the default CFG bundle"
+  echo "  --cfg-override CFG"
+  echo "             Use one CFG file instead of the default CFG bundle"
   echo "  --dry-run  Print the resolved run_analysis.py command and exit"
   echo "  -h, --help Show this help message"
   echo
@@ -43,6 +47,8 @@ main() {
   local -a RESOLVED_YEARS=()
   local USER_CHUNK_OVERRIDE=false
   local TAG=""
+  local SAMPLE_JSON=""
+  local CFG_OVERRIDE=""
 
   # Parse command-line arguments
   while [[ $# -gt 0 ]]; do
@@ -103,6 +109,22 @@ main() {
       --dry-run)
         FLAG_DRY_RUN=true
         shift
+        ;;
+      --sample-json)
+        if [[ $# -lt 2 || "$2" == -* ]]; then
+          echo "Error: --sample-json requires a JSON path"
+          return 1
+        fi
+        SAMPLE_JSON="$2"
+        shift 2
+        ;;
+      --cfg-override)
+        if [[ $# -lt 2 || "$2" == -* ]]; then
+          echo "Error: --cfg-override requires a CFG path"
+          return 1
+        fi
+        CFG_OVERRIDE="$2"
+        shift 2
         ;;
       -h|--help)
         PrintUsage
@@ -165,6 +187,21 @@ main() {
 
   if [[ ${#RESOLVED_YEARS[@]} -eq 0 ]]; then
     echo "Error: No years resolved from the provided arguments." >&2
+    return 1
+  fi
+
+  if [[ -n "$SAMPLE_JSON" && -n "$CFG_OVERRIDE" ]]; then
+    echo "Error: use only one of --sample-json or --cfg-override." >&2
+    return 1
+  fi
+
+  if [[ -n "$SAMPLE_JSON" && ! -f "$SAMPLE_JSON" ]]; then
+    echo "Error: sample JSON not found: $SAMPLE_JSON" >&2
+    return 1
+  fi
+
+  if [[ -n "$CFG_OVERRIDE" && ! -f "$CFG_OVERRIDE" ]]; then
+    echo "Error: CFG override not found: $CFG_OVERRIDE" >&2
     return 1
   fi
 
@@ -231,45 +268,57 @@ main() {
     return 0
   }
 
-  local CFG YEAR_CFGS
-  for YEAR in "${RESOLVED_YEARS[@]}"; do
-    if [[ -n "${RUN2_YEAR_MAP[$YEAR]}" ]]; then
-      if [[ "$RUN2_BUNDLE_ADDED" == "false" ]]; then
-        if [[ "$FLAG_CR" == "true" ]]; then
-          for CFG in "${RUN2_CFGS_CR[@]}"; do
-            add_cfg "$CFG" || return 1
-          done
-        else
-          for CFG in "${RUN2_CFGS_SR[@]}"; do
-            add_cfg "$CFG" || return 1
-          done
+  local INPUT_OVERRIDE_LABEL=""
+  if [[ -n "$SAMPLE_JSON" ]]; then
+    CFGS_LIST=("$SAMPLE_JSON")
+    INPUT_OVERRIDE_LABEL="sample JSON: $SAMPLE_JSON"
+  elif [[ -n "$CFG_OVERRIDE" ]]; then
+    CFGS_LIST=("$CFG_OVERRIDE")
+    INPUT_OVERRIDE_LABEL="CFG: $CFG_OVERRIDE"
+  else
+    local CFG YEAR_CFGS
+    for YEAR in "${RESOLVED_YEARS[@]}"; do
+      if [[ -n "${RUN2_YEAR_MAP[$YEAR]}" ]]; then
+        if [[ "$RUN2_BUNDLE_ADDED" == "false" ]]; then
+          if [[ "$FLAG_CR" == "true" ]]; then
+            for CFG in "${RUN2_CFGS_CR[@]}"; do
+              add_cfg "$CFG" || return 1
+            done
+          else
+            for CFG in "${RUN2_CFGS_SR[@]}"; do
+              add_cfg "$CFG" || return 1
+            done
+          fi
+          RUN2_BUNDLE_ADDED=true
         fi
-        RUN2_BUNDLE_ADDED=true
-      fi
-    else
-      if [[ "$FLAG_CR" == "true" ]]; then
-        YEAR_CFGS=(
-          "${CFGS_PATH}/NDSkim_${YEAR}_background_samples_cr.cfg"
-          "${CFGS_PATH}/NDSkim_${YEAR}_data_samples.cfg"
-          "${CFGS_PATH}/NDSkim_${YEAR}_mc_signal_samples.cfg"
-        )
       else
-        YEAR_CFGS=(
-          #"${CFGS_PATH}/NDSkim_${YEAR}_signal_samples.cfg"
-          "${CFGS_PATH}/NDSkim_${YEAR}_background_samples.cfg"
-          "${CFGS_PATH}/NDSkim_${YEAR}_data_samples.cfg"
-          "${CFGS_PATH}/NDSkim_${YEAR}_mc_signal_samples_sr.cfg"
-        )
+        if [[ "$FLAG_CR" == "true" ]]; then
+          YEAR_CFGS=(
+            "${CFGS_PATH}/NDSkim_${YEAR}_background_samples_cr.cfg"
+            "${CFGS_PATH}/NDSkim_${YEAR}_data_samples.cfg"
+            "${CFGS_PATH}/NDSkim_${YEAR}_mc_signal_samples.cfg"
+          )
+        else
+          YEAR_CFGS=(
+            #"${CFGS_PATH}/NDSkim_${YEAR}_signal_samples.cfg"
+            "${CFGS_PATH}/NDSkim_${YEAR}_background_samples.cfg"
+            "${CFGS_PATH}/NDSkim_${YEAR}_data_samples.cfg"
+            "${CFGS_PATH}/NDSkim_${YEAR}_mc_signal_samples_sr.cfg"
+          )
+        fi
+        for CFG in "${YEAR_CFGS[@]}"; do
+          add_cfg "$CFG" || return 1
+        done
       fi
-      for CFG in "${YEAR_CFGS[@]}"; do
-        add_cfg "$CFG" || return 1
-      done
-    fi
-  done
+    done
+  fi
   local CFGS
   CFGS=$(IFS=,; echo "${CFGS_LIST[*]}")
 
   echo "Resolved years: ${RESOLVED_YEARS[*]}"
+  if [[ -n "$INPUT_OVERRIDE_LABEL" ]]; then
+    echo "Input override: $INPUT_OVERRIDE_LABEL"
+  fi
   echo "Resolved CFGS: $CFGS"
 
   local REGION_LABEL
