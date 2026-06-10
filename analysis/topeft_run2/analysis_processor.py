@@ -26,6 +26,7 @@ from topeft.modules.corrections import ApplyJetCorrections, ApplyMETSystematics,
 import topeft.modules.event_selection as te_es
 import topeft.modules.object_selection as te_os
 from topeft.modules.ttgamma_photon_history import (
+    attach_conversion_overlap_removal_diagnostics,
     attach_photon_history_diagnostics,
 )
 from topcoffea.modules.get_param_from_jsons import GetParam
@@ -826,6 +827,11 @@ class AnalysisProcessor(processor.ProcessorABC):
                 events,
                 l_fo_conept_sorted,
                 None if isData else events.GenPart,
+            )
+            attach_conversion_overlap_removal_diagnostics(
+                events,
+                sample_name=events.metadata["dataset"],
+                is_data=isData,
             )
 
             #################### Taus ####################
@@ -1818,6 +1824,13 @@ class AnalysisProcessor(processor.ProcessorABC):
                                             all_cuts_mask = (selections.all(*cuts_lst) & njets_any_mask)
                                         else:
                                             all_cuts_mask = selections.all(*cuts_lst)
+                                        all_cuts_mask = (
+                                            all_cuts_mask
+                                            & events[
+                                                "ttgamma_photon_history_"
+                                                "pass_conversion_overlap_removal"
+                                            ]
+                                        )
                                         # Apply the optional cut on energy of the event
                                         if self._ecut_threshold is not None:
                                             all_cuts_mask = (all_cuts_mask & ecut_mask)

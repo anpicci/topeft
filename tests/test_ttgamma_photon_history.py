@@ -1,6 +1,7 @@
 from pathlib import Path
 
 import awkward as ak
+import pytest
 
 from topeft.modules.ttgamma_photon_history import (
     AMBIGUOUS,
@@ -13,7 +14,9 @@ from topeft.modules.ttgamma_photon_history import (
     NOT_CONVERSION,
     PRODUCTION_ISR,
     PRODUCTION_OFFSHELL_TOP,
+    attach_conversion_overlap_removal_diagnostics,
     attach_photon_history_diagnostics,
+    classify_conversion_overlap_sample,
     classify_selected_conversion_photon_history,
 )
 
@@ -43,6 +46,193 @@ def _categories(result):
 
 def _event(result, field):
     return ak.to_list(result["event"][field])
+
+
+def _overlap_events(decay, production, **guard_fields):
+    events = {
+        "ttgamma_photon_history_has_decay_origin_conversion_photon": ak.Array(
+            decay
+        ),
+        "ttgamma_photon_history_has_production_origin_conversion_photon": (
+            ak.Array(production)
+        ),
+    }
+    for field, values in guard_fields.items():
+        events[f"ttgamma_photon_history_{field}"] = ak.Array(values)
+    return events
+
+
+def _attach_overlap(sample_name, decay, production, is_data=False, **guards):
+    events = _overlap_events(decay, production, **guards)
+    result = attach_conversion_overlap_removal_diagnostics(
+        events,
+        sample_name=sample_name,
+        is_data=is_data,
+    )
+    return events, {
+        field: ak.to_list(values) for field, values in result.items()
+    }
+
+
+@pytest.mark.parametrize(
+    ("sample_name", "expected"),
+    [
+        ("UL18_TTGamma_Dilept_NDSkim", "ttgamma"),
+        ("UL16APV_TTGJets", "ttgamma"),
+        ("TTG-1Jets_PTG-10to100_NDSkim_2022", "ttgamma"),
+        ("UL18_TTTo2L2Nu_NDSkim", "inclusive_ttbar"),
+        ("UL17_TTToSemiLeptonic", "inclusive_ttbar"),
+        ("UL18_TTToHadronic", "inclusive_ttbar"),
+        ("UL18_TTJets", "inclusive_ttbar"),
+        ("TTto2L2Nu-2Jets_2022", "inclusive_ttbar"),
+        ("TTtoLNu2Q_NDSkim_2023", "inclusive_ttbar"),
+        ("TTto4Q_2023BPix", "inclusive_ttbar"),
+    ],
+)
+def test_conversion_overlap_sample_classifier_supported_names(
+    sample_name, expected
+):
+    assert classify_conversion_overlap_sample(sample_name) == expected
+
+
+@pytest.mark.parametrize(
+    "sample_name",
+    [
+        "TTWJetsToLNu",
+        "TTZToLLNuNu_M_10",
+        "ttHnobb",
+        "ST_top_t-channel_2022",
+        "ST_tW_Leptonic_2023",
+        "ZZTo4l_TTJets",
+        "Muon_2022",
+    ],
+)
+def test_conversion_overlap_sample_classifier_is_conservative(sample_name):
+    assert classify_conversion_overlap_sample(sample_name) == "other"
+
+
+@pytest.mark.parametrize(
+    "sample_name",
+    [
+        "UL18_TTGamma_Dilept",
+        "UL18_TTGJets",
+        "TTG-1Jets_PTG-10to100_2022",
+    ],
+)
+def test_ttgamma_decay_origin_is_vetoed(sample_name):
+    _, result = _attach_overlap(sample_name, [True], [False])
+
+    assert result["removed_ttgamma_decay_origin"] == [True]
+    assert result["removed_ttbar_production_origin"] == [False]
+    assert result["removed_by_conversion_overlap_removal"] == [True]
+    assert result["pass_conversion_overlap_removal"] == [False]
+
+
+def test_ttgamma_production_origin_passes():
+    _, result = _attach_overlap("UL18_TTGamma_Dilept", [False], [True])
+
+    assert result["removed_by_conversion_overlap_removal"] == [False]
+    assert result["pass_conversion_overlap_removal"] == [True]
+
+
+@pytest.mark.parametrize(
+    "sample_name",
+    [
+        "UL18_TTTo2L2Nu",
+        "UL18_TTToSemiLeptonic",
+        "UL18_TTToHadronic",
+        "UL18_TTJets",
+        "TTto2L2Nu_2022",
+        "TTtoLNu2Q_2023",
+        "TTto4Q_2023BPix",
+    ],
+)
+def test_inclusive_ttbar_production_origin_is_vetoed(sample_name):
+    _, result = _attach_overlap(sample_name, [False], [True])
+
+    assert result["removed_ttgamma_decay_origin"] == [False]
+    assert result["removed_ttbar_production_origin"] == [True]
+    assert result["removed_by_conversion_overlap_removal"] == [True]
+    assert result["pass_conversion_overlap_removal"] == [False]
+
+
+def test_inclusive_ttbar_decay_origin_passes():
+    _, result = _attach_overlap("UL18_TTTo2L2Nu", [True], [False])
+
+    assert result["removed_by_conversion_overlap_removal"] == [False]
+    assert result["pass_conversion_overlap_removal"] == [True]
+
+
+@pytest.mark.parametrize(
+    "sample_name",
+    ["UL18_TTGamma_Dilept", "UL18_TTTo2L2Nu"],
+)
+def test_guard_categories_do_not_drive_nominal_veto(sample_name):
+    _, result = _attach_overlap(
+        sample_name,
+        [False],
+        [False],
+        has_recovered_conversion_photon=[True],
+        has_classified_origin_conversion_photon=[False],
+        has_hadron_ancestor_conversion_photon=[True],
+        has_ambiguous_conversion_photon=[True],
+        has_no_photon_found_conversion_lepton=[True],
+        has_invalid_match_conversion_lepton=[True],
+    )
+
+    assert result["removed_by_conversion_overlap_removal"] == [False]
+    assert result["pass_conversion_overlap_removal"] == [True]
+
+
+@pytest.mark.parametrize(
+    ("sample_name", "is_data", "expected_pass"),
+    [
+        ("WJetsToLNu_2022", False, True),
+        ("UL18_TTGamma_Dilept", True, True),
+        ("UL18_TTTo2L2Nu", True, True),
+    ],
+)
+def test_other_mc_and_data_pass_unchanged(
+    sample_name, is_data, expected_pass
+):
+    _, result = _attach_overlap(
+        sample_name,
+        [True],
+        [True],
+        is_data=is_data,
+    )
+
+    assert result["removed_ttgamma_decay_origin"] == [False]
+    assert result["removed_ttbar_production_origin"] == [False]
+    assert result["pass_conversion_overlap_removal"] == [expected_pass]
+
+
+@pytest.mark.parametrize(
+    ("sample_name", "expected_removed"),
+    [
+        ("UL18_TTGamma_Dilept", True),
+        ("UL18_TTTo2L2Nu", True),
+        ("WJetsToLNu_2022", False),
+    ],
+)
+def test_mixed_decay_and_production_follows_literal_sample_rule(
+    sample_name, expected_removed
+):
+    events, result = _attach_overlap(sample_name, [True], [True])
+
+    assert result[
+        "has_mixed_decay_and_production_conversion_photons"
+    ] == [True]
+    assert result["removed_by_conversion_overlap_removal"] == [
+        expected_removed
+    ]
+    assert result["pass_conversion_overlap_removal"] == [
+        not expected_removed
+    ]
+    assert (
+        "ttgamma_photon_history_"
+        "has_mixed_decay_and_production_conversion_photons"
+    ) in events
 
 
 def test_non_conversion_lepton_is_not_a_candidate():
@@ -354,7 +544,7 @@ def test_attachment_path_handles_data_like_missing_gen_fields():
     ) == [False, False]
 
 
-def test_processor_attaches_diagnostics_without_event_selection_consuming_them():
+def test_processor_attaches_and_consumes_overlap_removal_diagnostics():
     processor_source = (
         REPO_ROOT / "analysis" / "topeft_run2" / "analysis_processor.py"
     ).read_text()
@@ -365,10 +555,38 @@ def test_processor_attaches_diagnostics_without_event_selection_consuming_them()
     attach_position = processor_source.index(
         "attach_photon_history_diagnostics("
     )
-    selection_position = processor_source.index(
-        "te_es.add1lMaskAndSFs(", attach_position
+    overlap_position = processor_source.index(
+        "attach_conversion_overlap_removal_diagnostics(", attach_position
+    )
+    event_selection_position = processor_source.index(
+        "te_es.add1lMaskAndSFs(", overlap_position
+    )
+    final_mask_position = processor_source.index(
+        '"pass_conversion_overlap_removal"', event_selection_position
     )
 
-    assert attach_position < selection_position
+    assert attach_position < overlap_position < event_selection_position
+    assert event_selection_position < final_mask_position
+    assert "all_cuts_mask" in processor_source[
+        final_mask_position - 250 : final_mask_position + 250
+    ]
     assert "ttgamma_photon_history_" not in selection_source
     assert "conversion_photon_history_" not in selection_source
+
+
+def test_stale_matched_field_names_do_not_reappear():
+    module_source = (
+        REPO_ROOT / "topeft" / "modules" / "ttgamma_photon_history.py"
+    ).read_text()
+    processor_source = (
+        REPO_ROOT / "analysis" / "topeft_run2" / "analysis_processor.py"
+    ).read_text()
+
+    stale_names = (
+        "has_matched_conversion_photon",
+        "n_matched_conversion_photons",
+        "matched_photon_index",
+    )
+    for stale_name in stale_names:
+        assert stale_name not in module_source
+        assert stale_name not in processor_source
