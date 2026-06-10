@@ -519,7 +519,7 @@ def classify_selected_conversion_photon_history(
 
 
 def attach_photon_history_diagnostics(events, selected_leptons, genparts=None):
-    """Attach diagnostic-only photon-history fields to leptons and events."""
+    """Attach photon-history fields and return the decorated leptons."""
 
     result = classify_selected_conversion_photon_history(
         genparts, selected_leptons
@@ -531,4 +531,4 @@ def attach_photon_history_diagnostics(events, selected_leptons, genparts=None):
         )
     for field, values in result["event"].items():
         events[f"{EVENT_DIAGNOSTIC_PREFIX}{field}"] = values
-    return leptons, result
+    return leptons

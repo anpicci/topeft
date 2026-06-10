@@ -499,12 +499,14 @@ def test_attachment_path_handles_data_like_missing_gen_fields():
     events = {}
     leptons = ak.Array([[{"pt": 25.0}], []])
 
-    attached, result = attach_photon_history_diagnostics(
+    attached = attach_photon_history_diagnostics(
         events,
         leptons,
         genparts=None,
     )
 
+    assert isinstance(attached, ak.Array)
+    assert not isinstance(attached, tuple)
     assert "conversion_photon_history_category" in ak.fields(attached)
     assert (
         "conversion_photon_history_recovered_photon_index"
@@ -531,6 +533,11 @@ def test_attachment_path_handles_data_like_missing_gen_fields():
         "ttgamma_photon_history_has_classified_origin_conversion_photon"
         in events
     )
+    assert "ttgamma_photon_history_has_decay_origin_conversion_photon" in events
+    assert (
+        "ttgamma_photon_history_has_production_origin_conversion_photon"
+        in events
+    )
     stale_event_flag = (
         "ttgamma_photon_history_" + "has_" + "matched_conversion_photon"
     )
@@ -540,7 +547,7 @@ def test_attachment_path_handles_data_like_missing_gen_fields():
     assert stale_event_flag not in events
     assert stale_event_count not in events
     assert ak.to_list(
-        result["event"]["has_selected_conversion_lepton"]
+        events["ttgamma_photon_history_has_selected_conversion_lepton"]
     ) == [False, False]
 
 

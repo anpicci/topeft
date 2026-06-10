@@ -823,7 +823,7 @@ class AnalysisProcessor(processor.ProcessorABC):
             l_fo_conept_sorted = l_fo[
                 ak.argsort(l_fo.conept, axis=-1, ascending=False)
             ]
-            l_fo_conept_sorted, _ = attach_photon_history_diagnostics(
+            l_fo_conept_sorted = attach_photon_history_diagnostics(
                 events,
                 l_fo_conept_sorted,
                 None if isData else events.GenPart,
