@@ -1,4 +1,9 @@
-"""Diagnostics for photons matched to selected conversion-like leptons."""
+"""Diagnostics for photons recovered from selected conversion-like leptons.
+
+Recovered means that a gen photon was found. Classified origin means that the
+recovered photon has a clean decay or production ancestry; hadron and ambiguous
+guard categories are intentionally excluded from classified origin.
+"""
 
 import awkward as ak
 import numpy as np
@@ -117,17 +122,18 @@ def _empty_result(selected_leptons, missing_branches):
     return {
         "lepton": {
             "category": categories,
-            "matched_photon_index": indices,
+            "recovered_photon_index": indices,
             "first_copy_photon_index": indices,
             "is_selected_conversion_lepton": false_objects,
-            "has_matched_conversion_photon": false_objects,
+            "has_recovered_conversion_photon": false_objects,
         },
         "event": {
             "diagnostic_missing_branches": _full_like_events(
                 selected_leptons, missing_branches
             ),
             "has_selected_conversion_lepton": false_events,
-            "has_matched_conversion_photon": false_events,
+            "has_recovered_conversion_photon": false_events,
+            "has_classified_origin_conversion_photon": false_events,
             "has_decay_origin_conversion_photon": false_events,
             "has_production_origin_conversion_photon": false_events,
             "has_hadron_ancestor_conversion_photon": false_events,
@@ -135,7 +141,8 @@ def _empty_result(selected_leptons, missing_branches):
             "has_no_photon_found_conversion_lepton": false_events,
             "has_invalid_match_conversion_lepton": false_events,
             "n_selected_conversion_leptons": zero_counts,
-            "n_matched_conversion_photons": zero_counts,
+            "n_recovered_conversion_photons": zero_counts,
+            "n_classified_origin_conversion_photons": zero_counts,
             "n_decay_origin_conversion_photons": zero_counts,
             "n_production_origin_conversion_photons": zero_counts,
             "n_hadron_ancestor_conversion_photons": zero_counts,
@@ -275,12 +282,12 @@ def _photon_ancestry(genparts, photon_indices, max_depth):
 def _classify_photons(
     genparts,
     is_conversion,
-    matched_photon_indices,
+    recovered_photon_indices,
     recovery_malformed,
     max_depth,
 ):
     categories = _full_like_objects(is_conversion, NOT_CONVERSION)
-    no_match = is_conversion & (matched_photon_indices < 0)
+    no_match = is_conversion & (recovered_photon_indices < 0)
     categories = ak.where(
         no_match & recovery_malformed, INVALID_MATCH, categories
     )
@@ -289,38 +296,38 @@ def _classify_photons(
     )
 
     first_copy, first_copy_malformed = _first_photon_copy(
-        genparts, matched_photon_indices, max_depth
+        genparts, recovered_photon_indices, max_depth
     )
     ancestry = _photon_ancestry(genparts, first_copy, max_depth)
-    matched = is_conversion & (matched_photon_indices >= 0)
-    ambiguous = matched & (
+    recovered = is_conversion & (recovered_photon_indices >= 0)
+    ambiguous = recovered & (
         first_copy_malformed
         | ancestry["malformed"]
         | ancestry["no_mother"]
     )
 
     mother_abs = abs(ancestry["mother_pdg_id"])
-    decay_lepton = matched & (
+    decay_lepton = recovered & (
         (mother_abs == 11) | (mother_abs == 13) | (mother_abs == 15)
     )
     decay_w_or_b = (
-        matched
+        recovered
         & ((mother_abs == 24) | (mother_abs == 5))
         & ancestry["has_top"]
     )
     decay_top_copy = (
-        matched
+        recovered
         & (mother_abs == 6)
         & (
             ancestry["grandmother_pdg_id"]
             == ancestry["mother_pdg_id"]
         )
     )
-    offshell_top = matched & (
+    offshell_top = recovered & (
         ((mother_abs == 6) & ~decay_top_copy) | (mother_abs == 21)
     )
     decay_any = decay_lepton | decay_w_or_b | decay_top_copy
-    production_isr = matched & ~decay_any & ~offshell_top
+    production_isr = recovered & ~decay_any & ~offshell_top
 
     categories = ak.where(production_isr, PRODUCTION_ISR, categories)
     categories = ak.where(offshell_top, PRODUCTION_OFFSHELL_TOP, categories)
@@ -332,7 +339,7 @@ def _classify_photons(
     )
     categories = ak.where(decay_lepton, DECAY_LEPTON, categories)
     categories = ak.where(
-        matched & ancestry["has_hadron"], HADRON_ANCESTOR, categories
+        recovered & ancestry["has_hadron"], HADRON_ANCESTOR, categories
     )
     categories = ak.where(ambiguous, AMBIGUOUS, categories)
     return categories, first_copy
@@ -340,13 +347,12 @@ def _classify_photons(
 
 def _event_reduction(selected_leptons, categories, missing_branches=False):
     is_conversion = selected_leptons.genPartFlav == 22
-    matched = is_conversion & ~_category_mask(
-        categories, (NO_PHOTON_FOUND, INVALID_MATCH)
-    )
     decay = _category_mask(categories, DECAY_CATEGORIES)
     production = _category_mask(categories, PRODUCTION_CATEGORIES)
+    classified_origin = decay | production
     hadron = categories == HADRON_ANCESTOR
     ambiguous = categories == AMBIGUOUS
+    recovered = classified_origin | hadron | ambiguous
     no_photon = categories == NO_PHOTON_FOUND
     invalid = categories == INVALID_MATCH
 
@@ -355,7 +361,10 @@ def _event_reduction(selected_leptons, categories, missing_branches=False):
             selected_leptons, missing_branches
         ),
         "has_selected_conversion_lepton": ak.any(is_conversion, axis=1),
-        "has_matched_conversion_photon": ak.any(matched, axis=1),
+        "has_recovered_conversion_photon": ak.any(recovered, axis=1),
+        "has_classified_origin_conversion_photon": ak.any(
+            classified_origin, axis=1
+        ),
         "has_decay_origin_conversion_photon": ak.any(decay, axis=1),
         "has_production_origin_conversion_photon": ak.any(
             production, axis=1
@@ -365,7 +374,10 @@ def _event_reduction(selected_leptons, categories, missing_branches=False):
         "has_no_photon_found_conversion_lepton": ak.any(no_photon, axis=1),
         "has_invalid_match_conversion_lepton": ak.any(invalid, axis=1),
         "n_selected_conversion_leptons": ak.sum(is_conversion, axis=1),
-        "n_matched_conversion_photons": ak.sum(matched, axis=1),
+        "n_recovered_conversion_photons": ak.sum(recovered, axis=1),
+        "n_classified_origin_conversion_photons": ak.sum(
+            classified_origin, axis=1
+        ),
         "n_decay_origin_conversion_photons": ak.sum(decay, axis=1),
         "n_production_origin_conversion_photons": ak.sum(
             production, axis=1
@@ -396,25 +408,25 @@ def classify_selected_conversion_photon_history(
     if not _has_required_fields(genparts, selected_leptons):
         return _empty_result(selected_leptons, missing_branches=True)
 
-    is_conversion, matched_photon_indices, recovery_malformed = (
+    is_conversion, recovered_photon_indices, recovery_malformed = (
         _recover_photon_indices(genparts, selected_leptons, max_depth)
     )
     categories, first_copy_indices = _classify_photons(
         genparts,
         is_conversion,
-        matched_photon_indices,
+        recovered_photon_indices,
         recovery_malformed,
         max_depth,
     )
-    has_matched_photon = is_conversion & (matched_photon_indices >= 0)
+    has_recovered_photon = is_conversion & (recovered_photon_indices >= 0)
 
     return {
         "lepton": {
             "category": categories,
-            "matched_photon_index": matched_photon_indices,
+            "recovered_photon_index": recovered_photon_indices,
             "first_copy_photon_index": first_copy_indices,
             "is_selected_conversion_lepton": is_conversion,
-            "has_matched_conversion_photon": has_matched_photon,
+            "has_recovered_conversion_photon": has_recovered_photon,
         },
         "event": _event_reduction(selected_leptons, categories),
     }

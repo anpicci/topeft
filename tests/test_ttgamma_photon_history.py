@@ -53,7 +53,8 @@ def test_non_conversion_lepton_is_not_a_candidate():
 
     assert _categories(result) == [[NOT_CONVERSION]]
     assert _event(result, "has_selected_conversion_lepton") == [False]
-    assert _event(result, "n_matched_conversion_photons") == [0]
+    assert _event(result, "n_recovered_conversion_photons") == [0]
+    assert _event(result, "n_classified_origin_conversion_photons") == [0]
 
 
 def test_direct_photon_match_and_decay_lepton_classification():
@@ -63,8 +64,10 @@ def test_direct_photon_match_and_decay_lepton_classification():
     )
 
     assert _categories(result) == [[DECAY_LEPTON]]
-    assert ak.to_list(result["lepton"]["matched_photon_index"]) == [[1]]
+    assert ak.to_list(result["lepton"]["recovered_photon_index"]) == [[1]]
     assert ak.to_list(result["lepton"]["first_copy_photon_index"]) == [[1]]
+    assert _event(result, "has_recovered_conversion_photon") == [True]
+    assert _event(result, "has_classified_origin_conversion_photon") == [True]
     assert _event(result, "has_decay_origin_conversion_photon") == [True]
 
 
@@ -75,7 +78,7 @@ def test_recovers_photon_from_immediate_mother():
     )
 
     assert _categories(result) == [[PRODUCTION_ISR]]
-    assert ak.to_list(result["lepton"]["matched_photon_index"]) == [[1]]
+    assert ak.to_list(result["lepton"]["recovered_photon_index"]) == [[1]]
 
 
 def test_recovers_photon_from_bounded_ancestor_chain():
@@ -90,7 +93,7 @@ def test_recovers_photon_from_bounded_ancestor_chain():
     )
 
     assert _categories(result) == [[PRODUCTION_ISR]]
-    assert ak.to_list(result["lepton"]["matched_photon_index"]) == [[1]]
+    assert ak.to_list(result["lepton"]["recovered_photon_index"]) == [[1]]
 
 
 def test_invalid_initial_match_and_no_photon_found_are_distinct():
@@ -100,6 +103,8 @@ def test_invalid_initial_match_and_no_photon_found_are_distinct():
     )
 
     assert _categories(result) == [[INVALID_MATCH, NO_PHOTON_FOUND]]
+    assert _event(result, "has_recovered_conversion_photon") == [False]
+    assert _event(result, "has_classified_origin_conversion_photon") == [False]
     assert _event(result, "has_invalid_match_conversion_lepton") == [True]
     assert _event(result, "has_no_photon_found_conversion_lepton") == [True]
 
@@ -111,7 +116,7 @@ def test_first_copy_normalization_walks_same_pdg_photon_mothers():
     )
 
     assert _categories(result) == [[PRODUCTION_ISR]]
-    assert ak.to_list(result["lepton"]["matched_photon_index"]) == [[2]]
+    assert ak.to_list(result["lepton"]["recovered_photon_index"]) == [[2]]
     assert ak.to_list(result["lepton"]["first_copy_photon_index"]) == [[1]]
 
 
@@ -165,7 +170,10 @@ def test_hadron_ancestor_has_precedence_over_origin_category():
     )
 
     assert _categories(result) == [[HADRON_ANCESTOR]]
+    assert _event(result, "has_recovered_conversion_photon") == [True]
+    assert _event(result, "has_classified_origin_conversion_photon") == [False]
     assert _event(result, "has_hadron_ancestor_conversion_photon") == [True]
+    assert _event(result, "has_decay_origin_conversion_photon") == [False]
     assert _event(result, "has_production_origin_conversion_photon") == [False]
 
 
@@ -183,6 +191,11 @@ def test_no_mother_and_malformed_cycle_are_ambiguous():
     )
 
     assert _categories(result) == [[AMBIGUOUS], [AMBIGUOUS]]
+    assert _event(result, "has_recovered_conversion_photon") == [True, True]
+    assert _event(result, "has_classified_origin_conversion_photon") == [
+        False,
+        False,
+    ]
     assert _event(result, "has_ambiguous_conversion_photon") == [True, True]
 
 
@@ -201,9 +214,75 @@ def test_multiple_conversion_leptons_reduce_to_event_counts():
         [DECAY_LEPTON, PRODUCTION_ISR, NOT_CONVERSION]
     ]
     assert _event(result, "n_selected_conversion_leptons") == [2]
-    assert _event(result, "n_matched_conversion_photons") == [2]
+    assert _event(result, "n_recovered_conversion_photons") == [2]
+    assert _event(result, "n_classified_origin_conversion_photons") == [2]
     assert _event(result, "n_decay_origin_conversion_photons") == [1]
     assert _event(result, "n_production_origin_conversion_photons") == [1]
+
+
+def test_recovered_and_classified_origin_partitions_include_guard_categories():
+    result = _classify(
+        [[
+            _genpart(11),
+            _genpart(22, 0),
+            _genpart(1),
+            _genpart(22, 2),
+            _genpart(111),
+            _genpart(22, 4),
+            _genpart(22),
+            _genpart(11),
+        ]],
+        [[
+            _lepton(1),
+            _lepton(3),
+            _lepton(5),
+            _lepton(6),
+            _lepton(7),
+            _lepton(99),
+            _lepton(1, gen_part_flav=1),
+        ]],
+    )
+
+    assert _categories(result) == [[
+        DECAY_LEPTON,
+        PRODUCTION_ISR,
+        HADRON_ANCESTOR,
+        AMBIGUOUS,
+        NO_PHOTON_FOUND,
+        INVALID_MATCH,
+        NOT_CONVERSION,
+    ]]
+    assert ak.to_list(
+        result["lepton"]["has_recovered_conversion_photon"]
+    ) == [[True, True, True, True, False, False, False]]
+
+    event = result["event"]
+    assert ak.to_list(event["n_recovered_conversion_photons"]) == [4]
+    assert ak.to_list(event["n_classified_origin_conversion_photons"]) == [2]
+    assert ak.to_list(event["n_decay_origin_conversion_photons"]) == [1]
+    assert ak.to_list(event["n_production_origin_conversion_photons"]) == [1]
+    assert ak.to_list(event["n_hadron_ancestor_conversion_photons"]) == [1]
+    assert ak.to_list(event["n_ambiguous_conversion_photons"]) == [1]
+    assert ak.to_list(event["n_no_photon_found_conversion_leptons"]) == [1]
+    assert ak.to_list(event["n_invalid_match_conversion_leptons"]) == [1]
+
+    assert ak.to_list(event["n_recovered_conversion_photons"]) == ak.to_list(
+        event["n_classified_origin_conversion_photons"]
+        + event["n_hadron_ancestor_conversion_photons"]
+        + event["n_ambiguous_conversion_photons"]
+    )
+    assert ak.to_list(
+        event["n_classified_origin_conversion_photons"]
+    ) == ak.to_list(
+        event["n_decay_origin_conversion_photons"]
+        + event["n_production_origin_conversion_photons"]
+    )
+    assert ak.to_list(
+        event["has_classified_origin_conversion_photon"]
+    ) == ak.to_list(
+        event["has_decay_origin_conversion_photon"]
+        | event["has_production_origin_conversion_photon"]
+    )
 
 
 def test_empty_event_is_supported():
@@ -237,9 +316,39 @@ def test_attachment_path_handles_data_like_missing_gen_fields():
     )
 
     assert "conversion_photon_history_category" in ak.fields(attached)
+    assert (
+        "conversion_photon_history_recovered_photon_index"
+        in ak.fields(attached)
+    )
+    assert (
+        "conversion_photon_history_has_recovered_conversion_photon"
+        in ak.fields(attached)
+    )
+    stale_index_field = (
+        "conversion_photon_history_" + "matched_" + "photon_index"
+    )
+    assert stale_index_field not in ak.fields(attached)
+    stale_lepton_flag = (
+        "conversion_photon_history_" + "has_" + "matched_conversion_photon"
+    )
+    assert (
+        stale_lepton_flag not in ak.fields(attached)
+    )
     assert ak.to_list(
         events["ttgamma_photon_history_diagnostic_missing_branches"]
     ) == [True, True]
+    assert (
+        "ttgamma_photon_history_has_classified_origin_conversion_photon"
+        in events
+    )
+    stale_event_flag = (
+        "ttgamma_photon_history_" + "has_" + "matched_conversion_photon"
+    )
+    stale_event_count = (
+        "ttgamma_photon_history_" + "n_" + "matched_conversion_photons"
+    )
+    assert stale_event_flag not in events
+    assert stale_event_count not in events
     assert ak.to_list(
         result["event"]["has_selected_conversion_lepton"]
     ) == [False, False]
