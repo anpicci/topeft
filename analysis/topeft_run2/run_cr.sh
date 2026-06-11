@@ -18,7 +18,7 @@ chunk_size="100000"
 #
 #   on te/ttgamma_conversion_photon_diagnostics:
 #     campaign_tag="photon_fbranch_feature"
-campaign_tag="photon_fbranch_feature"
+campaign_tag="photon_fbranch_baseline"
 
 cr_pkl_base_tag="CR_${campaign_tag}"
 sr_pkl_base_tag="SR_${campaign_tag}"
