@@ -1664,9 +1664,9 @@ if __name__ == "__main__":
             # mode will use the values specified here, so workers need to be at least
             # this large. If left unspecified, tasks will use whole workers in the
             # exploratory mode.
-            'cores': 1,
-            'disk': 10000,   #MB
-            'memory': 16000, #MB
+            # 'cores': 1,
+            # 'disk': 10000,   #MB
+            # 'memory': 16000, #MB
             # control the size of accumulation tasks.
             # "treereduction": 10,
             # terminate workers on which tasks have been running longer than average.
