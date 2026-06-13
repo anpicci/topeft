@@ -1,4 +1,3 @@
-```bash
 #!/usr/bin/env bash
 set -euo pipefail
 
@@ -307,4 +306,3 @@ echo "run_cr.sh completed"
 echo "campaign_tag: ${campaign_tag}"
 echo "ttgamma sample-role policy: ${ttgamma_sample_role_policy}"
 echo "output_dir: ${output_dir}"
-```
