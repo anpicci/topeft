@@ -668,7 +668,6 @@ class DatacardMaker():
             "ZG_MLL-4to50_PTG-200",
             "ZG_MLL-4to50_PTG-100to200",
             "ZG_MLL-50_PTG-400to600", # --> up to here
-            "TTG-1Jets_PTG-200",
             "DYJetsToLL_MLL-50",
             # "TTGamma",
             # "WWTo2L2Nu","ZZTo4L",#"WZTo3LNu",

@@ -45,19 +45,58 @@ PRODUCTION_CATEGORIES = (PRODUCTION_ISR, PRODUCTION_OFFSHELL_TOP)
 EVENT_DIAGNOSTIC_PREFIX = "ttgamma_photon_history_"
 DEFAULT_MAX_ANCESTRY_DEPTH = 64
 
-TTGAMMA_SAMPLE = "ttgamma"
+TTGAMMA_PRODUCTION_SAMPLE = "ttgamma_production"
+TTGAMMA_DECAY_SAMPLE = "ttgamma_decay"
+TTGAMMA_INCLUSIVE_SAMPLE = "ttgamma_inclusive"
 INCLUSIVE_TTBAR_SAMPLE = "inclusive_ttbar"
 OTHER_SAMPLE = "other"
 
-_RUN2_DATASET_PREFIX = r"(?:UL(?:16APV|16|17|18)_)?"
-_TTGAMMA_SAMPLE_PATTERN = re.compile(
-    rf"^{_RUN2_DATASET_PREFIX}(?:TTGamma|TTGJets|TTG-1Jets)(?:_|$)"
+SPLIT_SAMPLE_ROLE_POLICY = "split"
+RUN2_NLO_INCLUSIVE_SAMPLE_ROLE_POLICY = "run2_nlo_inclusive"
+SUPPORTED_SAMPLE_ROLE_POLICIES = (
+    SPLIT_SAMPLE_ROLE_POLICY,
+    RUN2_NLO_INCLUSIVE_SAMPLE_ROLE_POLICY,
+)
+
+_RUN2_ERA = r"(?:UL16APV|UL16|UL17|UL18)"
+_RUN3_ERA = r"(?:2022EE|2022|2023BPix|2023)"
+_TTGAMMA_PRODUCTION_SAMPLE_PATTERN = re.compile(
+    rf"(?:{_RUN2_ERA}_TTGJets(?:_NDSkim)?|TTGJets_central{_RUN2_ERA})"
+)
+_TTGAMMA_DECAY_SAMPLE_PATTERN = re.compile(
+    rf"(?:{_RUN2_ERA}_TTGamma_(?:Dilept|SingleLept)(?:_NDSkim)?"
+    rf"|TTGamma_central{_RUN2_ERA})"
+)
+_TTGAMMA_INCLUSIVE_SAMPLE_PATTERN = re.compile(
+    rf"(?:TTG-1Jets_PTG-(?:10to100|100to200|200)"
+    rf"(?:_NDSkim)?_{_RUN3_ERA}"
+    rf"|TTG-1Jets_PTG-(?:10to100|100to200|200)_central{_RUN3_ERA}"
+    rf"|TTGamma_central{_RUN3_ERA})"
 )
 _INCLUSIVE_TTBAR_SAMPLE_PATTERN = re.compile(
-    rf"^{_RUN2_DATASET_PREFIX}"
-    r"(?:TTTo2L2Nu|TTToSemiLeptonic|TTToHadronic|"
-    r"TTto2L2Nu|TTtoLNu2Q|TTto4Q|TTJets)(?:[-_]|$)"
+    rf"(?:{_RUN2_ERA}_(?:TTTo2L2Nu|TTToSemiLeptonic|TTToHadronic|TTJets)"
+    rf"(?:_NDSkim)?"
+    rf"|(?:TTTo2L2Nu|TTToSemiLeptonic|TTToHadronic|TTJets)"
+    rf"_central{_RUN2_ERA}"
+    rf"|(?:TTto2L2Nu(?:-[23]Jets)?|TTtoLNu2Q|TTto4Q)"
+    rf"(?:_NDSkim)?_{_RUN3_ERA}"
+    rf"|(?:TTto2L2Nu|TTtoLNu2Q|TTto4Q)_central{_RUN3_ERA})"
 )
+
+
+def get_ttgamma_sample_role_policy(
+    sample_role_policy=SPLIT_SAMPLE_ROLE_POLICY,
+):
+    """Return the configured ttgamma sample-role policy."""
+
+    policy = sample_role_policy
+    if policy not in SUPPORTED_SAMPLE_ROLE_POLICIES:
+        supported = ", ".join(SUPPORTED_SAMPLE_ROLE_POLICIES)
+        raise ValueError(
+            f"Unsupported ttgamma sample-role policy {policy!r}; "
+            f"supported values are: {supported}"
+        )
+    return policy
 
 
 def _zeros_like_objects(selected_leptons, dtype):
@@ -82,15 +121,28 @@ def _full_like_events(selected_leptons, value, dtype=np.bool_):
     return _zeros_like_events(selected_leptons, dtype) + value
 
 
-def classify_conversion_overlap_sample(sample_name):
+def classify_conversion_overlap_sample(
+    sample_name,
+    sample_role_policy=SPLIT_SAMPLE_ROLE_POLICY,
+):
     """Classify a dataset-basename key for conversion overlap removal."""
 
     normalized_name = str(sample_name).rsplit("/", 1)[-1]
     if normalized_name.endswith(".json"):
         normalized_name = normalized_name[:-5]
-    if _TTGAMMA_SAMPLE_PATTERN.match(normalized_name):
-        return TTGAMMA_SAMPLE
-    if _INCLUSIVE_TTBAR_SAMPLE_PATTERN.match(normalized_name):
+    policy = get_ttgamma_sample_role_policy(sample_role_policy)
+    if (
+        policy == RUN2_NLO_INCLUSIVE_SAMPLE_ROLE_POLICY
+        and _TTGAMMA_PRODUCTION_SAMPLE_PATTERN.fullmatch(normalized_name)
+    ):
+        return TTGAMMA_INCLUSIVE_SAMPLE
+    if _TTGAMMA_PRODUCTION_SAMPLE_PATTERN.fullmatch(normalized_name):
+        return TTGAMMA_PRODUCTION_SAMPLE
+    if _TTGAMMA_DECAY_SAMPLE_PATTERN.fullmatch(normalized_name):
+        return TTGAMMA_DECAY_SAMPLE
+    if _TTGAMMA_INCLUSIVE_SAMPLE_PATTERN.fullmatch(normalized_name):
+        return TTGAMMA_INCLUSIVE_SAMPLE
+    if _INCLUSIVE_TTBAR_SAMPLE_PATTERN.fullmatch(normalized_name):
         return INCLUSIVE_TTBAR_SAMPLE
     return OTHER_SAMPLE
 
@@ -99,6 +151,7 @@ def attach_conversion_overlap_removal_diagnostics(
     events,
     sample_name,
     is_data=False,
+    sample_role_policy=SPLIT_SAMPLE_ROLE_POLICY,
 ):
     """Attach nominal ttgamma/ttbar conversion-overlap removal flags."""
 
@@ -122,27 +175,79 @@ def attach_conversion_overlap_removal_diagnostics(
         ),
         np.bool_,
     )
+    has_selected_conversion_lepton = ak.values_astype(
+        ak.fill_none(
+            events[
+                f"{EVENT_DIAGNOSTIC_PREFIX}"
+                "has_selected_conversion_lepton"
+            ],
+            False,
+        ),
+        np.bool_,
+    )
     sample_class = (
         OTHER_SAMPLE
         if is_data
-        else classify_conversion_overlap_sample(sample_name)
+        else classify_conversion_overlap_sample(
+            sample_name,
+            sample_role_policy=sample_role_policy,
+        )
     )
 
     false_events = ak.zeros_like(decay, dtype=np.bool_)
-    removed_ttgamma = (
-        decay if sample_class == TTGAMMA_SAMPLE else false_events
+    true_events = ~false_events
+    is_ttgamma_production = (
+        true_events
+        if sample_class == TTGAMMA_PRODUCTION_SAMPLE
+        else false_events
     )
-    removed_ttbar = (
-        production
+    is_ttgamma_decay = (
+        true_events
+        if sample_class == TTGAMMA_DECAY_SAMPLE
+        else false_events
+    )
+    is_ttgamma_inclusive = (
+        true_events
+        if sample_class == TTGAMMA_INCLUSIVE_SAMPLE
+        else false_events
+    )
+    is_inclusive_ttbar = (
+        true_events
         if sample_class == INCLUSIVE_TTBAR_SAMPLE
         else false_events
     )
-    removed = removed_ttgamma | removed_ttbar
+    removed_ttgamma_production_role_decay_origin = (
+        decay if sample_class == TTGAMMA_PRODUCTION_SAMPLE else false_events
+    )
+    removed_ttgamma_decay_role_production_origin = (
+        production if sample_class == TTGAMMA_DECAY_SAMPLE else false_events
+    )
+    removed_ttbar_selected_external_conversion = (
+        has_selected_conversion_lepton
+        if sample_class == INCLUSIVE_TTBAR_SAMPLE
+        else false_events
+    )
+    removed = (
+        removed_ttgamma_production_role_decay_origin
+        | removed_ttgamma_decay_role_production_origin
+        | removed_ttbar_selected_external_conversion
+    )
     result = {
         "pass_conversion_overlap_removal": ~removed,
         "removed_by_conversion_overlap_removal": removed,
-        "removed_ttgamma_decay_origin": removed_ttgamma,
-        "removed_ttbar_production_origin": removed_ttbar,
+        "removed_ttgamma_production_role_decay_origin": (
+            removed_ttgamma_production_role_decay_origin
+        ),
+        "removed_ttgamma_decay_role_production_origin": (
+            removed_ttgamma_decay_role_production_origin
+        ),
+        "removed_ttbar_selected_external_conversion": (
+            removed_ttbar_selected_external_conversion
+        ),
+        "sample_role_is_ttgamma_production": is_ttgamma_production,
+        "sample_role_is_ttgamma_decay": is_ttgamma_decay,
+        "sample_role_is_ttgamma_inclusive": is_ttgamma_inclusive,
+        "sample_role_is_inclusive_ttbar": is_inclusive_ttbar,
         "has_mixed_decay_and_production_conversion_photons": (
             decay & production
         ),
