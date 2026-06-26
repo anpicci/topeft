@@ -75,7 +75,7 @@ cr_var_sets=(
 # Preserve the previous shared variable default for SR production. Tune this
 # separately when a dedicated SR campaign needs different histogram chunks.
 sr_var_sets=(
-  "lj0pt nbtagsl nbtagsm fwd0pt fwd0eta lt"
+  "lj0pt ptz ptz_wtau lt"
 )
 
 ###############################################################################
