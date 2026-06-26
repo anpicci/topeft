@@ -182,7 +182,7 @@ def test_secondary_processors_default_forward_eta_suppression_false():
     assert btag_processor.suppress_forward_eta_stochastic_jer is False
 
 
-def test_run_analysis_help_exposes_forward_eta_suppression_flag(capsys):
+def test_run_analysis_help_only_exposes_forward_eta_suppression_opt_out(capsys):
     argv = ["run_analysis.py", "--help"]
 
     original_sys_path = list(sys.path)
@@ -197,10 +197,8 @@ def test_run_analysis_help_exposes_forward_eta_suppression_flag(capsys):
     assert excinfo.value.code == 0
     help_text = capsys.readouterr().out
 
-    assert "--suppress-forward-eta-stochastic-jer" in help_text
+    assert "--suppress-forward-eta-stochastic-jer" not in help_text
     assert "--no-suppress-forward-eta-stochastic-jer" in help_text
-    assert "Opt-in" not in help_text
-    assert "Disabled by default" not in help_text
     assert "--fwd-eta-band-pt-apply" in help_text
 
 
