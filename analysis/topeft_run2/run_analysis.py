@@ -730,16 +730,10 @@ if __name__ == "__main__":
         help="Compute systematic variations",
     )
     parser.add_argument(
-        "--suppress-forward-eta-stochastic-jer",
-        dest="suppress_forward_eta_stochastic_jer",
-        action="store_true",
-        default=True,
-        help=argparse.SUPPRESS,
-    )
-    parser.add_argument(
         "--no-suppress-forward-eta-stochastic-jer",
         dest="suppress_forward_eta_stochastic_jer",
         action="store_false",
+        default=True,
         help=(
             "Disable the default forward-eta stochastic JER mitigation in "
             "2.5 < abs(eta) < 3.0."

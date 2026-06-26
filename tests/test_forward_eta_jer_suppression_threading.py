@@ -206,7 +206,6 @@ def test_run_analysis_help_only_exposes_forward_eta_suppression_opt_out(capsys):
     "cli_args, expected",
     [
         ([], True),
-        (["--suppress-forward-eta-stochastic-jer"], True),
         (["--no-suppress-forward-eta-stochastic-jer"], False),
     ],
 )
@@ -214,6 +213,17 @@ def test_run_analysis_forward_eta_suppression_cli_values(cli_args, expected):
     args = _parse_run_analysis_args(cli_args)
 
     assert args.suppress_forward_eta_stochastic_jer is expected
+
+
+def test_run_analysis_rejects_removed_positive_forward_eta_suppression_flag(capsys):
+    with pytest.raises(SystemExit) as excinfo:
+        _parse_run_analysis_args(["--suppress-forward-eta-stochastic-jer"])
+
+    assert excinfo.value.code == 2
+    assert (
+        "unrecognized arguments: --suppress-forward-eta-stochastic-jer"
+        in capsys.readouterr().err
+    )
 
 
 def test_run_analysis_threads_forward_eta_suppression_to_main_processor():

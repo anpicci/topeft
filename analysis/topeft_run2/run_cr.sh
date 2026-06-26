@@ -223,7 +223,6 @@ build_common_command_options() {
 
   cmd_ref+=(
     -p "${output_dir}"
-    --suppress-forward-eta-stochastic-jer
     --all-analysis
   )
 
