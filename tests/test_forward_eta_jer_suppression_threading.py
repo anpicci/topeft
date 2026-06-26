@@ -1,3 +1,4 @@
+import argparse
 import inspect
 import runpy
 import sys
@@ -13,6 +14,35 @@ from topeft.modules import corrections as cor
 
 
 _RUN_ANALYSIS_PATH = Path("analysis/topeft_run2/run_analysis.py")
+
+
+class _ParsedArgsCaptured(Exception):
+    pass
+
+
+def _parse_run_analysis_args(cli_args):
+    argv = ["run_analysis.py", *cli_args]
+    original_parse_args = argparse.ArgumentParser.parse_args
+
+    def parse_args_and_stop(parser, *args, **kwargs):
+        parsed_args = original_parse_args(parser, *args, **kwargs)
+        raise _ParsedArgsCaptured(parsed_args)
+
+    original_sys_path = list(sys.path)
+    sys.path.insert(0, str(_RUN_ANALYSIS_PATH.parent))
+    try:
+        with mock.patch.object(sys, "argv", argv):
+            with mock.patch.object(
+                argparse.ArgumentParser,
+                "parse_args",
+                parse_args_and_stop,
+            ):
+                with pytest.raises(_ParsedArgsCaptured) as excinfo:
+                    runpy.run_path(str(_RUN_ANALYSIS_PATH), run_name="__main__")
+    finally:
+        sys.path = original_sys_path
+
+    return excinfo.value.args[0]
 
 
 def test_apply_jet_corrections_forwards_resolved_forward_eta_suppression(monkeypatch):
@@ -168,8 +198,24 @@ def test_run_analysis_help_exposes_forward_eta_suppression_flag(capsys):
     help_text = capsys.readouterr().out
 
     assert "--suppress-forward-eta-stochastic-jer" in help_text
-    assert "requires JME/JERC approval" in help_text
+    assert "--no-suppress-forward-eta-stochastic-jer" in help_text
+    assert "Opt-in" not in help_text
+    assert "Disabled by default" not in help_text
     assert "--fwd-eta-band-pt-apply" in help_text
+
+
+@pytest.mark.parametrize(
+    "cli_args, expected",
+    [
+        ([], True),
+        (["--suppress-forward-eta-stochastic-jer"], True),
+        (["--no-suppress-forward-eta-stochastic-jer"], False),
+    ],
+)
+def test_run_analysis_forward_eta_suppression_cli_values(cli_args, expected):
+    args = _parse_run_analysis_args(cli_args)
+
+    assert args.suppress_forward_eta_stochastic_jer is expected
 
 
 def test_run_analysis_threads_forward_eta_suppression_to_main_processor():

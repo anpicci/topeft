@@ -309,6 +309,19 @@ main() {
     [UL18]=2018
   )
 
+  local -a RUN2_CFGS_SR=(
+    "${CFGS_PATH}/mc_signal_samples_NDSkim.cfg"
+    "${CFGS_PATH}/mc_background_samples_NDSkim.cfg"
+    "${CFGS_PATH}/data_samples_NDSkim.cfg"
+  )
+
+  local -a RUN2_CFGS_CR=(
+    "${CFGS_PATH}/mc_signal_samples_NDSkim.cfg"
+    "${CFGS_PATH}/mc_background_samples_NDSkim.cfg"
+    "${CFGS_PATH}/mc_background_samples_cr_NDSkim.cfg"
+    "${CFGS_PATH}/data_samples_NDSkim.cfg"
+  )
+
   declare -A SEEN_CFGS=()
   local RUN2_BUNDLE_ADDED=false
 
@@ -333,21 +346,12 @@ main() {
 
   get_run2_cfgs_for_region() {
     local region="$1"
-    local -n cfgs_ref="$2"
     case "$region" in
       CR)
-        cfgs_ref=(
-          "${CFGS_PATH}/mc_signal_samples_cr_NDSkim.cfg"
-          "${CFGS_PATH}/mc_background_samples_cr_NDSkim.cfg"
-          "${CFGS_PATH}/data_samples_cr_NDSkim.cfg"
-        )
+        printf '%s\n' "${RUN2_CFGS_CR[@]}"
         ;;
       SR)
-        cfgs_ref=(
-          "${CFGS_PATH}/mc_signal_samples_NDSkim.cfg"
-          "${CFGS_PATH}/mc_background_samples_NDSkim.cfg"
-          "${CFGS_PATH}/data_samples_NDSkim.cfg"
-        )
+        printf '%s\n' "${RUN2_CFGS_SR[@]}"
         ;;
       *)
         echo "Error: Unsupported region for Run 2 cfg resolution: $region" >&2
@@ -359,21 +363,18 @@ main() {
   get_run3_cfgs_for_region_and_year() {
     local region="$1"
     local year="$2"
-    local -n cfgs_ref="$3"
     case "$region" in
       CR)
-        cfgs_ref=(
-          "${CFGS_PATH}/NDSkim_${year}_background_samples_cr.cfg"
-          "${CFGS_PATH}/NDSkim_${year}_data_samples.cfg"
+        printf '%s\n' \
+          "${CFGS_PATH}/NDSkim_${year}_background_samples_cr.cfg" \
+          "${CFGS_PATH}/NDSkim_${year}_data_samples.cfg" \
           "${CFGS_PATH}/NDSkim_${year}_mc_signal_samples.cfg"
-        )
         ;;
       SR)
-        cfgs_ref=(
-          "${CFGS_PATH}/NDSkim_${year}_background_samples.cfg"
-          "${CFGS_PATH}/NDSkim_${year}_data_samples.cfg"
+        printf '%s\n' \
+          "${CFGS_PATH}/NDSkim_${year}_background_samples.cfg" \
+          "${CFGS_PATH}/NDSkim_${year}_data_samples.cfg" \
           "${CFGS_PATH}/NDSkim_${year}_mc_signal_samples_sr.cfg"
-        )
         ;;
       *)
         echo "Error: Unsupported region for Run 3 cfg resolution: $region" >&2
@@ -385,14 +386,12 @@ main() {
   add_run2_cfg_bundle_once() {
     local region="$1"
     local cfg
-    local -a cfgs_for_region=()
     if [[ "$RUN2_BUNDLE_ADDED" == "true" ]]; then
       return 0
     fi
-    get_run2_cfgs_for_region "$region" cfgs_for_region || return 1
-    for cfg in "${cfgs_for_region[@]}"; do
+    while IFS= read -r cfg; do
       add_cfg_once "$cfg" || return 1
-    done
+    done < <(get_run2_cfgs_for_region "$region")
     RUN2_BUNDLE_ADDED=true
   }
 
@@ -400,11 +399,9 @@ main() {
     local region="$1"
     local year="$2"
     local cfg
-    local -a cfgs_for_year=()
-    get_run3_cfgs_for_region_and_year "$region" "$year" cfgs_for_year || return 1
-    for cfg in "${cfgs_for_year[@]}"; do
+    while IFS= read -r cfg; do
       add_cfg_once "$cfg" || return 1
-    done
+    done < <(get_run3_cfgs_for_region_and_year "$region" "$year")
   }
 
   local INPUT_OVERRIDE_LABEL=""

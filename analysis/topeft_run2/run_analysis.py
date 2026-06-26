@@ -731,13 +731,20 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--suppress-forward-eta-stochastic-jer",
+        dest="suppress_forward_eta_stochastic_jer",
         action="store_true",
+        default=True,
         help=(
-            "Opt-in analysis-specific JER mitigation: in 2.5 < abs(eta) < 3.0, "
+            "Apply the default analysis-specific JER mitigation: in 2.5 < abs(eta) < 3.0, "
             "keep scaling JER for hybrid jets but suppress stochastic smearing for "
-            "non-hybrid jets. Disabled by default and requires JME/JERC approval "
-            "before production use."
+            "non-hybrid jets."
         ),
+    )
+    parser.add_argument(
+        "--no-suppress-forward-eta-stochastic-jer",
+        dest="suppress_forward_eta_stochastic_jer",
+        action="store_false",
+        help="Disable the default forward-eta stochastic JER mitigation.",
     )
     parser.add_argument(
         "--fwd-eta-band-pt-apply",
