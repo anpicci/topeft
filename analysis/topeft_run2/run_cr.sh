@@ -25,7 +25,7 @@ chunk_size="50000"
 ttgamma_sample_role_policy="split"
 
 # Use a strategy-specific tag to avoid mixing baseline/feature/diagnostic outputs.
-campaign_tag="preappr"
+campaign_tag="preappr_sr"
 
 cr_pkl_base_tag="${campaign_tag}"
 sr_pkl_base_tag="${campaign_tag}"
@@ -33,8 +33,8 @@ sr_pkl_base_tag="${campaign_tag}"
 # Execution switches.
 #
 # This script is currently configured for Yuyi's CR distribution request.
-run_cr=true
-run_sr=false
+run_cr=false
+run_sr=true
 
 # Useful while checking resolved years/categories/histograms without launching production.
 dry_run=false
@@ -44,7 +44,7 @@ dry_run=false
 # Yuyi's request is for distributions, and the previous colleague-facing setup used
 # systematic variations for CR plotting. Keep nonprompt disabled unless explicitly needed.
 do_systs=true
-do_np=false
+do_np=true
 
 # Enable only if the colleague explicitly needs lepton-flavour split outputs.
 split_lep_flavor=false
@@ -75,7 +75,7 @@ cr_var_sets=(
 # Preserve the previous shared variable default for SR production. Tune this
 # separately when a dedicated SR campaign needs different histogram chunks.
 sr_var_sets=(
-  "lj0pt ptz ptz_wtau lt"
+  "njets lj0pt ptz ptz_wtau lt"
 )
 
 ###############################################################################
@@ -124,15 +124,19 @@ sr_year_sets=(
   2022EE
   2023
   2023BPix
-  2016APV
-  2016
-  2017
-  2018
+  # 2016APV
+  # 2016
+  # 2017
+  # 2018
 )
 
 sr_category_sets=(
-  "2l 2lss_1tau 2los_1tau 3l_m_offZ"
-  "3l_p_offZ 3l_onZ_tau 3l_fwd 4l"
+  "2l"
+  "2lss_1tau 2los_1tau"
+  "3l_m_offZ"
+  "3l_p_offZ"
+  "3l_onZ_tau 4l"
+  "3l_fwd"
 )
 
 ###############################################################################
