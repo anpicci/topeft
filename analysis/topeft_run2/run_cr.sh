@@ -72,8 +72,8 @@ cr_var_sets=(
   "lj0pt nbtagsl nbtagsm fwd0pt fwd0eta lt"
 )
 
-# Preserve the previous shared variable default for SR production. Tune this
-# separately when a dedicated SR campaign needs different histogram chunks.
+# SR variable chunks are configured separately from CR so SR campaigns can use
+# dedicated histogram groups without changing the CR request.
 sr_var_sets=(
   "njets lj0pt ptz ptz_wtau lt"
 )
