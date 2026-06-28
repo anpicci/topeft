@@ -1873,6 +1873,11 @@ def _rebin_has_leftover(edges, factor):
 
 
 def _resolve_rebin_plot_edges(var_name, histogram, rebin_plot_vars, base_edges=None):
+    """Resolve plot/report-time edges without mutating source histograms.
+
+    Leftover visible bins are handled by rebin_1d_edges as a final merged bin.
+    """
+
     factor = (rebin_plot_vars or {}).get(var_name)
     if factor is None:
         return None, None, False
@@ -6161,6 +6166,8 @@ def produce_region_plots(
     rebin_plot_vars=None,
     negative_weight_report=True,
 ):
+    """Render requested variables and return negative-report rows from the sweep."""
+
     dict_of_hists = region_ctx.dict_of_hists
     context_label = f"{region_ctx.name} region"
     variables_to_plot = _resolve_requested_variables(
@@ -6839,6 +6846,11 @@ def _emit_systematics_summary_once(
 
 # Wrapper for getting plus and minus shape arrs
 def get_shape_syst_arrs(base_histo,group_type="CR",return_details=False):
+    """Compute aggregate shape arrays while tolerating absent process labels.
+
+    Process labels missing from the current process axis are filtered rather
+    than treated as global shape-systematic failures.
+    """
 
     # Get the list of systematic base names (i.e. without the up and down tags),
     # and keep only complete Up/Down pairs.
@@ -7077,6 +7089,7 @@ def get_decorrelated_uncty(
     total_up_arr=None,
     total_down_arr=None,
 ):
+    """Combine decorrelated group uncertainties for present process labels only."""
 
     # Initialize the array we will return (ok technically we return sqrt of this arr squared..)
     if total_up_arr is None:
@@ -8117,6 +8130,8 @@ def run_plots_for_region(
     rebin_plot_vars=None,
     negative_weight_report=True,
 ):
+    """Run one CR/SR plotting pass and write optional zero/negative reports."""
+
     _SYSTEMATICS_SUMMARY_EMITTED.clear()
 
     channel_output_cfg = CHANNEL_OUTPUT_CHOICES.get(channel_output)
@@ -8485,6 +8500,8 @@ def _cache_merged_histograms(merged_hists, cache_path, out_dir):
 
 
 def run_with_args(args, parser):
+    """Normalize CLI arguments, load histograms, and dispatch region plotting."""
+
     pkl_paths = _resolve_pkl_paths(args, parser)
 
     normalized_years = _normalize_year_tokens(args.year)
