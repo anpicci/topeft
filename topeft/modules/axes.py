@@ -67,7 +67,7 @@ info = {
     },
     "l1eta": {
         "regular": (10, -2.5, 2.5),
-        "label": r"Subleading $\eta$ "
+        "label": r"Subleading lep $\eta$ "
     },
     "j0pt": {
         "regular": (15, 0, 300),
