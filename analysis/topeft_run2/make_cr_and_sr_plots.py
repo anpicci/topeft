@@ -2116,6 +2116,20 @@ def _resolve_sumw2_rebin_axis_name(histogram, variable):
     )
 
 
+def _clone_sumw2_with_rebinned_axis(histogram, variable, target_edges):
+    """Clone a sumw2 histogram using its nominal or companion dense axis.
+
+    Sumw2 companion histograms may use the nominal dense-axis name or a
+    ``<variable>_sumw2`` dense-axis name.  Keep that policy centralized so
+    plot-time rebinning and negative-report collection do not drift apart.
+    """
+
+    if histogram is None:
+        return None
+    sumw2_axis_name = _resolve_sumw2_rebin_axis_name(histogram, variable)
+    return _clone_with_rebinned_axis(histogram, sumw2_axis_name, target_edges)
+
+
 def _rebin_uncertainty_array(
     values,
     original_edges,
@@ -3075,62 +3089,21 @@ def _render_variable_category(
                 "style": region_ctx.stacked_ratio_style,
             }
             bins_override = region_ctx.analysis_bins.get(var_name)
-            target_edges, rebin_factor, rebin_leftover = _resolve_rebin_plot_edges(
-                var_name,
-                hist_mc_integrated,
-                rebin_plot_vars,
+            rebin_report = _prepare_plot_rebin_and_negative_rows(
+                variable=var_name,
+                hist_mc=hist_mc_integrated,
+                hist_mc_sumw2=hist_mc_sumw2_integrated,
+                hist_data=hist_data_integrated,
+                group_map=group,
+                channel_or_region=region_ctx.name,
+                category_if_available=hist_cat,
+                rebin_plot_vars=rebin_plot_vars,
                 base_edges=bins_override,
+                negative_weight_report=negative_weight_report,
             )
-            if target_edges is not None:
-                if rebin_leftover:
-                    logger.warning(
-                        "Plot-time rebinning for variable '%s' by factor %d leaves leftover bins; merging leftovers into the final bin.",
-                        var_name,
-                        rebin_factor,
-                    )
-                stacked_kwargs["bins"] = target_edges
-                if negative_weight_report:
-                    negative_rows.extend(
-                        collect_negative_rows_for_plot_stage(
-                            variable=var_name,
-                            channel_or_region=region_ctx.name,
-                            category_if_available=hist_cat,
-                            stage="pre_rebin",
-                            hist_mc=hist_mc_integrated,
-                            hist_mc_sumw2=hist_mc_sumw2_integrated,
-                            hist_data=hist_data_integrated,
-                            group_map=group,
-                        )
-                    )
-                    negative_rows.extend(
-                        collect_negative_rows_for_plot_stage(
-                            variable=var_name,
-                            channel_or_region=region_ctx.name,
-                            category_if_available=hist_cat,
-                            stage="post_rebin",
-                            hist_mc=hist_mc_integrated,
-                            hist_mc_sumw2=hist_mc_sumw2_integrated,
-                            hist_data=hist_data_integrated,
-                            group_map=group,
-                            target_edges=target_edges,
-                        )
-                    )
-            else:
-                if bins_override is not None:
-                    stacked_kwargs["bins"] = bins_override
-                if negative_weight_report:
-                    negative_rows.extend(
-                        collect_negative_rows_for_plot_stage(
-                            variable=var_name,
-                            channel_or_region=region_ctx.name,
-                            category_if_available=hist_cat,
-                            stage="nominal_no_rebin",
-                            hist_mc=hist_mc_integrated,
-                            hist_mc_sumw2=hist_mc_sumw2_integrated,
-                            hist_data=hist_data_integrated,
-                            group_map=group,
-                        )
-                    )
+            if rebin_report["bins"] is not None:
+                stacked_kwargs["bins"] = rebin_report["bins"]
+            negative_rows.extend(rebin_report["negative_rows"])
             fig = make_region_stacked_ratio_fig(
                 hist_mc_integrated,
                 hist_data_integrated,
@@ -3376,62 +3349,21 @@ def _render_variable_category(
             "style": region_ctx.stacked_ratio_style,
         }
         bins_to_use = bins_override if bins_override is not None else default_bins
-        target_edges, rebin_factor, rebin_leftover = _resolve_rebin_plot_edges(
-            var_name,
-            hist_mc_integrated,
-            rebin_plot_vars,
+        rebin_report = _prepare_plot_rebin_and_negative_rows(
+            variable=var_name,
+            hist_mc=hist_mc_integrated,
+            hist_mc_sumw2=hist_mc_sumw2,
+            hist_data=hist_data_integrated,
+            group_map=stacked_kwargs["group"],
+            channel_or_region=region_ctx.name,
+            category_if_available=hist_cat,
+            rebin_plot_vars=rebin_plot_vars,
             base_edges=bins_to_use,
+            negative_weight_report=negative_weight_report,
         )
-        if target_edges is not None:
-            if rebin_leftover:
-                logger.warning(
-                    "Plot-time rebinning for variable '%s' by factor %d leaves leftover bins; merging leftovers into the final bin.",
-                    var_name,
-                    rebin_factor,
-                )
-            stacked_kwargs["bins"] = target_edges
-            if negative_weight_report:
-                negative_rows.extend(
-                    collect_negative_rows_for_plot_stage(
-                        variable=var_name,
-                        channel_or_region=region_ctx.name,
-                        category_if_available=hist_cat,
-                        stage="pre_rebin",
-                        hist_mc=hist_mc_integrated,
-                        hist_mc_sumw2=hist_mc_sumw2,
-                        hist_data=hist_data_integrated,
-                        group_map=stacked_kwargs["group"],
-                    )
-                )
-                negative_rows.extend(
-                    collect_negative_rows_for_plot_stage(
-                        variable=var_name,
-                        channel_or_region=region_ctx.name,
-                        category_if_available=hist_cat,
-                        stage="post_rebin",
-                        hist_mc=hist_mc_integrated,
-                        hist_mc_sumw2=hist_mc_sumw2,
-                        hist_data=hist_data_integrated,
-                        group_map=stacked_kwargs["group"],
-                        target_edges=target_edges,
-                    )
-                )
-        else:
-            if bins_to_use is not None:
-                stacked_kwargs["bins"] = bins_to_use
-            if negative_weight_report:
-                negative_rows.extend(
-                    collect_negative_rows_for_plot_stage(
-                        variable=var_name,
-                        channel_or_region=region_ctx.name,
-                        category_if_available=hist_cat,
-                        stage="nominal_no_rebin",
-                        hist_mc=hist_mc_integrated,
-                        hist_mc_sumw2=hist_mc_sumw2,
-                        hist_data=hist_data_integrated,
-                        group_map=stacked_kwargs["group"],
-                    )
-                )
+        if rebin_report["bins"] is not None:
+            stacked_kwargs["bins"] = rebin_report["bins"]
+        negative_rows.extend(rebin_report["negative_rows"])
         fig = make_region_stacked_ratio_fig(
             hist_mc_integrated,
             hist_data_integrated,
@@ -4000,14 +3932,13 @@ def collect_negative_rows_for_plot_stage(
     group_map,
     target_edges=None,
 ):
-    """Collect negative rows after optionally applying a plot-time rebin."""
+    """Collect negative rows after optionally applying a plot/report-time rebin."""
 
     if target_edges is not None:
         hist_mc = _clone_with_rebinned_axis(hist_mc, variable, target_edges)
         hist_data = _clone_with_rebinned_axis(hist_data, variable, target_edges)
-        sumw2_axis_name = _resolve_sumw2_rebin_axis_name(hist_mc_sumw2, variable)
-        hist_mc_sumw2 = _clone_with_rebinned_axis(
-            hist_mc_sumw2, sumw2_axis_name, target_edges
+        hist_mc_sumw2 = _clone_sumw2_with_rebinned_axis(
+            hist_mc_sumw2, variable, target_edges
         )
     return collect_negative_contribution_rows(
         variable=variable,
@@ -4019,6 +3950,95 @@ def collect_negative_rows_for_plot_stage(
         hist_data=hist_data,
         group_map=group_map,
     )
+
+
+def _prepare_plot_rebin_and_negative_rows(
+    *,
+    variable,
+    hist_mc,
+    hist_mc_sumw2,
+    hist_data,
+    group_map,
+    channel_or_region,
+    category_if_available,
+    rebin_plot_vars,
+    base_edges=None,
+    negative_weight_report=True,
+):
+    """Resolve plot-time bins and matching negative-report stage rows.
+
+    This is intentionally plot/report-time only: it returns the bin edges to
+    pass into the plotting helper and collects rows with the existing stage
+    labels ``nominal_no_rebin``, ``pre_rebin``, and ``post_rebin`` without
+    mutating the input histograms or changing CLI behavior.
+    """
+
+    negative_rows = []
+    target_edges, rebin_factor, rebin_leftover = _resolve_rebin_plot_edges(
+        variable,
+        hist_mc,
+        rebin_plot_vars,
+        base_edges=base_edges,
+    )
+
+    if target_edges is not None:
+        if rebin_leftover:
+            logger.warning(
+                "Plot-time rebinning for variable '%s' by factor %d leaves leftover bins; merging leftovers into the final bin.",
+                variable,
+                rebin_factor,
+            )
+        if negative_weight_report:
+            common_kwargs = {
+                "variable": variable,
+                "channel_or_region": channel_or_region,
+                "category_if_available": category_if_available,
+                "hist_mc": hist_mc,
+                "hist_mc_sumw2": hist_mc_sumw2,
+                "hist_data": hist_data,
+                "group_map": group_map,
+            }
+            negative_rows.extend(
+                collect_negative_rows_for_plot_stage(
+                    stage="pre_rebin",
+                    **common_kwargs,
+                )
+            )
+            negative_rows.extend(
+                collect_negative_rows_for_plot_stage(
+                    stage="post_rebin",
+                    target_edges=target_edges,
+                    **common_kwargs,
+                )
+            )
+        return {
+            "target_edges": target_edges,
+            "bins": target_edges,
+            "negative_rows": negative_rows,
+            "rebin_factor": rebin_factor,
+            "rebin_leftover": rebin_leftover,
+        }
+
+    if negative_weight_report:
+        negative_rows.extend(
+            collect_negative_rows_for_plot_stage(
+                variable=variable,
+                channel_or_region=channel_or_region,
+                category_if_available=category_if_available,
+                stage="nominal_no_rebin",
+                hist_mc=hist_mc,
+                hist_mc_sumw2=hist_mc_sumw2,
+                hist_data=hist_data,
+                group_map=group_map,
+            )
+        )
+    return {
+        "target_edges": None,
+        "bins": base_edges,
+        "negative_rows": negative_rows,
+        "rebin_factor": None,
+        "rebin_leftover": False,
+    }
 
 
 def _format_report_float(value):
@@ -7568,9 +7588,8 @@ def make_region_stacked_ratio_fig(
                 h_mc = _clone_with_rebinned_axis(h_mc, var, target_edges)
                 h_data = _clone_with_rebinned_axis(h_data, var, target_edges)
                 if h_mc_sumw2 is not None:
-                    sumw2_axis_name = _resolve_sumw2_rebin_axis_name(h_mc_sumw2, var)
-                    h_mc_sumw2 = _clone_with_rebinned_axis(
-                        h_mc_sumw2, sumw2_axis_name, target_edges
+                    h_mc_sumw2 = _clone_sumw2_with_rebinned_axis(
+                        h_mc_sumw2, var, target_edges
                     )
     else:
         target_edges = None
