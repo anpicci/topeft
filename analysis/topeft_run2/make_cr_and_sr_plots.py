@@ -1,6 +1,7 @@
 import numpy as np
 import os
 import copy
+import csv
 import datetime
 import argparse
 import json
@@ -1783,6 +1784,109 @@ def _validate_bin_edges(edges):
     return array
 
 
+def parse_rebin_plot_vars(raw_value):
+    """Parse a comma-separated variable-to-integer-factor rebin specification."""
+
+    if raw_value is None:
+        return {}
+    raw_text = str(raw_value).strip()
+    if not raw_text:
+        return {}
+
+    parsed = OrderedDict()
+    for raw_entry in raw_text.split(","):
+        entry = raw_entry.strip()
+        if not entry:
+            continue
+        if ":" in entry:
+            var_name, factor_text = entry.split(":", 1)
+        elif "=" in entry:
+            var_name, factor_text = entry.split("=", 1)
+        else:
+            raise ValueError(
+                f"Malformed rebin entry '{entry}'. Expected '<variable>:<factor>'."
+            )
+        var_name = var_name.strip()
+        factor_text = factor_text.strip()
+        if not var_name:
+            raise ValueError(f"Malformed rebin entry '{entry}': variable is empty.")
+        try:
+            factor = int(factor_text)
+        except ValueError as exc:
+            raise ValueError(
+                f"Invalid rebin factor for variable '{var_name}': '{factor_text}'."
+            ) from exc
+        if factor < 2:
+            raise ValueError(
+                f"Invalid rebin factor for variable '{var_name}': expected integer >= 2."
+            )
+        parsed[var_name] = factor
+
+    return parsed
+
+
+def _rebin_factor_slices(n_bins, factor):
+    if factor < 2:
+        raise ValueError("Rebin factor must be >= 2.")
+    if n_bins < 1:
+        raise ValueError("Cannot rebin an empty 1D bin array.")
+    return [
+        slice(start, min(start + factor, n_bins))
+        for start in range(0, n_bins, factor)
+    ]
+
+
+def rebin_1d_values(values, factor):
+    """Return 1D bin contents rebinned by summing groups of *factor* bins."""
+
+    array = np.asarray(values)
+    if array.ndim != 1:
+        raise ValueError("Only one-dimensional arrays can be rebinned.")
+    return np.asarray([array[slc].sum() for slc in _rebin_factor_slices(array.size, factor)])
+
+
+def rebin_1d_variances(variances, factor):
+    """Return 1D variances rebinned by summing grouped-bin variances."""
+
+    return rebin_1d_values(variances, factor)
+
+
+def rebin_1d_edges(edges, factor):
+    """Return variable-width edges after grouping visible bins by *factor*.
+
+    If the source bin count is not divisible by *factor*, the leftover bins are
+    merged into the final rebinned bin.
+    """
+
+    edge_array = _validate_bin_edges(edges)
+    n_bins = edge_array.size - 1
+    slices = _rebin_factor_slices(n_bins, factor)
+    new_edges = [edge_array[0]]
+    for slc in slices:
+        new_edges.append(edge_array[slc.stop])
+    return np.asarray(new_edges, dtype=float)
+
+
+def _rebin_has_leftover(edges, factor):
+    edge_array = _validate_bin_edges(edges)
+    return ((edge_array.size - 1) % factor) != 0
+
+
+def _resolve_rebin_plot_edges(var_name, histogram, rebin_plot_vars, base_edges=None):
+    factor = (rebin_plot_vars or {}).get(var_name)
+    if factor is None:
+        return None, None, False
+    if base_edges is None:
+        try:
+            base_edges = histogram.axes[var_name].edges
+        except (AttributeError, KeyError) as exc:
+            raise ValueError(
+                f"Cannot apply plot-time rebinning to variable '{var_name}': no compatible dense axis found."
+            ) from exc
+    target_edges = rebin_1d_edges(base_edges, factor)
+    return target_edges, factor, _rebin_has_leftover(base_edges, factor)
+
+
 def _build_variable_axis_like(axis, edges):
     """Construct a Variable axis matching the metadata of an existing dense axis."""
 
@@ -1867,8 +1971,10 @@ def _rebin_dense_histogram(dense_hist, axis_name, target_edges):
     """Return a rebinned copy of a dense hist.Hist along the specified axis."""
 
     try:
-        axis_index = dense_hist.axes.index(axis_name)
-    except ValueError as exc:  # pragma: no cover - defensive guard
+        axis_index = next(
+            idx for idx, axis in enumerate(dense_hist.axes) if axis.name == axis_name
+        )
+    except StopIteration as exc:  # pragma: no cover - defensive guard
         raise ValueError(f"Axis '{axis_name}' not found in histogram.") from exc
 
     original_axis = dense_hist.axes[axis_index]
@@ -2193,6 +2299,8 @@ def _initialize_render_worker(
     unblind_flag,
     stacked_log_y,
     verbose,
+    rebin_plot_vars=None,
+    negative_weight_report=True,
     prepared_payloads=None,
     shared_region_ctx=None,
 ):
@@ -2221,6 +2329,8 @@ def _initialize_render_worker(
         "unblind_flag": unblind_flag,
         "stacked_log_y": stacked_log_y,
         "verbose": bool(verbose),
+        "rebin_plot_vars": dict(rebin_plot_vars or {}),
+        "negative_weight_report": bool(negative_weight_report),
         "prepared_variables": prepared_variables,
     }
 
@@ -2267,7 +2377,7 @@ def _render_variable_from_worker(task_id, payload):
     )
 
     if category is None:
-        stat_only, stat_and_syst, html_set = _render_variable(
+        stat_only, stat_and_syst, html_set, negative_rows = _render_variable(
             var_name,
             ctx["region_ctx"],
             ctx["save_dir_path"],
@@ -2278,10 +2388,12 @@ def _render_variable_from_worker(task_id, payload):
             verbose=verbose,
             category=category,
             variable_payload=variable_payload,
+            rebin_plot_vars=ctx["rebin_plot_vars"],
+            negative_weight_report=ctx["negative_weight_report"],
         )
     else:
         if not variable_payload:
-            stat_only, stat_and_syst, html_set = 0, 0, set()
+            stat_only, stat_and_syst, html_set, negative_rows = 0, 0, set(), []
         else:
             region_ctx = ctx["region_ctx"]
             channel_bins = variable_payload["channel_dict"].get(category)
@@ -2291,9 +2403,9 @@ def _render_variable_from_worker(task_id, payload):
                     region_ctx.category_skip_rules, category, var_name
                 )
             ):
-                stat_only, stat_and_syst, html_set = 0, 0, set()
+                stat_only, stat_and_syst, html_set, negative_rows = 0, 0, set(), []
             else:
-                stat_only, stat_and_syst, html_set = _render_variable_category(
+                stat_only, stat_and_syst, html_set, negative_rows = _render_variable_category(
                     var_name,
                     category,
                     channel_bins,
@@ -2313,8 +2425,10 @@ def _render_variable_from_worker(task_id, payload):
                         "channel_display_labels", {}
                     ),
                     available_channels=variable_payload.get("available_channels"),
+                    rebin_plot_vars=ctx["rebin_plot_vars"],
+                    negative_weight_report=ctx["negative_weight_report"],
                 )
-    return task_id, stat_only, stat_and_syst, html_set
+    return task_id, stat_only, stat_and_syst, html_set, negative_rows
 
 
 def _prepare_variable_payload(
@@ -2491,6 +2605,8 @@ def _render_variable(
     verbose=False,
     category=None,
     variable_payload=None,
+    rebin_plot_vars=None,
+    negative_weight_report=True,
 ):
     """Render plots for *var_name* and return summary accounting."""
 
@@ -2506,7 +2622,7 @@ def _render_variable(
             unblind_flag=unblind_flag,
         )
     if not variable_payload:
-        return 0, 0, set()
+        return 0, 0, set(), []
 
     _ensure_variable_channel_coverage_validated(var_name, region_ctx, variable_payload)
 
@@ -2516,6 +2632,7 @@ def _render_variable(
     stat_only_plots = 0
     stat_and_syst_plots = 0
     html_dirs = set()
+    negative_rows = []
 
     if category is not None:
         channel_items = (
@@ -2534,7 +2651,7 @@ def _render_variable(
         ):
             continue
 
-        stat_only, stat_and_syst, html_set = _render_variable_category(
+        stat_only, stat_and_syst, html_set, category_negative_rows = _render_variable_category(
             var_name,
             hist_cat,
             channel_bins,
@@ -2552,12 +2669,15 @@ def _render_variable(
             verbose=verbose,
             channel_display_labels=channel_display_labels,
             available_channels=variable_payload.get("available_channels"),
+            rebin_plot_vars=rebin_plot_vars,
+            negative_weight_report=negative_weight_report,
         )
         stat_only_plots += stat_only
         stat_and_syst_plots += stat_and_syst
         html_dirs.update(html_set)
+        negative_rows.extend(category_negative_rows)
 
-    return stat_only_plots, stat_and_syst_plots, html_dirs
+    return stat_only_plots, stat_and_syst_plots, html_dirs, negative_rows
 
 
 def _render_variable_category(
@@ -2579,8 +2699,15 @@ def _render_variable_category(
     verbose=False,
     channel_display_labels=None,
     available_channels=None,
+    rebin_plot_vars=None,
+    negative_weight_report=True,
 ):
     """Render a single (variable, category) pair and return bookkeeping totals."""
+
+    negative_rows = []
+
+    def _empty_render_result():
+        return 0, 0, html_dirs, negative_rows
 
     if available_channels is None:
         available_channels = _resolve_channel_axis_labels(hist_mc)
@@ -2602,7 +2729,7 @@ def _render_variable_category(
         )
 
     if not filtered_bins:
-        return 0, 0, set()
+        return 0, 0, set(), negative_rows
 
     validate_channel_group(
         [hist_mc, hist_data],
@@ -2685,7 +2812,7 @@ def _render_variable_category(
                 hist_mc_integrated is not None,
                 hist_data_integrated is not None,
             )
-            return 0, 0, html_dirs
+            return _empty_render_result()
         hist_mc_sumw2_integrated = None
         if hist_mc_sumw2_orig is not None:
             hist_mc_sumw2_integrated = _integrate_category(
@@ -2821,7 +2948,7 @@ def _render_variable_category(
                     hist_cat,
                     var_name,
                 )
-                return 0, 0, html_dirs
+                return _empty_render_result()
             hist_mc_nominal = hist_mc_integrated[{"process": sum}].integrate(
                 "systematic", "nominal"
             )
@@ -2836,7 +2963,7 @@ def _render_variable_category(
                     hist_cat,
                     var_name,
                 )
-                return 0, 0, html_dirs
+                return _empty_render_result()
             fig = make_sparse2d_fig(
                 hist_mc_nominal,
                 hist_data_nominal,
@@ -2871,7 +2998,7 @@ def _render_variable_category(
                     mc_empty=mc_empty,
                     data_empty=data_empty,
                 )
-                return 0, 0, html_dirs
+                return _empty_render_result()
             if unblind_flag and not has_data:
                 _warn_undrawable_plot(
                     reason="empty-data-content",
@@ -2881,7 +3008,7 @@ def _render_variable_category(
                     mc_empty=mc_empty,
                     data_empty=data_empty,
                 )
-                return 0, 0, html_dirs
+                return _empty_render_result()
             if mc_empty or (unblind_flag and data_empty):
                 _warn_undrawable_plot(
                     reason="empty-or-missing-input",
@@ -2891,7 +3018,7 @@ def _render_variable_category(
                     mc_empty=mc_empty,
                     data_empty=data_empty,
                 )
-                return 0, 0, html_dirs
+                return _empty_render_result()
             x_range = (0, 250) if var_name == "ht" else None
             group = {k: v for k, v in region_ctx.group_map.items() if v}
             stacked_kwargs = {
@@ -2907,8 +3034,62 @@ def _render_variable_category(
                 "style": region_ctx.stacked_ratio_style,
             }
             bins_override = region_ctx.analysis_bins.get(var_name)
-            if bins_override is not None:
-                stacked_kwargs["bins"] = bins_override
+            target_edges, rebin_factor, rebin_leftover = _resolve_rebin_plot_edges(
+                var_name,
+                hist_mc_integrated,
+                rebin_plot_vars,
+                base_edges=bins_override,
+            )
+            if target_edges is not None:
+                if rebin_leftover:
+                    logger.warning(
+                        "Plot-time rebinning for variable '%s' by factor %d leaves leftover bins; merging leftovers into the final bin.",
+                        var_name,
+                        rebin_factor,
+                    )
+                stacked_kwargs["bins"] = target_edges
+                if negative_weight_report:
+                    negative_rows.extend(
+                        collect_negative_rows_for_plot_stage(
+                            variable=var_name,
+                            channel_or_region=region_ctx.name,
+                            category_if_available=hist_cat,
+                            stage="pre_rebin",
+                            hist_mc=hist_mc_integrated,
+                            hist_mc_sumw2=hist_mc_sumw2_integrated,
+                            hist_data=hist_data_integrated,
+                            group_map=group,
+                        )
+                    )
+                    negative_rows.extend(
+                        collect_negative_rows_for_plot_stage(
+                            variable=var_name,
+                            channel_or_region=region_ctx.name,
+                            category_if_available=hist_cat,
+                            stage="post_rebin",
+                            hist_mc=hist_mc_integrated,
+                            hist_mc_sumw2=hist_mc_sumw2_integrated,
+                            hist_data=hist_data_integrated,
+                            group_map=group,
+                            target_edges=target_edges,
+                        )
+                    )
+            else:
+                if bins_override is not None:
+                    stacked_kwargs["bins"] = bins_override
+                if negative_weight_report:
+                    negative_rows.extend(
+                        collect_negative_rows_for_plot_stage(
+                            variable=var_name,
+                            channel_or_region=region_ctx.name,
+                            category_if_available=hist_cat,
+                            stage="nominal_no_rebin",
+                            hist_mc=hist_mc_integrated,
+                            hist_mc_sumw2=hist_mc_sumw2_integrated,
+                            hist_data=hist_data_integrated,
+                            group_map=group,
+                        )
+                    )
             fig = make_region_stacked_ratio_fig(
                 hist_mc_integrated,
                 hist_data_integrated,
@@ -2928,7 +3109,7 @@ def _render_variable_category(
                     mc_empty=mc_empty,
                     data_empty=data_empty,
                 )
-                return 0, 0, html_dirs
+                return _empty_render_result()
         title = category_label + "_" + var_name
         if unit_norm_bool:
             title = title + "_unitnorm"
@@ -2976,7 +3157,7 @@ def _render_variable_category(
             if chan in hist_mc.axes["channel"]
         ]
         if not channels:
-            return 0, 0, html_dirs
+            return _empty_render_result()
         hist_mc_channel = hist_mc.integrate("channel", channels)[{"channel": sum}]
         samples_to_rm = _collect_samples_to_remove(
             region_ctx.sample_removal_rules, hist_cat, region_ctx
@@ -3110,7 +3291,7 @@ def _render_variable_category(
                 mc_empty=_hist_is_empty(hist_mc_integrated),
                 data_empty=_hist_is_empty(hist_data_integrated),
             )
-            return 0, 0, html_dirs
+            return _empty_render_result()
         if unblind_flag and not has_data:
             _warn_undrawable_plot(
                 reason="empty-data-content",
@@ -3120,7 +3301,7 @@ def _render_variable_category(
                 mc_empty=_hist_is_empty(hist_mc_integrated),
                 data_empty=_hist_is_empty(hist_data_integrated),
             )
-            return 0, 0, html_dirs
+            return _empty_render_result()
         mc_empty = _hist_is_empty(hist_mc_integrated)
         data_empty = _hist_is_empty(hist_data_integrated)
         if mc_empty or (unblind_flag and data_empty):
@@ -3132,7 +3313,7 @@ def _render_variable_category(
                 mc_empty=mc_empty,
                 data_empty=data_empty,
             )
-            return 0, 0, html_dirs
+            return _empty_render_result()
         title = f"{category_label}_{var_name}"
         if unit_norm_bool:
             title = f"{title}_unitnorm"
@@ -3154,8 +3335,62 @@ def _render_variable_category(
             "style": region_ctx.stacked_ratio_style,
         }
         bins_to_use = bins_override if bins_override is not None else default_bins
-        if bins_to_use is not None:
-            stacked_kwargs["bins"] = bins_to_use
+        target_edges, rebin_factor, rebin_leftover = _resolve_rebin_plot_edges(
+            var_name,
+            hist_mc_integrated,
+            rebin_plot_vars,
+            base_edges=bins_to_use,
+        )
+        if target_edges is not None:
+            if rebin_leftover:
+                logger.warning(
+                    "Plot-time rebinning for variable '%s' by factor %d leaves leftover bins; merging leftovers into the final bin.",
+                    var_name,
+                    rebin_factor,
+                )
+            stacked_kwargs["bins"] = target_edges
+            if negative_weight_report:
+                negative_rows.extend(
+                    collect_negative_rows_for_plot_stage(
+                        variable=var_name,
+                        channel_or_region=region_ctx.name,
+                        category_if_available=hist_cat,
+                        stage="pre_rebin",
+                        hist_mc=hist_mc_integrated,
+                        hist_mc_sumw2=hist_mc_sumw2,
+                        hist_data=hist_data_integrated,
+                        group_map=stacked_kwargs["group"],
+                    )
+                )
+                negative_rows.extend(
+                    collect_negative_rows_for_plot_stage(
+                        variable=var_name,
+                        channel_or_region=region_ctx.name,
+                        category_if_available=hist_cat,
+                        stage="post_rebin",
+                        hist_mc=hist_mc_integrated,
+                        hist_mc_sumw2=hist_mc_sumw2,
+                        hist_data=hist_data_integrated,
+                        group_map=stacked_kwargs["group"],
+                        target_edges=target_edges,
+                    )
+                )
+        else:
+            if bins_to_use is not None:
+                stacked_kwargs["bins"] = bins_to_use
+            if negative_weight_report:
+                negative_rows.extend(
+                    collect_negative_rows_for_plot_stage(
+                        variable=var_name,
+                        channel_or_region=region_ctx.name,
+                        category_if_available=hist_cat,
+                        stage="nominal_no_rebin",
+                        hist_mc=hist_mc_integrated,
+                        hist_mc_sumw2=hist_mc_sumw2,
+                        hist_data=hist_data_integrated,
+                        group_map=stacked_kwargs["group"],
+                    )
+                )
         fig = make_region_stacked_ratio_fig(
             hist_mc_integrated,
             hist_data_integrated,
@@ -3172,7 +3407,7 @@ def _render_variable_category(
                 mc_empty=mc_empty,
                 data_empty=data_empty,
             )
-            return 0, 0, html_dirs
+            return _empty_render_result()
         save_path = os.path.join(save_dir_path_tmp, f"{title}.png")
         fig.savefig(save_path, bbox_inches="tight", pad_inches=0.05)
         _close_figure_payload(fig)
@@ -3197,7 +3432,7 @@ def _render_variable_category(
     if "www" in save_dir_path_tmp:
         html_dirs.add(save_dir_path_tmp)
 
-    return stat_only_plots, stat_and_syst_plots, html_dirs
+    return stat_only_plots, stat_and_syst_plots, html_dirs, negative_rows
 def _resolve_requested_variables(dict_of_hists, variables, context):
     """Return the ordered list of variables to process for a plotting function."""
 
@@ -3483,6 +3718,362 @@ def _safe_divide(num, denom, default, zero_over_zero=None):
         zero_zero_mask = (denom_arr == 0) & (num_arr == 0)
         out[zero_zero_mask] = zero_over_zero
     return out
+
+
+NEGATIVE_WEIGHT_REPORT_COLUMNS = [
+    "variable",
+    "channel_or_region",
+    "category_if_available",
+    "stage",
+    "level",
+    "process",
+    "group",
+    "bin_index",
+    "bin_low",
+    "bin_high",
+    "yield",
+    "sumw2",
+    "error",
+    "effective_entries",
+    "total_mc_yield",
+    "data_yield",
+    "yield_over_total_mc",
+    "abs_yield_over_total_mc",
+    "is_compatible_with_zero_1sigma",
+    "is_single_effective_entry_like",
+    "is_low_effective_entries",
+]
+
+
+def effective_entries(yield_value, sumw2_value):
+    """Return yield²/sumw², or NaN when sumw² is unavailable/non-positive."""
+
+    if sumw2_value is None or not np.isfinite(sumw2_value) or sumw2_value <= 0:
+        return np.nan
+    return (float(yield_value) * float(yield_value)) / float(sumw2_value)
+
+
+def _negative_row_flags(yield_value, sumw2_value):
+    error = np.nan
+    if sumw2_value is not None and np.isfinite(sumw2_value) and sumw2_value >= 0:
+        error = math.sqrt(float(sumw2_value))
+    eff_entries = effective_entries(yield_value, sumw2_value)
+    return {
+        "error": error,
+        "effective_entries": eff_entries,
+        "is_compatible_with_zero_1sigma": bool(
+            np.isfinite(error) and abs(float(yield_value)) <= error
+        ),
+        "is_single_effective_entry_like": bool(
+            np.isfinite(eff_entries) and eff_entries <= 1.05
+        ),
+        "is_low_effective_entries": bool(
+            np.isfinite(eff_entries) and eff_entries <= 5.0
+        ),
+    }
+
+
+def _hist_1d_edges(hist_obj, var_name):
+    try:
+        return np.asarray(hist_obj.axes[var_name].edges, dtype=float)
+    except (AttributeError, KeyError) as exc:
+        raise ValueError(f"Histogram has no dense axis '{var_name}'.") from exc
+
+
+def _hist_1d_visible_values(hist_obj, var_name):
+    values = np.asarray(_values_without_flow(hist_obj, include_overflow=False), dtype=float)
+    if values.ndim == 0:
+        values = values.reshape(1)
+    if values.ndim != 1:
+        raise ValueError(
+            f"Expected a one-dimensional histogram projection for '{var_name}', got shape {values.shape}."
+        )
+    return values
+
+
+def _process_values_from_hist(hist_obj, processes, var_name, template):
+    if hist_obj is None:
+        return np.full_like(template, np.nan, dtype=float)
+    try:
+        available = set(hist_obj.axes["process"])
+    except (AttributeError, KeyError):
+        return np.full_like(template, np.nan, dtype=float)
+    if processes is sum:
+        selected = hist_obj[{"process": sum}]
+        return _hist_1d_visible_values(selected, var_name)
+    present = [proc for proc in processes if proc in available]
+    if not present:
+        return np.zeros_like(template, dtype=float)
+    selected = hist_obj[{"process": present}][{"process": sum}]
+    return _hist_1d_visible_values(selected, var_name)
+
+
+def _make_negative_contribution_row(
+    *,
+    variable,
+    channel_or_region,
+    category_if_available,
+    stage,
+    level,
+    process,
+    group,
+    bin_index,
+    bin_low,
+    bin_high,
+    yield_value,
+    sumw2_value,
+    total_mc_yield,
+    data_yield,
+):
+    flags = _negative_row_flags(yield_value, sumw2_value)
+    yield_over_total = np.nan
+    if np.isfinite(total_mc_yield) and not np.isclose(total_mc_yield, 0.0):
+        yield_over_total = float(yield_value) / float(total_mc_yield)
+    row = {
+        "variable": variable,
+        "channel_or_region": channel_or_region,
+        "category_if_available": category_if_available or "",
+        "stage": stage,
+        "level": level,
+        "process": process or "",
+        "group": group or "",
+        "bin_index": int(bin_index),
+        "bin_low": float(bin_low),
+        "bin_high": float(bin_high),
+        "yield": float(yield_value),
+        "sumw2": float(sumw2_value) if sumw2_value is not None else np.nan,
+        "total_mc_yield": float(total_mc_yield),
+        "data_yield": float(data_yield),
+        "yield_over_total_mc": yield_over_total,
+        "abs_yield_over_total_mc": abs(yield_over_total)
+        if np.isfinite(yield_over_total)
+        else np.nan,
+    }
+    row.update(flags)
+    return row
+
+
+def collect_negative_contribution_rows(
+    *,
+    variable,
+    channel_or_region,
+    category_if_available,
+    stage,
+    hist_mc,
+    hist_mc_sumw2,
+    hist_data,
+    group_map,
+):
+    """Collect process-level and group-level negative MC contribution rows."""
+
+    if hist_mc is None:
+        return []
+
+    edges = _hist_1d_edges(hist_mc, variable)
+    template = _hist_1d_visible_values(hist_mc[{"process": sum}], variable)
+    total_mc_values = template
+    data_values = (
+        _process_values_from_hist(hist_data, sum, variable, template)
+        if hist_data is not None
+        else np.zeros_like(template, dtype=float)
+    )
+
+    process_labels = list(hist_mc.axes["process"])
+    process_to_group = {}
+    for group_name, members in (group_map or {}).items():
+        for process_name in members:
+            process_to_group.setdefault(process_name, group_name)
+
+    rows = []
+
+    for process_name in process_labels:
+        values = _process_values_from_hist(hist_mc, [process_name], variable, template)
+        sumw2_values = _process_values_from_hist(
+            hist_mc_sumw2, [process_name], variable, template
+        )
+        for bin_index, yield_value in enumerate(values):
+            if yield_value >= 0:
+                continue
+            rows.append(
+                _make_negative_contribution_row(
+                    variable=variable,
+                    channel_or_region=channel_or_region,
+                    category_if_available=category_if_available,
+                    stage=stage,
+                    level="process",
+                    process=process_name,
+                    group=process_to_group.get(process_name, ""),
+                    bin_index=bin_index,
+                    bin_low=edges[bin_index],
+                    bin_high=edges[bin_index + 1],
+                    yield_value=yield_value,
+                    sumw2_value=sumw2_values[bin_index],
+                    total_mc_yield=total_mc_values[bin_index],
+                    data_yield=data_values[bin_index],
+                )
+            )
+
+    available_processes = set(process_labels)
+    for group_name, members in (group_map or {}).items():
+        present_members = [member for member in members if member in available_processes]
+        if not present_members:
+            continue
+        values = _process_values_from_hist(hist_mc, present_members, variable, template)
+        sumw2_values = _process_values_from_hist(
+            hist_mc_sumw2, present_members, variable, template
+        )
+        for bin_index, yield_value in enumerate(values):
+            if yield_value >= 0:
+                continue
+            rows.append(
+                _make_negative_contribution_row(
+                    variable=variable,
+                    channel_or_region=channel_or_region,
+                    category_if_available=category_if_available,
+                    stage=stage,
+                    level="group",
+                    process="",
+                    group=group_name,
+                    bin_index=bin_index,
+                    bin_low=edges[bin_index],
+                    bin_high=edges[bin_index + 1],
+                    yield_value=yield_value,
+                    sumw2_value=sumw2_values[bin_index],
+                    total_mc_yield=total_mc_values[bin_index],
+                    data_yield=data_values[bin_index],
+                )
+            )
+
+    return rows
+
+
+def collect_negative_rows_for_plot_stage(
+    *,
+    variable,
+    channel_or_region,
+    category_if_available,
+    stage,
+    hist_mc,
+    hist_mc_sumw2,
+    hist_data,
+    group_map,
+    target_edges=None,
+):
+    """Collect negative rows after optionally applying a plot-time rebin."""
+
+    if target_edges is not None:
+        hist_mc = _clone_with_rebinned_axis(hist_mc, variable, target_edges)
+        hist_data = _clone_with_rebinned_axis(hist_data, variable, target_edges)
+        hist_mc_sumw2 = _clone_with_rebinned_axis(
+            hist_mc_sumw2, variable, target_edges
+        )
+    return collect_negative_contribution_rows(
+        variable=variable,
+        channel_or_region=channel_or_region,
+        category_if_available=category_if_available,
+        stage=stage,
+        hist_mc=hist_mc,
+        hist_mc_sumw2=hist_mc_sumw2,
+        hist_data=hist_data,
+        group_map=group_map,
+    )
+
+
+def _format_report_float(value):
+    if value is None:
+        return ""
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return value
+    if not np.isfinite(numeric):
+        return ""
+    return "{:.12g}".format(numeric)
+
+
+def write_negative_weight_report(rows, output_dir, summary_limit=20):
+    """Write negative MC contribution CSV and Markdown summary."""
+
+    os.makedirs(output_dir, exist_ok=True)
+    csv_path = os.path.join(output_dir, "negative_weight_contribution_report.csv")
+    md_path = os.path.join(output_dir, "negative_weight_contribution_summary.md")
+
+    normalized_rows = list(rows or [])
+    with open(csv_path, "w", newline="") as csv_file:
+        writer = csv.DictWriter(csv_file, fieldnames=NEGATIVE_WEIGHT_REPORT_COLUMNS)
+        writer.writeheader()
+        for row in normalized_rows:
+            writer.writerow(
+                {
+                    column: _format_report_float(row.get(column))
+                    for column in NEGATIVE_WEIGHT_REPORT_COLUMNS
+                }
+            )
+
+    process_rows = [row for row in normalized_rows if row.get("level") == "process"]
+    group_rows = [row for row in normalized_rows if row.get("level") == "group"]
+    single_eff_group_rows = [
+        row for row in group_rows if row.get("is_single_effective_entry_like")
+    ]
+    low_eff_group_rows = [row for row in group_rows if row.get("is_low_effective_entries")]
+    negative_total_bins = {
+        (
+            row.get("variable"),
+            row.get("channel_or_region"),
+            row.get("category_if_available"),
+            row.get("stage"),
+            row.get("bin_index"),
+        )
+        for row in normalized_rows
+        if row.get("total_mc_yield") is not None
+        and np.isfinite(row.get("total_mc_yield"))
+        and row.get("total_mc_yield") < 0
+    }
+
+    def _top_rows(level_rows):
+        return sorted(level_rows, key=lambda row: abs(row.get("yield", 0.0)), reverse=True)[
+            :summary_limit
+        ]
+
+    def _row_label(row):
+        owner = row.get("process") or row.get("group") or "<unknown>"
+        return (
+            f"{row.get('variable')} {row.get('category_if_available') or row.get('channel_or_region')} "
+            f"{row.get('stage')} bin {row.get('bin_index')} [{row.get('bin_low')}, {row.get('bin_high')}): "
+            f"{owner} yield={_format_report_float(row.get('yield'))}, "
+            f"sumw2={_format_report_float(row.get('sumw2'))}, "
+            f"neff={_format_report_float(row.get('effective_entries'))}"
+        )
+
+    with open(md_path, "w") as md_file:
+        md_file.write("# Negative MC Contribution Summary\n\n")
+        md_file.write(f"- total negative process bins: {len(process_rows)}\n")
+        md_file.write(f"- total negative group bins: {len(group_rows)}\n")
+        md_file.write(
+            "- negative group bins with effective_entries <= 1.05: "
+            f"{len(single_eff_group_rows)}\n"
+        )
+        md_file.write(
+            "- negative group bins with effective_entries <= 5: "
+            f"{len(low_eff_group_rows)}\n"
+        )
+        md_file.write(f"- bins with negative total MC: {len(negative_total_bins)}\n\n")
+
+        md_file.write("## Top Negative Process Contributions\n\n")
+        if process_rows:
+            for row in _top_rows(process_rows):
+                md_file.write(f"- {_row_label(row)}\n")
+        else:
+            md_file.write("- none\n")
+
+        md_file.write("\n## Top Negative Group Contributions\n\n")
+        if group_rows:
+            for row in _top_rows(group_rows):
+                md_file.write(f"- {_row_label(row)}\n")
+        else:
+            md_file.write("- none\n")
+
+    return {"csv": csv_path, "markdown": md_path}
 
 
 def _normalize_histograms(
@@ -5505,6 +6096,8 @@ def produce_region_plots(
     *,
     workers=1,
     verbose=False,
+    rebin_plot_vars=None,
+    negative_weight_report=True,
 ):
     dict_of_hists = region_ctx.dict_of_hists
     context_label = f"{region_ctx.name} region"
@@ -5586,6 +6179,7 @@ def produce_region_plots(
     stat_only_plots = 0
     stat_and_syst_plots = 0
     html_dirs = set()
+    negative_rows = []
 
     worker_count = max(int(workers or 1), 1)
     tasks = list(eligible_variables)
@@ -5691,6 +6285,8 @@ def produce_region_plots(
                     unblind_flag,
                     stacked_log_y,
                     verbose,
+                    rebin_plot_vars,
+                    negative_weight_report,
                     prepared_payloads,
                     shared_region_ctx,
                 ),
@@ -5707,10 +6303,17 @@ def produce_region_plots(
                     for task_id, payload, _, _, _ in task_specs
                 ]
                 for future in as_completed(futures):
-                    task_id, stat_only, stat_and_syst, html_set = future.result()
+                    (
+                        task_id,
+                        stat_only,
+                        stat_and_syst,
+                        html_set,
+                        task_negative_rows,
+                    ) = future.result()
                     stat_only_plots += stat_only
                     stat_and_syst_plots += stat_and_syst
                     html_dirs.update(html_set)
+                    negative_rows.extend(task_negative_rows)
                     _report_progress(id_to_label.get(task_id, str(task_id)))
         finally:
             _SHARED_REGION_CTX = None
@@ -5719,7 +6322,7 @@ def produce_region_plots(
         for _, _, label, var_name, hist_cat in task_specs:
             variable_payload = _get_variable_payload(var_name)
             if hist_cat is None:
-                stat_only, stat_and_syst, html_set = _render_variable(
+                stat_only, stat_and_syst, html_set, task_negative_rows = _render_variable(
                     var_name,
                     region_ctx,
                     save_dir_path,
@@ -5730,10 +6333,12 @@ def produce_region_plots(
                     verbose=verbose,
                     category=hist_cat,
                     variable_payload=variable_payload,
+                    rebin_plot_vars=rebin_plot_vars,
+                    negative_weight_report=negative_weight_report,
                 )
             else:
                 if not variable_payload:
-                    stat_only, stat_and_syst, html_set = 0, 0, set()
+                    stat_only, stat_and_syst, html_set, task_negative_rows = 0, 0, set(), []
                 else:
                     _ensure_variable_channel_coverage_validated(
                         var_name, region_ctx, variable_payload
@@ -5745,9 +6350,14 @@ def produce_region_plots(
                             region_ctx.category_skip_rules, hist_cat, var_name
                         )
                     ):
-                        stat_only, stat_and_syst, html_set = 0, 0, set()
+                        stat_only, stat_and_syst, html_set, task_negative_rows = 0, 0, set(), []
                     else:
-                        stat_only, stat_and_syst, html_set = _render_variable_category(
+                        (
+                            stat_only,
+                            stat_and_syst,
+                            html_set,
+                            task_negative_rows,
+                        ) = _render_variable_category(
                             var_name,
                             hist_cat,
                             channel_bins,
@@ -5766,10 +6376,13 @@ def produce_region_plots(
                             channel_display_labels=variable_payload.get(
                                 "channel_display_labels", {}
                             ),
+                            rebin_plot_vars=rebin_plot_vars,
+                            negative_weight_report=negative_weight_report,
                         )
             stat_only_plots += stat_only
             stat_and_syst_plots += stat_and_syst
             html_dirs.update(html_set)
+            negative_rows.extend(task_negative_rows)
             _report_progress(label)
 
     for html_dir in sorted(html_dirs):
@@ -5798,6 +6411,8 @@ def produce_region_plots(
         print(f" in {save_dir_path}")
     else:
         print()
+
+    return negative_rows
 
 
 def _ensure_list(values):
@@ -7437,6 +8052,8 @@ def run_plots_for_region(
     channel_output="merged",
     enable_category_skips=False,
     report_zero_yields=False,
+    rebin_plot_vars=None,
+    negative_weight_report=True,
 ):
     _SYSTEMATICS_SUMMARY_EMITTED.clear()
 
@@ -7464,6 +8081,7 @@ def run_plots_for_region(
         )
     restored_channel_labels = False
     summary_region_ctx = None
+    all_negative_rows = []
 
     if (
         is_lepton_flavor_in_pkl
@@ -7515,7 +8133,7 @@ def run_plots_for_region(
             mode_label = CHANNEL_MODE_LABELS.get(channel_mode, channel_mode)
             print(f"\n[{region_ctx.name}] Channel output mode: {mode_label}")
 
-        produce_region_plots(
+        negative_rows = produce_region_plots(
             region_ctx,
             save_dir_path,
             variables,
@@ -7525,7 +8143,11 @@ def run_plots_for_region(
             unblind=unblind,
             workers=workers,
             verbose=verbose,
+            rebin_plot_vars=rebin_plot_vars,
+            negative_weight_report=negative_weight_report,
         )
+        if negative_rows:
+            all_negative_rows.extend(negative_rows)
 
     zero_yield_summary = _summarize_zero_yield_processes(
         dict_of_hists,
@@ -7538,6 +8160,19 @@ def run_plots_for_region(
         zero_yield_summary,
         detailed=bool(report_zero_yields),
     )
+
+    if negative_weight_report:
+        report_paths = write_negative_weight_report(
+            all_negative_rows,
+            save_dir_path,
+        )
+        print(
+            "Wrote negative MC contribution report: {csv}; summary: {markdown}".format(
+                **report_paths
+            )
+        )
+    else:
+        print("Negative MC contribution report disabled by --no-negative-weight-report.")
 
     return zero_yield_summary
 
@@ -7684,6 +8319,20 @@ def build_arg_parser():
         ),
     )
     parser.add_argument(
+        "--rebin-plot-vars",
+        default="",
+        help=(
+            "Comma-separated plot-time integer rebin factors by variable, e.g. "
+            "'j0pt:2,l1conept=2'. Leftover bins are merged into the final bin."
+        ),
+    )
+    parser.add_argument(
+        "--no-negative-weight-report",
+        dest="negative_weight_report",
+        action="store_false",
+        help="Disable the end-of-run negative MC contribution CSV/Markdown report.",
+    )
+    parser.add_argument(
         "--on-process-collision",
         choices=["error", "warn", "allow"],
         default="error",
@@ -7721,7 +8370,7 @@ def build_arg_parser():
         action="store_false",
         help="Limit output to high-level progress messages (default).",
     )
-    parser.set_defaults(unblind=None, verbose=False)
+    parser.set_defaults(unblind=None, verbose=False, negative_weight_report=True)
     return parser
 
 
@@ -7811,6 +8460,23 @@ def run_with_args(args, parser):
     )
     print(f"Channel output selection: {args.channel_output}")
 
+    try:
+        rebin_plot_vars = parse_rebin_plot_vars(args.rebin_plot_vars)
+    except ValueError as exc:
+        parser.error(str(exc))
+    if rebin_plot_vars:
+        print(
+            "Plot-time rebinning requested: "
+            + ", ".join(
+                f"{var_name}:{factor}" for var_name, factor in rebin_plot_vars.items()
+            )
+        )
+    print(
+        "Negative MC contribution report: {}".format(
+            "enabled" if args.negative_weight_report else "disabled"
+        )
+    )
+
     normalized_variables = []
     if args.variables is not None:
         seen_variables = set()
@@ -7899,6 +8565,8 @@ def run_with_args(args, parser):
         channel_output=args.channel_output,
         enable_category_skips=args.enable_category_skips,
         report_zero_yields=args.report_zero_yields,
+        rebin_plot_vars=rebin_plot_vars,
+        negative_weight_report=args.negative_weight_report,
     )
     return 0
 
