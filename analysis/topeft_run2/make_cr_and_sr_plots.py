@@ -2075,6 +2075,47 @@ def _clone_with_rebinned_axis(histogram, axis_name, target_edges):
     )
 
 
+def _histogram_dense_axis_names(histogram):
+    """Return numeric dense-axis names available for plot-time rebinning."""
+
+    if histogram is None:
+        return []
+    if hasattr(histogram, "dense_axes"):
+        axes = histogram.dense_axes
+    elif isinstance(histogram, hist.Hist):
+        axes = histogram.axes
+    else:
+        return []
+    return [
+        axis.name
+        for axis in axes
+        if hasattr(axis, "edges") and not axis.__class__.__name__.endswith("Category")
+    ]
+
+
+def _resolve_sumw2_rebin_axis_name(histogram, variable):
+    """Resolve the dense axis to use when rebinding a sumw2 companion histogram."""
+
+    if histogram is None:
+        return None
+
+    dense_axis_names = _histogram_dense_axis_names(histogram)
+    candidates = [variable, f"{variable}_sumw2"]
+    for candidate in candidates:
+        if candidate in dense_axis_names:
+            return candidate
+
+    if len(dense_axis_names) == 1:
+        return dense_axis_names[0]
+
+    available = ", ".join(dense_axis_names) if dense_axis_names else "<none>"
+    tried = ", ".join(candidates)
+    raise ValueError(
+        "Cannot resolve sumw2 dense axis for variable "
+        f"'{variable}'. Tried: {tried}. Available dense axes: {available}."
+    )
+
+
 def _rebin_uncertainty_array(
     values,
     original_edges,
@@ -3964,8 +4005,9 @@ def collect_negative_rows_for_plot_stage(
     if target_edges is not None:
         hist_mc = _clone_with_rebinned_axis(hist_mc, variable, target_edges)
         hist_data = _clone_with_rebinned_axis(hist_data, variable, target_edges)
+        sumw2_axis_name = _resolve_sumw2_rebin_axis_name(hist_mc_sumw2, variable)
         hist_mc_sumw2 = _clone_with_rebinned_axis(
-            hist_mc_sumw2, variable, target_edges
+            hist_mc_sumw2, sumw2_axis_name, target_edges
         )
     return collect_negative_contribution_rows(
         variable=variable,
@@ -7526,8 +7568,9 @@ def make_region_stacked_ratio_fig(
                 h_mc = _clone_with_rebinned_axis(h_mc, var, target_edges)
                 h_data = _clone_with_rebinned_axis(h_data, var, target_edges)
                 if h_mc_sumw2 is not None:
+                    sumw2_axis_name = _resolve_sumw2_rebin_axis_name(h_mc_sumw2, var)
                     h_mc_sumw2 = _clone_with_rebinned_axis(
-                        h_mc_sumw2, var, target_edges
+                        h_mc_sumw2, sumw2_axis_name, target_edges
                     )
     else:
         target_edges = None

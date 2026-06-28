@@ -1619,11 +1619,16 @@ def test_resolve_rebin_plot_edges_skips_unlisted_variables():
     assert had_leftover is False
 
 
-def _make_negative_report_hists():
+def _make_negative_report_hists(variable="j0pt", sumw2_axis_name=None):
+    sumw2_axis_name = sumw2_axis_name or variable
     process_axis = hist.axis.StrCategory([], name="process", growth=True)
-    value_axis = hist.axis.Variable([0.0, 1.0, 2.0, 3.0, 4.0], name="j0pt")
+    value_axis = hist.axis.Variable([0.0, 1.0, 2.0, 3.0, 4.0], name=variable)
+    sumw2_axis = hist.axis.Variable(
+        [0.0, 1.0, 2.0, 3.0, 4.0],
+        name=sumw2_axis_name,
+    )
     h_mc = hist.Hist(process_axis, value_axis, storage=hist.storage.Double())
-    h_sumw2 = hist.Hist(process_axis, value_axis, storage=hist.storage.Double())
+    h_sumw2 = hist.Hist(process_axis, sumw2_axis, storage=hist.storage.Double())
     h_data = hist.Hist(process_axis, value_axis, storage=hist.storage.Double())
 
     mc_values = {
@@ -1636,14 +1641,22 @@ def _make_negative_report_hists():
     }
     for process_name, values in mc_values.items():
         for bin_index, value in enumerate(values):
-            h_mc.fill(process=process_name, j0pt=bin_index + 0.5, weight=value)
+            h_mc.fill(
+                process=process_name,
+                **{variable: bin_index + 0.5},
+                weight=value,
+            )
             h_sumw2.fill(
                 process=process_name,
-                j0pt=bin_index + 0.5,
+                **{sumw2_axis_name: bin_index + 0.5},
                 weight=sumw2_values[process_name][bin_index],
             )
     for bin_index in range(4):
-        h_data.fill(process="data", j0pt=bin_index + 0.5, weight=10.0)
+        h_data.fill(
+            process="data",
+            **{variable: bin_index + 0.5},
+            weight=10.0,
+        )
 
     return h_mc, h_sumw2, h_data
 
@@ -1710,6 +1723,114 @@ def test_negative_report_omits_positive_bins_and_reports_post_rebin_rows():
     assert process_rows[0]["yield"] == -2.0
     assert process_rows[0]["sumw2"] == 34.0
     assert all(row["yield"] < 0 for row in rows)
+
+
+def test_negative_report_post_rebin_resolves_sumw2_suffix_axis():
+    h_mc, h_sumw2, h_data = _make_negative_report_hists(
+        variable="l1conept",
+        sumw2_axis_name="l1conept_sumw2",
+    )
+    target_edges = make_cr_and_sr_plots.rebin_1d_edges([0.0, 1.0, 2.0, 3.0, 4.0], 2)
+
+    rows = make_cr_and_sr_plots.collect_negative_rows_for_plot_stage(
+        variable="l1conept",
+        channel_or_region="CR",
+        category_if_available="2los_CRZ",
+        stage="post_rebin",
+        hist_mc=h_mc,
+        hist_mc_sumw2=h_sumw2,
+        hist_data=h_data,
+        group_map={"Singleboson": ["neg_proc"], "Other": ["pos_proc"]},
+        target_edges=target_edges,
+    )
+
+    process_row = next(row for row in rows if row["level"] == "process")
+    assert process_row["variable"] == "l1conept"
+    assert process_row["stage"] == "post_rebin"
+    assert process_row["bin_low"] == 0.0
+    assert process_row["bin_high"] == 2.0
+    assert process_row["yield"] == -2.0
+    assert process_row["sumw2"] == 34.0
+    assert process_row["effective_entries"] == pytest.approx(4.0 / 34.0)
+
+
+def test_negative_report_post_rebin_without_sumw2_does_not_crash():
+    h_mc, _, h_data = _make_negative_report_hists(variable="l1conept")
+    target_edges = make_cr_and_sr_plots.rebin_1d_edges([0.0, 1.0, 2.0, 3.0, 4.0], 2)
+
+    rows = make_cr_and_sr_plots.collect_negative_rows_for_plot_stage(
+        variable="l1conept",
+        channel_or_region="CR",
+        category_if_available="2los_CRZ",
+        stage="post_rebin",
+        hist_mc=h_mc,
+        hist_mc_sumw2=None,
+        hist_data=h_data,
+        group_map={"Singleboson": ["neg_proc"], "Other": ["pos_proc"]},
+        target_edges=target_edges,
+    )
+
+    process_row = next(row for row in rows if row["level"] == "process")
+    assert process_row["yield"] == -2.0
+    assert np.isnan(process_row["sumw2"])
+    assert np.isnan(process_row["effective_entries"])
+
+
+def test_negative_report_ambiguous_sumw2_dense_axis_lists_available_axes():
+    h_mc, _, h_data = _make_negative_report_hists(variable="l1conept")
+    process_axis = hist.axis.StrCategory([], name="process", growth=True)
+    h_sumw2 = hist.Hist(
+        process_axis,
+        hist.axis.Variable([0.0, 1.0, 2.0, 3.0, 4.0], name="alt_a"),
+        hist.axis.Variable([0.0, 1.0, 2.0, 3.0, 4.0], name="alt_b"),
+        storage=hist.storage.Double(),
+    )
+    target_edges = make_cr_and_sr_plots.rebin_1d_edges([0.0, 1.0, 2.0, 3.0, 4.0], 2)
+
+    with pytest.raises(
+        ValueError,
+        match=(
+            "Cannot resolve sumw2 dense axis for variable 'l1conept'.*"
+            "Available dense axes: alt_a, alt_b"
+        ),
+    ):
+        make_cr_and_sr_plots.collect_negative_rows_for_plot_stage(
+            variable="l1conept",
+            channel_or_region="CR",
+            category_if_available="2los_CRZ",
+            stage="post_rebin",
+            hist_mc=h_mc,
+            hist_mc_sumw2=h_sumw2,
+            hist_data=h_data,
+            group_map={"Singleboson": ["neg_proc"], "Other": ["pos_proc"]},
+            target_edges=target_edges,
+        )
+
+
+def test_negative_report_missing_sumw2_dense_axis_lists_available_axes():
+    h_mc, _, h_data = _make_negative_report_hists(variable="l1conept")
+    process_axis = hist.axis.StrCategory([], name="process", growth=True)
+    h_sumw2 = hist.Hist(process_axis, storage=hist.storage.Double())
+    target_edges = make_cr_and_sr_plots.rebin_1d_edges([0.0, 1.0, 2.0, 3.0, 4.0], 2)
+
+    with pytest.raises(
+        ValueError,
+        match=(
+            "Cannot resolve sumw2 dense axis for variable 'l1conept'.*"
+            "Available dense axes: <none>"
+        ),
+    ):
+        make_cr_and_sr_plots.collect_negative_rows_for_plot_stage(
+            variable="l1conept",
+            channel_or_region="CR",
+            category_if_available="2los_CRZ",
+            stage="post_rebin",
+            hist_mc=h_mc,
+            hist_mc_sumw2=h_sumw2,
+            hist_data=h_data,
+            group_map={"Singleboson": ["neg_proc"], "Other": ["pos_proc"]},
+            target_edges=target_edges,
+        )
 
 
 def test_write_negative_weight_report_creates_csv_and_markdown(tmp_path):
