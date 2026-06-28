@@ -6011,6 +6011,30 @@ def _format_syst_preview(values, max_items=20):
     return ", ".join(values[:max_items]) + f", +{len(values) - max_items} more"
 
 
+def filter_existing_processes(requested_processes, available_processes):
+    """Return requested process labels that exist on the current process axis."""
+
+    available_set = set(available_processes)
+    present = []
+    missing = []
+    for process_name in requested_processes:
+        if process_name in available_set:
+            present.append(process_name)
+        else:
+            missing.append(process_name)
+    return present, missing
+
+
+def _process_axis_labels(histo):
+    """Return labels on the process axis, raising for non-process axis problems."""
+
+    axis_names = [getattr(axis, "name", None) for axis in getattr(histo, "axes", ())]
+    if "process" not in axis_names:
+        raise KeyError("Histogram has no 'process' axis.")
+    return tuple(yt.get_cat_lables(histo, "process"))
+
+
+
 def _discover_shape_systematics(all_syst_var_lst):
     axis_labels = [str(label) for label in all_syst_var_lst]
     axis_label_set = set(axis_labels)
@@ -6152,6 +6176,18 @@ def get_shape_syst_arrs(base_histo,group_type="CR",return_details=False):
     for syst_name in syst_var_lst:
         try:
             relevant_samples_lst = yt.get_cat_lables(base_histo.integrate("systematic",syst_name+"Up"), "process") # The samples relevant to this syst
+            relevant_samples_lst, missing_relevant_samples = filter_existing_processes(
+                relevant_samples_lst,
+                _process_axis_labels(base_histo),
+            )
+            if missing_relevant_samples:
+                _logger.debug(
+                    "Shape systematic '%s' ignored process labels absent from the current process axis: %s",
+                    syst_name,
+                    ", ".join(missing_relevant_samples),
+                )
+            if not relevant_samples_lst:
+                continue
             proc_projection = base_histo.integrate("process", relevant_samples_lst)[{"process": sum}]
             n_arr = _eval_without_underflow(
                 proc_projection.integrate("systematic", "nominal")
@@ -6373,18 +6409,31 @@ def get_decorrelated_uncty(
 
     result_dtype = np.result_type(template_zeros_arr, total_up_arr, total_down_arr)
     a_arr_sum = np.zeros_like(template_zeros_arr, dtype=result_dtype) # Just using this template_zeros_arr for its size
+    available_processes = _process_axis_labels(base_histo)
+    relevant_samples = set(relevant_samples_lst)
 
     # Loop over the groups of processes, generally the processes in the groups will be correlated and the different groups will be uncorrelated
     for proc_grp in grp_map.keys():
         proc_lst = grp_map[proc_grp]
         if proc_grp in ["Nonprompt","Flips","Data"]: continue # Renorm and fact not relevant here
         if proc_lst == []: continue # Nothing here
+        present_proc_lst, missing_proc_lst = filter_existing_processes(
+            proc_lst,
+            available_processes,
+        )
+        if missing_proc_lst:
+            _logger.debug(
+                "Shape systematic '%s' ignored process labels absent from the current process axis for group '%s': %s",
+                syst_name,
+                proc_grp,
+                ", ".join(missing_proc_lst),
+            )
+        proc_lst = [proc_name for proc_name in present_proc_lst if proc_name in relevant_samples]
+        if proc_lst == []: continue # No process in this group contributes to this systematic in the current histogram
 
         # We'll keep all signal processes as uncorrelated, similar to what's done in SR
         if proc_grp == "Signal":
             for proc_name in proc_lst:
-                if proc_name not in relevant_samples_lst: continue
-
                 n_arr_proc = _eval_without_underflow(
                     base_histo[{"process": proc_name, "systematic": "nominal"}]
                 )
