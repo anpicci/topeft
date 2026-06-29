@@ -244,7 +244,7 @@ For a focused CR check of the known narrow-bin variables, run only the variables
 
 ```bash
 YR=2017
-PKL=/groups/klannon/apiccine/preappr_260613/2017CRs_preappr_2los_CRZ-2l_CR_njets-l1conept-l1eta-j0pt-j0eta-invmass-ljptsum-nbtagsm-npvsGood_np.pkl.gz
+PKL=/path/to/plotsCR_${YR}.pkl.gz
 
 python make_cr_and_sr_plots.py \
   -f "$PKL" \
