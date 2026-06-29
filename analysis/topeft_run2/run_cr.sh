@@ -75,7 +75,8 @@ cr_var_sets=(
 # SR variable chunks are configured separately from CR so SR campaigns can use
 # dedicated histogram groups without changing the CR request.
 sr_var_sets=(
-  "njets lj0pt ptz ptz_wtau lt"
+  "njets lj0pt"
+  "ptz ptz_wtau lt"
 )
 
 ###############################################################################
@@ -123,7 +124,8 @@ sr_year_sets=(
   # 2022
   # 2022EE
   # 2023
-  2023BPix
+  # 2023BPix
+  "2022 2022EE 2023 2023BPix"
   # 2016APV
   # 2016
   # 2017
