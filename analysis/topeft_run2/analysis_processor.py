@@ -1453,6 +1453,7 @@ class AnalysisProcessor(processor.ProcessorABC):
             selections.add("atleast_6j", (njets>=6))
             selections.add("atleast_7j", (njets>=7))
             selections.add("atleast_0j", (njets>=0))
+            selections.add("atmost_2j" , (njets<=2))
             selections.add("atmost_3j" , (njets<=3))
 
             # AR/SR categories
