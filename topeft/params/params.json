@@ -36,6 +36,7 @@
     "dz_cut" : 0.1,
     "dxy_tau_cut" : 1000.0,
     "dz_tau_cut" : 0.2,
+    "tau_pog_vsjet_wp" : "Medium",
     "sip3d_cut" : 8,
 
 

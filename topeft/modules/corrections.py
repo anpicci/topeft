@@ -58,7 +58,16 @@ TAU_ENERGY_FIELDS = {
         for variation in TAU_ENERGY_SYSTEMATICS
     },
 }
-TAU_POG_VSJET_WP = "Medium"
+
+
+def get_tau_pog_vsjet_wp():
+    return get_te_param("tau_pog_vsjet_wp")
+
+
+def _resolve_tau_pog_vsjet_wp(vsJetWP):
+    if vsJetWP is not None:
+        return vsJetWP
+    return get_tau_pog_vsjet_wp()
 
 
 def is_muon_momentum_systematic(syst_var):
@@ -745,8 +754,9 @@ def _evaluate_tau_energy_components(
     }
 
 
-def AttachTauEnergyCorrections(year, taus, isData, vsJetWP=TAU_POG_VSJET_WP):
+def AttachTauEnergyCorrections(year, taus, isData, vsJetWP=None):
     """Attach complete nominal and varied tau pt/mass views from raw kinematics."""
+    vsJetWP = _resolve_tau_pog_vsjet_wp(vsJetWP)
     if "pt_raw" not in ak.fields(taus):
         taus = ak.with_field(taus, taus.pt, "pt_raw")
     if "mass_raw" not in ak.fields(taus):
@@ -800,9 +810,10 @@ def AttachTauSF(
     events,
     taus,
     year,
-    vsJetWP=TAU_POG_VSJET_WP,
+    vsJetWP=None,
     run3_fake_split=False,
 ):
+    vsJetWP = _resolve_tau_pog_vsjet_wp(vsJetWP)
     pt   = taus.pt
     dm   = taus.decayMode
     eta  = taus.eta
