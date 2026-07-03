@@ -59,17 +59,6 @@ TAU_ENERGY_FIELDS = {
     },
 }
 
-
-def get_tau_pog_vsjet_wp():
-    return get_te_param("tau_pog_vsjet_wp")
-
-
-def _resolve_tau_pog_vsjet_wp(vsJetWP):
-    if vsJetWP is not None:
-        return vsJetWP
-    return get_tau_pog_vsjet_wp()
-
-
 def is_muon_momentum_systematic(syst_var):
     return syst_var in RUN3_MUON_MOMENTUM_SYSTEMATICS
 
@@ -756,7 +745,9 @@ def _evaluate_tau_energy_components(
 
 def AttachTauEnergyCorrections(year, taus, isData, vsJetWP=None):
     """Attach complete nominal and varied tau pt/mass views from raw kinematics."""
-    vsJetWP = _resolve_tau_pog_vsjet_wp(vsJetWP)
+    is_run2 = str(year).startswith("201")
+    if vsJetWP is None:
+        vsJetWP = get_te_param("run2_tau_t_tag" if is_run2 else "run3_tau_t_tag")
     if "pt_raw" not in ak.fields(taus):
         taus = ak.with_field(taus, taus.pt, "pt_raw")
     if "mass_raw" not in ak.fields(taus):
@@ -813,7 +804,6 @@ def AttachTauSF(
     vsJetWP=None,
     run3_fake_split=False,
 ):
-    vsJetWP = _resolve_tau_pog_vsjet_wp(vsJetWP)
     pt   = taus.pt
     dm   = taus.decayMode
     eta  = taus.eta
@@ -822,6 +812,8 @@ def AttachTauSF(
 
     is_run2 = year.startswith("201")
     is_run3 = not is_run2
+    if vsJetWP is None:
+        vsJetWP = get_te_param("run2_tau_t_tag" if is_run2 else "run3_tau_t_tag")
 
     stored_muon_mask = None
     if "ismTight" in ak.fields(taus):

@@ -3,11 +3,18 @@ from types import SimpleNamespace
 
 import awkward as ak
 import correctionlib
+import json
 import numpy as np
 import pytest
 from topcoffea.modules.paths import topcoffea_path
 
 import topeft.modules.corrections as corrections
+
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+PARAMS_PATH = REPO_ROOT / "topeft" / "params" / "params.json"
+PROCESSOR_PATH = REPO_ROOT / "analysis" / "topeft_run2" / "analysis_processor.py"
+CORRECTIONS_PATH = REPO_ROOT / "topeft" / "modules" / "corrections.py"
 
 
 class _RecordingCorrection:
@@ -72,7 +79,7 @@ def _tau_record(year, gen_part_flav):
         ("2022", "DeepTau2018v2p5VSjet", "TauFakeSF_Run3"),
     ],
 )
-def test_tau_pog_vsjet_payload_uses_aligned_medium_wp_and_fake_sf_stays_separate(
+def test_tau_vsjet_payload_uses_aligned_medium_wp_and_fake_sf_stays_separate(
     monkeypatch,
     year,
     vsjet_correction_name,
@@ -94,7 +101,9 @@ def test_tau_pog_vsjet_payload_uses_aligned_medium_wp_and_fake_sf_stays_separate
         {},
         _tau_record(year, gen_part_flav=5),
         year,
-        vsJetWP=corrections.get_tau_pog_vsjet_wp(),
+        vsJetWP=corrections.get_te_param(
+            "run2_tau_t_tag" if year.startswith("201") else "run3_tau_t_tag"
+        ),
     )
 
     vsjet_calls = recording_corrections[vsjet_correction_name].calls
@@ -134,14 +143,23 @@ def test_jet_faking_tau_sf_keeps_its_dedicated_non_pog_payload(
         {},
         _tau_record(year, gen_part_flav=0),
         year,
-        vsJetWP=corrections.get_tau_pog_vsjet_wp(),
+        vsJetWP=corrections.get_te_param(
+            "run2_tau_t_tag" if year.startswith("201") else "run3_tau_t_tag"
+        ),
     )
 
     assert fake_sf_key in recording_evaluator.keys
 
 
-def test_params_json_defines_canonical_tau_pog_vsjet_wp():
-    assert corrections.get_tau_pog_vsjet_wp() == "Medium"
+def test_params_json_defines_run2_and_run3_tau_tags():
+    params = json.loads(PARAMS_PATH.read_text())
+    stale_key = "tau_" + "pog_vsjet_wp"
+
+    assert params["run2_tau_t_tag"] == "Medium"
+    assert params["run3_tau_t_tag"] == "Medium"
+    assert params["run2_tau_fo_tag"] == "Loose"
+    assert params["run3_tau_fo_tag"] == "Loose"
+    assert stale_key not in params
 
 
 def test_run2_deeptau2017_vsjet_schema_matches_evaluate_call_order():
@@ -164,15 +182,33 @@ def test_run2_deeptau2017_vsjet_schema_matches_evaluate_call_order():
 
 
 def test_processor_uses_params_tau_wp_and_loose_tau_fo_tag_for_run2_and_run3():
-    processor_source = (
-        Path(__file__).resolve().parents[1]
-        / "analysis"
-        / "topeft_run2"
-        / "analysis_processor.py"
-    ).read_text()
+    processor_source = PROCESSOR_PATH.read_text()
 
-    assert corrections.get_tau_pog_vsjet_wp() == "Medium"
-    assert "tau_T_tag = get_tau_pog_vsjet_wp()" in processor_source
-    assert 'tau_fo_tag = "Loose"' in processor_source
+    assert "tau_T_tag = get_te_param(" in processor_source
+    assert "tau_fo_tag = get_te_param(" in processor_source
+    for key in (
+        "run2_tau_t_tag",
+        "run3_tau_t_tag",
+        "run2_tau_fo_tag",
+        "run3_tau_fo_tag",
+    ):
+        assert key in processor_source
+    assert 'tau_fo_tag = "Loose"' not in processor_source
     assert 'tau_fo_tag = "VLoose" if is_run2 else "Loose"' not in processor_source
     assert 'tau_T_tag = "Loose" if is_run2 else "Medium"' not in processor_source
+
+
+def test_tau_tag_params_use_direct_access_without_redundant_helpers():
+    corrections_source = CORRECTIONS_PATH.read_text()
+    processor_source = PROCESSOR_PATH.read_text()
+    rejected_getter = "get_tau_" + "pog_vsjet_wp"
+    rejected_resolver = "_resolve_tau_" + "pog_vsjet_wp"
+    stale_key = "tau_" + "pog_vsjet_wp"
+
+    assert f"def {rejected_getter}" not in corrections_source
+    assert f"def {rejected_resolver}" not in corrections_source
+    assert rejected_getter not in processor_source
+    assert rejected_resolver not in corrections_source
+    assert stale_key not in corrections_source
+    assert stale_key not in processor_source
+    assert 'get_te_param("run2_tau_t_tag" if is_run2 else "run3_tau_t_tag")' in corrections_source
