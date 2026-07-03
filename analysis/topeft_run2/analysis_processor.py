@@ -22,7 +22,7 @@ import topcoffea.modules.corrections as tc_cor
 from topeft.modules.axes import info as axes_info
 from topeft.modules.axes import info_2d as axes_info_2d
 from topeft.modules.paths import topeft_path
-from topeft.modules.corrections import ApplyJetCorrections, ApplyMETSystematics, GetBtagEff, AttachMuonSF, AttachElectronSF, AttachElectronCorrections, AttachTauSF, AttachTauEnergyCorrections, ApplyTauEnergySystematics, AttachPerLeptonFR, AttachMuonMomentumCorrections, ApplyMuonMomentumSystematics, get_supported_muon_momentum_systematics, get_supported_tau_energy_systematics, ApplyJetSystematics, GetTriggerSF, ApplyJetVetoMaps, get_selected_met, get_selected_raw_met, get_corr_t1_met_jets, get_supported_jet_systematics, get_supported_met_systematics, is_met_unclustered_systematic, resolve_forward_eta_stochastic_jer_suppression, use_type1_met
+from topeft.modules.corrections import ApplyJetCorrections, ApplyMETSystematics, GetBtagEff, AttachMuonSF, AttachElectronSF, AttachElectronCorrections, AttachTauSF, AttachTauEnergyCorrections, ApplyTauEnergySystematics, AttachPerLeptonFR, AttachMuonMomentumCorrections, ApplyMuonMomentumSystematics, get_supported_muon_momentum_systematics, get_supported_tau_energy_systematics, ApplyJetSystematics, GetTriggerSF, ApplyJetVetoMaps, get_selected_met, get_selected_raw_met, get_corr_t1_met_jets, get_supported_jet_systematics, get_supported_met_systematics, is_met_unclustered_systematic, resolve_forward_eta_stochastic_jer_suppression, use_type1_met, TAU_POG_VSJET_WP
 import topeft.modules.event_selection as te_es
 import topeft.modules.object_selection as te_os
 from topeft.modules.ttgamma_photon_history import (
@@ -410,6 +410,7 @@ class AnalysisProcessor(processor.ProcessorABC):
         explicit_zll_cr_channels = {
             "2los_CRZ",
             "2lss_CRflip",
+            "3l_CR",
         }
         # Diagnostic Z-candidate observable for the SFOS on-Z subset of these
         # selected 2lOS+tau CR events; the categories are not globally on-Z.
@@ -669,7 +670,7 @@ class AnalysisProcessor(processor.ProcessorABC):
 
         if self.enable_tau_blocks:
             tau_fo_tag = "VLoose" if is_run2 else "Loose"
-            tau_T_tag = "Loose" if is_run2 else "Medium"
+            tau_T_tag = TAU_POG_VSJET_WP
             taus = AttachTauEnergyCorrections(
                 year, tau, isData, vsJetWP=tau_T_tag
             )
