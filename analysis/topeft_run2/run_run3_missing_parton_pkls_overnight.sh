@@ -52,8 +52,13 @@ Run one complete campaign in this order:
   4. TOP-22-006 central NLO tZq and private LO tllq diagnostic PKLs.
 
 The operator must prepare the repository, environment, and execution service
-before starting this command.  A fresh campaign root must be absent or empty.
-Use --resume only for an interrupted campaign created by this driver.
+before starting this command.  The campaign root must be an absolute path; a
+fresh root must be absent or empty.  Use --resume only for an interrupted
+campaign created by this driver.
+
+Canonical launch directory:
+  cd /users/apiccine/work/correction-lib/topeft/analysis/topeft_run2
+  ./run_run3_missing_parton_pkls_overnight.sh /absolute/campaign_root
 
 Environment overrides:
   ALL_ANALYSIS_CHUNKS      integer >= 2 (default: 2)
@@ -179,6 +184,7 @@ parse_args() {
   if [[ -z "${output_root}" && "${resume_mode}" == false ]]; then
     output_root="${default_output_parent}/run3_missing_parton_$(timestamp_utc)"
   fi
+  [[ "${output_root}" == /* ]] || die "output root must be an absolute path"
 }
 
 assert_operational_prerequisites() {
@@ -451,6 +457,127 @@ role_labels_csv() {
   printf '%s\n' "${labels[*]}"
 }
 
+run_histogram_validator() {
+  run_python - "$@" <<'PY'
+import json
+import sys
+
+import awkward as ak
+import numpy as np
+from topeft.modules.datacard_tools import load_and_merge_histogram_pkls
+
+
+def normalize_histogram_values(values):
+    """Return a dense numerical view without mutating the histogram values.
+
+    Hist categorical combinations that were never populated can be represented
+    as Awkward ``None`` or as masked cells.  Those are structural empties, so
+    they become zero for validation.  All present numerical values are kept
+    unchanged and are checked for NaN or infinity by ``require_finite``.
+    """
+    if isinstance(values, ak.highlevel.Array):
+        filled = ak.fill_none(values, 0, axis=None)
+        return np.asarray(ak.to_numpy(filled, allow_missing=False))
+
+    if np.ma.isMaskedArray(values):
+        return np.asarray(np.ma.asarray(values).filled(0))
+
+    array = np.asarray(values)
+    if array.dtype == object:
+        filled = ak.fill_none(ak.Array(array.tolist()), 0, axis=None)
+        return np.asarray(ak.to_numpy(filled, allow_missing=False))
+    return array
+
+
+def require_finite(values, context):
+    normalized = normalize_histogram_values(values)
+    if not np.isfinite(normalized).all():
+        raise RuntimeError(f"{context} contains NaN or infinite bin content")
+    return normalized
+
+
+def load(path_or_paths, **kwargs):
+    if isinstance(path_or_paths, str):
+        path_or_paths = [path_or_paths]
+    return load_and_merge_histogram_pkls(path_or_paths, require_sumw2=True, **kwargs)
+
+
+mode, *args = sys.argv[1:]
+if mode == "pkl":
+    path, role, scope, labels_csv = args
+    expected_labels = [item for item in labels_csv.split(",") if item]
+    histograms, merge_report = load(path)
+    for key in ("njets", "njets_sumw2"):
+        if key not in histograms:
+            raise RuntimeError(f"missing required histogram: {key}")
+        histogram = histograms[key]
+        axis_names = [axis.name for axis in histogram.axes]
+        missing_axes = [name for name in ("process", "channel", "systematic", "appl") if name not in axis_names]
+        if missing_axes:
+            raise RuntimeError(f"{key} lacks required axes: {missing_axes}")
+        require_finite(histogram.values(flow=True), key)
+
+    njets = histograms["njets"]
+    processes = sorted(map(str, njets.axes["process"]))
+    missing_labels = sorted(set(expected_labels) - set(processes))
+    if missing_labels:
+        raise RuntimeError(f"expected process labels are absent: {missing_labels}; got {processes}")
+    channels = sorted(map(str, njets.axes["channel"]))
+    applications = sorted(map(str, njets.axes["appl"]))
+    if not channels:
+        raise RuntimeError("njets has no populated channel labels")
+    if not applications or not all(item.startswith("isSR") for item in applications):
+        raise RuntimeError(f"expected SR-only application labels, got {applications}")
+    print(json.dumps({
+        "axes": [axis.name for axis in njets.axes],
+        "channels": channels,
+        "histograms": sorted(histograms),
+        "loader": "pass",
+        "merge_inputs": merge_report["num_inputs"],
+        "processes": processes,
+        "role": role,
+        "scope": scope,
+    }, sort_keys=True))
+elif mode == "chunk_partition":
+    role, *paths = args
+    seen_channels = {}
+    for path in paths:
+        histograms, _ = load(path)
+        histogram = histograms["njets"]
+        for channel in map(str, histogram.axes["channel"]):
+            values = require_finite(
+                histogram[{"channel": channel}].values(flow=True),
+                f"njets channel {channel} in {path}",
+            )
+            if np.any(np.abs(values) > 0.0):
+                if channel in seen_channels:
+                    raise RuntimeError(
+                        f"duplicate populated channel '{channel}' in chunk outputs "
+                        f"{seen_channels[channel]} and {path}"
+                    )
+                seen_channels[channel] = path
+    if not seen_channels:
+        raise RuntimeError("no populated channels were found in chunk outputs")
+    print(json.dumps({"role": role, "populated_channel_count": len(seen_channels), "result": "pass"}, sort_keys=True))
+elif mode == "merged_totals":
+    canonical_path, *raw_paths = args
+    raw, _ = load(raw_paths, on_process_collision="allow")
+    canonical, _ = load(canonical_path)
+    for key in ("njets", "njets_sumw2"):
+        if key not in raw or key not in canonical:
+            raise RuntimeError(f"missing {key} during merged-total validation")
+        raw_values = require_finite(raw[key].values(flow=True), f"raw {key}")
+        canonical_values = require_finite(canonical[key].values(flow=True), f"canonical {key}")
+        if raw_values.shape != canonical_values.shape:
+            raise RuntimeError(f"{key} shape mismatch: {raw_values.shape} != {canonical_values.shape}")
+        if not np.allclose(raw_values, canonical_values, rtol=1.0e-12, atol=1.0e-12):
+            raise RuntimeError(f"{key} totals differ from the accumulated raw chunks")
+    print(json.dumps({"raw_chunk_count": len(raw_paths), "result": "pass"}, sort_keys=True))
+else:
+    raise RuntimeError(f"unknown histogram validation mode: {mode}")
+PY
+}
+
 validate_pkl() {
   local path="$1"
   local role="$2"
@@ -470,50 +597,7 @@ validate_pkl() {
     return 1
   fi
   labels_csv="$(role_labels_csv "${role}")" || return 1
-  if ! details="$(run_python - "${path}" "${role}" "${scope}" "${labels_csv}" <<'PY'
-import json
-import sys
-
-import numpy as np
-from topeft.modules.datacard_tools import load_and_merge_histogram_pkls
-
-path, role, scope, labels_csv = sys.argv[1:]
-expected_labels = [item for item in labels_csv.split(",") if item]
-histograms, merge_report = load_and_merge_histogram_pkls([path], require_sumw2=True)
-for key in ("njets", "njets_sumw2"):
-    if key not in histograms:
-        raise RuntimeError(f"missing required histogram: {key}")
-    histogram = histograms[key]
-    axis_names = [axis.name for axis in histogram.axes]
-    missing_axes = [name for name in ("process", "channel", "systematic", "appl") if name not in axis_names]
-    if missing_axes:
-        raise RuntimeError(f"{key} lacks required axes: {missing_axes}")
-    if not np.isfinite(np.asarray(histogram.values(flow=True))).all():
-        raise RuntimeError(f"{key} contains NaN or infinite bin content")
-
-njets = histograms["njets"]
-processes = sorted(map(str, njets.axes["process"]))
-missing_labels = sorted(set(expected_labels) - set(processes))
-if missing_labels:
-    raise RuntimeError(f"expected process labels are absent: {missing_labels}; got {processes}")
-channels = sorted(map(str, njets.axes["channel"]))
-applications = sorted(map(str, njets.axes["appl"]))
-if not channels:
-    raise RuntimeError("njets has no populated channel labels")
-if not applications or not all(item.startswith("isSR") for item in applications):
-    raise RuntimeError(f"expected SR-only application labels, got {applications}")
-print(json.dumps({
-    "axes": [axis.name for axis in njets.axes],
-    "channels": channels,
-    "histograms": sorted(histograms),
-    "loader": "pass",
-    "merge_inputs": merge_report["num_inputs"],
-    "processes": processes,
-    "role": role,
-    "scope": scope,
-}, sort_keys=True))
-PY
-)"; then
+  if ! details="$(run_histogram_validator pkl "${path}" "${role}" "${scope}" "${labels_csv}")"; then
     printf 'PKL validation failed: loader or histogram contract failed: %s\n' "${path}" >&2
     return 1
   fi
@@ -529,33 +613,7 @@ validate_chunk_partition() {
   shift
   local details
 
-  if ! details="$(run_python - "${role}" "$@" <<'PY'
-import json
-import sys
-
-import numpy as np
-from topeft.modules.datacard_tools import load_and_merge_histogram_pkls
-
-role = sys.argv[1]
-paths = sys.argv[2:]
-seen_channels = {}
-for path in paths:
-    histograms, _ = load_and_merge_histogram_pkls([path], require_sumw2=True)
-    histogram = histograms["njets"]
-    for channel in map(str, histogram.axes["channel"]):
-        values = np.asarray(histogram[{"channel": channel}].values(flow=True))
-        if np.any(np.abs(values) > 0.0):
-            if channel in seen_channels:
-                raise RuntimeError(
-                    f"duplicate populated channel '{channel}' in chunk outputs "
-                    f"{seen_channels[channel]} and {path}"
-                )
-            seen_channels[channel] = path
-if not seen_channels:
-    raise RuntimeError("no populated channels were found in chunk outputs")
-print(json.dumps({"role": role, "populated_channel_count": len(seen_channels), "result": "pass"}, sort_keys=True))
-PY
-)"; then
+  if ! details="$(run_histogram_validator chunk_partition "${role}" "$@")"; then
     printf 'chunk-partition validation failed for role: %s\n' "${role}" >&2
     return 1
   fi
@@ -567,29 +625,7 @@ validate_merged_totals() {
   shift
   local details
 
-  if ! details="$(run_python - "${canonical_path}" "$@" <<'PY'
-import json
-import sys
-
-import numpy as np
-from topeft.modules.datacard_tools import load_and_merge_histogram_pkls
-
-canonical_path = sys.argv[1]
-raw_paths = sys.argv[2:]
-raw, _ = load_and_merge_histogram_pkls(raw_paths, on_process_collision="allow", require_sumw2=True)
-canonical, _ = load_and_merge_histogram_pkls([canonical_path], require_sumw2=True)
-for key in ("njets", "njets_sumw2"):
-    if key not in raw or key not in canonical:
-        raise RuntimeError(f"missing {key} during merged-total validation")
-    raw_values = np.asarray(raw[key].values(flow=True))
-    canonical_values = np.asarray(canonical[key].values(flow=True))
-    if raw_values.shape != canonical_values.shape:
-        raise RuntimeError(f"{key} shape mismatch: {raw_values.shape} != {canonical_values.shape}")
-    if not np.allclose(raw_values, canonical_values, rtol=1.0e-12, atol=1.0e-12):
-        raise RuntimeError(f"{key} totals differ from the accumulated raw chunks")
-print(json.dumps({"raw_chunk_count": len(raw_paths), "result": "pass"}, sort_keys=True))
-PY
-)"; then
+  if ! details="$(run_histogram_validator merged_totals "${canonical_path}" "$@")"; then
     printf 'merged-total validation failed: %s\n' "${canonical_path}" >&2
     return 1
   fi
