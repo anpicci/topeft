@@ -2,7 +2,8 @@
 #
 # Execute one Run 3 missing-parton input-pkl campaign.  Repository and
 # environment preparation are the operator's responsibility before invocation.
-# This driver only runs and validates PKL production; it never builds payloads.
+# This driver only orchestrates PKL production and operational output checks;
+# deep histogram-content auditing and payload work are separate tasks.
 
 set -Eeuo pipefail
 
@@ -35,8 +36,6 @@ campaign_lock_dir=""
 declare -a all_analysis_groups=()
 declare -a top22006_groups=()
 declare -a chunk_specs=()
-declare -a central_process_labels=()
-declare -a private_process_labels=()
 declare -a resolved_command=()
 
 usage() {
@@ -50,6 +49,10 @@ Run one complete campaign in this order:
   2. all-analysis private LO tllq category chunks;
   3. canonical merged all-analysis central/private PKLs;
   4. TOP-22-006 central NLO tZq and private LO tllq diagnostic PKLs.
+
+A successful exit establishes only command completion and operational output
+checks (regular file, nonempty, gzip integrity, expected counts, checksums).
+Histogram content and physics auditing are intentionally performed later.
 
 The operator must prepare the repository, environment, and execution service
 before starting this command.  The campaign root must be an absolute path; a
@@ -276,7 +279,7 @@ initialize_existing_campaign() {
   [[ "$(awk -F= '$1 == "state" {print $2}' "${status_file}")" != "success" ]] \
     || die "a successful campaign is immutable and cannot be resumed"
   acquire_campaign_lock
-  record_retry "resume_started" "campaign root accepted; completed outputs will be revalidated"
+  record_retry "resume_started" "campaign root accepted; completed outputs will receive operational checks"
 }
 
 read_json_keys() {
@@ -318,50 +321,6 @@ build_chunk_specs() {
     chunk_specs+=("${groups[*]}")
     start_index=$((start_index + chunk_size))
   done
-}
-
-cfg_json_relpaths() {
-  local cfg_relpath="$1"
-  local cfg_path="${topeft_root}/${cfg_relpath}"
-  local line
-  local token
-  local absolute_path
-
-  while IFS= read -r line || [[ -n "${line}" ]]; do
-    line="${line%%#*}"
-    line="${line//[[:space:]]/}"
-    [[ -n "${line}" ]] || continue
-    [[ "${line}" == root://* ]] && continue
-    for token in ${line//,/ }; do
-      absolute_path="$(realpath -m "${script_dir}/${token}")"
-      [[ "${absolute_path}" == "${topeft_root}/"* ]] \
-        || die "cfg input lies outside topeft: ${token}"
-      [[ -f "${absolute_path}" ]] || die "cfg references a missing JSON: ${absolute_path}"
-      printf '%s\n' "${absolute_path#"${topeft_root}/"}"
-    done
-  done < "${cfg_path}"
-}
-
-load_process_labels() {
-  local cfg_relpath="$1"
-  local -n labels_ref="$2"
-  local -a json_relpaths=()
-
-  mapfile -t json_relpaths < <(cfg_json_relpaths "${cfg_relpath}")
-  mapfile -t labels_ref < <(
-    run_python - "${topeft_root}" "${json_relpaths[@]}" <<'PY'
-import json
-import pathlib
-import sys
-
-root = pathlib.Path(sys.argv[1])
-for relpath in sys.argv[2:]:
-    with (root / relpath).open(encoding="utf-8") as stream:
-        payload = json.load(stream)
-    print(payload["histAxisName"])
-PY
-  )
-  (( ${#labels_ref[@]} == 4 )) || die "${cfg_relpath} must resolve exactly four Run 3 process labels"
 }
 
 write_output_contract() {
@@ -433,7 +392,7 @@ build_run_analysis_command() {
   fi
 }
 
-record_validation() {
+record_operational_check() {
   local path="$1"
   local role="$2"
   local scope="$3"
@@ -445,191 +404,32 @@ record_validation() {
     "${path}" "${role}" "${scope}" "${classification}" "${result}" "${detail}" >> "${validation_file}"
 }
 
-role_labels_csv() {
-  local role="$1"
-  local -a labels=()
-  case "${role}" in
-    central_tzq) labels=("${central_process_labels[@]}") ;;
-    private_tllq) labels=("${private_process_labels[@]}") ;;
-    *) die "unknown role: ${role}" ;;
-  esac
-  local IFS=,
-  printf '%s\n' "${labels[*]}"
-}
-
-run_histogram_validator() {
-  run_python - "$@" <<'PY'
-import json
-import sys
-
-import awkward as ak
-import numpy as np
-from topeft.modules.datacard_tools import load_and_merge_histogram_pkls
-
-
-def normalize_histogram_values(values):
-    """Return a dense numerical view without mutating the histogram values.
-
-    Hist categorical combinations that were never populated can be represented
-    as Awkward ``None`` or as masked cells.  Those are structural empties, so
-    they become zero for validation.  All present numerical values are kept
-    unchanged and are checked for NaN or infinity by ``require_finite``.
-    """
-    if isinstance(values, ak.highlevel.Array):
-        filled = ak.fill_none(values, 0, axis=None)
-        return np.asarray(ak.to_numpy(filled, allow_missing=False))
-
-    if np.ma.isMaskedArray(values):
-        return np.asarray(np.ma.asarray(values).filled(0))
-
-    array = np.asarray(values)
-    if array.dtype == object:
-        filled = ak.fill_none(ak.Array(array.tolist()), 0, axis=None)
-        return np.asarray(ak.to_numpy(filled, allow_missing=False))
-    return array
-
-
-def require_finite(values, context):
-    normalized = normalize_histogram_values(values)
-    if not np.isfinite(normalized).all():
-        raise RuntimeError(f"{context} contains NaN or infinite bin content")
-    return normalized
-
-
-def load(path_or_paths, **kwargs):
-    if isinstance(path_or_paths, str):
-        path_or_paths = [path_or_paths]
-    return load_and_merge_histogram_pkls(path_or_paths, require_sumw2=True, **kwargs)
-
-
-mode, *args = sys.argv[1:]
-if mode == "pkl":
-    path, role, scope, labels_csv = args
-    expected_labels = [item for item in labels_csv.split(",") if item]
-    histograms, merge_report = load(path)
-    for key in ("njets", "njets_sumw2"):
-        if key not in histograms:
-            raise RuntimeError(f"missing required histogram: {key}")
-        histogram = histograms[key]
-        axis_names = [axis.name for axis in histogram.axes]
-        missing_axes = [name for name in ("process", "channel", "systematic", "appl") if name not in axis_names]
-        if missing_axes:
-            raise RuntimeError(f"{key} lacks required axes: {missing_axes}")
-        require_finite(histogram.values(flow=True), key)
-
-    njets = histograms["njets"]
-    processes = sorted(map(str, njets.axes["process"]))
-    missing_labels = sorted(set(expected_labels) - set(processes))
-    if missing_labels:
-        raise RuntimeError(f"expected process labels are absent: {missing_labels}; got {processes}")
-    channels = sorted(map(str, njets.axes["channel"]))
-    applications = sorted(map(str, njets.axes["appl"]))
-    if not channels:
-        raise RuntimeError("njets has no populated channel labels")
-    if not applications or not all(item.startswith("isSR") for item in applications):
-        raise RuntimeError(f"expected SR-only application labels, got {applications}")
-    print(json.dumps({
-        "axes": [axis.name for axis in njets.axes],
-        "channels": channels,
-        "histograms": sorted(histograms),
-        "loader": "pass",
-        "merge_inputs": merge_report["num_inputs"],
-        "processes": processes,
-        "role": role,
-        "scope": scope,
-    }, sort_keys=True))
-elif mode == "chunk_partition":
-    role, *paths = args
-    seen_channels = {}
-    for path in paths:
-        histograms, _ = load(path)
-        histogram = histograms["njets"]
-        for channel in map(str, histogram.axes["channel"]):
-            values = require_finite(
-                histogram[{"channel": channel}].values(flow=True),
-                f"njets channel {channel} in {path}",
-            )
-            if np.any(np.abs(values) > 0.0):
-                if channel in seen_channels:
-                    raise RuntimeError(
-                        f"duplicate populated channel '{channel}' in chunk outputs "
-                        f"{seen_channels[channel]} and {path}"
-                    )
-                seen_channels[channel] = path
-    if not seen_channels:
-        raise RuntimeError("no populated channels were found in chunk outputs")
-    print(json.dumps({"role": role, "populated_channel_count": len(seen_channels), "result": "pass"}, sort_keys=True))
-elif mode == "merged_totals":
-    canonical_path, *raw_paths = args
-    raw, _ = load(raw_paths, on_process_collision="allow")
-    canonical, _ = load(canonical_path)
-    for key in ("njets", "njets_sumw2"):
-        if key not in raw or key not in canonical:
-            raise RuntimeError(f"missing {key} during merged-total validation")
-        raw_values = require_finite(raw[key].values(flow=True), f"raw {key}")
-        canonical_values = require_finite(canonical[key].values(flow=True), f"canonical {key}")
-        if raw_values.shape != canonical_values.shape:
-            raise RuntimeError(f"{key} shape mismatch: {raw_values.shape} != {canonical_values.shape}")
-        if not np.allclose(raw_values, canonical_values, rtol=1.0e-12, atol=1.0e-12):
-            raise RuntimeError(f"{key} totals differ from the accumulated raw chunks")
-    print(json.dumps({"raw_chunk_count": len(raw_paths), "result": "pass"}, sort_keys=True))
-else:
-    raise RuntimeError(f"unknown histogram validation mode: {mode}")
-PY
-}
-
-validate_pkl() {
+check_output_file() {
   local path="$1"
   local role="$2"
   local scope="$3"
   local classification="$4"
-  local labels_csv
-  local details
   local file_size
   local checksum
 
+  if [[ ! -f "${path}" ]]; then
+    printf 'output check failed: missing regular file: %s\n' "${path}" >&2
+    return 1
+  fi
   if [[ ! -s "${path}" ]]; then
-    printf 'PKL validation failed: missing or empty pkl: %s\n' "${path}" >&2
+    printf 'output check failed: empty file: %s\n' "${path}" >&2
     return 1
   fi
   if ! gzip -t "${path}"; then
-    printf 'PKL validation failed: gzip integrity check failed: %s\n' "${path}" >&2
-    return 1
-  fi
-  labels_csv="$(role_labels_csv "${role}")" || return 1
-  if ! details="$(run_histogram_validator pkl "${path}" "${role}" "${scope}" "${labels_csv}")"; then
-    printf 'PKL validation failed: loader or histogram contract failed: %s\n' "${path}" >&2
+    printf 'output check failed: gzip integrity check failed: %s\n' "${path}" >&2
     return 1
   fi
   file_size="$(stat -c '%s' "${path}")"
   checksum="$(sha256sum "${path}" | awk '{print $1}')"
-  printf 'validated_pkl: %s\n' "${details}"
-  record_validation "${path}" "${role}" "${scope}" "${classification}" "pass" \
-    "bytes=${file_size}; sha256=${checksum}; ${details}"
-}
-
-validate_chunk_partition() {
-  local role="$1"
-  shift
-  local details
-
-  if ! details="$(run_histogram_validator chunk_partition "${role}" "$@")"; then
-    printf 'chunk-partition validation failed for role: %s\n' "${role}" >&2
-    return 1
-  fi
-  printf 'chunk_partition: %s\n' "${details}"
-}
-
-validate_merged_totals() {
-  local canonical_path="$1"
-  shift
-  local details
-
-  if ! details="$(run_histogram_validator merged_totals "${canonical_path}" "$@")"; then
-    printf 'merged-total validation failed: %s\n' "${canonical_path}" >&2
-    return 1
-  fi
-  printf 'merged_totals: %s\n' "${details}"
+  printf 'output_check: path=%s bytes=%s sha256=%s gzip=pass\n' \
+    "${path}" "${file_size}" "${checksum}"
+  record_operational_check "${path}" "${role}" "${scope}" "${classification}" "pass" \
+    "exists=pass; nonempty=pass; gzip=pass; bytes=${file_size}; sha256=${checksum}"
 }
 
 quarantine_invalid_output() {
@@ -665,7 +465,7 @@ execute_analysis_output() {
   local classification="$7"
 
   if [[ "${resume_mode}" == true && -e "${output_path}" ]]; then
-    if validate_pkl "${output_path}" "${role}" "${scope}" "${classification}"; then
+    if check_output_file "${output_path}" "${role}" "${scope}" "${classification}"; then
       record_retry "resume_skip_valid" "${output_path}"
       return 0
     fi
@@ -675,7 +475,7 @@ execute_analysis_output() {
   mkdir -p "$(dirname -- "${output_path}")"
   build_run_analysis_command "${role}" "${scope}" "${output_path}" "${category_spec}"
   run_step "${phase}_${role}_${chunk}" "${resolved_command[@]}"
-  validate_pkl "${output_path}" "${role}" "${scope}" "${classification}"
+  check_output_file "${output_path}" "${role}" "${scope}" "${classification}"
 }
 
 canonical_path_for_role() {
@@ -705,6 +505,16 @@ validate_raw_output_count() {
     || die "expected ${all_analysis_chunks} raw ${role} chunk outputs, found ${#raw_paths[@]}"
 }
 
+validate_single_output_count() {
+  local label="$1"
+  local path="$2"
+  local -a matches=()
+
+  mapfile -t matches < <(find "$(dirname -- "${path}")" -maxdepth 1 -type f \
+    -name "$(basename -- "${path}")" -print)
+  (( ${#matches[@]} == 1 )) || die "expected exactly one ${label} output, found ${#matches[@]}"
+}
+
 canonicalize_role() {
   local role="$1"
   local canonical_path
@@ -721,11 +531,9 @@ canonicalize_role() {
     raw_paths+=("${raw_path}")
   done
   validate_raw_output_count "${role}"
-  validate_chunk_partition "${role}" "${raw_paths[@]}"
 
   if [[ "${resume_mode}" == true && -e "${canonical_path}" ]]; then
-    if validate_pkl "${canonical_path}" "${role}" "all_analysis" "canonical" \
-      && validate_merged_totals "${canonical_path}" "${raw_paths[@]}"; then
+    if check_output_file "${canonical_path}" "${role}" "all_analysis" "canonical"; then
       record_retry "resume_skip_valid" "${canonical_path}"
       return 0
     fi
@@ -741,8 +549,7 @@ canonicalize_role() {
     "${raw_paths[@]}" --merge-only --on-process-collision allow \
     --merge-report "${merge_report_path}" --cache-merged-pkl "${canonical_path}" \
     --out-dir "$(dirname -- "${canonical_path}")"
-  validate_pkl "${canonical_path}" "${role}" "all_analysis" "canonical"
-  validate_merged_totals "${canonical_path}" "${raw_paths[@]}"
+  check_output_file "${canonical_path}" "${role}" "all_analysis" "canonical"
 }
 
 execute_all_analysis() {
@@ -766,7 +573,7 @@ execute_all_analysis() {
   for role in central_tzq private_tllq; do
     canonicalize_role "${role}"
   done
-  write_status "all_analysis_validated" "all raw chunks and canonical role inputs passed validation"
+  write_status "all_analysis_checked" "all raw chunks and canonical role inputs passed operational checks"
 }
 
 execute_top22006() {
@@ -779,7 +586,7 @@ execute_top22006() {
     execute_analysis_output "top22006" "${role}" "top22006" "single" \
       "${output_path}" "${top22006_groups[*]}" "diagnostic"
   done
-  write_status "top22006_validated" "both TOP-22-006 diagnostic PKLs passed validation"
+  write_status "top22006_checked" "both TOP-22-006 diagnostic PKLs passed operational checks"
 }
 
 validate_final_outputs() {
@@ -788,23 +595,15 @@ validate_final_outputs() {
   local role
   local chunk
   local path
-  local -a raw_paths=()
-  local chunk_index
-  local chunk_label
 
   while IFS=$'\t' read -r classification scope role chunk path; do
     [[ "${classification}" == "classification" ]] && continue
-    validate_pkl "${path}" "${role}" "${scope}" "${classification}"
+    check_output_file "${path}" "${role}" "${scope}" "${classification}"
   done < "${output_contract_file}"
   for role in central_tzq private_tllq; do
-    raw_paths=()
-    for ((chunk_index = 1; chunk_index <= all_analysis_chunks; chunk_index++)); do
-      printf -v chunk_label '%02d' "${chunk_index}"
-      raw_paths+=("$(raw_path_for_chunk "${role}" "${chunk_label}")")
-    done
     validate_raw_output_count "${role}"
-    validate_chunk_partition "${role}" "${raw_paths[@]}"
-    validate_merged_totals "$(canonical_path_for_role "${role}")" "${raw_paths[@]}"
+    validate_single_output_count "canonical ${role}" "$(canonical_path_for_role "${role}")"
+    validate_single_output_count "TOP-22-006 ${role}" "$(top22006_path_for_role "${role}")"
   done
 }
 
@@ -836,12 +635,9 @@ main() {
 
   load_category_groups
   build_chunk_specs
-  load_process_labels "${central_cfg}" central_process_labels
-  load_process_labels "${private_cfg}" private_process_labels
-
   if [[ "${resume_mode}" == true ]]; then
     verify_resume_contract
-    write_status "running" "resume accepted; completed outputs will be revalidated"
+    write_status "running" "resume accepted; completed outputs will receive operational checks"
   else
     write_output_contract "${output_contract_file}"
     write_status "running" "fresh campaign started"
@@ -851,8 +647,8 @@ main() {
   execute_top22006
   validate_final_outputs
   write_checksum_inventory
-  write_status "success" "all required raw, canonical, and TOP-22-006 PKLs passed validation"
-  printf 'SUCCESS: campaign outputs and checksum manifest are complete under %s\n' "${output_root}"
+  write_status "success" "all expected PKLs passed operational checks and checksums were written"
+  printf 'SUCCESS: command, output, count, gzip, and checksum checks are complete under %s\n' "${output_root}"
 }
 
 main "$@"
