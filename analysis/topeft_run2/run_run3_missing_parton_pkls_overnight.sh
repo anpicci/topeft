@@ -9,14 +9,17 @@ set -Eeuo pipefail
 
 run3_years=(2022 2022EE 2023 2023BPix)
 
-script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-topeft_root="$(cd -- "${script_dir}/../.." && pwd)"
-workspace_root="$(cd -- "${topeft_root}/.." && pwd)"
+script_dir="$(cd -P -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+topeft_root="$(cd -P -- "${script_dir}/../.." && pwd)"
+workspace_root="$(cd -P -- "${topeft_root}/.." && pwd)"
 environment_wrapper="${workspace_root}/codex-run.sh"
 python_env="${PYTHON_ENV:-/users/apiccine/work/miniconda3/envs/clib-env/bin/python}"
 default_output_parent="/groups/klannon/apiccine/misspar_debug"
 executor="${MISSING_PARTON_EXECUTOR:-work_queue}"
 all_analysis_chunks="${ALL_ANALYSIS_CHUNKS:-2}"
+environment_archive_dir_default="${script_dir}/topeft-envs"
+environment_archive_dir="${TOPEFT_ENVS_DIR:-${environment_archive_dir_default}}"
+environment_archive_pattern="env_*.tar.gz"
 
 central_cfg="input_samples/cfgs/missing_parton_run3_central_tzq_NDSkim.cfg"
 private_cfg="input_samples/cfgs/missing_parton_run3_private_tllq_NDSkim.cfg"
@@ -30,6 +33,7 @@ retry_history_file=""
 output_contract_file=""
 validation_file=""
 execution_commands_file=""
+environment_archive_cleanup_file=""
 log_file=""
 campaign_lock_dir=""
 
@@ -67,6 +71,7 @@ Environment overrides:
   ALL_ANALYSIS_CHUNKS      integer >= 2 (default: 2)
   MISSING_PARTON_EXECUTOR  futures, work_queue, or taskvine (default: work_queue)
   PYTHON_ENV               interpreter used through correction-lib/codex-run.sh
+  TOPEFT_ENVS_DIR          must be exactly this driver's topeft-envs cache directory
 USAGE_EOF
 }
 
@@ -210,6 +215,7 @@ campaign_paths() {
   output_contract_file="${output_root}/output_contract.tsv"
   validation_file="${output_root}/validation.tsv"
   execution_commands_file="${output_root}/execution_commands.tsv"
+  environment_archive_cleanup_file="${output_root}/environment_archive_cleanup.tsv"
   log_file="${output_root}/run.log"
   campaign_lock_dir="${output_root}/.campaign_lock"
 }
@@ -238,6 +244,9 @@ write_campaign_metadata() {
     printf 'python_interpreter=%s\n' "${python_env}"
     printf 'executor=%s\n' "${executor}"
     printf 'all_analysis_chunks=%s\n' "${all_analysis_chunks}"
+    printf 'environment_archive_directory=%s\n' "${environment_archive_dir_default}"
+    printf 'environment_archive_patterns=%s\n' "${environment_archive_pattern}"
+    printf 'environment_archive_cleanup_policy=before_each_run_analysis_command; regular_files_only\n'
     printf 'periods=%s\n' "${run3_years[*]}"
     printf 'central_cfg=%s\n' "${central_cfg}"
     printf 'private_cfg=%s\n' "${private_cfg}"
@@ -265,6 +274,8 @@ initialize_new_campaign() {
   printf 'timestamp\taction\tdetail\n' > "${retry_history_file}"
   printf 'path\trole\tscope\tclassification\tresult\tdetail\n' > "${validation_file}"
   printf 'timestamp\tstep\tcommand\n' > "${execution_commands_file}"
+  printf 'timestamp\tphase\tmode\tresolved_directory\tpattern\tcandidate_path\taction\tresult\tnotes\n' \
+    > "${environment_archive_cleanup_file}"
   write_campaign_metadata
 }
 
@@ -279,6 +290,10 @@ initialize_existing_campaign() {
   [[ "$(awk -F= '$1 == "state" {print $2}' "${status_file}")" != "success" ]] \
     || die "a successful campaign is immutable and cannot be resumed"
   acquire_campaign_lock
+  if [[ ! -f "${environment_archive_cleanup_file}" ]]; then
+    printf 'timestamp\tphase\tmode\tresolved_directory\tpattern\tcandidate_path\taction\tresult\tnotes\n' \
+      > "${environment_archive_cleanup_file}"
+  fi
   record_retry "resume_started" "campaign root accepted; completed outputs will receive operational checks"
 }
 
@@ -455,6 +470,118 @@ run_step() {
   printf '===== DONE %s timestamp=%s =====\n' "${step_name}" "$(timestamp_iso)"
 }
 
+record_environment_archive_cleanup() {
+  local phase="$1"
+  local resolved_directory="$2"
+  local pattern="$3"
+  local candidate_path="$4"
+  local action="$5"
+  local result="$6"
+  local notes="$7"
+  local mode="fresh"
+
+  if [[ "${resume_mode}" == true ]]; then
+    mode="resume"
+  fi
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    "$(timestamp_iso)" "${phase}" "${mode}" "${resolved_directory}" "${pattern}" \
+    "${candidate_path}" "${action}" "${result}" "${notes}" \
+    >> "${environment_archive_cleanup_file}"
+  printf 'environment_archive_cleanup: phase=%s mode=%s directory=%s pattern=%s candidate=%s action=%s result=%s notes=%s\n' \
+    "${phase}" "${mode}" "${resolved_directory}" "${pattern}" "${candidate_path}" \
+    "${action}" "${result}" "${notes}"
+}
+
+clear_stale_environment_tarballs() {
+  local phase="$1"
+  local resolved_directory=""
+  local candidate_path
+  local -a archive_candidates=()
+  local -a symlink_candidates=()
+
+  if [[ -z "${environment_archive_dir}" ]]; then
+    record_environment_archive_cleanup "${phase}" "" "${environment_archive_pattern}" "-" \
+      "rejected" "fail" "empty_directory"
+    return 1
+  fi
+  if [[ "${environment_archive_dir}" != "${environment_archive_dir_default}" ]]; then
+    record_environment_archive_cleanup "${phase}" "${environment_archive_dir}" "${environment_archive_pattern}" "-" \
+      "rejected" "fail" "override_must_match_driver_cache"
+    return 1
+  fi
+  if [[ -L "${environment_archive_dir}" ]]; then
+    record_environment_archive_cleanup "${phase}" "${environment_archive_dir}" "${environment_archive_pattern}" "-" \
+      "rejected" "fail" "cache_directory_is_symlink"
+    return 1
+  fi
+  if [[ ! -e "${environment_archive_dir}" ]]; then
+    record_environment_archive_cleanup "${phase}" "${environment_archive_dir_default}" "${environment_archive_pattern}" "-" \
+      "no_match" "pass" "cache_directory_absent"
+    return 0
+  fi
+  if [[ ! -d "${environment_archive_dir}" || ! -r "${environment_archive_dir}" || ! -x "${environment_archive_dir}" ]]; then
+    record_environment_archive_cleanup "${phase}" "${environment_archive_dir}" "${environment_archive_pattern}" "-" \
+      "rejected" "fail" "cache_directory_not_accessible_directory"
+    return 1
+  fi
+  if ! resolved_directory="$(cd -P -- "${environment_archive_dir}" && pwd)"; then
+    record_environment_archive_cleanup "${phase}" "${environment_archive_dir}" "${environment_archive_pattern}" "-" \
+      "failed" "fail" "canonicalization_failed"
+    return 1
+  fi
+  case "${resolved_directory}" in
+    ""|/|"${topeft_root}"|"${workspace_root}"|"${HOME:-}")
+      record_environment_archive_cleanup "${phase}" "${resolved_directory}" "${environment_archive_pattern}" "-" \
+        "rejected" "fail" "unsafe_resolved_directory"
+      return 1
+      ;;
+  esac
+  if [[ "${resolved_directory}" != "${environment_archive_dir_default}" ]]; then
+    record_environment_archive_cleanup "${phase}" "${resolved_directory}" "${environment_archive_pattern}" "-" \
+      "rejected" "fail" "canonical_path_mismatch"
+    return 1
+  fi
+  if ! find "${resolved_directory}" -mindepth 1 -maxdepth 1 \( -type f -o -type l \) \
+    -name "${environment_archive_pattern}" -print -quit >/dev/null; then
+    record_environment_archive_cleanup "${phase}" "${resolved_directory}" "${environment_archive_pattern}" "-" \
+      "failed" "fail" "candidate_enumeration_failed"
+    return 1
+  fi
+
+  mapfile -d '' -t symlink_candidates < <(find "${resolved_directory}" -mindepth 1 -maxdepth 1 \
+    -type l -name "${environment_archive_pattern}" -print0)
+  if (( ${#symlink_candidates[@]} > 0 )); then
+    for candidate_path in "${symlink_candidates[@]}"; do
+      record_environment_archive_cleanup "${phase}" "${resolved_directory}" "${environment_archive_pattern}" \
+        "${candidate_path}" "rejected" "fail" "matching_archive_symlink"
+    done
+    return 1
+  fi
+
+  mapfile -d '' -t archive_candidates < <(find "${resolved_directory}" -mindepth 1 -maxdepth 1 \
+    -type f -name "${environment_archive_pattern}" -print0 | sort -z)
+  if (( ${#archive_candidates[@]} == 0 )); then
+    record_environment_archive_cleanup "${phase}" "${resolved_directory}" "${environment_archive_pattern}" "-" \
+      "no_match" "pass" "no_generated_archives"
+    return 0
+  fi
+
+  for candidate_path in "${archive_candidates[@]}"; do
+    if [[ -L "${candidate_path}" || ! -f "${candidate_path}" ]]; then
+      record_environment_archive_cleanup "${phase}" "${resolved_directory}" "${environment_archive_pattern}" \
+        "${candidate_path}" "rejected" "fail" "candidate_not_regular_file"
+      return 1
+    fi
+    if ! rm -- "${candidate_path}"; then
+      record_environment_archive_cleanup "${phase}" "${resolved_directory}" "${environment_archive_pattern}" \
+        "${candidate_path}" "failed" "fail" "rm_failed"
+      return 1
+    fi
+    record_environment_archive_cleanup "${phase}" "${resolved_directory}" "${environment_archive_pattern}" \
+      "${candidate_path}" "removed" "pass" "generated_remote_environment_archive"
+  done
+}
+
 execute_analysis_output() {
   local phase="$1"
   local role="$2"
@@ -474,6 +601,7 @@ execute_analysis_output() {
   [[ ! -e "${output_path}" ]] || die "refusing to overwrite existing output: ${output_path}"
   mkdir -p "$(dirname -- "${output_path}")"
   build_run_analysis_command "${role}" "${scope}" "${output_path}" "${category_spec}"
+  clear_stale_environment_tarballs "${phase}_${role}_${chunk}"
   run_step "${phase}_${role}_${chunk}" "${resolved_command[@]}"
   check_output_file "${output_path}" "${role}" "${scope}" "${classification}"
 }
