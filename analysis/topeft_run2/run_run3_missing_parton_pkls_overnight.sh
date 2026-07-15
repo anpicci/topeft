@@ -401,10 +401,11 @@ build_run_analysis_command() {
   local -a category_groups=()
 
   case "${role}" in
-    central_tzq) cfg="${central_cfg}" ;;
-    private_tllq) cfg="${private_cfg}" ;;
+    central_tzq) cfg="${topeft_root}/${central_cfg}" ;;
+    private_tllq) cfg="${topeft_root}/${private_cfg}" ;;
     *) die "unknown role: ${role}" ;;
   esac
+  
   outdir="$(dirname -- "${output_path}")"
   outname="$(basename -- "${output_path}" .pkl.gz)"
   read -r -a category_groups <<< "${category_spec}"
