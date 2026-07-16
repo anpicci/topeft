@@ -16,6 +16,7 @@ from topeft.modules.paths import topeft_path
 from topeft.modules.axes import info as axes_info
 from topeft.modules.compatibility import add_sumw2_stub
 from topeft.modules.missing_parton_contract import (
+    SR_CHANNEL_CONFIG_KEY,
     load_missing_parton_channel_contract,
 )
 
@@ -620,21 +621,46 @@ class DatacardMaker():
             self._missing_parton_channel_contract = contract
         return contract
 
-    def select_final_sr_appl(self, h, channel, process=None):
-        """Select the metadata-defined SR appl category when the axis exists."""
+    def _resolve_supported_sr_appl(self, h, channel, process=None):
         if h is None or "appl" not in self._axis_names(h):
-            return h
+            return None
 
         contract = self._get_missing_parton_channel_contract()
-        expected_sr_appl = contract.expected_sr_appl(channel)
+        process_text = "" if process is None else f", process {process!r}"
+        try:
+            expected_sr_appl = contract.expected_sr_appl(channel)
+        except ValueError as exc:
+            raise ValueError(
+                "DatacardMaker application-axis selection currently supports only "
+                "metadata-defined SR channels. Requested channel "
+                f"{channel!r}{process_text} is not in the "
+                f"{SR_CHANNEL_CONFIG_KEY} contract. CR/AR application-axis card "
+                "production is not implemented. No SR/AR integration, label "
+                "guessing, or fallback was performed. Use an already projected/"
+                "no-appl input or add a separately reviewed supported workflow."
+            ) from exc
+
         available_appl = [str(label) for label in h.axes["appl"]]
         if expected_sr_appl not in available_appl:
-            process_text = "" if process is None else f", process {process!r}"
             raise ValueError(
-                f"Missing expected SR appl label {expected_sr_appl!r} for channel "
-                f"{channel!r}{process_text}; available appl labels are "
-                f"{available_appl!r}."
+                f"DatacardMaker recognized channel {channel!r}{process_text} as a "
+                "metadata-defined SR channel, but its exact expected appl label "
+                f"{expected_sr_appl!r} is missing. Available appl labels are "
+                f"{available_appl!r}. No SR/AR integration, label guessing, or "
+                "fallback was performed."
             )
+        return expected_sr_appl
+
+    def select_final_sr_appl(self, h, channel, process=None):
+        """Select the metadata-defined SR appl category when the axis exists."""
+        expected_sr_appl = self._resolve_supported_sr_appl(
+            h,
+            channel,
+            process=process,
+        )
+        if expected_sr_appl is None:
+            return h
+
         return h.integrate("appl", expected_sr_appl)
 
     @staticmethod
@@ -1254,6 +1280,11 @@ class DatacardMaker():
             print(f"[ERROR] Unknown channel {ch}")
             return None
 
+        h = self.hists[km_dist]
+        h_sumw2 = self.hists.get(f"{km_dist}_sumw2")
+        self._resolve_supported_sr_appl(h, ch)
+        self._resolve_supported_sr_appl(h_sumw2, ch)
+
         print(f"Analyzing {km_dist} in {ch}")
 
         bin_str = f"bin_{ch}_{km_dist}"
@@ -1270,11 +1301,7 @@ class DatacardMaker():
 
         outf_root_name = self.FNAME_TEMPLATE.format(cat=ch,kmvar=km_dist,ext="root")
 
-        h = self.hists[km_dist]
-        h_sumw2 = None
-        if f"{km_dist}_sumw2" in self.hists:
-            h_sumw2 = self.hists[km_dist+"_sumw2"]
-        else:
+        if h_sumw2 is None:
             msg = "No sumw2 histogram found! Setting errors to 0"
             print(msg)
         ch_hist = h.integrate("channel",[ch])

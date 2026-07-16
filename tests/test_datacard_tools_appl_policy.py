@@ -120,16 +120,68 @@ def test_missing_expected_sr_label_fails():
     maker = object.__new__(DatacardMaker)
     source = _make_hist("njets", "3l_onZ_1b", {"isAR_3l": 3.0})
 
-    with pytest.raises(ValueError, match="Missing expected SR appl label 'isSR_3l'"):
+    with pytest.raises(ValueError) as exc_info:
         maker.select_final_sr_appl(source, "3l_onZ_1b", process="tZq")
 
+    message = str(exc_info.value)
+    assert "recognized channel '3l_onZ_1b', process 'tZq'" in message
+    assert "metadata-defined SR channel" in message
+    assert "exact expected appl label 'isSR_3l' is missing" in message
+    assert "Available appl labels are ['isAR_3l']" in message
+    assert "No SR/AR integration, label guessing, or fallback was performed" in message
 
-def test_unknown_channel_is_not_authorized_by_single_sr_label():
+
+@pytest.mark.parametrize(
+    "channel",
+    [
+        "3l_CR",
+        "3l_onZ_1b_AR",
+        "custom_3l",
+    ],
+)
+def test_non_sr_channel_with_appl_fails_with_explicit_support_boundary(channel):
     maker = object.__new__(DatacardMaker)
-    source = _make_hist("njets", "custom_3l", {"isSR_3l": 3.0})
+    source = _make_hist("njets", channel, {"isSR_3l": 3.0})
 
-    with pytest.raises(ValueError, match="Unknown missing-parton channel"):
-        maker.select_final_sr_appl(source, "custom_3l", process="tZq")
+    with pytest.raises(ValueError) as exc_info:
+        maker.select_final_sr_appl(source, channel, process="tZq")
+
+    message = str(exc_info.value)
+    assert "supports only metadata-defined SR channels" in message
+    assert f"Requested channel {channel!r}, process 'tZq'" in message
+    assert "is not in the ALL_CH_LST_SR contract" in message
+    assert "CR/AR application-axis card production is not implemented" in message
+    assert "No SR/AR integration, label guessing, or fallback was performed" in message
+    assert "already projected/no-appl input" in message
+    assert "separately reviewed supported workflow" in message
+
+
+def test_analyze_rejects_cr_zero_jet_before_unrelated_channel_parsing(tmp_path):
+    channel = "3l_CR_0j"
+    hists = {
+        "ht": _make_hist(
+            "ht",
+            channel,
+            {"isSR_3l": 17.0, "isAR_3l": 5.0},
+        ),
+        "ht_sumw2": _make_hist(
+            "ht_sumw2",
+            channel,
+            {"isSR_3l": 19.0, "isAR_3l": 7.0},
+        ),
+    }
+    maker = DatacardMaker(
+        hists=hists,
+        out_dir=str(tmp_path),
+        var_lst=["ht"],
+        do_nuisance=False,
+        verbose=False,
+    )
+
+    with pytest.raises(ValueError, match="supports only metadata-defined SR channels"):
+        maker.analyze("ht", channel, {"tZq": []}, True, {})
+
+    assert list(tmp_path.iterdir()) == []
 
 
 def test_no_appl_input_is_identity_and_does_not_load_registry(monkeypatch):
