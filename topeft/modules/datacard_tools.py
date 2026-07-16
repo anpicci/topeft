@@ -15,6 +15,9 @@ from topcoffea.modules.utils import regex_match, get_hist_from_pkl
 from topeft.modules.paths import topeft_path
 from topeft.modules.axes import info as axes_info
 from topeft.modules.compatibility import add_sumw2_stub
+from topeft.modules.missing_parton_contract import (
+    load_missing_parton_channel_contract,
+)
 
 
 PRECISION = 6   # Decimal point precision in the text datacard output
@@ -596,6 +599,80 @@ class DatacardMaker():
         else:
             raise ValueError(f"Unable to determine lepton multiplicity from string {s}")
 
+    @staticmethod
+    def _axis_names(h):
+        if h is None:
+            return ()
+        try:
+            return tuple(ax.name for ax in h.axes)
+        except Exception:
+            axes_name = getattr(getattr(h, "axes", None), "name", None)
+            if axes_name is None:
+                return ()
+            if isinstance(axes_name, str):
+                return (axes_name,)
+            return tuple(axes_name)
+
+    def _get_missing_parton_channel_contract(self):
+        contract = getattr(self, "_missing_parton_channel_contract", None)
+        if contract is None:
+            contract = load_missing_parton_channel_contract()
+            self._missing_parton_channel_contract = contract
+        return contract
+
+    def select_final_sr_appl(self, h, channel, process=None):
+        """Select the metadata-defined SR appl category when the axis exists."""
+        if h is None or "appl" not in self._axis_names(h):
+            return h
+
+        contract = self._get_missing_parton_channel_contract()
+        expected_sr_appl = contract.expected_sr_appl(channel)
+        available_appl = [str(label) for label in h.axes["appl"]]
+        if expected_sr_appl not in available_appl:
+            process_text = "" if process is None else f", process {process!r}"
+            raise ValueError(
+                f"Missing expected SR appl label {expected_sr_appl!r} for channel "
+                f"{channel!r}{process_text}; available appl labels are "
+                f"{available_appl!r}."
+            )
+        return h.integrate("appl", expected_sr_appl)
+
+    @staticmethod
+    def _sparse_key_mapping(sp_key):
+        if hasattr(sp_key, "_asdict"):
+            return dict(sp_key._asdict())
+        fields = getattr(sp_key, "_fields", None)
+        if fields is not None:
+            return dict(zip(fields, sp_key))
+        return {}
+
+    @classmethod
+    def validate_sparse_axes_for_card(cls, templates, channel, process):
+        """Reject unresolved sparse axes that would duplicate template names."""
+        labels_by_axis = defaultdict(set)
+        for sp_key in templates:
+            key_map = cls._sparse_key_mapping(sp_key)
+            for axis_name, label in key_map.items():
+                if axis_name != "systematic":
+                    labels_by_axis[axis_name].add(str(label))
+
+        duplicate_producing_axes = {
+            axis_name: labels
+            for axis_name, labels in labels_by_axis.items()
+            if len(labels) > 1
+        }
+        if not duplicate_producing_axes:
+            return
+
+        axis_name = sorted(duplicate_producing_axes)[0]
+        labels = sorted(duplicate_producing_axes[axis_name])
+        raise ValueError(
+            f"Unresolved sparse axis {axis_name!r} while writing datacard channel "
+            f"{channel!r}, process {process!r}; labels are {labels!r}. This would "
+            "create duplicate ROOT template names. Resolve the sparse category "
+            "before card writing."
+        )
+
     @classmethod
     def get_processes_by_years(cls,h):
         """
@@ -613,6 +690,9 @@ class DatacardMaker():
         self.do_sm           = kwargs.pop("do_sm",False)
         self.do_nuisance     = kwargs.pop("do_nuisance",False)
         self.drop_syst       = kwargs.pop("drop_syst",[])
+        self.skip_missing_parton_rate_syst = bool(
+            kwargs.pop("skip_missing_parton_rate_syst",False)
+        )
         self.out_dir         = kwargs.pop("out_dir",".")
         self.var_lst         = kwargs.pop("var_lst",[])
         self.do_mc_stat      = kwargs.pop("do_mc_stat",False)
@@ -936,24 +1016,27 @@ class DatacardMaker():
             new_syst.add_process(p,per_jet_uncs)
         rate_systs[syst_name] = new_syst
 
-        # Finally, deal with the missing_parton systematic
-        # TODO: This feels pretty hardcoded, but not sure there's any way around it
-        branch_key = "tllq"
-        syst_name = "missing_parton"
-        new_syst = RateSystematic(syst_name)
+        if getattr(self, "skip_missing_parton_rate_syst", False):
+            print("Skipping missing_parton rate systematic")
+        else:
+            # Finally, deal with the missing_parton systematic
+            # TODO: This feels pretty hardcoded, but not sure there's any way around it
+            branch_key = "tllq"
+            syst_name = "missing_parton"
+            new_syst = RateSystematic(syst_name)
 
-        fpath = topeft_path(mp_fpath)
-        print(f"Opening: {fpath}")
-        with uproot.open(fpath) as f:
-            d = {}
-            for k in f.keys():
-                #k = k.replace(";1","")
-                # Note: Values in the ROOT file are computed as the fraction of the rate needed to
-                #   reach agreement, so need to add 1 to get the corresponding kapaa value
-                d[k] = f[f"{k}/{branch_key}"].array() + 1
-            new_syst.add_process("tllq",d)
-            new_syst.add_process("tHq",d)
-        rate_systs[syst_name] = new_syst
+            fpath = topeft_path(mp_fpath)
+            print(f"Opening: {fpath}")
+            with uproot.open(fpath) as f:
+                d = {}
+                for k in f.keys():
+                    #k = k.replace(";1","")
+                    # Note: Values in the ROOT file are computed as the fraction of the rate needed to
+                    #   reach agreement, so need to add 1 to get the corresponding kapaa value
+                    d[k] = f[f"{k}/{branch_key}"].array() + 1
+                new_syst.add_process("tllq",d)
+                new_syst.add_process("tHq",d)
+            rate_systs[syst_name] = new_syst
 
         return rate_systs
 
@@ -1219,6 +1302,8 @@ class DatacardMaker():
 
                 proc_hist = ch_hist.integrate("process",[p])
                 proc_sumw2 = ch_sumw2 if ch_sumw2 is None else ch_sumw2.integrate("process",[p])
+                proc_hist = self.select_final_sr_appl(proc_hist, ch, process=p)
+                proc_sumw2 = self.select_final_sr_appl(proc_sumw2, ch, process=p)
                 if self.verbose:
                     print(f"Decomposing {ch}-{p}")
                 decomposed_templates = self.decompose(proc_hist,proc_sumw2,wcs)
@@ -1242,10 +1327,12 @@ class DatacardMaker():
                         "shapes": set(),
                         "rate": -1
                     }
+                    self.validate_sparse_axes_for_card(v, ch, proc_name)
                     # There should be only 1 sparse axis at this point, the systematics axis
                     check_zero_arr0 = False
                     check_zero_arr1 = False
                     seen = {}
+                    written_hist_names = set()
                     for sp_key,arr in v.items():
                         syst = sp_key[0]
                         if crop_negative_bins:
@@ -1340,6 +1427,14 @@ class DatacardMaker():
                                     text_card_info[proc_name]["shapes"].add(syst_base)
                             syst_width = max(len(syst),syst_width)
                         zero_out_sumw2 = p != "fakes" and "close" not in p # Zero out sumw2 for all proc but fakes, so that we only do auto stats for fakes
+                        if hist_name in written_hist_names:
+                            raise ValueError(
+                                f"Duplicate ROOT template name {hist_name!r} while writing "
+                                f"datacard channel {ch!r}, process {proc_name!r}. An "
+                                "unexpected sparse axis was not resolved before template "
+                                "writing."
+                            )
+                        written_hist_names.add(hist_name)
                         f[hist_name] = to_hist(arr,hist_name,zero_wgts=zero_out_sumw2)
 
                         num_h += 1
@@ -1359,11 +1454,12 @@ class DatacardMaker():
                             pass
                 # obtain the scalings for scalings.json file
                 if p in self.SIGNALS:
+                    scaling_hist = self.select_final_sr_appl(h, ch, process=p)
                     if self.wc_scalings:
-                        scalings = h[{'channel':ch,'process':p,'systematic':'nominal'}].make_scaling(self.wc_scalings)
+                        scalings = scaling_hist[{'channel':ch,'process':p,'systematic':'nominal'}].make_scaling(self.wc_scalings)
                         self.scalings_json = self.make_scalings_json(self.scalings,ch,km_dist,p,self.wc_scalings,scalings)
                     else:
-                        scalings = h[{'channel':ch,'process':p,'systematic':'nominal'}].make_scaling()
+                        scalings = scaling_hist[{'channel':ch,'process':p,'systematic':'nominal'}].make_scaling()
                         self.scalings_json = self.make_scalings_json(self.scalings,ch,km_dist,p,h.wc_names,scalings)
             f["data_obs"] = to_hist(data_obs,"data_obs")
 
