@@ -1,317 +1,1166 @@
-'''
-This script computes the msising parton rate
-It requires the central (tZq) and private (tllq) samples exist in
-`histos/central_sm/` and `histos/private_sm/` respectively
-To create these, run the datacard maker (tllq `with` systematics, tZq without)
-'''
+"""Build the public 34-TTree missing-parton payload from njet datacards.
 
-import numpy as np
-import matplotlib.pyplot as plt
-import uproot
-import matplotlib as mpl
-mpl.use('Agg')
-import mplhep as hep
+The producer compares private LO ``tllq`` cards with central NLO ``tZq``
+cards. Stored values are fractional shifts; the DatacardMaker consumer adds
+one and applies the resulting ``missing_parton`` nuisance to ``tllq`` and
+``tHq``.
+"""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
 import math
-from topeft.modules.comp_datacard import strip
-import re
+import os
+import tempfile
+from collections import Counter
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Iterable, Mapping, Sequence
 
+from topeft.modules.missing_parton_contract import (
+    LEGACY_MISSING_PARTON_BASE_CHANNELS,
+    LEGACY_MISSING_PARTON_BRANCH,
+    legacy_missing_parton_payload_lengths,
+    validate_legacy_missing_parton_payload,
+    validate_legacy_missing_parton_values,
+)
 from topeft.modules.paths import topeft_path
-from topcoffea.modules.paths import topcoffea_path
-from topcoffea.modules.get_param_from_jsons import GetParam
-get_tc_param = GetParam(topcoffea_path("params/params.json"))
 
-files = ['2lss_4t_m', '2lss_4t_p', '2lss_fwd_m', '2lss_fwd_p', '2lss_m', '2lss_p', '3l_m_offZ_1b', '3l_m_offZ_2b', '3l_onZ_1b', '3l_onZ_2b', '3l_p_offZ_1b', '3l_p_offZ_2b', '4l']
-files = ['2lss_fwd_m', '2lss_fwd_p']
-files_diff = ['2lss_4t_m_4j_2b', '2lss_4t_m_5j_2b', '2lss_4t_m_6j_2b', '2lss_4t_m_7j_2b', '2lss_4t_p_4j_2b', '2lss_4t_p_5j_2b', '2lss_4t_p_6j_2b', '2lss_4t_p_7j_2b', '2lss_m_4j_2b', '2lss_m_5j_2b', '2lss_m_6j_2b', '2lss_m_7j_2b', '2lss_p_4j_2b', '2lss_p_5j_2b', '2lss_p_6j_2b', '2lss_p_7j_2b', '3l_m_offZ_1b_2j', '3l_m_offZ_1b_3j', '3l_m_offZ_1b_4j', '3l_m_offZ_1b_5j', '3l_m_offZ_2b_2j', '3l_m_offZ_2b_3j', '3l_m_offZ_2b_4j', '3l_m_offZ_2b_5j', '3l_onZ_1b_2j', '3l_onZ_1b_3j', '3l_onZ_1b_4j', '3l_onZ_1b_5j', '3l_onZ_2b_2j', '3l_onZ_2b_3j', '3l_onZ_2b_4j', '3l_onZ_2b_5j', '3l_p_offZ_1b_2j', '3l_p_offZ_1b_3j', '3l_p_offZ_1b_4j', '3l_p_offZ_1b_5j', '3l_p_offZ_2b_2j', '3l_p_offZ_2b_3j', '3l_p_offZ_2b_4j', '3l_p_offZ_2b_5j', '4l_2j_2b', '4l_3j_2b', '4l_4j_2b']
-files = ['3l_onZ_1b_2j', '3l_onZ_1b_3j', '3l_onZ_1b_4j', '3l_onZ_1b_5j', '3l_onZ_2b_2j', '3l_onZ_2b_3j', '3l_onZ_2b_4j', '3l_onZ_2b_5j']
 
-#files_diff = ['2lss_4t_m_4j', '2lss_4t_m_5j', '2lss_4t_m_6j', '2lss_4t_m_7j', '2lss_4t_p_4j', '2lss_4t_p_5j', '2lss_4t_p_6j', '2lss_4t_p_7j', '2lss_m_4j', '2lss_m_5j', '2lss_m_6j', '2lss_m_7j', '2lss_p_4j', '2lss_p_5j', '2lss_p_6j', '2lss_p_7j', '3l_1tau_1b_2j', '3l_1tau_1b_3j', '3l_1tau_1b_4j', '3l_1tau_1b_5j','3l_m_offZ_none_1b_2j', '3l_m_offZ_none_1b_3j', '3l_m_offZ_none_1b_4j', '3l_m_offZ_none_1b_5j', '3l_m_offZ_none_2b_2j', '3l_m_offZ_none_2b_3j', '3l_m_offZ_none_2b_4j', '3l_m_offZ_none_2b_5j', '3l_onZ_1b_2j', '3l_onZ_1b_3j', '3l_onZ_1b_4j', '3l_onZ_1b_5j', '3l_onZ_2b_2j', '3l_onZ_2b_3j', '3l_onZ_2b_4j', '3l_onZ_2b_5j', '3l_p_offZ_1b_2j', '3l_p_offZ_1b_3j', '3l_p_offZ_1b_4j', '3l_p_offZ_1b_5j', '3l_p_offZ_2b_2j', '3l_p_offZ_2b_3j', '3l_p_offZ_2b_4j', '3l_p_offZ_2b_5j', '4l_2j_2b', '4l_3j_2b', '4l_4j_2b']
+DEFAULT_YEARS = ("2016APV", "2016", "2017", "2018")
+DEFAULT_CENTRAL_PROCESS = "tZq"
+DEFAULT_PRIVATE_PROCESS = "tllq"
+MISSING_PARTON_SYST_NAME = "missing_parton"
+PHYSICAL_NJET_BIN_COUNT = 8
+WEIGHTED_YIELD_ZERO_THRESHOLD = 1.0e-5
+ROOT_TXT_RATE_REL_TOL = 1.0e-6
+ROOT_TXT_RATE_ABS_TOL = 1.0e-6
+LEGACY_CENTRAL_CARD_DIR = Path("parton_datacards/Run2/central_tZq")
+LEGACY_PRIVATE_CARD_DIR = Path("parton_datacards/Run2/private_tllq")
+LEGACY_OUTPUT_FILE = Path(
+    topeft_path("data/missing_parton/missing_parton_test.root")
+)
 
-files_diff = ['2los_onZ_1tau', '2lss_4t_m', '2lss_4t_p', '2lss_fwd_m', '2lss_fwd_p', '2lss_m_1tau_offZ', '2lss_m_1tau_onZ', '2lss_m', '2lss_p_1tau_offZ', '2lss_p_1tau_onZ', '2lss_p', '3l_1tau_1b', '3l_1tau_2b', '3l_m_offZ_1b_fwd', '3l_m_offZ_2b_fwd', '3l_m_offZ_high_1b', '3l_m_offZ_high_2b', '3l_m_offZ_low_1b', '3l_m_offZ_low_2b', '3l_m_offZ_none_1b', '3l_m_offZ_none_2b', '3l_onZ_1b_fwd', '3l_onZ_1b', '3l_onZ_2b_fwd', '3l_onZ_2b', '3l_p_offZ_1b_fwd', '3l_p_offZ_2b_fwd', '3l_p_offZ_high_1b', '3l_p_offZ_high_2b', '3l_p_offZ_low_1b', '3l_p_offZ_low_2b', '3l_p_offZ_none_1b', '3l_p_offZ_none_2b', '4l']
+PROCESS_ALIASES = {
+    DEFAULT_CENTRAL_PROCESS: (
+        "tZq",
+        "TZQB-Zto2L-4FS_MLL-30",
+    ),
+    DEFAULT_PRIVATE_PROCESS: ("tllq",),
+}
 
-#files_ptz = ['3l_m_offZ_low_1b_2j', '3l_m_offZ_low_1b_3j', '3l_m_offZ_low_1b_4j', '3l_m_offZ_low_1b_5j', '3l_m_offZ_low_2b_2j', '3l_m_offZ_low_2b_3j', '3l_m_offZ_low_2b_4j', '3l_m_offZ_low_2b_5j', '3l_m_offZ_high_1b_2j', '3l_m_offZ_high_1b_3j', '3l_m_offZ_high_1b_4j', '3l_m_offZ_high_1b_5j', '3l_m_offZ_high_2b_2j', '3l_m_offZ_high_2b_3j', '3l_m_offZ_high_2b_4j', '3l_m_offZ_high_2b_5j']
-files_ptz_wtau = ['2lss_m_1tau_onZ_3j', '2lss_m_1tau_onZ_4j', '2lss_m_1tau_onZ_5j', '2lss_m_1tau_onZ_6j', '2lss_p_1tau_onZ_3j', '2lss_p_1tau_onZ_4j', '2lss_p_1tau_onZ_5j','2lss_p_1tau_onZ_6j']
 
-def matches_process(proc_name, process):
+class ConfigError(ValueError):
+    """Raised when a requested producer configuration is not executable."""
 
-    aliases = {
-        'tllq': [
-            'tllq',
-            'tZq',
-            'TZQB-Zto2L-4FS_MLL-30'
-        ],
 
-        'tZq': [
-            'tZq',
-            'TZQB-Zto2L-4FS_MLL-30'
-            ]
-    }
+@dataclass(frozen=True)
+class CardFiles:
+    root_path: Path
+    txt_path: Path
 
-    targets = aliases.get(process, [process])
 
-    return any(t in proc_name for t in targets)
+@dataclass(frozen=True)
+class parsed_card:
+    process_names: tuple[str, ...]
+    rates: tuple[float, ...]
+    rate_systematics: tuple[tuple[str, tuple[str, ...]], ...]
 
-def get_hists(fname, path, process):
-    fin = uproot.open('parton_datacards/Run2/'+path+'/ttx_multileptons-'+fname+'.root')
-    card = strip('parton_datacards/Run2/'+path+'/ttx_multileptons-'+fname+'.txt')
-    #print("card", card)
-    sm = [k.split(';')[0] for k in fin.keys() if 'sm' in k]
 
-    nom = {}; up = {}; down = {}
+@dataclass(frozen=True)
+class base_category_card_data:
+    nominal_values: object
+    shape_values: tuple[object, ...]
+    bin_edges: object
+    parsed_txt: parsed_card
 
-    #nom = {proc.strip(';1'): fin[proc].values() for proc in fin if 'sm;' in proc and (process in proc or process.replace('ll','Z') in proc)}
-    nom = {
-        proc.replace(";1", ""): fin[proc].values()
-        for proc in fin
-        if (
-            'sm;' in proc
-            and matches_process(proc, process)
-        )
-    }
-    for val in nom.values():
-        val = [x if not math.isinf(x) else 0 for x in val]
 
-#    up = {proc.strip('Up;1'): fin[proc].to_numpy()[0] for proc in fin if 'sm' in proc and ('Up;' in proc or 'flat' in proc) and 'fakes' not in proc}
-#    down = {proc.strip('Down;1'): fin[proc].to_numpy()[0] for proc in fin if 'sm' in proc and ('Down;' in proc or 'flat' in proc) and 'fakes' not in proc}
-    up = {
-        proc.replace("Up;1", ""): fin[proc].to_numpy()[0]
-        for proc in fin
-        if (
-            'sm' in proc
-            and ('Up;' in proc or 'flat' in proc)
-            and 'fakes' not in proc
-            and matches_process(proc, process)
-        )
-    }
+@dataclass(frozen=True)
+class category_payload_plan:
+    base_channel: str
+    central_process_name: str
+    private_process_name: str
+    central_integral: float
+    private_integral: float
+    stored_values: object
 
-    down = {
-        proc.replace("Down;1", ""): fin[proc].to_numpy()[0]
-        for proc in fin
-        if (
-            'sm' in proc
-            and ('Down;' in proc or 'flat' in proc)
-            and 'fakes' not in proc
-            and matches_process(proc, process)
-        )
-    }
 
-    if len(nom) == 0:
-        print("NO MATCH FOUND")
-        print("fname =", fname)
-        print("path =", path)
-        print("process =", process)
-        print("available keys =", fin.keys())
-        return None, {}, None, None, None
+@dataclass(frozen=True)
+class payload_plan:
+    categories: tuple[category_payload_plan, ...]
 
-    total = np.array([v for v in nom.values()])[0]
+    @property
+    def values_by_category(self) -> Mapping[str, object]:
+        return {
+            category.base_channel: category.stored_values
+            for category in self.categories
+        }
 
-    systs = [0,0]
-    err = [np.zeros_like(total), np.zeros_like(total)]
-    total_systs = [
-        fin[k].to_numpy()[0]
-        for k in fin.keys()
-        if (
-            'sm' in k
-            and ('Up' in k or 'Down' in k)
-            and 'fakes' not in k
-            and matches_process(k, process)
-        )
-    ]
-
-    # Handle shape systematics
-    if len(total_systs) > 0:
-        systs[0] = [k.split(';')[0] for k in fin.keys() if 'sm' in k and 'Up' in k and 'fakes' not in k]
-        systs[1] = [k.split(';')[0] for k in fin.keys() if 'sm' in k and 'Down' in k and 'fakes' not in k]
-        systs = [k for k in zip(systs[0], systs[1])]
-        for syst in total_systs:
-            mask = syst - total > 0
-            shift = (syst - total)
-            err[0][~mask] = np.sqrt(np.square(err[1][~mask]) + np.square(-shift[~mask]))
-            err[1][mask] = np.sqrt(np.square(err[0][mask]) + np.square(shift[mask]))
-
-    # Handle flat rate systematics
-    flat_systs = zip(card[0], card[0].values(), *card[1])
-    for c in flat_systs:
-        proc = c[0]
-        rate = c[1]
-        vals = c[2:]
-        if 'sm' not in proc: continue
-        if 'tllq' not in proc: continue
-        for val in vals:
-            s = [0,0]
-            if '-' in val: continue
-            if '/' in val:
-                s[0] = 1 - float(val.split('/')[0])
-                s[1] = float(val.split('/')[1]) - 1
-            else:
-                s[0] = float(val) - 1
-                s[1] = float(val) - 1
-            err[0] = np.sqrt(np.square(err[0]) + np.square(total*s[0]))
-            err[1] = np.sqrt(np.square(err[1]) + np.square(total*s[1]))
-
-    hist_key = list(nom.keys())[0]
-    bins = fin[hist_key + ';1'].axis().edges()
-
-    return total, nom, err, bins, [proc.split('_sm')[0]for proc in fin if 'sm;' in proc]
-
-if __name__ == '__main__':
-    import argparse
-    import datetime
-    import os
-    from topcoffea.scripts.make_html import make_html
-
-    parser = argparse.ArgumentParser(description='You can select which file to run over')
-    parser.add_argument('--years',          default=[], action='extend', nargs='+', help = 'Specify a list of years')
-    parser.add_argument('--time', '-t',     action='store_true', help = 'Append time to dir')
-    parser.add_argument("-o", "--output-path", default=".", help = "The path the output files should be saved to")
-    parser.add_argument('--var',            default='njets', help = 'Specify variable to run over')
-
-    args = parser.parse_args()
-    years    = args.years
-    var      = args.var
-    if var == 'njets':
-        files = files_diff
-    if var == 'ptz':
-        files = files_ptz
-    if var == 'ptz_wtau':
-        files = files_ptz_wtau
-    if len(years)==0: years = ['2016APV', '2016', '2017', '2018']
-    #if len(years)==0: years = ['2022', '2022EE', '2023', '2023BPix']
-    lumi = {}
-    for year in years:
-        lumi[year] = get_tc_param(f"lumi_{year}")
-    print(f'Running over: {", ".join(list(lumi.keys()))} (%0.3g fb^-1)' % sum(lumi.values()))
-
-    # Make a tmp output directory in curren dir a different dir is not specified
-    timestamp_tag = datetime.datetime.now().strftime('%Y%m%d_%H%M')
-    save_dir_path = args.output_path
-    outdir_name = save_dir_path+"/missing_parton/"+var
-    if args.time:
-        outdir_name = outdir_name+'_'+timestamp_tag
-    outdir_name += '/'
-    if not os.path.exists(outdir_name):
-        os.mkdir(outdir_name)
-    else:
-        print(f'Overwriting contents in {outdir_name}\nUse the `-t` flag to make unique directories')
-    save_dir_path = os.path.join(args.output_path,outdir_name)
-
-    fout = topeft_path('data/missing_parton/missing_parton_test.root')
-    print("saving output in data/missing_parton/missing_parton_test.root")
-    if var == 'njets' or var == 'ptz_wtau':
-        if not os.path.exists(fout):
-            fout = uproot.create(fout)
-        else:
-            fout = uproot.update(fout)
-    else:
-        fout = 'topcoffea/data/missing_parton/missing_parton_test.root'
-        fout = uproot.open(fout)
-
-    rename = {'tllq': 'tZq', 'ttZ': 'ttll', 'ttW': 'ttlnu'} #Used to rename things like ttZ to ttll and ttHnobb to ttH
-    rename = {} #Used to rename things like ttZ to ttll and ttHnobb to ttH
-    for proc in ['tllq']:
-        for fname in files:
-            fname += '_' + var
-            total_private, nom_private, err, bins, label = get_hists(fname, 'private_tllq', proc)
-            print("proc,", proc)
-            rproc = rename[proc] if proc in rename else proc
-            total_central, nom_central, _, _, _ = get_hists(fname, 'central_tZq', 'tZq')
-            if total_private is None or total_central is None:
-                print(f"Skipping empty category: {fname}")
-                continue
-
-            hep.style.use("CMS")
-            fig,ax = plt.subplots(figsize=(8, 6))
-            hep.histplot(total_private, bins=bins, stack=False, label='Priavte LO', ax=ax, sort='yield')
-            hep.histplot(total_central, bins=bins, stack=False, label='Central NLO', ax=ax, sort='yield')
-            # Keep track of negative sign (since abs is requried to in sqrt)
-            err_low  = total_private - err[0]
-            err_high = total_private + err[1]
-            plt.fill_between(bins, np.append(err_low, 0.), np.append(err_high, 0.), step='post', facecolor='none', edgecolor='lightgray', label='Other syst.', hatch='///')
-            parton = np.zeros_like(total_private)
-            pos = total_private >= total_central
-            neg = total_private < total_central
-            for n in range(len(total_private)):
-                #sign = total_central[n] / np.abs(total_central[n])
-                if total_central[n] != 0:
-                    sign = total_central[n] / abs(total_central[n])
-                else:
-                    sign = 1
-
-                # total_private - sqrt(err_low^2 + parton^2) = total_central
-                if total_private[n] >= total_central[n]:
-                    if err_low[n]<total_central[n]: parton[n] = 0 # Error larger than central value
-                    else: parton[n] = np.sqrt(np.square(total_private[n] - total_central[n]) - np.square(err[0][n]))
-                # total_private + sqrt(err_low^2 + parton^2) = total_central
-                else:
-                    if err_high[n]>total_central[n]: parton[n] = 0 # Error larger than central value
-                    else: parton[n] = np.sqrt(np.square(total_private[n] - total_central[n]) - np.square(err[1][n]))
-            #if var == 'njets': fout[fname.replace('njets', '2b')] = {proc : np.nan_to_num(parton/total_private, 0)}
-            if var == 'njets' or var == 'ptz_wtau':
-
-                lep_bin = re.sub('_'+var, '', fname)
-
-                vals = np.nan_to_num(parton / total_private, 0)
-                merge_rules = [
-                    ("m_1tau",     6),  # 2lss 1tau merging 6j+
-                    ("p_1tau",     6),
-                    ("2los",       3),
-                    ("onZ_1b_fwd", 4),
-                    ("onZ_2b_fwd", 4),
-                    ("offZ_2b_fwd",4),
-                    ("4l",         4),
-                    ("3l",         5),  # avoid conflicting with 3l fwd
-                ]
-
-                for pattern, idx in merge_rules:
-                    if pattern in lep_bin:
-                        denom = np.sum(total_private[idx:])
-                        merged = 0.0 if denom == 0 else np.sum(parton[idx:]) / denom
-                        vals = np.concatenate([vals[:idx], [merged]])
-                        break
-
-                fout[lep_bin] = {
-                    proc: vals
+    def to_printable_dict(self) -> dict[str, object]:
+        return {
+            "category_count": len(self.categories),
+            "categories": [
+                {
+                    "base_channel": category.base_channel,
+                    "central_process": category.central_process_name,
+                    "private_process": category.private_process_name,
+                    "central_integral": category.central_integral,
+                    "private_integral": category.private_integral,
+                    "stored_value_count": len(category.stored_values),
+                    "stored_value_min": float(min(category.stored_values)),
+                    "stored_value_max": float(max(category.stored_values)),
                 }
+                for category in self.categories
+            ],
+        }
 
-            else:
-                lep_bin = re.sub(f'_{var}$', '', lep_bin)
 
-                # remove jet bin like _2j, _3j, _4j, ...
-                lep_bin = re.sub(r'_\dj$', '', lep_bin)
+@dataclass(frozen=True)
+class ResolvedConfig:
+    central_card_dir: Path
+    private_card_dir: Path
+    output_file: Path
+    output_path: Path
+    input_mode: str
+    dry_run: bool
+    overwrite: bool
+    years: tuple[str, ...]
+    time: bool
+    var: str
 
-                # add fixed b-category for 2lss regions
-                if '2lss' in lep_bin:
-                    lep_bin += '_2b'
+    def to_printable_dict(self) -> dict[str, object]:
+        return {
+            "mode": "dry_run" if self.dry_run else "execute",
+            "input_mode": self.input_mode,
+            "central_card_dir": str(self.central_card_dir),
+            "private_card_dir": str(self.private_card_dir),
+            "central_process_aliases": list(
+                PROCESS_ALIASES[DEFAULT_CENTRAL_PROCESS]
+            ),
+            "private_process_aliases": list(
+                PROCESS_ALIASES[DEFAULT_PRIVATE_PROCESS]
+            ),
+            "base_category_count": len(LEGACY_MISSING_PARTON_BASE_CHANNELS),
+            "base_categories": list(LEGACY_MISSING_PARTON_BASE_CHANNELS),
+            "output_file": str(self.output_file),
+            "output_path": str(self.output_path),
+            "overwrite": self.overwrite,
+            "years": list(self.years),
+            "time": self.time,
+            "var": self.var,
+        }
 
-                offset = -4 if '3l' not in fname else -2
-                jet_bin = int(re.findall('\dj', fname)[0][:-1])
-                parton = np.array(fout[lep_bin]['tllq'].array())[jet_bin + offset] * total_private
-            sign = np.ones_like(parton)
-            err_low  = total_private - np.sqrt(np.square(err[0]) + np.square(parton))
-            err_high = total_private + np.sqrt(np.square(err[1]) + np.square(parton))
-            # Correct for cases where parton > err_low (negative)
-            for n,_ in enumerate(sign):
-                if np.square(err_low[n]) - np.square(parton[n]) < 0 or err_low[n] < 0: sign[n] = -1
-            plt.fill_between(bins, np.append(err_low, 0), np.append(err_high, 0), step='post', facecolor='none', edgecolor='lightgray', label='Total syst.', hatch='\\\\\\') # append 0 to pad plots (matplotlib plots up to but not including the last bin)
-            np.seterr(invalid='ignore')
-            maxbin = np.max(np.max([total_private,total_private+np.max(err, axis=0)+parton], axis=0))*2
-            if np.isnan(maxbin) or np.isinf(maxbin): maxbin = 1
-            plt.ylim([0, maxbin])
-            hep.cms.label(lumi='%0.3g'%sum(lumi.values()))
-            plt.ylabel('Predicted yield')
-            ax.legend(loc='upper right', fontsize='xx-small', ncol=2)
-            if var == 'njets':
-                plt.xlabel('$N_{jets}$')
-            plt.xlabel(var)
-            plt.show()
-            plt.tight_layout()
-            plt.savefig(f'{outdir_name}/{fname}.png')
-            print(f'save {fname}.png in {outdir_name}')
-            plt.savefig(f'{outdir_name}/{fname}.pdf')
-            print(f'save {fname}.pdf in {outdir_name}')
-            plt.close('all')
 
-    # Make an index.html file if saving to web area
-    if "www" in outdir_name:
-        make_html(save_dir_path, 400, 300)
-    fout.close()
+def build_arg_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description=(
+            "Derive the public 34-TTree missing-parton ROOT payload from "
+            "central tZq and private tllq njet card directories."
+        )
+    )
+    parser.add_argument(
+        "--central-card-dir",
+        "--central-dir",
+        dest="central_card_dir",
+        help=(
+            "Directory containing the 34 central tZq ROOT/TXT pairs. "
+            "When omitted with --private-card-dir, the historical "
+            "parton_datacards/Run2 layout is used."
+        ),
+    )
+    parser.add_argument(
+        "--private-card-dir",
+        "--private-dir",
+        dest="private_card_dir",
+        help=(
+            "Directory containing the 34 private tllq ROOT/TXT pairs. "
+            "When omitted with --central-card-dir, the historical "
+            "parton_datacards/Run2 layout is used."
+        ),
+    )
+    parser.add_argument(
+        "--output-file",
+        "--output-payload",
+        dest="output_file",
+        help=(
+            "Output ROOT payload. Defaults to the historical "
+            "topeft/data/missing_parton/missing_parton_test.root path."
+        ),
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help=(
+            "Perform complete inventory, card, numerical, and payload-plan "
+            "validation without writing a ROOT file."
+        ),
+    )
+    parser.add_argument(
+        "--overwrite",
+        "--allow-overwrite",
+        dest="overwrite",
+        action="store_true",
+        help="Atomically replace an existing output only after full validation.",
+    )
+
+    # Historical public flags retained at the argument-parsing boundary.
+    parser.add_argument(
+        "--years",
+        default=[],
+        action="extend",
+        nargs="+",
+        help="Historical year labels retained for CLI compatibility.",
+    )
+    parser.add_argument(
+        "--time",
+        "-t",
+        action="store_true",
+        help="Historical timestamp flag retained for CLI compatibility.",
+    )
+    parser.add_argument(
+        "-o",
+        "--output-path",
+        default=".",
+        help="Historical diagnostic output path retained for CLI compatibility.",
+    )
+    parser.add_argument(
+        "--var",
+        default="njets",
+        help="Historical observable selector; payload production supports njets.",
+    )
+    return parser
+
+
+def resolve_config(args: argparse.Namespace) -> ResolvedConfig:
+    explicit_central = args.central_card_dir is not None
+    explicit_private = args.private_card_dir is not None
+    if explicit_central != explicit_private:
+        raise ConfigError(
+            "--central-card-dir and --private-card-dir must be supplied together."
+        )
+    if args.var != "njets":
+        raise ConfigError(
+            "The compatibility-preserving missing-parton payload producer is "
+            "defined only for --var njets."
+        )
+
+    input_mode = "explicit" if explicit_central else "legacy"
+    central_card_dir = (
+        Path(args.central_card_dir)
+        if explicit_central
+        else LEGACY_CENTRAL_CARD_DIR
+    )
+    private_card_dir = (
+        Path(args.private_card_dir)
+        if explicit_private
+        else LEGACY_PRIVATE_CARD_DIR
+    )
+    output_file = (
+        Path(args.output_file) if args.output_file else LEGACY_OUTPUT_FILE
+    )
+    years = tuple(args.years or DEFAULT_YEARS)
+    config = ResolvedConfig(
+        central_card_dir=central_card_dir,
+        private_card_dir=private_card_dir,
+        output_file=output_file,
+        output_path=Path(args.output_path),
+        input_mode=input_mode,
+        dry_run=bool(args.dry_run),
+        overwrite=bool(args.overwrite),
+        years=years,
+        time=bool(args.time),
+        var=args.var,
+    )
+    if output_file.exists() and not config.overwrite:
+        raise ConfigError(
+            f"Refusing to overwrite existing output payload {output_file}. "
+            "Pass --overwrite to authorize atomic replacement."
+        )
+    return config
+
+
+def card_files_for_category(
+    card_dir: str | Path,
+    base_channel: str,
+    var: str = "njets",
+) -> CardFiles:
+    stem = Path(card_dir) / f"ttx_multileptons-{base_channel}_{var}"
+    return CardFiles(
+        root_path=stem.with_suffix(".root"),
+        txt_path=stem.with_suffix(".txt"),
+    )
+
+
+def _category_from_card_path(path: Path, *, extension: str, var: str) -> str:
+    prefix = "ttx_multileptons-"
+    suffix = f"_{var}.{extension}"
+    if not path.name.startswith(prefix) or not path.name.endswith(suffix):
+        raise ValueError(
+            f"Unexpected derivation-card filename {path.name!r}; expected "
+            f"{prefix}<base_channel>{suffix}."
+        )
+    category = path.name[len(prefix) : -len(suffix)]
+    if not category:
+        raise ValueError(f"Empty base category in derivation-card path {path}.")
+    return category
+
+
+def _index_card_paths(
+    paths: Iterable[Path],
+    *,
+    extension: str,
+    var: str,
+) -> Mapping[str, Path]:
+    indexed_paths = []
+    for path in paths:
+        category = _category_from_card_path(
+            Path(path),
+            extension=extension,
+            var=var,
+        )
+        indexed_paths.append((category, Path(path)))
+    counts = Counter(category for category, _ in indexed_paths)
+    duplicates = sorted(
+        category for category, count in counts.items() if count > 1
+    )
+    if duplicates:
+        raise ValueError(
+            f"Duplicate {extension.upper()} derivation-card categories: "
+            f"{duplicates!r}."
+        )
+    return {category: path for category, path in indexed_paths}
+
+
+def discover_card_pairs(
+    card_dir: str | Path,
+    *,
+    expected_categories: Sequence[str] = LEGACY_MISSING_PARTON_BASE_CHANNELS,
+    var: str = "njets",
+    role: str,
+) -> Mapping[str, CardFiles]:
+    card_dir = Path(card_dir)
+    if not card_dir.is_dir():
+        raise FileNotFoundError(
+            f"Missing {role} derivation-card directory: {card_dir}."
+        )
+
+    root_paths = _index_card_paths(
+        sorted(card_dir.glob(f"ttx_multileptons-*_{var}.root")),
+        extension="root",
+        var=var,
+    )
+    txt_paths = _index_card_paths(
+        sorted(card_dir.glob(f"ttx_multileptons-*_{var}.txt")),
+        extension="txt",
+        var=var,
+    )
+    expected = set(expected_categories)
+    observed_root = set(root_paths)
+    observed_txt = set(txt_paths)
+    missing_root = sorted(expected - observed_root)
+    missing_txt = sorted(expected - observed_txt)
+    unexpected_root = sorted(observed_root - expected)
+    unexpected_txt = sorted(observed_txt - expected)
+    if missing_root or missing_txt or unexpected_root or unexpected_txt:
+        raise ValueError(
+            f"Invalid {role} derivation-card inventory in {card_dir}: "
+            f"missing_root={missing_root!r}, missing_txt={missing_txt!r}, "
+            f"unexpected_root={unexpected_root!r}, "
+            f"unexpected_txt={unexpected_txt!r}. Full public payload builds "
+            "require exactly one ROOT/TXT pair for each of the 34 base categories."
+        )
+
+    return {
+        category: CardFiles(
+            root_path=root_paths[category],
+            txt_path=txt_paths[category],
+        )
+        for category in expected_categories
+    }
+
+
+def root_key_without_cycle(root_key: str) -> str:
+    return str(root_key).split(";", 1)[0].strip()
+
+
+def process_from_root_key(root_key: str) -> str:
+    object_name = root_key_without_cycle(root_key)
+    if "_sm" not in object_name:
+        return object_name.strip()
+    return object_name.split("_sm", 1)[0].strip()
+
+
+def systematic_from_root_key(root_key: str) -> str:
+    object_name = root_key_without_cycle(root_key)
+    if "_sm_" not in object_name:
+        return ""
+    return object_name.split("_sm_", 1)[1]
+
+
+def process_aliases(process: str) -> tuple[str, ...]:
+    normalized = str(process).strip()
+    for aliases in PROCESS_ALIASES.values():
+        if normalized in aliases:
+            return aliases
+    return (normalized,)
+
+
+def matches_process_name(candidate: str, process: str) -> bool:
+    return process_from_root_key(candidate) in process_aliases(process)
+
+
+def is_nominal_key(root_key: str, process: str) -> bool:
+    return (
+        matches_process_name(root_key, process)
+        and root_key_without_cycle(root_key).endswith("_sm")
+    )
+
+
+def is_shape_variation_key(root_key: str, process: str) -> bool:
+    systematic = systematic_from_root_key(root_key)
+    return (
+        bool(systematic)
+        and matches_process_name(root_key, process)
+        and (systematic.endswith("Up") or systematic.endswith("Down"))
+    )
+
+
+def available_process_names(root_keys: Iterable[str]) -> tuple[str, ...]:
+    return tuple(
+        sorted(
+            {
+                process_from_root_key(root_key)
+                for root_key in root_keys
+                if "_sm" in root_key_without_cycle(root_key)
+            }
+        )
+    )
+
+
+def _find_existing_missing_parton_content(
+    root_keys: Iterable[str],
+    card_text: str,
+) -> tuple[str, ...]:
+    hits = [
+        root_key_without_cycle(root_key)
+        for root_key in root_keys
+        if MISSING_PARTON_SYST_NAME in root_key_without_cycle(root_key).lower()
+    ]
+    for line in card_text.splitlines():
+        fields = line.split()
+        if fields and fields[0].lower().startswith(MISSING_PARTON_SYST_NAME):
+            hits.append(line.strip())
+    return tuple(hits)
+
+
+def _parse_text_card(card_text: str, *, card_path: Path) -> parsed_card:
+    process_names = None
+    rates = None
+    rate_systematics = []
+    for raw_line in card_text.splitlines():
+        line = raw_line.split("#", 1)[0].strip()
+        if not line:
+            continue
+        fields = line.split()
+        if fields[0] == "process":
+            candidates = fields[1:]
+            try:
+                tuple(int(value) for value in candidates)
+            except ValueError:
+                process_names = tuple(candidates)
+        elif fields[0] == "rate":
+            try:
+                rates = tuple(float(value) for value in fields[1:])
+            except ValueError as exc:
+                raise ValueError(
+                    f"Non-numeric rate row in {card_path}: {line!r}."
+                ) from exc
+        elif len(fields) >= 2 and fields[1] == "lnN":
+            rate_systematics.append((fields[0], tuple(fields[2:])))
+
+    if process_names is None or rates is None:
+        raise ValueError(
+            f"Missing nominal process or rate row in text card {card_path}."
+        )
+    if len(process_names) != len(rates):
+        raise ValueError(
+            f"Process/rate column mismatch in {card_path}: "
+            f"process_count={len(process_names)}, rate_count={len(rates)}."
+        )
+    for nuisance_name, values in rate_systematics:
+        if len(values) != len(process_names):
+            raise ValueError(
+                f"lnN column mismatch for {nuisance_name!r} in {card_path}: "
+                f"expected={len(process_names)}, found={len(values)}."
+            )
+    return parsed_card(
+        process_names=process_names,
+        rates=rates,
+        rate_systematics=tuple(rate_systematics),
+    )
+
+
+def _validate_finite_template(
+    values,
+    *,
+    card_path: Path,
+    object_name: str,
+    base_channel: str,
+    role: str,
+) -> None:
+    import numpy as np
+
+    values = np.asarray(values, dtype=float)
+    if values.ndim != 1 or not np.all(np.isfinite(values)):
+        nonfinite = np.flatnonzero(~np.isfinite(values)).tolist()
+        raise ValueError(
+            f"Malformed {role} template: card={card_path}, "
+            f"object={object_name!r}, base_channel={base_channel!r}, "
+            f"shape={values.shape}, nonfinite_indices={nonfinite!r}."
+        )
+
+
+def _validate_txt_nominal_rate(
+    parsed_txt: parsed_card,
+    *,
+    process: str,
+    root_integral: float,
+    card_path: Path,
+    base_channel: str,
+    role: str,
+) -> str:
+    matches = [
+        (process_name, rate)
+        for process_name, rate in zip(
+            parsed_txt.process_names,
+            parsed_txt.rates,
+        )
+        if matches_process_name(process_name, process)
+    ]
+    if len(matches) != 1:
+        raise ValueError(
+            f"Expected exactly one TXT semantic process for {process!r}: "
+            f"card={card_path}, base_channel={base_channel!r}, role={role}, "
+            f"matches={matches!r}, available={parsed_txt.process_names!r}."
+        )
+    process_name, txt_rate = matches[0]
+    if not math.isfinite(txt_rate):
+        raise ValueError(
+            f"Non-finite TXT nominal rate in {card_path}: "
+            f"process={process_name!r}, rate={txt_rate!r}."
+        )
+    if not math.isclose(
+        root_integral,
+        txt_rate,
+        rel_tol=ROOT_TXT_RATE_REL_TOL,
+        abs_tol=ROOT_TXT_RATE_ABS_TOL,
+    ):
+        absolute_difference = abs(root_integral - txt_rate)
+        relative_difference = absolute_difference / max(
+            abs(root_integral),
+            abs(txt_rate),
+            1.0,
+        )
+        raise ValueError(
+            f"ROOT/TXT nominal disagreement: card={card_path}, "
+            f"process={process_name!r}, base_channel={base_channel!r}, "
+            f"role={role}, root_integral={root_integral}, txt_rate={txt_rate}, "
+            f"absolute_difference={absolute_difference}, "
+            f"relative_difference={relative_difference}, "
+            f"rel_tol={ROOT_TXT_RATE_REL_TOL}, "
+            f"abs_tol={ROOT_TXT_RATE_ABS_TOL}."
+        )
+    return process_name
+
+
+def read_base_category_card(
+    card_files: CardFiles,
+    process: str,
+    *,
+    base_channel: str,
+    role: str,
+) -> tuple[base_category_card_data, str]:
+    import numpy as np
+    import uproot
+
+    missing_files = [
+        str(path)
+        for path in (card_files.root_path, card_files.txt_path)
+        if not path.is_file()
+    ]
+    if missing_files:
+        raise FileNotFoundError(
+            "Missing card input file(s): " + ", ".join(missing_files)
+        )
+
+    card_text = card_files.txt_path.read_text(encoding="utf-8")
+    parsed_txt = _parse_text_card(
+        card_text,
+        card_path=card_files.txt_path,
+    )
+    with uproot.open(card_files.root_path) as root_file:
+        root_keys = list(root_file.keys())
+        existing_missing_parton = _find_existing_missing_parton_content(
+            root_keys,
+            card_text,
+        )
+        if existing_missing_parton:
+            raise ValueError(
+                "Detected pre-existing missing_parton content in source card "
+                f"{card_files.txt_path}: {existing_missing_parton[:5]!r}. "
+                "Produce source cards with --skip-missing-parton-rate-syst."
+            )
+
+        nominal_keys = [
+            root_key
+            for root_key in root_keys
+            if is_nominal_key(root_key, process)
+        ]
+        if len(nominal_keys) != 1:
+            raise ValueError(
+                f"Expected exactly one nominal ROOT semantic process for "
+                f"{process!r}: card={card_files.root_path}, "
+                f"base_channel={base_channel!r}, role={role}, "
+                f"matches={[root_key_without_cycle(key) for key in nominal_keys]!r}, "
+                f"available_processes={available_process_names(root_keys)!r}."
+            )
+        nominal_key = nominal_keys[0]
+        nominal_values = np.asarray(
+            root_file[nominal_key].values(flow=False),
+            dtype=float,
+        )
+        bin_edges = np.asarray(
+            root_file[nominal_key].axis().edges(flow=False),
+            dtype=float,
+        )
+        _validate_finite_template(
+            nominal_values,
+            card_path=card_files.root_path,
+            object_name=root_key_without_cycle(nominal_key),
+            base_channel=base_channel,
+            role=role,
+        )
+
+        shape_values = []
+        for root_key in root_keys:
+            if not is_shape_variation_key(root_key, process):
+                continue
+            object_name = root_key_without_cycle(root_key)
+            if "fakes" in object_name:
+                continue
+            values = np.asarray(
+                root_file[root_key].values(flow=False),
+                dtype=float,
+            )
+            edges = np.asarray(
+                root_file[root_key].axis().edges(flow=False),
+                dtype=float,
+            )
+            _validate_finite_template(
+                values,
+                card_path=card_files.root_path,
+                object_name=object_name,
+                base_channel=base_channel,
+                role=role,
+            )
+            if values.shape != nominal_values.shape or not np.array_equal(
+                edges,
+                bin_edges,
+            ):
+                raise ValueError(
+                    f"Incompatible {role} shape template: "
+                    f"card={card_files.root_path}, object={object_name!r}, "
+                    f"base_channel={base_channel!r}, "
+                    f"nominal_shape={nominal_values.shape}, "
+                    f"shape={values.shape}, "
+                    f"nominal_edges={bin_edges.tolist()}, "
+                    f"shape_edges={edges.tolist()}."
+                )
+            shape_values.append(values)
+
+    process_name = _validate_txt_nominal_rate(
+        parsed_txt,
+        process=process,
+        root_integral=float(np.sum(nominal_values)),
+        card_path=card_files.txt_path,
+        base_channel=base_channel,
+        role=role,
+    )
+    return (
+        base_category_card_data(
+            nominal_values=nominal_values,
+            shape_values=tuple(shape_values),
+            bin_edges=bin_edges,
+            parsed_txt=parsed_txt,
+        ),
+        process_name,
+    )
+
+
+def validate_physical_njet_axis(
+    values,
+    bin_edges,
+    *,
+    base_channel: str,
+    role: str,
+) -> None:
+    import numpy as np
+
+    values = np.asarray(values)
+    edges = np.asarray(bin_edges, dtype=float)
+    expected_edges = np.arange(PHYSICAL_NJET_BIN_COUNT + 1, dtype=float)
+    if (
+        values.ndim != 1
+        or len(values) != PHYSICAL_NJET_BIN_COUNT
+        or not np.array_equal(edges, expected_edges)
+    ):
+        raise ValueError(
+            f"Unexpected {role} physical-njet layout for {base_channel!r}: "
+            f"expected eight 0..6 plus >=7 bins with edges "
+            f"{expected_edges.tolist()}, found shape={values.shape}, "
+            f"edges={edges.tolist()}."
+        )
+
+
+def _parse_rate_shift(value: str) -> tuple[float, float] | None:
+    value = str(value).strip()
+    if not value or value == "-":
+        return None
+    if "/" in value:
+        low, high = value.split("/", 1)
+        return 1.0 - float(low), float(high) - 1.0
+    shift = float(value) - 1.0
+    return shift, shift
+
+
+def private_rate_errors(
+    card_data: base_category_card_data,
+    *,
+    process: str = DEFAULT_PRIVATE_PROCESS,
+) -> tuple[object, object]:
+    import numpy as np
+
+    nominal = np.asarray(card_data.nominal_values, dtype=float)
+    down = np.zeros_like(nominal)
+    up = np.zeros_like(nominal)
+    for variation in card_data.shape_values:
+        shift = np.asarray(variation, dtype=float) - nominal
+        upward = shift > 0.0
+        up[upward] = np.hypot(up[upward], shift[upward])
+        down[~upward] = np.hypot(down[~upward], shift[~upward])
+
+    for _, values in card_data.parsed_txt.rate_systematics:
+        for process_name, raw_value in zip(
+            card_data.parsed_txt.process_names,
+            values,
+        ):
+            if not matches_process_name(process_name, process):
+                continue
+            parsed_shift = _parse_rate_shift(raw_value)
+            if parsed_shift is None:
+                continue
+            down_shift, up_shift = parsed_shift
+            down = np.hypot(down, nominal * down_shift)
+            up = np.hypot(up, nominal * up_shift)
+
+    if (
+        not np.all(np.isfinite(down))
+        or not np.all(np.isfinite(up))
+        or np.any(down < 0.0)
+        or np.any(up < 0.0)
+    ):
+        raise ValueError("Invalid private uncertainty values after card parsing.")
+    return down, up
+
+
+def calculate_missing_parton_per_bin(
+    private_values,
+    central_values,
+    private_down_error,
+    private_up_error,
+    *,
+    base_channel: str,
+) -> tuple[object, object]:
+    """Return per-bin missing-parton amounts and stored fractional shifts."""
+    import numpy as np
+
+    private_values = np.asarray(private_values, dtype=float)
+    central_values = np.asarray(central_values, dtype=float)
+    private_down_error = np.asarray(private_down_error, dtype=float)
+    private_up_error = np.asarray(private_up_error, dtype=float)
+    arrays = (
+        private_values,
+        central_values,
+        private_down_error,
+        private_up_error,
+    )
+    if any(array.shape != private_values.shape for array in arrays):
+        raise ValueError(
+            f"Missing-parton numerical array mismatch for {base_channel!r}: "
+            f"shapes={[array.shape for array in arrays]!r}."
+        )
+    if any(not np.all(np.isfinite(array)) for array in arrays):
+        raise ValueError(
+            f"Non-finite missing-parton numerical input for {base_channel!r}."
+        )
+    if np.any(private_values < 0.0):
+        indices = np.flatnonzero(private_values < 0.0).tolist()
+        raise ValueError(
+            f"Negative private denominator for {base_channel!r} at physical "
+            f"njet indices {indices!r}; no clipping or absolute-value fallback "
+            "is allowed."
+        )
+    if np.any(private_down_error < 0.0) or np.any(private_up_error < 0.0):
+        raise ValueError(
+            f"Negative private uncertainty for {base_channel!r}."
+        )
+
+    missing_parton = np.zeros_like(private_values)
+    stored_fraction = np.zeros_like(private_values)
+    for index, (private, central, down_error, up_error) in enumerate(
+        zip(
+            private_values,
+            central_values,
+            private_down_error,
+            private_up_error,
+        )
+    ):
+        effective_private = (
+            0.0
+            if abs(private) < WEIGHTED_YIELD_ZERO_THRESHOLD
+            else float(private)
+        )
+        effective_central = (
+            0.0
+            if abs(central) < WEIGHTED_YIELD_ZERO_THRESHOLD
+            else float(central)
+        )
+        if effective_private == 0.0:
+            if effective_central == 0.0:
+                continue
+            raise ValueError(
+                "Undefined missing-parton ratio with a zero/near-zero private "
+                f"denominator and nonzero central yield: "
+                f"base_channel={base_channel!r}, physical_njet={index}, "
+                f"private={private}, central={central}, "
+                f"threshold={WEIGHTED_YIELD_ZERO_THRESHOLD}. "
+                "No denominator floor, clipping, smoothing, or fallback was applied."
+            )
+
+        delta = effective_private - effective_central
+        selected_error = float(down_error if delta >= 0.0 else up_error)
+        residual = max(delta * delta - selected_error * selected_error, 0.0)
+        amount = math.sqrt(residual)
+        fraction = amount / effective_private
+        if not math.isfinite(fraction) or fraction < 0.0:
+            raise ValueError(
+                f"Invalid stored missing-parton fraction for "
+                f"{base_channel!r}[{index}]: {fraction!r}."
+            )
+        if 1.0 + fraction <= 0.0:
+            raise ValueError(
+                f"Invalid consumer kappa_up for {base_channel!r}[{index}]: "
+                f"stored_fraction={fraction!r}."
+            )
+        missing_parton[index] = amount
+        stored_fraction[index] = fraction
+    return missing_parton, stored_fraction
+
+
+def merge_legacy_payload_tail(
+    *,
+    base_channel: str,
+    private_values,
+    missing_parton_values,
+    per_bin_fractions,
+    expected_length: int,
+):
+    """Apply the public physical-njet indexing and merged-tail convention."""
+    import numpy as np
+
+    private_values = np.asarray(private_values, dtype=float)
+    missing_parton_values = np.asarray(missing_parton_values, dtype=float)
+    per_bin_fractions = np.asarray(per_bin_fractions, dtype=float)
+    tail_start = expected_length - 1
+    if not 0 <= tail_start < len(private_values):
+        raise ValueError(
+            f"Invalid legacy tail start for {base_channel!r}: "
+            f"expected_length={expected_length}, "
+            f"physical_bin_count={len(private_values)}."
+        )
+    denominator = float(np.sum(private_values[tail_start:]))
+    numerator = float(np.sum(missing_parton_values[tail_start:]))
+    if denominator < 0.0:
+        raise ValueError(
+            f"Negative merged private denominator for {base_channel!r}: "
+            f"{denominator}."
+        )
+    if denominator == 0.0:
+        if numerator != 0.0:
+            raise ValueError(
+                f"Undefined merged missing-parton fraction for "
+                f"{base_channel!r}: numerator={numerator}, denominator=0."
+            )
+        merged_fraction = 0.0
+    else:
+        merged_fraction = numerator / denominator
+    stored_values = np.concatenate(
+        (per_bin_fractions[:tail_start], np.asarray([merged_fraction]))
+    )
+    return validate_legacy_missing_parton_values(
+        stored_values,
+        base_channel=base_channel,
+        expected_length=expected_length,
+    )
+
+
+def build_category_payload(
+    *,
+    base_channel: str,
+    private_card: base_category_card_data,
+    central_card: base_category_card_data,
+    expected_length: int,
+) -> object:
+    import numpy as np
+
+    validate_physical_njet_axis(
+        private_card.nominal_values,
+        private_card.bin_edges,
+        base_channel=base_channel,
+        role="private",
+    )
+    validate_physical_njet_axis(
+        central_card.nominal_values,
+        central_card.bin_edges,
+        base_channel=base_channel,
+        role="central",
+    )
+    if not np.array_equal(private_card.bin_edges, central_card.bin_edges):
+        raise ValueError(
+            f"Central/private njet bin-edge mismatch for {base_channel!r}: "
+            f"private={private_card.bin_edges.tolist()}, "
+            f"central={central_card.bin_edges.tolist()}."
+        )
+
+    down_error, up_error = private_rate_errors(private_card)
+    missing_parton, per_bin_fractions = calculate_missing_parton_per_bin(
+        private_card.nominal_values,
+        central_card.nominal_values,
+        down_error,
+        up_error,
+        base_channel=base_channel,
+    )
+    return merge_legacy_payload_tail(
+        base_channel=base_channel,
+        private_values=private_card.nominal_values,
+        missing_parton_values=missing_parton,
+        per_bin_fractions=per_bin_fractions,
+        expected_length=expected_length,
+    )
+
+
+def build_payload_plan(config: ResolvedConfig) -> payload_plan:
+    import numpy as np
+
+    central_inventory = discover_card_pairs(
+        config.central_card_dir,
+        role="central",
+        var=config.var,
+    )
+    private_inventory = discover_card_pairs(
+        config.private_card_dir,
+        role="private",
+        var=config.var,
+    )
+    expected_lengths = legacy_missing_parton_payload_lengths()
+    validated_cards = {}
+    for base_channel in LEGACY_MISSING_PARTON_BASE_CHANNELS:
+        private_card, private_process_name = read_base_category_card(
+            private_inventory[base_channel],
+            DEFAULT_PRIVATE_PROCESS,
+            base_channel=base_channel,
+            role="private",
+        )
+        central_card, central_process_name = read_base_category_card(
+            central_inventory[base_channel],
+            DEFAULT_CENTRAL_PROCESS,
+            base_channel=base_channel,
+            role="central",
+        )
+        validate_physical_njet_axis(
+            private_card.nominal_values,
+            private_card.bin_edges,
+            base_channel=base_channel,
+            role="private",
+        )
+        validate_physical_njet_axis(
+            central_card.nominal_values,
+            central_card.bin_edges,
+            base_channel=base_channel,
+            role="central",
+        )
+        if not np.array_equal(private_card.bin_edges, central_card.bin_edges):
+            raise ValueError(
+                f"Central/private njet bin-edge mismatch for {base_channel!r}: "
+                f"private={private_card.bin_edges.tolist()}, "
+                f"central={central_card.bin_edges.tolist()}."
+            )
+        validated_cards[base_channel] = (
+            private_card,
+            private_process_name,
+            central_card,
+            central_process_name,
+        )
+
+    category_plans = []
+    for base_channel in LEGACY_MISSING_PARTON_BASE_CHANNELS:
+        (
+            private_card,
+            private_process_name,
+            central_card,
+            central_process_name,
+        ) = validated_cards[base_channel]
+        stored_values = build_category_payload(
+            base_channel=base_channel,
+            private_card=private_card,
+            central_card=central_card,
+            expected_length=expected_lengths[base_channel],
+        )
+        category_plans.append(
+            category_payload_plan(
+                base_channel=base_channel,
+                central_process_name=central_process_name,
+                private_process_name=private_process_name,
+                central_integral=float(
+                    np.sum(central_card.nominal_values)
+                ),
+                private_integral=float(
+                    np.sum(private_card.nominal_values)
+                ),
+                stored_values=stored_values,
+            )
+        )
+    return payload_plan(categories=tuple(category_plans))
+
+
+def _validate_in_memory_payload(payload_values: Mapping[str, object]) -> None:
+    expected_lengths = legacy_missing_parton_payload_lengths()
+    expected_keys = list(LEGACY_MISSING_PARTON_BASE_CHANNELS)
+    observed_keys = list(payload_values)
+    if set(observed_keys) != set(expected_keys) or len(observed_keys) != len(
+        expected_keys
+    ):
+        raise ValueError(
+            f"Invalid in-memory legacy payload key set: "
+            f"missing={sorted(set(expected_keys) - set(observed_keys))!r}, "
+            f"unexpected={sorted(set(observed_keys) - set(expected_keys))!r}."
+        )
+    for base_channel in expected_keys:
+        validate_legacy_missing_parton_values(
+            payload_values[base_channel],
+            base_channel=base_channel,
+            expected_length=expected_lengths[base_channel],
+        )
+
+
+def write_legacy_payload_atomic(
+    output_file: str | Path,
+    payload_values: Mapping[str, object],
+    *,
+    overwrite: bool = False,
+) -> str:
+    """Write, validate, and atomically install a complete legacy payload."""
+    import numpy as np
+    import uproot
+
+    output_file = Path(output_file)
+    _validate_in_memory_payload(payload_values)
+    if output_file.exists() and not overwrite:
+        raise FileExistsError(
+            f"Refusing to overwrite existing output payload {output_file}. "
+            "Pass --overwrite to authorize atomic replacement."
+        )
+
+    output_file.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{output_file.name}.",
+        suffix=".tmp.root",
+        dir=output_file.parent,
+    )
+    os.close(descriptor)
+    temporary_path = Path(temporary_name)
+    try:
+        with uproot.recreate(temporary_path) as payload_file:
+            for base_channel in LEGACY_MISSING_PARTON_BASE_CHANNELS:
+                tree = payload_file.mktree(
+                    base_channel,
+                    {LEGACY_MISSING_PARTON_BRANCH: "float64"},
+                )
+                tree.extend(
+                    {
+                        LEGACY_MISSING_PARTON_BRANCH: np.asarray(
+                            payload_values[base_channel],
+                            dtype=np.float64,
+                        )
+                    }
+                )
+        validate_legacy_missing_parton_payload(temporary_path)
+
+        if output_file.exists() and not overwrite:
+            raise FileExistsError(
+                f"Output payload appeared during validation: {output_file}. "
+                "No replacement was performed."
+            )
+        os.replace(temporary_path, output_file)
+        validate_legacy_missing_parton_payload(output_file)
+        return hashlib.sha256(output_file.read_bytes()).hexdigest()
+    finally:
+        if temporary_path.exists():
+            temporary_path.unlink()
+
+
+def run_producer(config: ResolvedConfig) -> tuple[payload_plan, str | None]:
+    plan = build_payload_plan(config)
+    if config.dry_run:
+        return plan, None
+    output_sha256 = write_legacy_payload_atomic(
+        config.output_file,
+        plan.values_by_category,
+        overwrite=config.overwrite,
+    )
+    return plan, output_sha256
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    parser = build_arg_parser()
+    args = parser.parse_args(argv)
+    try:
+        config = resolve_config(args)
+        plan, output_sha256 = run_producer(config)
+    except (ConfigError, FileNotFoundError, FileExistsError, OSError, ValueError) as exc:
+        parser.error(str(exc))
+
+    summary = {
+        "resolved_config": config.to_printable_dict(),
+        "payload_plan": plan.to_printable_dict(),
+        "output_sha256": output_sha256,
+        "write_performed": not config.dry_run,
+    }
+    if config.dry_run:
+        print(
+            "missing_parton.py dry-run validation succeeded; "
+            "no ROOT payload was written."
+        )
+    else:
+        print(
+            f"Wrote validated legacy missing-parton payload: "
+            f"{config.output_file} sha256={output_sha256}"
+        )
+    print(json.dumps(summary, indent=2, sort_keys=True))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

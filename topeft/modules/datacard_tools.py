@@ -1059,7 +1059,8 @@ class DatacardMaker():
                     #k = k.replace(";1","")
                     # Note: Values in the ROOT file are computed as the fraction of the rate needed to
                     #   reach agreement, so need to add 1 to get the corresponding kapaa value
-                    d[k] = f[f"{k}/{branch_key}"].array() + 1
+                    channel_key = str(k).split(";", 1)[0]
+                    d[channel_key] = f[f"{k}/{branch_key}"].array() + 1
                 new_syst.add_process("tllq",d)
                 new_syst.add_process("tHq",d)
             rate_systs[syst_name] = new_syst
