@@ -89,15 +89,41 @@ def test_both_zero_or_effectively_zero_rates_are_neutral():
     assert fraction.tolist() == pytest.approx([0.0, 0.0])
 
 
-def test_zero_or_near_zero_private_with_nonzero_central_fails():
+def test_near_zero_positive_private_with_nonzero_central_is_neutral():
     module = load_module()
 
-    with pytest.raises(ValueError, match="zero/near-zero private") as exc_info:
-        calculate(module, [0.5e-5], [1.0])
+    parton, fraction = calculate(module, [0.5e-5], [1.0])
 
-    message = str(exc_info.value)
-    assert "threshold=1e-05" in message
-    assert "No denominator floor" in message
+    assert parton.tolist() == [0.0]
+    assert fraction.tolist() == [0.0]
+    assert 1.0 + fraction[0] == 1.0
+
+
+def test_near_zero_negative_private_with_nonzero_central_is_neutral():
+    module = load_module()
+
+    parton, fraction = calculate(module, [-0.5e-5], [1.0])
+
+    assert parton.tolist() == [0.0]
+    assert fraction.tolist() == [0.0]
+    assert 1.0 + fraction[0] == 1.0
+
+
+def test_effectively_zero_private_never_uses_threshold_as_denominator():
+    module = load_module()
+
+    _, fraction = calculate(module, [0.25e-5], [1.0e6])
+
+    assert fraction.tolist() == [0.0]
+
+
+def test_private_value_at_threshold_uses_ordinary_formula():
+    module = load_module()
+
+    parton, fraction = calculate(module, [1.0e-5], [0.0])
+
+    assert parton.tolist() == pytest.approx([1.0e-5])
+    assert fraction.tolist() == pytest.approx([1.0])
 
 
 def test_zero_or_near_zero_central_with_positive_private_is_supported():
@@ -116,10 +142,12 @@ def test_nonfinite_numerical_inputs_fail(bad_value):
         calculate(module, [10.0], [bad_value])
 
 
-def test_negative_private_denominator_fails_without_absolute_value():
+def test_materially_negative_private_denominator_fails_without_absolute_value():
     module = load_module()
 
-    with pytest.raises(ValueError, match="Negative private denominator") as exc_info:
+    with pytest.raises(
+        ValueError, match="Materially negative private denominator"
+    ) as exc_info:
         calculate(module, [-0.5], [0.0])
 
     assert "no clipping or absolute-value fallback" in str(exc_info.value)

@@ -84,6 +84,7 @@ class category_payload_plan:
     private_process_name: str
     central_integral: float
     private_integral: float
+    neutralized_physical_njets: tuple[int, ...]
     stored_values: object
 
 
@@ -101,6 +102,14 @@ class payload_plan:
     def to_printable_dict(self) -> dict[str, object]:
         return {
             "category_count": len(self.categories),
+            "neutralized_bins": [
+                {
+                    "base_channel": category.base_channel,
+                    "physical_njet": physical_njet,
+                }
+                for category in self.categories
+                for physical_njet in category.neutralized_physical_njets
+            ],
             "categories": [
                 {
                     "base_channel": category.base_channel,
@@ -108,6 +117,9 @@ class payload_plan:
                     "private_process": category.private_process_name,
                     "central_integral": category.central_integral,
                     "private_integral": category.private_integral,
+                    "neutralized_physical_njets": list(
+                        category.neutralized_physical_njets
+                    ),
                     "stored_value_count": len(category.stored_values),
                     "stored_value_min": float(min(category.stored_values)),
                     "stored_value_max": float(max(category.stored_values)),
@@ -805,10 +817,12 @@ def calculate_missing_parton_per_bin(
         raise ValueError(
             f"Non-finite missing-parton numerical input for {base_channel!r}."
         )
-    if np.any(private_values < 0.0):
-        indices = np.flatnonzero(private_values < 0.0).tolist()
+    if np.any(private_values <= -WEIGHTED_YIELD_ZERO_THRESHOLD):
+        indices = np.flatnonzero(
+            private_values <= -WEIGHTED_YIELD_ZERO_THRESHOLD
+        ).tolist()
         raise ValueError(
-            f"Negative private denominator for {base_channel!r} at physical "
+            f"Materially negative private denominator for {base_channel!r} at physical "
             f"njet indices {indices!r}; no clipping or absolute-value fallback "
             "is allowed."
         )
@@ -827,27 +841,14 @@ def calculate_missing_parton_per_bin(
             private_up_error,
         )
     ):
-        effective_private = (
-            0.0
-            if abs(private) < WEIGHTED_YIELD_ZERO_THRESHOLD
-            else float(private)
-        )
+        if abs(private) < WEIGHTED_YIELD_ZERO_THRESHOLD:
+            continue
+        effective_private = float(private)
         effective_central = (
             0.0
             if abs(central) < WEIGHTED_YIELD_ZERO_THRESHOLD
             else float(central)
         )
-        if effective_private == 0.0:
-            if effective_central == 0.0:
-                continue
-            raise ValueError(
-                "Undefined missing-parton ratio with a zero/near-zero private "
-                f"denominator and nonzero central yield: "
-                f"base_channel={base_channel!r}, physical_njet={index}, "
-                f"private={private}, central={central}, "
-                f"threshold={WEIGHTED_YIELD_ZERO_THRESHOLD}. "
-                "No denominator floor, clipping, smoothing, or fallback was applied."
-            )
 
         delta = effective_private - effective_central
         selected_error = float(down_error if delta >= 0.0 else up_error)
@@ -1028,6 +1029,11 @@ def build_payload_plan(config: ResolvedConfig) -> payload_plan:
             central_card=central_card,
             expected_length=expected_lengths[base_channel],
         )
+        neutralized_physical_njets = tuple(
+            index
+            for index, private_value in enumerate(private_card.nominal_values)
+            if abs(float(private_value)) < WEIGHTED_YIELD_ZERO_THRESHOLD
+        )
         category_plans.append(
             category_payload_plan(
                 base_channel=base_channel,
@@ -1039,6 +1045,7 @@ def build_payload_plan(config: ResolvedConfig) -> payload_plan:
                 private_integral=float(
                     np.sum(private_card.nominal_values)
                 ),
+                neutralized_physical_njets=neutralized_physical_njets,
                 stored_values=stored_values,
             )
         )

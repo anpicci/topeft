@@ -4,6 +4,7 @@ import importlib.util
 import sys
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 
@@ -175,6 +176,28 @@ def test_dry_run_builds_complete_plan_and_never_calls_writer(
     assert plan is expected_plan
     assert output_sha256 is None
     assert not config.output_file.exists()
+
+
+def test_dry_run_plan_prints_neutralized_physical_bins():
+    module = load_module()
+    category = module.category_payload_plan(
+        base_channel="2lss_m_1tau_onZ",
+        central_process_name="tZq_sm",
+        private_process_name="tllq_sm",
+        central_integral=1.0,
+        private_integral=0.0,
+        neutralized_physical_njets=(2, 7),
+        stored_values=np.zeros(7),
+    )
+
+    plan = module.payload_plan(categories=(category,))
+    printable = plan.to_printable_dict()
+
+    assert printable["neutralized_bins"] == [
+        {"base_channel": "2lss_m_1tau_onZ", "physical_njet": 2},
+        {"base_channel": "2lss_m_1tau_onZ", "physical_njet": 7},
+    ]
+    assert printable["categories"][0]["neutralized_physical_njets"] == [2, 7]
 
 
 def test_invalid_input_leaves_existing_output_byte_for_byte_unchanged(
