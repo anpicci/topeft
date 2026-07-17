@@ -25,6 +25,7 @@ resume_mode=false
 print_plan=false
 attempt=1
 campaign_type="run2_top22006_missing_parton"
+campaign_mutation_allowed=false
 
 campaign_metadata=""
 output_contract=""
@@ -83,6 +84,7 @@ run_python() {
 write_status() {
     local state="$1"
     local detail="${2:-}"
+    [[ "${campaign_mutation_allowed}" == true ]] || return 0
     [[ -n "${status_file}" && -d "${output_root:-/nonexistent}" ]] || return 0
     local temporary_status="${status_file}.tmp.$$"
     {
@@ -146,6 +148,9 @@ parse_args() {
         shift
     done
 
+    if [[ "${resume_mode}" == true && "${print_plan}" == true ]]; then
+        die "--resume and --print-plan are mutually exclusive"
+    fi
     [[ -n "${output_root}" ]] || die "OUTPUT_ROOT is required"
     [[ "${output_root}" == /* ]] || die "OUTPUT_ROOT must be absolute"
     case "${executor}" in
@@ -176,7 +181,7 @@ validate_output_root() {
 
 assert_operational_prerequisites() {
     local required_command
-    for required_command in git sha256sum gzip flock find realpath awk sed; do
+    for required_command in git sha256sum gzip flock find realpath awk sed mktemp sort; do
         command -v "${required_command}" >/dev/null 2>&1 || die "required command not found: ${required_command}"
     done
 
@@ -205,6 +210,7 @@ acquire_campaign_lock() {
     mkdir -p -- "${output_root}/.campaign_lock"
     exec 9>"${output_root}/.campaign_lock/active.lock"
     flock -n 9 || die "another driver process holds the campaign lock"
+    campaign_mutation_allowed=true
 }
 
 file_sha256() {
@@ -253,8 +259,14 @@ metadata_value() {
     awk -F= -v requested_key="${key}" '$1 == requested_key {sub(/^[^=]*=/, ""); print; exit}' "${campaign_metadata}"
 }
 
+require_resume_regular_file() {
+    local path="$1"
+    local description="$2"
+    [[ ! -L "${path}" && -f "${path}" ]] || die "${description} must be a regular non-symlink file"
+}
+
 verify_resume_metadata() {
-    [[ -f "${campaign_metadata}" ]] || die "resume metadata is missing"
+    require_resume_regular_file "${campaign_metadata}" "resume campaign_metadata.txt"
     [[ "$(metadata_value campaign_type)" == "${campaign_type}" ]] || die "resume campaign type mismatch"
     [[ "$(metadata_value driver_path)" == "${driver_path}" ]] || die "resume driver path mismatch"
     [[ "$(metadata_value driver_sha256)" == "$(file_sha256 "${driver_path}")" ]] || die "resume driver hash mismatch"
@@ -294,10 +306,13 @@ initialize_new_campaign() {
 initialize_existing_campaign() {
     [[ -d "${output_root}" ]] || die "--resume requires an existing OUTPUT_ROOT"
     campaign_paths
-    acquire_campaign_lock
+    require_resume_regular_file "${campaign_metadata}" "resume campaign_metadata.txt"
+    require_resume_regular_file "${status_file}" "resume status.txt"
+    require_resume_regular_file "${output_contract}" "resume output_contract.tsv"
     verify_resume_metadata
-    [[ -f "${status_file}" ]] || die "resume status file is missing"
+    verify_resume_contract
     ! grep -qx 'state=success' "${status_file}" || die "campaign already completed successfully"
+    acquire_campaign_lock
 
     local previous_attempts=0
     if [[ -f "${retry_history}" ]]; then
@@ -512,6 +527,7 @@ clear_stale_environment_tarballs() {
     local expected_dir="${environment_archive_dir_default}"
     local resolved_requested=""
     local resolved_expected=""
+    local enumeration_file=""
     local candidate
     local -a stale_archives=()
 
@@ -527,8 +543,12 @@ clear_stale_environment_tarballs() {
         record_environment_archive_cleanup "${context}" rejected "${requested_dir}" cache_directory_is_symlink
         return 1
     fi
-    if [[ ! -d "${requested_dir}" ]]; then
-        record_environment_archive_cleanup "${context}" rejected "${requested_dir}" cache_directory_missing
+    if [[ ! -e "${requested_dir}" ]]; then
+        record_environment_archive_cleanup "${context}" no_match "${expected_dir}" cache_directory_absent
+        return 0
+    fi
+    if [[ ! -d "${requested_dir}" || ! -r "${requested_dir}" || ! -x "${requested_dir}" ]]; then
+        record_environment_archive_cleanup "${context}" rejected "${requested_dir}" cache_directory_not_accessible_directory
         return 1
     fi
 
@@ -552,16 +572,36 @@ clear_stale_environment_tarballs() {
         return 1
     fi
 
+    if ! enumeration_file="$(mktemp "${TMPDIR:-/tmp}/run2_missing_parton_environment_archives.XXXXXX")"; then
+        record_environment_archive_cleanup "${context}" failed "${resolved_requested}" candidate_enumeration_tempfile_failed
+        return 1
+    fi
+    if ! find "${resolved_requested}" -mindepth 1 -maxdepth 1 \
+        \( -type f -o -type l \) -name "${environment_archive_pattern}" -print0 \
+        | sort -z > "${enumeration_file}"; then
+        record_environment_archive_cleanup "${context}" failed "${resolved_requested}" candidate_enumeration_failed
+        rm -f -- "${enumeration_file}"
+        return 1
+    fi
+
     while IFS= read -r -d '' candidate; do
         if [[ -L "${candidate}" ]]; then
             record_environment_archive_cleanup "${context}" rejected "${candidate}" matching_symlink
+            rm -f -- "${enumeration_file}"
+            return 1
+        elif [[ -f "${candidate}" ]]; then
+            stale_archives+=("${candidate}")
+        else
+            record_environment_archive_cleanup "${context}" failed "${candidate}" candidate_changed_during_enumeration
+            rm -f -- "${enumeration_file}"
             return 1
         fi
-    done < <(find "${resolved_requested}" -mindepth 1 -maxdepth 1 -name "${environment_archive_pattern}" -print0)
+    done < "${enumeration_file}"
 
-    while IFS= read -r -d '' candidate; do
-        stale_archives+=("${candidate}")
-    done < <(find "${resolved_requested}" -mindepth 1 -maxdepth 1 -type f -name "${environment_archive_pattern}" -print0)
+    if ! rm -f -- "${enumeration_file}"; then
+        record_environment_archive_cleanup "${context}" failed "${enumeration_file}" candidate_enumeration_tempfile_cleanup_failed
+        return 1
+    fi
 
     if ((${#stale_archives[@]} == 0)); then
         record_environment_archive_cleanup "${context}" no_match "${resolved_requested}" "pattern=${environment_archive_pattern}"
@@ -655,7 +695,6 @@ main() {
 
     if [[ "${resume_mode}" == true ]]; then
         initialize_existing_campaign
-        verify_resume_contract
     else
         initialize_new_campaign
         write_output_contract
