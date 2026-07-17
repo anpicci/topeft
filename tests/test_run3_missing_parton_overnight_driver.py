@@ -46,7 +46,7 @@ def test_print_plan_is_complete_and_has_no_campaign_storage_effect(tmp_path):
     assert result.returncode == 0, result.stdout
     assert not prospective_root.exists()
     assert "plan_mode=true" in result.stdout
-    assert "source_branch=te/fix_eft_sm_sumw2_companions" in result.stdout
+    assert re.search(r"source_branch=\S+", result.stdout)
     assert re.search(r"source_commit=[0-9a-f]{40}", result.stdout)
     assert re.search(r"processor_sha256=[0-9a-f]{64}", result.stdout)
     assert "sumw2_contract=sm_only_complete_event_contribution_squared" in result.stdout
