@@ -26,6 +26,7 @@ private_cfg="input_samples/cfgs/missing_parton_run3_private_tllq_NDSkim.cfg"
 
 output_root=""
 resume_mode=false
+print_plan_mode=false
 current_phase="running"
 status_file=""
 state_history_file=""
@@ -47,6 +48,7 @@ usage() {
 Usage:
   run_run3_missing_parton_pkls_overnight.sh [output_root]
   run_run3_missing_parton_pkls_overnight.sh --resume <existing_output_root>
+  run_run3_missing_parton_pkls_overnight.sh --print-plan <prospective_output_root>
 
 Run one complete campaign in this order:
   1. all-analysis central NLO tZq category chunks;
@@ -62,6 +64,9 @@ The operator must prepare the repository, environment, and execution service
 before starting this command.  The campaign root must be an absolute path; a
 fresh root must be absent or empty.  Use --resume only for an interrupted
 campaign created by this driver.
+
+--print-plan validates the configuration and prints the exact commands and
+output contract without creating the campaign root or invoking a backend.
 
 Canonical launch directory:
   cd /users/apiccine/work/correction-lib/topeft/analysis/topeft_run2
@@ -159,8 +164,15 @@ parse_args() {
     case "$1" in
       --resume)
         [[ $# -ge 2 ]] || die "--resume requires an existing output root"
-        [[ -z "${positional_root}" && "${resume_mode}" == false ]] || die "select one campaign mode"
+        [[ -z "${positional_root}" && "${resume_mode}" == false && "${print_plan_mode}" == false ]] || die "select one campaign mode"
         resume_mode=true
+        output_root="$2"
+        shift 2
+        ;;
+      --print-plan)
+        [[ $# -ge 2 ]] || die "--print-plan requires a prospective output root"
+        [[ -z "${positional_root}" && "${resume_mode}" == false && "${print_plan_mode}" == false ]] || die "select one campaign mode"
+        print_plan_mode=true
         output_root="$2"
         shift 2
         ;;
@@ -172,7 +184,7 @@ parse_args() {
         die "unknown option: $1"
         ;;
       *)
-        [[ "${resume_mode}" == false ]] || die "--resume accepts its output root directly after the flag"
+        [[ "${resume_mode}" == false && "${print_plan_mode}" == false ]] || die "the selected mode accepts its output root directly after the flag"
         [[ -z "${positional_root}" ]] || die "only one output root may be supplied"
         positional_root="$1"
         shift
@@ -180,7 +192,7 @@ parse_args() {
     esac
   done
 
-  if [[ "${resume_mode}" == false ]]; then
+  if [[ "${resume_mode}" == false && "${print_plan_mode}" == false ]]; then
     output_root="${positional_root}"
   fi
   case "${executor}" in
@@ -189,7 +201,7 @@ parse_args() {
   esac
   is_positive_integer "${all_analysis_chunks}" || die "ALL_ANALYSIS_CHUNKS must be a positive integer"
   (( all_analysis_chunks >= 2 )) || die "ALL_ANALYSIS_CHUNKS must be at least 2"
-  if [[ -z "${output_root}" && "${resume_mode}" == false ]]; then
+  if [[ -z "${output_root}" && "${resume_mode}" == false && "${print_plan_mode}" == false ]]; then
     output_root="${default_output_parent}/run3_missing_parton_$(timestamp_utc)"
   fi
   [[ "${output_root}" == /* ]] || die "output root must be an absolute path"
@@ -206,6 +218,7 @@ assert_operational_prerequisites() {
   command -v flock >/dev/null 2>&1 || die "flock is required for exclusive campaign ownership"
   command -v gzip >/dev/null 2>&1 || die "gzip is required for PKL validation"
   command -v sha256sum >/dev/null 2>&1 || die "sha256sum is required for PKL manifests"
+  command -v git >/dev/null 2>&1 || die "git is required for source provenance"
 }
 
 campaign_paths() {
@@ -230,8 +243,14 @@ acquire_campaign_lock() {
 
 write_campaign_metadata() {
   local driver_checksum
+  local processor_checksum
+  local source_branch
+  local source_commit
 
   driver_checksum="$(sha256sum "${BASH_SOURCE[0]}" | awk '{print $1}')"
+  processor_checksum="$(sha256sum "${script_dir}/analysis_processor.py" | awk '{print $1}')"
+  source_branch="$(git -C "${topeft_root}" branch --show-current)"
+  source_commit="$(git -C "${topeft_root}" rev-parse HEAD)"
   {
     printf 'campaign_id=run3_missing_parton_%s\n' "$(basename -- "${output_root}")"
     printf 'started=%s\n' "$(timestamp_iso)"
@@ -240,6 +259,14 @@ write_campaign_metadata() {
     printf 'hostname=%s\n' "$(hostname)"
     printf 'driver_path=%s\n' "${BASH_SOURCE[0]}"
     printf 'driver_sha256=%s\n' "${driver_checksum}"
+    printf 'source_branch=%s\n' "${source_branch}"
+    printf 'source_commit=%s\n' "${source_commit}"
+    printf 'processor_path=%s\n' "${script_dir}/analysis_processor.py"
+    printf 'processor_sha256=%s\n' "${processor_checksum}"
+    printf 'sumw2_contract=sm_only_complete_event_contribution_squared\n'
+    printf 'private_tllq_sumw2_status=corrected_sm_only_statistical_companion\n'
+    printf 'private_tllq_nominal_status=unchanged_by_sumw2_correction\n'
+    printf 'central_tzq_nominal_and_sumw2_status=unchanged_regression_control\n'
     printf 'environment_wrapper=%s\n' "${environment_wrapper}"
     printf 'python_interpreter=%s\n' "${python_env}"
     printf 'executor=%s\n' "${executor}"
@@ -405,6 +432,76 @@ build_run_analysis_command() {
   else
     resolved_command+=(--category-groups "${category_groups[@]}")
   fi
+}
+
+build_canonicalize_command() {
+  local role="$1"
+  local canonical_path
+  local merge_report_path
+  local chunk_index
+  local chunk_label
+  local -a raw_paths=()
+
+  canonical_path="$(canonical_path_for_role "${role}")"
+  merge_report_path="${output_root}/all_analysis/canonical/${role}_merge_report.json"
+  for ((chunk_index = 1; chunk_index <= all_analysis_chunks; chunk_index++)); do
+    printf -v chunk_label '%02d' "${chunk_index}"
+    raw_paths+=("$(raw_path_for_chunk "${role}" "${chunk_label}")")
+  done
+  resolved_command=(
+    "${environment_wrapper}" /bin/bash --noprofile --norc -c
+    'cd "$1"; shift; exec "$@"'
+    run3_missing_parton_driver "${script_dir}" "${python_env}" make_cards.py
+    "${raw_paths[@]}" --merge-only --on-process-collision allow
+    --merge-report "${merge_report_path}" --cache-merged-pkl "${canonical_path}"
+    --out-dir "$(dirname -- "${canonical_path}")"
+  )
+}
+
+print_execution_plan() {
+  local temporary_contract
+  local role
+  local chunk_index
+  local chunk_label
+  local chunk_spec
+  local output_path
+
+  printf 'plan_mode=true\n'
+  printf 'source_branch=%s\n' "$(git -C "${topeft_root}" branch --show-current)"
+  printf 'source_commit=%s\n' "$(git -C "${topeft_root}" rev-parse HEAD)"
+  printf 'processor_sha256=%s\n' "$(sha256sum "${script_dir}/analysis_processor.py" | awk '{print $1}')"
+  printf 'sumw2_contract=sm_only_complete_event_contribution_squared\n'
+  printf 'executor=%s\n' "${executor}"
+  printf 'all_analysis_chunks=%s\n' "${all_analysis_chunks}"
+  printf 'periods=%s\n' "${run3_years[*]}"
+  printf 'output_root=%s\n' "${output_root}"
+
+  temporary_contract="$(mktemp "${TMPDIR:-/tmp}/run3_missing_parton_plan.XXXXXX")"
+  write_output_contract "${temporary_contract}"
+  printf '%s\n' '--- output_contract.tsv ---'
+  cat "${temporary_contract}"
+  rm -f "${temporary_contract}"
+
+  printf '%s\n' '--- execution_commands ---'
+  for role in central_tzq private_tllq; do
+    chunk_index=0
+    for chunk_spec in "${chunk_specs[@]}"; do
+      chunk_index=$((chunk_index + 1))
+      printf -v chunk_label '%02d' "${chunk_index}"
+      output_path="$(raw_path_for_chunk "${role}" "${chunk_label}")"
+      build_run_analysis_command "${role}" "all_analysis" "${output_path}" "${chunk_spec}"
+      printf 'all_analysis_%s_%s\t%s\n' "${role}" "${chunk_label}" "$(quote_command "${resolved_command[@]}")"
+    done
+  done
+  for role in central_tzq private_tllq; do
+    build_canonicalize_command "${role}"
+    printf 'canonicalize_%s\t%s\n' "${role}" "$(quote_command "${resolved_command[@]}")"
+  done
+  for role in central_tzq private_tllq; do
+    output_path="$(top22006_path_for_role "${role}")"
+    build_run_analysis_command "${role}" "top22006" "${output_path}" "${top22006_groups[*]}"
+    printf 'top22006_%s\t%s\n' "${role}" "$(quote_command "${resolved_command[@]}")"
+  done
 }
 
 record_operational_check() {
@@ -646,7 +743,6 @@ validate_single_output_count() {
 canonicalize_role() {
   local role="$1"
   local canonical_path
-  local merge_report_path
   local chunk_index
   local chunk_label
   local raw_path
@@ -669,14 +765,8 @@ canonicalize_role() {
   fi
   [[ ! -e "${canonical_path}" ]] || die "refusing to overwrite canonical output: ${canonical_path}"
   mkdir -p "$(dirname -- "${canonical_path}")"
-  merge_report_path="${output_root}/all_analysis/canonical/${role}_merge_report.json"
-  run_step "canonicalize_${role}" \
-    "${environment_wrapper}" /bin/bash --noprofile --norc -c \
-    'cd "$1"; shift; exec "$@"' \
-    run3_missing_parton_driver "${script_dir}" "${python_env}" make_cards.py \
-    "${raw_paths[@]}" --merge-only --on-process-collision allow \
-    --merge-report "${merge_report_path}" --cache-merged-pkl "${canonical_path}" \
-    --out-dir "$(dirname -- "${canonical_path}")"
+  build_canonicalize_command "${role}"
+  run_step "canonicalize_${role}" "${resolved_command[@]}"
   check_output_file "${canonical_path}" "${role}" "all_analysis" "canonical"
 }
 
@@ -753,6 +843,13 @@ write_checksum_inventory() {
 main() {
   parse_args "$@"
   assert_operational_prerequisites
+
+  if [[ "${print_plan_mode}" == true ]]; then
+    load_category_groups
+    build_chunk_specs
+    print_execution_plan
+    return 0
+  fi
 
   if [[ "${resume_mode}" == true ]]; then
     initialize_existing_campaign
