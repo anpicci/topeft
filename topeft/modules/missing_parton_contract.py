@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 from types import MappingProxyType
 from typing import Mapping
@@ -125,22 +126,29 @@ def normalize_sr_registry(sr_registry: str | None = None) -> str:
     return registry
 
 
+@lru_cache(maxsize=None)
+def _load_sr_registry_config(config_path: str):
+    with open(config_path, encoding="utf-8") as handle:
+        return json.load(handle)
+
+
 def load_or_validate_selected_registry(sr_registry: str | None = None, config_path=None):
     registry = normalize_sr_registry(sr_registry)
-    path = topeft_path("channels/ch_lst.json") if config_path is None else config_path
-    with open(path, encoding="utf-8") as handle:
-        config = json.load(handle)
+    path = Path(
+        topeft_path("channels/ch_lst.json") if config_path is None else config_path
+    )
+    config = _load_sr_registry_config(str(path.resolve()))
     if registry not in config:
         raise ValueError(f"Selected SR registry {registry!r} is absent from {path}.")
     return registry, config[registry]
 
 
-def parse_sr_njet_token(source_label: str) -> tuple[str, int, str]:
+def parse_analysis_njet_token(source_label: str) -> tuple[str, int, str]:
     source_label = str(source_label)
-    if not source_label.startswith(("=", ">")):
+    mode_by_prefix = {"=": "exactly", ">": "atleast", "<": "atmost"}
+    if not source_label or source_label[0] not in mode_by_prefix:
         raise ValueError(
-            f"Unsupported n-jet label {source_label!r} in {SR_CHANNEL_CONFIG_KEY}; "
-            "expected an exact '=N' or inclusive '>N' label."
+            f"Unsupported n-jet label {source_label!r}; expected '=N', '>N', or '<N'."
         )
     try:
         threshold = int(source_label[1:])
@@ -152,7 +160,17 @@ def parse_sr_njet_token(source_label: str) -> tuple[str, int, str]:
         raise ValueError(
             f"Negative n-jet threshold {source_label!r} in {SR_CHANNEL_CONFIG_KEY}."
         )
-    return ("exactly" if source_label.startswith("=") else "atleast", threshold, f"_{threshold}j")
+    return mode_by_prefix[source_label[0]], threshold, f"_{threshold}j"
+
+
+def parse_sr_njet_token(source_label: str) -> tuple[str, int, str]:
+    mode, threshold, suffix = parse_analysis_njet_token(source_label)
+    if mode == "atmost":
+        raise ValueError(
+            f"Unsupported n-jet label {source_label!r} in {SR_CHANNEL_CONFIG_KEY}; "
+            "expected an exact '=N' or inclusive '>N' label."
+        )
+    return mode, threshold, suffix
 
 
 def _parse_njet_source_label(source_label: str) -> int:

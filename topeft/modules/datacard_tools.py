@@ -18,8 +18,8 @@ from topeft.modules.compatibility import add_sumw2_stub
 from topeft.modules.missing_parton_contract import (
     DEFAULT_SR_REGISTRY,
     SR_CHANNEL_CONFIG_KEY,
+    load_or_validate_selected_registry,
     load_missing_parton_channel_contract,
-    normalize_sr_registry,
 )
 
 
@@ -595,7 +595,7 @@ class DatacardMaker():
                 "An explicit missing-parton payload path must be non-empty. Omit the "
                 "option to select the run-era default."
             )
-        registry = normalize_sr_registry(sr_registry)
+        registry, _ = load_or_validate_selected_registry(sr_registry)
         era = cls.missing_parton_run_era_for_years(
             year_or_periods,
             payload_path=payload_path,
@@ -854,7 +854,9 @@ class DatacardMaker():
         else:
             rate_syst_path = kwargs.pop("rate_systs_path","params/rate_systs_run2.json")
         explicit_missing_parton_path = kwargs.pop("missing_parton_path",None)
-        self.sr_registry = normalize_sr_registry(kwargs.pop("sr_registry", DEFAULT_SR_REGISTRY))
+        self.sr_registry, _ = load_or_validate_selected_registry(
+            kwargs.pop("sr_registry", DEFAULT_SR_REGISTRY)
+        )
         self.missing_parton_payload_path = None
         if self.do_nuisance and not self.skip_missing_parton_rate_syst:
             self.missing_parton_payload_path = self.resolve_missing_parton_payload_path(

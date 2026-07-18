@@ -190,7 +190,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
             "parton_datacards/Run2 layout is used."
         ),
     )
-    parser.add_argument("--sr-registry", choices=SUPPORTED_SR_REGISTRIES, default=DEFAULT_SR_REGISTRY)
+    parser.add_argument(
+        "--sr-registry",
+        choices=SUPPORTED_SR_REGISTRIES,
+        default=DEFAULT_SR_REGISTRY,
+        help=f"SR registry for payload provenance (default: {DEFAULT_SR_REGISTRY}).",
+    )
     parser.add_argument(
         "--private-card-dir",
         "--private-dir",

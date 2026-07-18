@@ -81,7 +81,8 @@ def build_arg_parser():
     )
     from topeft.modules.missing_parton_contract import SUPPORTED_SR_REGISTRIES, DEFAULT_SR_REGISTRY
     parser.add_argument("--sr-registry", choices=SUPPORTED_SR_REGISTRIES, default=DEFAULT_SR_REGISTRY,
-                        help="SR registry associated with missing-parton payload selection.")
+                        help=("SR registry associated with missing-parton payload selection "
+                              f"(default: {DEFAULT_SR_REGISTRY})."))
     parser.add_argument("--skip-missing-parton-rate-syst",action="store_true",default=False,help="Skip loading/inserting only the missing-parton rate systematic; preserves other nuisances.")
     parser.add_argument("--selected-wcs-ref",default="test/selectedWCs.json",help="Reference file for selected wcs")
     parser.add_argument("--out-dir","-d",default=".",help="Output directory to write root and text datacard files to")

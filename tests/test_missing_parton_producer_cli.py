@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import hashlib
 import sys
 from pathlib import Path
 
@@ -158,6 +159,7 @@ def test_dry_run_builds_complete_plan_and_never_calls_writer(
         years=("2022",),
         time=False,
         var="njets",
+        sr_registry=module.DEFAULT_SR_REGISTRY,
     )
 
     def build_plan(observed_config):
@@ -219,6 +221,7 @@ def test_invalid_input_leaves_existing_output_byte_for_byte_unchanged(
         years=("2022",),
         time=False,
         var="njets",
+        sr_registry=module.DEFAULT_SR_REGISTRY,
     )
     monkeypatch.setattr(
         module,
@@ -230,6 +233,148 @@ def test_invalid_input_leaves_existing_output_byte_for_byte_unchanged(
         module.run_producer(config)
 
     assert output.read_bytes() == original
+
+
+@pytest.mark.parametrize(
+    "sr_registry",
+    (
+        "TOP22_006_CH_LST_SR",
+        "TAU_CH_LST_SR",
+        "OFFZ_SPLIT_CH_LST_SR",
+        "FWD_CH_LST_SR",
+        "ALL_CH_LST_SR",
+    ),
+)
+def test_sr_registry_choices_resolve_and_are_recorded(
+    tmp_path,
+    sr_registry,
+):
+    module = load_module()
+    output = tmp_path / f"{sr_registry}.root"
+
+    config = parse_config(
+        module,
+        "--sr-registry",
+        sr_registry,
+        "--output-file",
+        str(output),
+        "--dry-run",
+    )
+
+    printable = config.to_printable_dict()
+    assert config.sr_registry == sr_registry
+    assert printable["sr_registry"] == sr_registry
+    assert Path(printable["ch_lst_json"]).name == "ch_lst.json"
+    assert printable["ch_lst_sha256"] == hashlib.sha256(
+        Path(printable["ch_lst_json"]).read_bytes()
+    ).hexdigest()
+
+
+def test_nondefault_registry_requires_explicit_output(tmp_path):
+    module = load_module()
+
+    with pytest.raises(module.ConfigError, match="requires an explicit --output-file"):
+        parse_config(module, "--sr-registry", "FWD_CH_LST_SR", "--dry-run")
+
+    config = parse_config(
+        module,
+        "--sr-registry",
+        "FWD_CH_LST_SR",
+        "--output-file",
+        str(tmp_path / "fwd.root"),
+        "--dry-run",
+    )
+    assert config.sr_registry == "FWD_CH_LST_SR"
+
+
+def test_producer_parser_rejects_unknown_registry():
+    module = load_module()
+
+    with pytest.raises(SystemExit):
+        module.build_arg_parser().parse_args(
+            ["--sr-registry", "UNKNOWN_SR_REGISTRY"]
+        )
+
+
+def test_nondefault_dry_run_is_allowed_and_never_writes(monkeypatch, tmp_path):
+    module = load_module()
+    config = parse_config(
+        module,
+        "--sr-registry",
+        "FWD_CH_LST_SR",
+        "--output-file",
+        str(tmp_path / "fwd.root"),
+        "--dry-run",
+    )
+    expected_plan = module.payload_plan(categories=())
+    monkeypatch.setattr(module, "build_payload_plan", lambda observed: expected_plan)
+    monkeypatch.setattr(
+        module,
+        "write_legacy_payload_atomic",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("dry-run attempted to write")
+        ),
+    )
+
+    plan, output_sha256 = module.run_producer(config)
+
+    assert plan is expected_plan
+    assert output_sha256 is None
+    assert not config.output_file.exists()
+
+
+def test_nondefault_generation_guard_precedes_plan_and_write(monkeypatch, tmp_path):
+    module = load_module()
+    config = parse_config(
+        module,
+        "--sr-registry",
+        "FWD_CH_LST_SR",
+        "--output-file",
+        str(tmp_path / "fwd.root"),
+    )
+    monkeypatch.setattr(
+        module,
+        "build_payload_plan",
+        lambda *_: (_ for _ in ()).throw(AssertionError("plan was built")),
+    )
+    monkeypatch.setattr(
+        module,
+        "write_legacy_payload_atomic",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("writer was called")
+        ),
+    )
+
+    with pytest.raises(module.ConfigError, match="FWD_CH_LST_SR") as exc_info:
+        module.run_producer(config)
+
+    message = str(exc_info.value)
+    assert "MP010B7" in message
+    assert "layout generation is not yet enabled" in message
+    assert "No output was written" in message
+    assert not config.output_file.exists()
+
+
+def test_default_registry_is_not_rejected_by_generation_guard(monkeypatch, tmp_path):
+    module = load_module()
+    config = parse_config(
+        module,
+        "--output-file",
+        str(tmp_path / "all.root"),
+    )
+    expected_plan = module.payload_plan(categories=())
+    monkeypatch.setattr(module, "build_payload_plan", lambda observed: expected_plan)
+    monkeypatch.setattr(
+        module,
+        "write_legacy_payload_atomic",
+        lambda *_args, **_kwargs: "synthetic-sha256",
+    )
+
+    plan, output_sha256 = module.run_producer(config)
+
+    assert plan is expected_plan
+    assert output_sha256 == "synthetic-sha256"
+    assert not config.output_file.exists()
 
 
 def test_help_documents_legacy_and_explicit_modes_deterministically():
@@ -247,6 +392,8 @@ def test_help_documents_legacy_and_explicit_modes_deterministically():
         "--output-file",
         "--dry-run",
         "--overwrite",
+        "--sr-registry",
     ):
         assert option in help_text
     assert "34-TTree" in help_text
+    assert "default: ALL_CH_LST_SR" in " ".join(help_text.split())

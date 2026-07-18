@@ -12,6 +12,10 @@ from analysis.topeft_run2 import make_cards
 from topcoffea.modules.histEFT import HistEFT
 from topeft.modules import datacard_tools
 from topeft.modules.datacard_tools import DatacardMaker, RateSystematic
+from topeft.modules.missing_parton_contract import (
+    DEFAULT_SR_REGISTRY,
+    SUPPORTED_SR_REGISTRIES,
+)
 
 
 def _condor_namespace(
@@ -19,6 +23,7 @@ def _condor_namespace(
     *,
     year_lst=(),
     missing_parton_payload_path=None,
+    sr_registry=DEFAULT_SR_REGISTRY,
 ):
     return SimpleNamespace(
         do_mc_stat=False,
@@ -29,6 +34,7 @@ def _condor_namespace(
         drop_syst=[],
         skip_missing_parton_rate_syst=skip_missing_parton_rate_syst,
         missing_parton_payload_path=missing_parton_payload_path,
+        sr_registry=sr_registry,
     )
 
 
@@ -86,6 +92,27 @@ def test_parser_default_preserves_missing_parton_nuisance():
 
     assert args.skip_missing_parton_rate_syst is False
     assert args.miss_parton_file is None
+    assert args.sr_registry == DEFAULT_SR_REGISTRY
+
+
+def test_parser_accepts_every_canonical_sr_registry():
+    for sr_registry in SUPPORTED_SR_REGISTRIES:
+        args = make_cards.build_arg_parser().parse_args(
+            ["input.pkl.gz", "--sr-registry", sr_registry]
+        )
+        assert args.sr_registry == sr_registry
+
+    with pytest.raises(SystemExit):
+        make_cards.build_arg_parser().parse_args(
+            ["input.pkl.gz", "--sr-registry", "UNKNOWN_SR_REGISTRY"]
+        )
+
+
+def test_parser_help_records_registry_default_and_payload_override():
+    help_text = make_cards.build_arg_parser().format_help()
+
+    assert "default: ALL_CH_LST_SR" in " ".join(help_text.split())
+    assert "--miss-parton-file" in help_text
 
 
 def test_parser_preserves_explicit_missing_parton_payload_override():
@@ -161,6 +188,42 @@ def test_local_cli_omission_passes_direct_default_resolution_inputs(monkeypatch)
 
     assert exc_info.value.args[0]["missing_parton_path"] is None
     assert exc_info.value.args[0]["year_lst"] == ["UL18"]
+    assert exc_info.value.args[0]["sr_registry"] == DEFAULT_SR_REGISTRY
+
+
+def test_local_cli_propagates_registry_and_exact_payload_override(monkeypatch):
+    class captured_kwargs(RuntimeError):
+        pass
+
+    def capture_datacard_maker(*, hists, **kwargs):
+        assert hists == {}
+        raise captured_kwargs(kwargs)
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "make_cards.py",
+            "input.pkl.gz",
+            "--sr-registry",
+            "FWD_CH_LST_SR",
+            "--miss-parton-file",
+            "arbitrary/payload.root",
+        ],
+    )
+    monkeypatch.setattr(
+        make_cards,
+        "load_and_merge_histogram_pkls",
+        lambda *args, **kwargs: ({}, {}),
+    )
+    monkeypatch.setattr(make_cards, "_emit_merge_report", lambda *args: None)
+    monkeypatch.setattr(make_cards, "DatacardMaker", capture_datacard_maker)
+
+    with pytest.raises(captured_kwargs) as exc_info:
+        make_cards.main()
+
+    assert exc_info.value.args[0]["sr_registry"] == "FWD_CH_LST_SR"
+    assert exc_info.value.args[0]["missing_parton_path"] == "arbitrary/payload.root"
 
 
 def test_condor_option_propagation_is_additive_and_targeted():
@@ -201,6 +264,18 @@ def test_condor_option_reconstruction_materializes_resolved_payload_path(payload
 
     payload_option_index = opts.index("--miss-parton-file")
     assert opts[payload_option_index + 1] == payload_path
+
+
+@pytest.mark.parametrize("sr_registry", SUPPORTED_SR_REGISTRIES)
+def test_condor_option_reconstruction_preserves_one_registry(sr_registry):
+    opts = make_cards._build_condor_base_other_opts(
+        _condor_namespace(False, sr_registry=sr_registry),
+        "error",
+    )
+
+    assert opts.count("--sr-registry") == 1
+    registry_option_index = opts.index("--sr-registry")
+    assert opts[registry_option_index + 1] == sr_registry
 
 
 def test_skip_option_suppresses_only_missing_parton(monkeypatch):
