@@ -490,6 +490,21 @@ class DatacardMaker():
 
     SYST_YEARS = ["2016","2016APV","2017","2018","2022","2022EE","2023","2023BPix"]
 
+    MISSING_PARTON_YEAR_ERAS = {
+        "UL16": "run2",
+        "UL16APV": "run2",
+        "UL17": "run2",
+        "UL18": "run2",
+        "2022": "run3",
+        "2022EE": "run3",
+        "2023": "run3",
+        "2023BPix": "run3",
+    }
+    MISSING_PARTON_NUISANCE_NAMES = {
+        "run2": "missing_parton_run2",
+        "run3": "missing_parton_run3",
+    }
+
     FNAME_TEMPLATE = "ttx_multileptons-{cat}_{kmvar}.{ext}"
     # FNAME_TEMPLATE = "TESTING_ttx_multileptons-{cat}.{ext}"
 
@@ -506,6 +521,60 @@ class DatacardMaker():
             if s.endswith(yr+"Up"): return yr
             if s.endswith(yr+"Down"): return yr
         return None
+
+    @classmethod
+    def missing_parton_run_era(cls, year_or_period):
+        """Resolve one canonical card-making period to its missing-parton era."""
+        if not isinstance(year_or_period, str) or not year_or_period:
+            raise ValueError(
+                "Missing canonical year or period for missing-parton nuisance correlation."
+            )
+        try:
+            return cls.MISSING_PARTON_YEAR_ERAS[year_or_period]
+        except KeyError as exc:
+            raise ValueError(
+                f"Unsupported canonical year or period {year_or_period!r} for "
+                "missing-parton nuisance correlation. Supported values: "
+                f"{tuple(cls.MISSING_PARTON_YEAR_ERAS)!r}."
+            ) from exc
+
+    @classmethod
+    def missing_parton_nuisance_name(cls, year_or_period):
+        era = cls.missing_parton_run_era(year_or_period)
+        return cls.MISSING_PARTON_NUISANCE_NAMES[era]
+
+    @classmethod
+    def missing_parton_nuisance_name_for_years(cls, year_or_periods):
+        if isinstance(year_or_periods, str):
+            year_or_periods = (year_or_periods,)
+        else:
+            try:
+                year_or_periods = tuple(year_or_periods)
+            except TypeError as exc:
+                raise ValueError(
+                    "Missing canonical year or period for missing-parton nuisance correlation."
+                ) from exc
+        if not year_or_periods:
+            raise ValueError(
+                "Missing canonical year or period for missing-parton nuisance correlation."
+            )
+
+        resolved_eras = tuple(
+            cls.missing_parton_run_era(year_or_period)
+            for year_or_period in year_or_periods
+        )
+        unique_eras = set(resolved_eras)
+        if len(unique_eras) != 1:
+            raise ValueError(
+                "Mixed Run 2 and Run 3 years cannot share one missing-parton nuisance "
+                "in a single DatacardMaker run: "
+                f"original labels={year_or_periods!r}, resolved eras={resolved_eras!r}."
+            )
+        return cls.MISSING_PARTON_NUISANCE_NAMES[resolved_eras[0]]
+
+    @classmethod
+    def is_missing_parton_nuisance_name(cls, nuisance_name):
+        return nuisance_name in cls.MISSING_PARTON_NUISANCE_NAMES.values()
 
     @classmethod
     def strip_fluctuation(cls,s):
@@ -1048,7 +1117,7 @@ class DatacardMaker():
             # Finally, deal with the missing_parton systematic
             # TODO: This feels pretty hardcoded, but not sure there's any way around it
             branch_key = "tllq"
-            syst_name = "missing_parton"
+            syst_name = self.missing_parton_nuisance_name_for_years(self.year_lst)
             new_syst = RateSystematic(syst_name)
 
             fpath = topeft_path(mp_fpath)
@@ -1567,7 +1636,9 @@ class DatacardMaker():
             for k,rate_syst in self.rate_systs.items():
                 syst_name = rate_syst.name
                 left_text = f"{syst_name:<{syst_width}} lnN"
-                if km_dist == "njets" and (syst_name == "diboson_njets" or syst_name == "missing_parton"):
+                if km_dist == "njets" and (
+                    syst_name == "diboson_njets" or self.is_missing_parton_nuisance_name(syst_name)
+                ):
                     # These systematics are only treated as rate systs for njets distribution
                     continue
                 row = [f"{left_text:<{left_width}}"]
@@ -1579,7 +1650,7 @@ class DatacardMaker():
                         # v = rate_syst.get_process(proc_name)
                         # if isinstance(v,dict):
                         #     v = v[str(num_j)]
-                    elif syst_name == "missing_parton":
+                    elif self.is_missing_parton_nuisance_name(syst_name):
                         v = rate_syst.get_process(proc_name)
                         #if miss_part_path == "data/missing_parton/missing_parton.root":
                         #    if "2los" in ch:

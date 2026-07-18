@@ -46,10 +46,11 @@ class _fake_missing_parton_file:
         return _fake_branch()
 
 
-def _systematics_loader(skip_missing_parton_rate_syst):
+def _systematics_loader(skip_missing_parton_rate_syst, year_lst=("UL18",)):
     maker = object.__new__(DatacardMaker)
     maker.do_nuisance = True
     maker.skip_missing_parton_rate_syst = skip_missing_parton_rate_syst
+    maker.year_lst = list(year_lst)
     return maker
 
 
@@ -149,7 +150,8 @@ def test_skip_option_suppresses_only_missing_parton(monkeypatch):
         "does-not-exist.root",
     )
 
-    assert "missing_parton" not in systematics
+    assert "missing_parton_run2" not in systematics
+    assert "missing_parton_run3" not in systematics
     assert "diboson_njets" in systematics
     assert len(systematics) > 1
 
@@ -166,9 +168,9 @@ def test_default_missing_parton_contract_remains_tllq_and_thq(monkeypatch):
         "params/rate_systs_run3.json",
         "synthetic.root",
     )
-    missing_parton = systematics["missing_parton"]
+    missing_parton = systematics["missing_parton_run2"]
 
-    assert missing_parton.name == "missing_parton"
+    assert missing_parton.name == "missing_parton_run2"
     assert missing_parton.get_process("tllq") == {
         "3l_onZ_1b": pytest.approx(np.asarray([1.2, 1.3]))
     }
@@ -178,7 +180,14 @@ def test_default_missing_parton_contract_remains_tllq_and_thq(monkeypatch):
     assert missing_parton.get_process("ttH") == "-"
 
 
-def test_missing_parton_card_formatting_and_missing_entry_remain_public(tmp_path):
+@pytest.mark.parametrize(
+    "nuisance_name",
+    ("missing_parton_run2", "missing_parton_run3"),
+)
+def test_missing_parton_card_formatting_and_missing_entry_remain_public(
+    tmp_path,
+    nuisance_name,
+):
     channel = "3l_onZ_1b_2j"
     hists = {
         "ht": _make_card_hist("ht", channel),
@@ -191,11 +200,11 @@ def test_missing_parton_card_formatting_and_missing_entry_remain_public(tmp_path
         do_nuisance=False,
         verbose=False,
     )
-    missing_parton = RateSystematic("missing_parton")
+    missing_parton = RateSystematic(nuisance_name)
     payload = {"3l_onZ_1b": np.asarray([1.0, 1.1, 1.2])}
     missing_parton.add_process("tllq", payload)
     missing_parton.add_process("tHq", payload)
-    maker.rate_systs = {"missing_parton": missing_parton}
+    maker.rate_systs = {nuisance_name: missing_parton}
 
     maker.analyze(
         "ht",
@@ -214,7 +223,7 @@ def test_missing_parton_card_formatting_and_missing_entry_remain_public(tmp_path
             field.endswith("_sm") for field in fields[1:]
         ):
             process_names = fields[1:]
-        if fields[:2] == ["missing_parton", "lnN"]:
+        if fields[:2] == [nuisance_name, "lnN"]:
             missing_parton_values = fields[2:]
 
     assert dict(zip(process_names, missing_parton_values)) == {
