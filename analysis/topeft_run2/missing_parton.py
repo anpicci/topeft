@@ -17,13 +17,14 @@ import tempfile
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, Mapping, Sequence
+from types import MappingProxyType
+from typing import Iterable, Iterator, Mapping, Sequence
 
 from topeft.modules.missing_parton_contract import (
     DEFAULT_SR_REGISTRY,
-    LEGACY_MISSING_PARTON_BASE_CHANNELS,
     LEGACY_MISSING_PARTON_BRANCH,
-    legacy_missing_parton_payload_lengths,
+    category_payload_layout,
+    load_registry_payload_layout,
     validate_legacy_missing_parton_payload,
     validate_legacy_missing_parton_values,
     normalize_sr_registry,
@@ -67,6 +68,23 @@ class CardFiles:
 
 
 @dataclass(frozen=True)
+class selected_card_inventory(Mapping[str, CardFiles]):
+    pairs: Mapping[str, CardFiles]
+    unused_categories: tuple[str, ...]
+    missing_root_categories: tuple[str, ...] = ()
+    missing_txt_categories: tuple[str, ...] = ()
+
+    def __getitem__(self, key: str) -> CardFiles:
+        return self.pairs[key]
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self.pairs)
+
+    def __len__(self) -> int:
+        return len(self.pairs)
+
+
+@dataclass(frozen=True)
 class parsed_card:
     process_names: tuple[str, ...]
     rates: tuple[float, ...]
@@ -90,11 +108,20 @@ class category_payload_plan:
     private_integral: float
     neutralized_physical_njets: tuple[int, ...]
     stored_values: object
+    jet_lst: tuple[str, ...] = ()
+    terminal_mode: str = ""
+    terminal_threshold: int = -1
+    terminal_source_physical_njets: tuple[int, ...] = ()
 
 
 @dataclass(frozen=True)
 class payload_plan:
     categories: tuple[category_payload_plan, ...]
+    registry: str = DEFAULT_SR_REGISTRY
+    ch_lst_path: str = ""
+    ch_lst_sha256: str = ""
+    unused_central_categories: tuple[str, ...] = ()
+    unused_private_categories: tuple[str, ...] = ()
 
     @property
     def values_by_category(self) -> Mapping[str, object]:
@@ -105,7 +132,18 @@ class payload_plan:
 
     def to_printable_dict(self) -> dict[str, object]:
         return {
+            "registry": self.registry,
+            "ch_lst_path": self.ch_lst_path,
+            "ch_lst_sha256": self.ch_lst_sha256,
             "category_count": len(self.categories),
+            "base_category_order": [
+                category.base_channel for category in self.categories
+            ],
+            "unused_input_categories": {
+                "central": list(self.unused_central_categories),
+                "private": list(self.unused_private_categories),
+            },
+            "missing_required_categories": [],
             "neutralized_bins": [
                 {
                     "base_channel": category.base_channel,
@@ -123,6 +161,12 @@ class payload_plan:
                     "private_integral": category.private_integral,
                     "neutralized_physical_njets": list(
                         category.neutralized_physical_njets
+                    ),
+                    "jet_lst": list(category.jet_lst),
+                    "terminal_mode": category.terminal_mode,
+                    "terminal_threshold": category.terminal_threshold,
+                    "terminal_source_physical_njets": list(
+                        category.terminal_source_physical_njets
                     ),
                     "stored_value_count": len(category.stored_values),
                     "stored_value_min": float(min(category.stored_values)),
@@ -148,6 +192,8 @@ class ResolvedConfig:
     sr_registry: str
 
     def to_printable_dict(self) -> dict[str, object]:
+        layout = load_registry_payload_layout(self.sr_registry)
+        ch_lst_path = Path(topeft_path("channels/ch_lst.json"))
         return {
             "mode": "dry_run" if self.dry_run else "execute",
             "input_mode": self.input_mode,
@@ -159,8 +205,8 @@ class ResolvedConfig:
             "private_process_aliases": list(
                 PROCESS_ALIASES[DEFAULT_PRIVATE_PROCESS]
             ),
-            "base_category_count": len(LEGACY_MISSING_PARTON_BASE_CHANNELS),
-            "base_categories": list(LEGACY_MISSING_PARTON_BASE_CHANNELS),
+            "base_category_count": len(layout.categories),
+            "base_categories": list(layout.ordered_base_categories),
             "output_file": str(self.output_file),
             "output_path": str(self.output_path),
             "overwrite": self.overwrite,
@@ -168,15 +214,16 @@ class ResolvedConfig:
             "time": self.time,
             "var": self.var,
             "sr_registry": self.sr_registry,
-            "ch_lst_json": topeft_path("channels/ch_lst.json"),
-            "ch_lst_sha256": hashlib.sha256(Path(topeft_path("channels/ch_lst.json")).read_bytes()).hexdigest(),
+            "ch_lst_json": str(ch_lst_path),
+            "ch_lst_sha256": hashlib.sha256(ch_lst_path.read_bytes()).hexdigest(),
+            "registry_layout": layout.to_printable_dict(),
         }
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "Derive the public 34-TTree missing-parton ROOT payload from "
+            "Derive a registry-selected missing-parton ROOT payload from "
             "central tZq and private tllq njet card directories."
         )
     )
@@ -185,7 +232,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--central-dir",
         dest="central_card_dir",
         help=(
-            "Directory containing the 34 central tZq ROOT/TXT pairs. "
+            "Directory containing central tZq ROOT/TXT pairs. "
             "When omitted with --private-card-dir, the historical "
             "parton_datacards/Run2 layout is used."
         ),
@@ -201,7 +248,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--private-dir",
         dest="private_card_dir",
         help=(
-            "Directory containing the 34 private tllq ROOT/TXT pairs. "
+            "Directory containing private tllq ROOT/TXT pairs. "
             "When omitted with --central-card-dir, the historical "
             "parton_datacards/Run2 layout is used."
         ),
@@ -367,10 +414,11 @@ def _index_card_paths(
 def discover_card_pairs(
     card_dir: str | Path,
     *,
-    expected_categories: Sequence[str] = LEGACY_MISSING_PARTON_BASE_CHANNELS,
+    expected_categories: Sequence[str] | None = None,
     var: str = "njets",
     role: str,
-) -> Mapping[str, CardFiles]:
+    allow_missing: bool = False,
+) -> selected_card_inventory:
     card_dir = Path(card_dir)
     if not card_dir.is_dir():
         raise FileNotFoundError(
@@ -387,29 +435,39 @@ def discover_card_pairs(
         extension="txt",
         var=var,
     )
+    if expected_categories is None:
+        expected_categories = load_registry_payload_layout().ordered_base_categories
+    expected_categories = tuple(expected_categories)
     expected = set(expected_categories)
     observed_root = set(root_paths)
     observed_txt = set(txt_paths)
-    missing_root = sorted(expected - observed_root)
-    missing_txt = sorted(expected - observed_txt)
-    unexpected_root = sorted(observed_root - expected)
-    unexpected_txt = sorted(observed_txt - expected)
-    if missing_root or missing_txt or unexpected_root or unexpected_txt:
+    missing_root = tuple(sorted(expected - observed_root))
+    missing_txt = tuple(sorted(expected - observed_txt))
+    unused_categories = tuple(sorted((observed_root | observed_txt) - expected))
+    if (missing_root or missing_txt) and not allow_missing:
         raise ValueError(
             f"Invalid {role} derivation-card inventory in {card_dir}: "
-            f"missing_root={missing_root!r}, missing_txt={missing_txt!r}, "
-            f"unexpected_root={unexpected_root!r}, "
-            f"unexpected_txt={unexpected_txt!r}. Full public payload builds "
-            "require exactly one ROOT/TXT pair for each of the 34 base categories."
+            f"missing_root={list(missing_root)!r}, "
+            f"missing_txt={list(missing_txt)!r}, "
+            f"unused_categories={list(unused_categories)!r}. Selected payload "
+            "builds require one ROOT/TXT pair for every registry category."
         )
 
-    return {
-        category: CardFiles(
-            root_path=root_paths[category],
-            txt_path=txt_paths[category],
-        )
-        for category in expected_categories
-    }
+    return selected_card_inventory(
+        pairs=MappingProxyType(
+            {
+                category: CardFiles(
+                    root_path=root_paths[category],
+                    txt_path=txt_paths[category],
+                )
+                for category in expected_categories
+                if category in root_paths and category in txt_paths
+            }
+        ),
+        unused_categories=unused_categories,
+        missing_root_categories=missing_root,
+        missing_txt_categories=missing_txt,
+    )
 
 
 def root_key_without_cycle(root_key: str) -> str:
@@ -889,50 +947,44 @@ def calculate_missing_parton_per_bin(
     return missing_parton, stored_fraction
 
 
-def merge_legacy_payload_tail(
+def _aggregate_card_population(
+    card_data: base_category_card_data,
     *,
-    base_channel: str,
-    private_values,
-    missing_parton_values,
-    per_bin_fractions,
-    expected_length: int,
-):
-    """Apply the public physical-njet indexing and merged-tail convention."""
+    physical_indices: Sequence[int],
+) -> base_category_card_data:
+    """Aggregate source-level card inputs before evaluating the formula."""
     import numpy as np
 
-    private_values = np.asarray(private_values, dtype=float)
-    missing_parton_values = np.asarray(missing_parton_values, dtype=float)
-    per_bin_fractions = np.asarray(per_bin_fractions, dtype=float)
-    tail_start = expected_length - 1
-    if not 0 <= tail_start < len(private_values):
+    physical_indices = tuple(int(index) for index in physical_indices)
+    nominal_values = np.asarray(card_data.nominal_values, dtype=float)
+    if (
+        not physical_indices
+        or min(physical_indices) < 0
+        or max(physical_indices) >= len(nominal_values)
+    ):
         raise ValueError(
-            f"Invalid legacy tail start for {base_channel!r}: "
-            f"expected_length={expected_length}, "
-            f"physical_bin_count={len(private_values)}."
+            f"Invalid physical njet population {physical_indices!r} for source "
+            f"shape {nominal_values.shape}."
         )
-    denominator = float(np.sum(private_values[tail_start:]))
-    numerator = float(np.sum(missing_parton_values[tail_start:]))
-    if denominator < 0.0:
-        raise ValueError(
-            f"Negative merged private denominator for {base_channel!r}: "
-            f"{denominator}."
-        )
-    if denominator == 0.0:
-        if numerator != 0.0:
-            raise ValueError(
-                f"Undefined merged missing-parton fraction for "
-                f"{base_channel!r}: numerator={numerator}, denominator=0."
+    selected_indices = list(physical_indices)
+    return base_category_card_data(
+        nominal_values=np.asarray(
+            [float(np.sum(nominal_values[selected_indices]))]
+        ),
+        shape_values=tuple(
+            np.asarray(
+                [
+                    float(
+                        np.sum(
+                            np.asarray(values, dtype=float)[selected_indices]
+                        )
+                    )
+                ]
             )
-        merged_fraction = 0.0
-    else:
-        merged_fraction = numerator / denominator
-    stored_values = np.concatenate(
-        (per_bin_fractions[:tail_start], np.asarray([merged_fraction]))
-    )
-    return validate_legacy_missing_parton_values(
-        stored_values,
-        base_channel=base_channel,
-        expected_length=expected_length,
+            for values in card_data.shape_values
+        ),
+        bin_edges=np.asarray([0.0, 1.0]),
+        parsed_txt=card_data.parsed_txt,
     )
 
 
@@ -941,7 +993,7 @@ def build_category_payload(
     base_channel: str,
     private_card: base_category_card_data,
     central_card: base_category_card_data,
-    expected_length: int,
+    layout: category_payload_layout,
 ) -> object:
     import numpy as np
 
@@ -964,39 +1016,97 @@ def build_category_payload(
             f"central={central_card.bin_edges.tolist()}."
         )
 
+    if layout.base_sr_category != base_channel:
+        raise ValueError(
+            f"Payload layout/category mismatch: layout={layout.base_sr_category!r}, "
+            f"input={base_channel!r}."
+        )
+    if not 0 <= layout.terminal_threshold < PHYSICAL_NJET_BIN_COUNT:
+        raise ValueError(
+            f"Registry terminal threshold {layout.terminal_threshold} for "
+            f"{base_channel!r} is outside the maintained eight-bin source axis."
+        )
+
     down_error, up_error = private_rate_errors(private_card)
-    missing_parton, per_bin_fractions = calculate_missing_parton_per_bin(
-        private_card.nominal_values,
-        central_card.nominal_values,
-        down_error,
-        up_error,
+    direct_stop = (
+        layout.terminal_threshold
+        if layout.terminal_is_inclusive
+        else layout.public_array_length
+    )
+    _, direct_fractions = calculate_missing_parton_per_bin(
+        np.asarray(private_card.nominal_values)[:direct_stop],
+        np.asarray(central_card.nominal_values)[:direct_stop],
+        np.asarray(down_error)[:direct_stop],
+        np.asarray(up_error)[:direct_stop],
         base_channel=base_channel,
     )
-    return merge_legacy_payload_tail(
+
+    stored_values = direct_fractions
+    if layout.terminal_is_inclusive:
+        terminal_indices = tuple(
+            range(layout.terminal_threshold, PHYSICAL_NJET_BIN_COUNT)
+        )
+        aggregate_private = _aggregate_card_population(
+            private_card,
+            physical_indices=terminal_indices,
+        )
+        aggregate_central = _aggregate_card_population(
+            central_card,
+            physical_indices=terminal_indices,
+        )
+        aggregate_down, aggregate_up = private_rate_errors(aggregate_private)
+        _, aggregate_fraction = calculate_missing_parton_per_bin(
+            aggregate_private.nominal_values,
+            aggregate_central.nominal_values,
+            aggregate_down,
+            aggregate_up,
+            base_channel=base_channel,
+        )
+        stored_values = np.concatenate((direct_fractions, aggregate_fraction))
+
+    return validate_legacy_missing_parton_values(
+        stored_values,
         base_channel=base_channel,
-        private_values=private_card.nominal_values,
-        missing_parton_values=missing_parton,
-        per_bin_fractions=per_bin_fractions,
-        expected_length=expected_length,
+        expected_length=layout.public_array_length,
     )
 
 
 def build_payload_plan(config: ResolvedConfig) -> payload_plan:
     import numpy as np
 
+    layout = load_registry_payload_layout(config.sr_registry)
+    expected_categories = layout.ordered_base_categories
     central_inventory = discover_card_pairs(
         config.central_card_dir,
+        expected_categories=expected_categories,
         role="central",
         var=config.var,
+        allow_missing=True,
     )
     private_inventory = discover_card_pairs(
         config.private_card_dir,
+        expected_categories=expected_categories,
         role="private",
         var=config.var,
+        allow_missing=True,
     )
-    expected_lengths = legacy_missing_parton_payload_lengths()
+    if any(
+        (
+            central_inventory.missing_root_categories,
+            central_inventory.missing_txt_categories,
+            private_inventory.missing_root_categories,
+            private_inventory.missing_txt_categories,
+        )
+    ):
+        raise ValueError(
+            "Missing required registry-selected derivation-card categories: "
+            f"central_missing_root={list(central_inventory.missing_root_categories)!r}, "
+            f"central_missing_txt={list(central_inventory.missing_txt_categories)!r}, "
+            f"private_missing_root={list(private_inventory.missing_root_categories)!r}, "
+            f"private_missing_txt={list(private_inventory.missing_txt_categories)!r}."
+        )
     validated_cards = {}
-    for base_channel in LEGACY_MISSING_PARTON_BASE_CHANNELS:
+    for base_channel in expected_categories:
         private_card, private_process_name = read_base_category_card(
             private_inventory[base_channel],
             DEFAULT_PRIVATE_PROCESS,
@@ -1035,7 +1145,8 @@ def build_payload_plan(config: ResolvedConfig) -> payload_plan:
         )
 
     category_plans = []
-    for base_channel in LEGACY_MISSING_PARTON_BASE_CHANNELS:
+    for category_layout in layout.categories:
+        base_channel = category_layout.base_sr_category
         (
             private_card,
             private_process_name,
@@ -1046,7 +1157,7 @@ def build_payload_plan(config: ResolvedConfig) -> payload_plan:
             base_channel=base_channel,
             private_card=private_card,
             central_card=central_card,
-            expected_length=expected_lengths[base_channel],
+            layout=category_layout,
         )
         neutralized_physical_njets = tuple(
             index
@@ -1066,14 +1177,40 @@ def build_payload_plan(config: ResolvedConfig) -> payload_plan:
                 ),
                 neutralized_physical_njets=neutralized_physical_njets,
                 stored_values=stored_values,
+                jet_lst=category_layout.jet_lst,
+                terminal_mode=category_layout.terminal_mode,
+                terminal_threshold=category_layout.terminal_threshold,
+                terminal_source_physical_njets=(
+                    tuple(
+                        range(
+                            category_layout.terminal_threshold,
+                            PHYSICAL_NJET_BIN_COUNT,
+                        )
+                    )
+                    if category_layout.terminal_is_inclusive
+                    else (category_layout.terminal_threshold,)
+                ),
             )
         )
-    return payload_plan(categories=tuple(category_plans))
+    ch_lst_path = Path(topeft_path("channels/ch_lst.json"))
+    return payload_plan(
+        categories=tuple(category_plans),
+        registry=layout.registry,
+        ch_lst_path=str(ch_lst_path),
+        ch_lst_sha256=hashlib.sha256(ch_lst_path.read_bytes()).hexdigest(),
+        unused_central_categories=central_inventory.unused_categories,
+        unused_private_categories=private_inventory.unused_categories,
+    )
 
 
-def _validate_in_memory_payload(payload_values: Mapping[str, object]) -> None:
-    expected_lengths = legacy_missing_parton_payload_lengths()
-    expected_keys = list(LEGACY_MISSING_PARTON_BASE_CHANNELS)
+def _validate_in_memory_payload(
+    payload_values: Mapping[str, object],
+    *,
+    sr_registry: str | None = None,
+) -> None:
+    layout = load_registry_payload_layout(sr_registry)
+    expected_lengths = layout.public_lengths
+    expected_keys = list(layout.ordered_base_categories)
     observed_keys = list(payload_values)
     if set(observed_keys) != set(expected_keys) or len(observed_keys) != len(
         expected_keys
@@ -1096,13 +1233,15 @@ def write_legacy_payload_atomic(
     payload_values: Mapping[str, object],
     *,
     overwrite: bool = False,
+    sr_registry: str | None = None,
 ) -> str:
-    """Write, validate, and atomically install a complete legacy payload."""
+    """Write, validate, and atomically install a registry-selected payload."""
     import numpy as np
     import uproot
 
     output_file = Path(output_file)
-    _validate_in_memory_payload(payload_values)
+    layout = load_registry_payload_layout(sr_registry)
+    _validate_in_memory_payload(payload_values, sr_registry=layout.registry)
     if output_file.exists() and not overwrite:
         raise FileExistsError(
             f"Refusing to overwrite existing output payload {output_file}. "
@@ -1119,7 +1258,7 @@ def write_legacy_payload_atomic(
     temporary_path = Path(temporary_name)
     try:
         with uproot.recreate(temporary_path) as payload_file:
-            for base_channel in LEGACY_MISSING_PARTON_BASE_CHANNELS:
+            for base_channel in layout.ordered_base_categories:
                 tree = payload_file.mktree(
                     base_channel,
                     {LEGACY_MISSING_PARTON_BRANCH: "float64"},
@@ -1132,7 +1271,10 @@ def write_legacy_payload_atomic(
                         )
                     }
                 )
-        validate_legacy_missing_parton_payload(temporary_path)
+        validate_legacy_missing_parton_payload(
+            temporary_path,
+            sr_registry=layout.registry,
+        )
 
         if output_file.exists() and not overwrite:
             raise FileExistsError(
@@ -1140,7 +1282,10 @@ def write_legacy_payload_atomic(
                 "No replacement was performed."
             )
         os.replace(temporary_path, output_file)
-        validate_legacy_missing_parton_payload(output_file)
+        validate_legacy_missing_parton_payload(
+            output_file,
+            sr_registry=layout.registry,
+        )
         return hashlib.sha256(output_file.read_bytes()).hexdigest()
     finally:
         if temporary_path.exists():
@@ -1148,12 +1293,6 @@ def write_legacy_payload_atomic(
 
 
 def run_producer(config: ResolvedConfig) -> tuple[payload_plan, str | None]:
-    if not config.dry_run and config.sr_registry != DEFAULT_SR_REGISTRY:
-        raise ConfigError(
-            f"SR registry {config.sr_registry!r} was accepted, but registry-specific "
-            "payload layout generation is not yet enabled; MP010B7 must implement "
-            "the selected-registry layout contract. No output was written."
-        )
     plan = build_payload_plan(config)
     if config.dry_run:
         return plan, None
@@ -1161,6 +1300,7 @@ def run_producer(config: ResolvedConfig) -> tuple[payload_plan, str | None]:
         config.output_file,
         plan.values_by_category,
         overwrite=config.overwrite,
+        sr_registry=config.sr_registry,
     )
     return plan, output_sha256
 
@@ -1187,7 +1327,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
     else:
         print(
-            f"Wrote validated legacy missing-parton payload: "
+            f"Wrote validated registry-selected missing-parton payload: "
             f"{config.output_file} sha256={output_sha256}"
         )
     print(json.dumps(summary, indent=2, sort_keys=True))

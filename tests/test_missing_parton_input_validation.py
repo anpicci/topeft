@@ -10,6 +10,7 @@ import uproot
 
 from topeft.modules.missing_parton_contract import (
     LEGACY_MISSING_PARTON_BASE_CHANNELS,
+    load_registry_payload_layout,
 )
 
 
@@ -102,7 +103,7 @@ def read(module, stem, *, process="tllq", role="private"):
     )
 
 
-def test_full_inventory_requires_exactly_34_root_txt_pairs(tmp_path):
+def test_default_inventory_uses_all_registry_json_order(tmp_path):
     module = load_module()
     for category in LEGACY_MISSING_PARTON_BASE_CHANNELS:
         stem = tmp_path / f"ttx_multileptons-{category}_njets"
@@ -111,8 +112,10 @@ def test_full_inventory_requires_exactly_34_root_txt_pairs(tmp_path):
 
     inventory = module.discover_card_pairs(tmp_path, role="private")
 
-    assert list(inventory) == list(LEGACY_MISSING_PARTON_BASE_CHANNELS)
+    expected = load_registry_payload_layout().ordered_base_categories
+    assert list(inventory) == list(expected)
     assert len(inventory) == 34
+    assert inventory.unused_categories == ()
 
 
 def test_missing_root_or_txt_partner_fails(tmp_path):
@@ -125,6 +128,23 @@ def test_missing_root_or_txt_partner_fails(tmp_path):
             expected_categories=("a",),
             role="private",
         )
+
+
+def test_inventory_failure_reports_every_missing_selected_category(tmp_path):
+    for extension in ("root", "txt"):
+        (tmp_path / f"ttx_multileptons-a_njets.{extension}").touch()
+
+    module = load_module()
+    with pytest.raises(ValueError) as exc_info:
+        module.discover_card_pairs(
+            tmp_path,
+            expected_categories=("a", "b", "c"),
+            role="private",
+        )
+
+    message = str(exc_info.value)
+    assert "missing_root=['b', 'c']" in message
+    assert "missing_txt=['b', 'c']" in message
 
 
 def test_duplicate_semantic_category_fails():
@@ -142,19 +162,21 @@ def test_duplicate_semantic_category_fails():
         )
 
 
-def test_unexpected_category_policy_is_strict(tmp_path):
+def test_unselected_category_is_ignored_and_reported(tmp_path):
     module = load_module()
     for category in ("a", "unexpected"):
         stem = tmp_path / f"ttx_multileptons-{category}_njets"
         stem.with_suffix(".root").touch()
         stem.with_suffix(".txt").touch()
 
-    with pytest.raises(ValueError, match="unexpected_root"):
-        module.discover_card_pairs(
-            tmp_path,
-            expected_categories=("a",),
-            role="central",
-        )
+    inventory = module.discover_card_pairs(
+        tmp_path,
+        expected_categories=("a",),
+        role="central",
+    )
+
+    assert list(inventory) == ["a"]
+    assert inventory.unused_categories == ("unexpected",)
 
 
 @pytest.mark.parametrize("bad_value", (np.nan, np.inf, -np.inf))
@@ -296,5 +318,5 @@ def test_central_private_bin_edges_must_match():
             base_channel="2lss_p",
             private_card=private,
             central_card=central,
-            expected_length=8,
+            layout=load_registry_payload_layout().categories_by_name["2lss_p"],
         )

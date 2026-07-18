@@ -9,6 +9,7 @@ import numpy as np
 import pytest
 
 from topeft.modules.missing_parton_contract import (
+    build_registry_payload_layout,
     validate_legacy_missing_parton_values,
 )
 
@@ -162,42 +163,126 @@ def test_uncertainty_larger_than_rate_difference_yields_neutral_fraction():
     assert fraction.tolist() == pytest.approx([0.0])
 
 
-def test_merged_tail_uses_sum_of_per_bin_missing_parton_amounts():
-    module = load_module()
-    private = np.asarray([10.0, 10.0, 10.0, 10.0, 10.0, 2.0, 3.0, 4.0])
-    parton = np.asarray([1.0, 2.0, 3.0, 4.0, 5.0, 1.0, 1.0, 2.0])
-    fractions = parton / private
+def _synthetic_layout(base_category, jet_lst):
+    return build_registry_payload_layout(
+        "ALL_CH_LST_SR",
+        {
+            "synthetic": {
+                "lep_chan_lst": [[base_category]],
+                "jet_lst": list(jet_lst),
+            }
+        },
+    ).categories[0]
 
-    stored = module.merge_legacy_payload_tail(
-        base_channel="3l_onZ_1b",
-        private_values=private,
-        missing_parton_values=parton,
-        per_bin_fractions=fractions,
-        expected_length=6,
+
+def _card(module, nominal, *, shapes=(), rate_systematics=()):
+    nominal = np.asarray(nominal, dtype=float)
+    return module.base_category_card_data(
+        nominal_values=nominal,
+        shape_values=tuple(np.asarray(values, dtype=float) for values in shapes),
+        bin_edges=np.arange(len(nominal) + 1, dtype=float),
+        parsed_txt=module.parsed_card(
+            process_names=("tllq_sm",),
+            rates=(float(np.sum(nominal)),),
+            rate_systematics=tuple(rate_systematics),
+        ),
     )
 
-    assert stored[:5].tolist() == pytest.approx(fractions[:5])
-    assert stored[5] == pytest.approx(4.0 / 9.0)
 
-
-def test_physical_njet_indices_are_preserved_before_merged_tail():
+@pytest.mark.parametrize("terminal_threshold", (3, 4, 5, 6, 7))
+def test_terminal_tail_aggregates_source_inputs_before_formula(
+    terminal_threshold,
+):
     module = load_module()
-    private = np.full(8, 10.0)
-    parton = np.arange(1.0, 9.0)
-    fractions = parton / private
-
-    stored = module.merge_legacy_payload_tail(
-        base_channel="2lss_m_1tau_onZ",
-        private_values=private,
-        missing_parton_values=parton,
-        per_bin_fractions=fractions,
-        expected_length=7,
+    base_category = "synthetic"
+    private_values = np.asarray([11.0, 9.0, 13.0, 8.0, 7.0, 6.0, 5.0, 4.0])
+    central_values = np.asarray([2.0, 3.0, 4.0, 2.0, 1.0, 3.0, 2.0, -2.0])
+    shape_down = private_values - 0.5
+    shape_up = private_values + 0.75
+    rate_systematics = (("rate", ("0.9/1.2",)),)
+    private_card = _card(
+        module,
+        private_values,
+        shapes=(shape_down, shape_up),
+        rate_systematics=rate_systematics,
+    )
+    central_card = _card(module, central_values)
+    layout = _synthetic_layout(
+        base_category,
+        (f">{terminal_threshold}",),
     )
 
-    assert stored.shape == (7,)
-    assert stored[3] == pytest.approx(fractions[3])
-    assert stored[5] == pytest.approx(fractions[5])
-    assert stored[6] == pytest.approx((parton[6] + parton[7]) / 20.0)
+    stored = module.build_category_payload(
+        base_channel=base_category,
+        private_card=private_card,
+        central_card=central_card,
+        layout=layout,
+    )
+
+    down_error, up_error = module.private_rate_errors(private_card)
+    _, direct_fractions = module.calculate_missing_parton_per_bin(
+        private_values[:terminal_threshold],
+        central_values[:terminal_threshold],
+        down_error[:terminal_threshold],
+        up_error[:terminal_threshold],
+        base_channel=base_category,
+    )
+    tail = slice(terminal_threshold, None)
+    private_total = float(np.sum(private_values[tail]))
+    central_total = float(np.sum(central_values[tail]))
+    shape_down_shift = float(np.sum(shape_down[tail] - private_values[tail]))
+    aggregate_down_error = math.hypot(
+        abs(shape_down_shift),
+        0.1 * private_total,
+    )
+    aggregate_delta = private_total - central_total
+    expected_tail = math.sqrt(
+        max(aggregate_delta**2 - aggregate_down_error**2, 0.0)
+    ) / private_total
+
+    assert stored.shape == (terminal_threshold + 1,)
+    assert stored[:terminal_threshold] == pytest.approx(direct_fractions)
+    assert stored[terminal_threshold] == pytest.approx(expected_tail)
+    assert len(stored) - 1 == terminal_threshold
+
+    per_bin_missing, _ = module.calculate_missing_parton_per_bin(
+        private_values[tail],
+        central_values[tail],
+        down_error[tail],
+        up_error[tail],
+        base_channel=base_category,
+    )
+    combined_derived_fraction = float(np.sum(per_bin_missing)) / private_total
+    if terminal_threshold < 7:
+        assert stored[terminal_threshold] != pytest.approx(
+            combined_derived_fraction
+        )
+    else:
+        assert stored[terminal_threshold] == pytest.approx(
+            combined_derived_fraction
+        )
+
+
+def test_exact_terminal_keeps_every_public_index_direct():
+    module = load_module()
+    private_values = np.arange(10.0, 18.0)
+    central_values = np.arange(2.0, 10.0)
+    layout = _synthetic_layout("synthetic", ("=2", "=3", "=4"))
+
+    stored = module.build_category_payload(
+        base_channel="synthetic",
+        private_card=_card(module, private_values),
+        central_card=_card(module, central_values),
+        layout=layout,
+    )
+    _, expected = calculate(
+        module,
+        private_values[:5],
+        central_values[:5],
+    )
+
+    assert stored.shape == (5,)
+    assert stored == pytest.approx(expected)
 
 
 def test_numerical_array_shape_mismatch_fails():

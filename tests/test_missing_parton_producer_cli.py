@@ -235,6 +235,51 @@ def test_invalid_input_leaves_existing_output_byte_for_byte_unchanged(
     assert output.read_bytes() == original
 
 
+def test_plan_reports_missing_categories_from_both_source_roles_before_write(
+    monkeypatch,
+    tmp_path,
+):
+    module = load_module()
+    config = parse_config(
+        module,
+        "--output-file",
+        str(tmp_path / "payload.root"),
+    )
+
+    def discover(_, *, role, **kwargs):
+        missing = "missing_central" if role == "central" else "missing_private"
+        return module.selected_card_inventory(
+            pairs={},
+            unused_categories=(),
+            missing_root_categories=(missing,),
+            missing_txt_categories=(missing,),
+        )
+
+    monkeypatch.setattr(module, "discover_card_pairs", discover)
+    monkeypatch.setattr(
+        module,
+        "read_base_category_card",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("card read preceded complete inventory validation")
+        ),
+    )
+    monkeypatch.setattr(
+        module,
+        "write_legacy_payload_atomic",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("writer was called")
+        ),
+    )
+
+    with pytest.raises(ValueError, match="Missing required") as exc_info:
+        module.run_producer(config)
+
+    message = str(exc_info.value)
+    assert "missing_central" in message
+    assert "missing_private" in message
+    assert not config.output_file.exists()
+
+
 @pytest.mark.parametrize(
     "sr_registry",
     (
@@ -323,7 +368,10 @@ def test_nondefault_dry_run_is_allowed_and_never_writes(monkeypatch, tmp_path):
     assert not config.output_file.exists()
 
 
-def test_nondefault_generation_guard_precedes_plan_and_write(monkeypatch, tmp_path):
+def test_nondefault_generation_reaches_plan_and_registry_bound_writer(
+    monkeypatch,
+    tmp_path,
+):
     module = load_module()
     config = parse_config(
         module,
@@ -332,27 +380,137 @@ def test_nondefault_generation_guard_precedes_plan_and_write(monkeypatch, tmp_pa
         "--output-file",
         str(tmp_path / "fwd.root"),
     )
-    monkeypatch.setattr(
-        module,
-        "build_payload_plan",
-        lambda *_: (_ for _ in ()).throw(AssertionError("plan was built")),
+    expected_plan = module.payload_plan(
+        categories=(),
+        registry="FWD_CH_LST_SR",
     )
+    calls = []
+    monkeypatch.setattr(module, "build_payload_plan", lambda _: expected_plan)
+
+    def writer(output_file, payload_values, **kwargs):
+        calls.append((output_file, payload_values, kwargs))
+        return "synthetic-sha256"
+
+    monkeypatch.setattr(module, "write_legacy_payload_atomic", writer)
+
+    plan, output_sha256 = module.run_producer(config)
+
+    assert plan is expected_plan
+    assert output_sha256 == "synthetic-sha256"
+    assert calls == [
+        (
+            config.output_file,
+            {},
+            {"overwrite": False, "sr_registry": "FWD_CH_LST_SR"},
+        )
+    ]
+    assert not config.output_file.exists()
+
+
+@pytest.mark.parametrize(
+    "sr_registry",
+    (
+        "TOP22_006_CH_LST_SR",
+        "TAU_CH_LST_SR",
+        "OFFZ_SPLIT_CH_LST_SR",
+        "FWD_CH_LST_SR",
+        "ALL_CH_LST_SR",
+    ),
+)
+def test_selected_registry_builds_only_selected_plan_and_reports_unused_inputs(
+    monkeypatch,
+    tmp_path,
+    sr_registry,
+):
+    module = load_module()
+    config = parse_config(
+        module,
+        "--sr-registry",
+        sr_registry,
+        "--output-file",
+        str(tmp_path / f"{sr_registry}.root"),
+    )
+    expected_layout = module.load_registry_payload_layout(sr_registry)
+    observed_inventories = {}
+
+    def discover(_, *, expected_categories, var, role, allow_missing):
+        assert allow_missing is True
+        observed_inventories[role] = tuple(expected_categories)
+        return module.selected_card_inventory(
+            pairs={
+                category: module.CardFiles(
+                    tmp_path / f"{role}-{category}.root",
+                    tmp_path / f"{role}-{category}.txt",
+                )
+                for category in expected_categories
+            },
+            unused_categories=(f"unused_{role}",),
+        )
+
+    def read_card(_, process, *, base_channel, role):
+        if role == "private":
+            nominal = np.arange(10.0, 18.0)
+            process_name = "tllq_sm"
+        else:
+            nominal = np.arange(1.0, 9.0)
+            process_name = "tZq_sm"
+        card = module.base_category_card_data(
+            nominal_values=nominal,
+            shape_values=(),
+            bin_edges=np.arange(9.0),
+            parsed_txt=module.parsed_card(
+                process_names=(process_name,),
+                rates=(float(np.sum(nominal)),),
+                rate_systematics=(),
+            ),
+        )
+        return card, process_name
+
+    writer_calls = []
+    monkeypatch.setattr(module, "discover_card_pairs", discover)
+    monkeypatch.setattr(module, "read_base_category_card", read_card)
     monkeypatch.setattr(
         module,
         "write_legacy_payload_atomic",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            AssertionError("writer was called")
-        ),
+        lambda output_file, payload_values, **kwargs: writer_calls.append(
+            (output_file, payload_values, kwargs)
+        )
+        or "synthetic-sha256",
     )
 
-    with pytest.raises(module.ConfigError, match="FWD_CH_LST_SR") as exc_info:
-        module.run_producer(config)
+    plan, output_sha256 = module.run_producer(config)
 
-    message = str(exc_info.value)
-    assert "MP010B7" in message
-    assert "layout generation is not yet enabled" in message
-    assert "No output was written" in message
-    assert not config.output_file.exists()
+    expected_categories = expected_layout.ordered_base_categories
+    assert observed_inventories == {
+        "central": expected_categories,
+        "private": expected_categories,
+    }
+    assert tuple(plan.values_by_category) == expected_categories
+    assert plan.registry == sr_registry
+    assert plan.unused_central_categories == ("unused_central",)
+    assert plan.unused_private_categories == ("unused_private",)
+    assert [
+        len(plan.values_by_category[category]) for category in expected_categories
+    ] == [
+        expected_layout.categories_by_name[category].public_array_length
+        for category in expected_categories
+    ]
+    assert writer_calls[0][0] == config.output_file
+    assert tuple(writer_calls[0][1]) == expected_categories
+    assert writer_calls[0][2]["sr_registry"] == sr_registry
+    assert output_sha256 == "synthetic-sha256"
+    if sr_registry == "ALL_CH_LST_SR":
+        plans_by_category = {
+            category.base_channel: category for category in plan.categories
+        }
+        for base_category in (
+            "3l_m_offZ_1b_fwd",
+            "3l_p_offZ_1b_fwd",
+        ):
+            assert plans_by_category[
+                base_category
+            ].terminal_source_physical_njets == (4, 5, 6, 7)
+            assert len(plans_by_category[base_category].stored_values) == 5
 
 
 def test_default_registry_is_not_rejected_by_generation_guard(monkeypatch, tmp_path):
@@ -395,5 +553,5 @@ def test_help_documents_legacy_and_explicit_modes_deterministically():
         "--sr-registry",
     ):
         assert option in help_text
-    assert "34-TTree" in help_text
+    assert "registry-selected missing-parton ROOT payload" in help_text
     assert "default: ALL_CH_LST_SR" in " ".join(help_text.split())
