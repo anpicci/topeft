@@ -7,6 +7,10 @@ from topeft.modules import datacard_tools
 from topeft.modules.datacard_tools import DatacardMaker
 
 
+RUN2_DEFAULT_PAYLOAD = "data/missing_parton/missing_parton_run2.root"
+RUN3_DEFAULT_PAYLOAD = "data/missing_parton/missing_parton_run3.root"
+
+
 class _fake_branch:
     def __init__(self, values):
         self.values = values
@@ -42,21 +46,40 @@ def _systematics_loader(*, years, do_nuisance=True, skip=False):
 
 
 @pytest.mark.parametrize("year", ("UL16", "UL16APV", "UL17", "UL18"))
-def test_all_supported_run2_card_years_resolve_to_one_nuisance(year):
+def test_all_supported_run2_card_years_resolve_to_one_nuisance_and_default_payload(year):
     assert DatacardMaker.missing_parton_run_era(year) == "run2"
     assert DatacardMaker.missing_parton_nuisance_name(year) == "missing_parton"
+    assert DatacardMaker.resolve_missing_parton_payload_path((year,)) == RUN2_DEFAULT_PAYLOAD
 
 
 @pytest.mark.parametrize("year", ("2022", "2022EE", "2023", "2023BPix"))
-def test_all_supported_run3_card_years_resolve_to_one_nuisance(year):
+def test_all_supported_run3_card_years_resolve_to_one_nuisance_and_default_payload(year):
     assert DatacardMaker.missing_parton_run_era(year) == "run3"
     assert DatacardMaker.missing_parton_nuisance_name(year) == "missing_parton"
+    assert DatacardMaker.resolve_missing_parton_payload_path((year,)) == RUN3_DEFAULT_PAYLOAD
 
 
 @pytest.mark.parametrize("year", ("", "2018", "UL18_extra"))
 def test_malformed_or_unsupported_years_are_rejected(year):
     with pytest.raises(ValueError, match="canonical year or period|Unsupported canonical"):
         DatacardMaker.missing_parton_nuisance_name(year)
+
+
+@pytest.mark.parametrize("year", ("UL18", "2023"))
+@pytest.mark.parametrize(
+    "payload_path",
+    ("custom/root_payload.root", "data/missing_parton/missing_parton.root"),
+)
+def test_explicit_payload_path_is_preserved_without_filename_inference(year, payload_path):
+    assert (
+        DatacardMaker.resolve_missing_parton_payload_path((year,), payload_path)
+        == payload_path
+    )
+
+
+def test_empty_explicit_payload_path_is_rejected():
+    with pytest.raises(ValueError, match="must be non-empty"):
+        DatacardMaker.resolve_missing_parton_payload_path(("UL18",), "")
 
 
 def test_mixed_era_years_fail_with_original_labels_and_resolved_eras():
@@ -74,6 +97,14 @@ def test_mixed_era_years_fail_with_original_labels_and_resolved_eras():
     assert "run2.root" in message
     assert "different nuisance names" not in message.lower()
 
+    with pytest.raises(ValueError, match="one explicit missing-parton payload source"):
+        DatacardMaker.resolve_missing_parton_payload_path(("UL18", "2022"))
+    with pytest.raises(ValueError, match="one explicit missing-parton payload source"):
+        DatacardMaker.resolve_missing_parton_payload_path(
+            ("UL18", "2022"),
+            "data/missing_parton/missing_parton.root",
+        )
+
 
 def test_mixed_era_loader_fails_before_opening_the_payload(monkeypatch):
     maker = _systematics_loader(years=("UL18", "2022"))
@@ -85,6 +116,86 @@ def test_mixed_era_loader_fails_before_opening_the_payload(monkeypatch):
 
     with pytest.raises(ValueError, match="one explicit missing-parton payload source"):
         maker.load_systematics("params/rate_systs_run3.json", "synthetic.root")
+
+
+@pytest.mark.parametrize(
+    ("year", "expected_payload"),
+    (("UL18", RUN2_DEFAULT_PAYLOAD), ("2023", RUN3_DEFAULT_PAYLOAD)),
+)
+def test_direct_constructor_uses_the_same_era_default_payload(
+    monkeypatch,
+    year,
+    expected_payload,
+):
+    captured_payload_paths = []
+
+    def capture_systematics(self, rate_syst_path, missing_parton_path):
+        captured_payload_paths.append(missing_parton_path)
+        return {}
+
+    monkeypatch.setattr(DatacardMaker, "load_systematics", capture_systematics)
+    maker = DatacardMaker(
+        hists={},
+        do_nuisance=True,
+        year_lst=[year],
+        verbose=False,
+    )
+
+    assert maker.missing_parton_payload_path == expected_payload
+    assert captured_payload_paths == [expected_payload]
+
+
+@pytest.mark.parametrize(
+    ("year", "expected_payload"),
+    (("UL18", RUN2_DEFAULT_PAYLOAD), ("2023", RUN3_DEFAULT_PAYLOAD)),
+)
+def test_default_payload_path_is_opened_for_the_resolved_era(
+    monkeypatch,
+    year,
+    expected_payload,
+):
+    opened_paths = []
+
+    def open_payload(path):
+        opened_paths.append(str(path))
+        return _fake_missing_parton_file((0.2, 0.3))
+
+    monkeypatch.setattr(datacard_tools.uproot, "open", open_payload)
+    maker = _systematics_loader(years=(year,))
+    resolved_payload = DatacardMaker.resolve_missing_parton_payload_path((year,))
+
+    systematics = maker.load_systematics("params/rate_systs_run3.json", resolved_payload)
+
+    assert "missing_parton" in systematics
+    assert resolved_payload == expected_payload
+    assert opened_paths[0].endswith(expected_payload)
+
+
+@pytest.mark.parametrize("do_nuisance, skip", ((False, False), (True, True)))
+def test_constructor_skip_and_disabled_modes_bypass_default_resolution(
+    monkeypatch,
+    do_nuisance,
+    skip,
+):
+    def fail_if_resolved(*args, **kwargs):
+        raise AssertionError("missing-parton default was resolved despite suppression")
+
+    monkeypatch.setattr(
+        DatacardMaker,
+        "resolve_missing_parton_payload_path",
+        fail_if_resolved,
+    )
+    monkeypatch.setattr(DatacardMaker, "load_systematics", lambda *args: {})
+
+    maker = DatacardMaker(
+        hists={},
+        do_nuisance=do_nuisance,
+        skip_missing_parton_rate_syst=skip,
+        year_lst=["UL18", "2022"],
+        verbose=False,
+    )
+
+    assert maker.missing_parton_payload_path is None
 
 
 @pytest.mark.parametrize(

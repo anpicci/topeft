@@ -14,15 +14,21 @@ from topeft.modules import datacard_tools
 from topeft.modules.datacard_tools import DatacardMaker, RateSystematic
 
 
-def _condor_namespace(skip_missing_parton_rate_syst):
+def _condor_namespace(
+    skip_missing_parton_rate_syst,
+    *,
+    year_lst=(),
+    missing_parton_payload_path=None,
+):
     return SimpleNamespace(
         do_mc_stat=False,
         verbose=False,
         use_real_data=False,
         do_nuisance=True,
-        year_lst=[],
+        year_lst=list(year_lst),
         drop_syst=[],
         skip_missing_parton_rate_syst=skip_missing_parton_rate_syst,
+        missing_parton_payload_path=missing_parton_payload_path,
     )
 
 
@@ -79,6 +85,15 @@ def test_parser_default_preserves_missing_parton_nuisance():
     args = make_cards.build_arg_parser().parse_args(["input.pkl.gz"])
 
     assert args.skip_missing_parton_rate_syst is False
+    assert args.miss_parton_file is None
+
+
+def test_parser_preserves_explicit_missing_parton_payload_override():
+    args = make_cards.build_arg_parser().parse_args(
+        ["input.pkl.gz", "--miss-parton-file", "custom/payload.root"]
+    )
+
+    assert args.miss_parton_file == "custom/payload.root"
 
 
 def test_parser_accepts_targeted_missing_parton_suppression():
@@ -120,6 +135,34 @@ def test_local_main_propagates_targeted_suppression(monkeypatch):
     assert exc_info.value.args[0]["skip_missing_parton_rate_syst"] is True
 
 
+def test_local_cli_omission_passes_direct_default_resolution_inputs(monkeypatch):
+    class captured_kwargs(RuntimeError):
+        pass
+
+    def capture_datacard_maker(*, hists, **kwargs):
+        assert hists == {}
+        raise captured_kwargs(kwargs)
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["make_cards.py", "input.pkl.gz", "--do-nuisance", "--year", "UL18"],
+    )
+    monkeypatch.setattr(
+        make_cards,
+        "load_and_merge_histogram_pkls",
+        lambda *args, **kwargs: ({}, {}),
+    )
+    monkeypatch.setattr(make_cards, "_emit_merge_report", lambda *args: None)
+    monkeypatch.setattr(make_cards, "DatacardMaker", capture_datacard_maker)
+
+    with pytest.raises(captured_kwargs) as exc_info:
+        make_cards.main()
+
+    assert exc_info.value.args[0]["missing_parton_path"] is None
+    assert exc_info.value.args[0]["year_lst"] == ["UL18"]
+
+
 def test_condor_option_propagation_is_additive_and_targeted():
     default_opts = make_cards._build_condor_base_other_opts(
         _condor_namespace(False),
@@ -136,6 +179,28 @@ def test_condor_option_propagation_is_additive_and_targeted():
         "--on-process-collision",
         "error",
     ]
+
+
+@pytest.mark.parametrize(
+    "payload_path",
+    (
+        "data/missing_parton/missing_parton_run2.root",
+        "data/missing_parton/missing_parton_run3.root",
+        "custom/payload.root",
+    ),
+)
+def test_condor_option_reconstruction_materializes_resolved_payload_path(payload_path):
+    opts = make_cards._build_condor_base_other_opts(
+        _condor_namespace(
+            False,
+            year_lst=("UL18",),
+            missing_parton_payload_path=payload_path,
+        ),
+        "error",
+    )
+
+    payload_option_index = opts.index("--miss-parton-file")
+    assert opts[payload_option_index + 1] == payload_path
 
 
 def test_skip_option_suppresses_only_missing_parton(monkeypatch):

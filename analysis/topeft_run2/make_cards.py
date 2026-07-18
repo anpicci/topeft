@@ -69,7 +69,16 @@ def build_arg_parser():
     parser.add_argument("pkl_file",nargs="*",help="One or more pickle files with histograms to run over")
     parser.add_argument("--pkl-list-file",default="",help="Optional text file with one pkl path per line")
     parser.add_argument("--rate-syst-json","-s",default="params/rate_systs.json",help="Rate related systematics json file, path relative to topeft_path()")
-    parser.add_argument("--miss-parton-file","-m",default="data/missing_parton/missing_parton.root",help="File for missing parton systematic, path relative to topeft_path()")
+    parser.add_argument(
+        "--miss-parton-file",
+        "-m",
+        default=None,
+        help=(
+            "Optional missing-parton payload path relative to topeft_path(); when "
+            "omitted, select missing_parton_run2.root or missing_parton_run3.root "
+            "from the resolved card era."
+        ),
+    )
     parser.add_argument("--skip-missing-parton-rate-syst",action="store_true",default=False,help="Skip loading/inserting only the missing-parton rate systematic; preserves other nuisances.")
     parser.add_argument("--selected-wcs-ref",default="test/selectedWCs.json",help="Reference file for selected wcs")
     parser.add_argument("--out-dir","-d",default=".",help="Output directory to write root and text datacard files to")
@@ -178,6 +187,9 @@ def _build_condor_base_other_opts(dc,on_process_collision):
         base_other_opts.extend(["--year"," ".join(dc.year_lst)])
     if dc.drop_syst:
         base_other_opts.extend(["--drop-syst"," ".join(dc.drop_syst)])
+    missing_parton_payload_path = getattr(dc, "missing_parton_payload_path", None)
+    if missing_parton_payload_path is not None:
+        base_other_opts.extend(["--miss-parton-file", missing_parton_payload_path])
     if getattr(dc, "skip_missing_parton_rate_syst", False):
         base_other_opts.append("--skip-missing-parton-rate-syst")
     base_other_opts.extend(["--on-process-collision",on_process_collision])

@@ -501,6 +501,10 @@ class DatacardMaker():
         "2023BPix": "run3",
     }
     MISSING_PARTON_NUISANCE_NAME = "missing_parton"
+    MISSING_PARTON_DEFAULT_PAYLOADS = {
+        "run2": "data/missing_parton/missing_parton_run2.root",
+        "run3": "data/missing_parton/missing_parton_run3.root",
+    }
 
     FNAME_TEMPLATE = "ttx_multileptons-{cat}_{kmvar}.{ext}"
     # FNAME_TEMPLATE = "TESTING_ttx_multileptons-{cat}.{ext}"
@@ -541,7 +545,7 @@ class DatacardMaker():
         return cls.MISSING_PARTON_NUISANCE_NAME
 
     @classmethod
-    def missing_parton_nuisance_name_for_years(cls, year_or_periods, payload_path=None):
+    def missing_parton_run_era_for_years(cls, year_or_periods, payload_path=None):
         if isinstance(year_or_periods, str):
             year_or_periods = (year_or_periods,)
         else:
@@ -572,7 +576,30 @@ class DatacardMaker():
                 "Produce Run 2 and Run 3 cards separately with their matching payloads."
                 f"{payload_text}"
             )
+        return resolved_eras[0]
+
+    @classmethod
+    def missing_parton_nuisance_name_for_years(cls, year_or_periods, payload_path=None):
+        cls.missing_parton_run_era_for_years(
+            year_or_periods,
+            payload_path=payload_path,
+        )
         return cls.MISSING_PARTON_NUISANCE_NAME
+
+    @classmethod
+    def resolve_missing_parton_payload_path(cls, year_or_periods, payload_path=None):
+        if payload_path == "":
+            raise ValueError(
+                "An explicit missing-parton payload path must be non-empty. Omit the "
+                "option to select the run-era default."
+            )
+        era = cls.missing_parton_run_era_for_years(
+            year_or_periods,
+            payload_path=payload_path,
+        )
+        if payload_path is not None:
+            return payload_path
+        return cls.MISSING_PARTON_DEFAULT_PAYLOADS[era]
 
     @classmethod
     def is_missing_parton_nuisance_name(cls, nuisance_name):
@@ -818,10 +845,19 @@ class DatacardMaker():
             rate_syst_path = kwargs.pop("rate_systs_path","params/rate_systs_run3.json")
         else:
             rate_syst_path = kwargs.pop("rate_systs_path","params/rate_systs_run2.json")
-        miss_part_path = kwargs.pop("missing_parton_path","data/missing_parton/missing_parton.root")
+        explicit_missing_parton_path = kwargs.pop("missing_parton_path",None)
+        self.missing_parton_payload_path = None
+        if self.do_nuisance and not self.skip_missing_parton_rate_syst:
+            self.missing_parton_payload_path = self.resolve_missing_parton_payload_path(
+                self.year_lst,
+                explicit_missing_parton_path,
+            )
 
         # TODO: Need to find a better name for this variable
-        self.rate_systs = self.load_systematics(rate_syst_path,miss_part_path)
+        self.rate_systs = self.load_systematics(
+            rate_syst_path,
+            self.missing_parton_payload_path,
+        )
 
         # Samples to be excluded from the datacard, should correspond to names before group_processes is run
         self.ignore = [
