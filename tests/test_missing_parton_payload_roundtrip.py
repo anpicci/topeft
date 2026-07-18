@@ -84,7 +84,7 @@ def test_writer_loader_and_datacardmaker_round_trip(tmp_path):
     module.write_legacy_payload_atomic(payload_path, synthetic_payload())
     missing_parton = load_missing_parton_systematic(payload_path)
 
-    assert missing_parton.name == "missing_parton_run2"
+    assert missing_parton.name == "missing_parton"
     assert missing_parton.get_process("tllq")["3l_onZ_1b"][2] == pytest.approx(
         1.2
     )
@@ -105,7 +105,7 @@ def test_writer_loader_and_datacardmaker_round_trip(tmp_path):
         do_nuisance=False,
         verbose=False,
     )
-    maker.rate_systs = {"missing_parton_run2": missing_parton}
+    maker.rate_systs = {"missing_parton": missing_parton}
     maker.analyze(
         "ht",
         channel,
@@ -123,7 +123,7 @@ def test_writer_loader_and_datacardmaker_round_trip(tmp_path):
             field.endswith("_sm") for field in fields[1:]
         ):
             process_names = fields[1:]
-        if fields[:2] == ["missing_parton_run2", "lnN"]:
+        if fields[:2] == ["missing_parton", "lnN"]:
             nuisance_values = fields[2:]
 
     assert dict(zip(process_names, nuisance_values)) == {
@@ -147,12 +147,12 @@ def test_missing_base_category_entry_still_formats_as_dash(tmp_path):
         do_nuisance=False,
         verbose=False,
     )
-    missing_parton = RateSystematic("missing_parton_run2")
+    missing_parton = RateSystematic("missing_parton")
     missing_parton.add_process(
         "tllq",
         {"different_base_category": np.asarray([1.2])},
     )
-    maker.rate_systs = {"missing_parton_run2": missing_parton}
+    maker.rate_systs = {"missing_parton": missing_parton}
 
     maker.analyze(
         "ht",
@@ -166,7 +166,7 @@ def test_missing_base_category_entry_still_formats_as_dash(tmp_path):
     nuisance_line = next(
         line
         for line in card_path.read_text(encoding="utf-8").splitlines()
-        if line.split()[:2] == ["missing_parton_run2", "lnN"]
+        if line.split()[:2] == ["missing_parton", "lnN"]
     )
     assert nuisance_line.split()[2:] == ["-"]
 

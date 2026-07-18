@@ -500,10 +500,7 @@ class DatacardMaker():
         "2023": "run3",
         "2023BPix": "run3",
     }
-    MISSING_PARTON_NUISANCE_NAMES = {
-        "run2": "missing_parton_run2",
-        "run3": "missing_parton_run3",
-    }
+    MISSING_PARTON_NUISANCE_NAME = "missing_parton"
 
     FNAME_TEMPLATE = "ttx_multileptons-{cat}_{kmvar}.{ext}"
     # FNAME_TEMPLATE = "TESTING_ttx_multileptons-{cat}.{ext}"
@@ -540,11 +537,11 @@ class DatacardMaker():
 
     @classmethod
     def missing_parton_nuisance_name(cls, year_or_period):
-        era = cls.missing_parton_run_era(year_or_period)
-        return cls.MISSING_PARTON_NUISANCE_NAMES[era]
+        cls.missing_parton_run_era(year_or_period)
+        return cls.MISSING_PARTON_NUISANCE_NAME
 
     @classmethod
-    def missing_parton_nuisance_name_for_years(cls, year_or_periods):
+    def missing_parton_nuisance_name_for_years(cls, year_or_periods, payload_path=None):
         if isinstance(year_or_periods, str):
             year_or_periods = (year_or_periods,)
         else:
@@ -565,16 +562,21 @@ class DatacardMaker():
         )
         unique_eras = set(resolved_eras)
         if len(unique_eras) != 1:
+            payload_text = ""
+            if payload_path is not None:
+                payload_text = f" Active payload path: {payload_path!r}."
             raise ValueError(
-                "Mixed Run 2 and Run 3 years cannot share one missing-parton nuisance "
-                "in a single DatacardMaker run: "
-                f"original labels={year_or_periods!r}, resolved eras={resolved_eras!r}."
+                "Mixed Run 2 and Run 3 years cannot use one explicit missing-parton "
+                "payload source in a single DatacardMaker run: "
+                f"original labels={year_or_periods!r}, resolved eras={resolved_eras!r}. "
+                "Produce Run 2 and Run 3 cards separately with their matching payloads."
+                f"{payload_text}"
             )
-        return cls.MISSING_PARTON_NUISANCE_NAMES[resolved_eras[0]]
+        return cls.MISSING_PARTON_NUISANCE_NAME
 
     @classmethod
     def is_missing_parton_nuisance_name(cls, nuisance_name):
-        return nuisance_name in cls.MISSING_PARTON_NUISANCE_NAMES.values()
+        return nuisance_name == cls.MISSING_PARTON_NUISANCE_NAME
 
     @classmethod
     def strip_fluctuation(cls,s):
@@ -1117,7 +1119,10 @@ class DatacardMaker():
             # Finally, deal with the missing_parton systematic
             # TODO: This feels pretty hardcoded, but not sure there's any way around it
             branch_key = "tllq"
-            syst_name = self.missing_parton_nuisance_name_for_years(self.year_lst)
+            syst_name = self.missing_parton_nuisance_name_for_years(
+                self.year_lst,
+                payload_path=mp_fpath,
+            )
             new_syst = RateSystematic(syst_name)
 
             fpath = topeft_path(mp_fpath)
