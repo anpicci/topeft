@@ -11,7 +11,12 @@ from typing import Mapping
 from topeft.modules.paths import topeft_path
 
 
-SR_CHANNEL_CONFIG_KEY = "ALL_CH_LST_SR"
+SUPPORTED_SR_REGISTRIES = (
+    "TOP22_006_CH_LST_SR", "TAU_CH_LST_SR", "OFFZ_SPLIT_CH_LST_SR",
+    "FWD_CH_LST_SR", "ALL_CH_LST_SR",
+)
+DEFAULT_SR_REGISTRY = "ALL_CH_LST_SR"
+SR_CHANNEL_CONFIG_KEY = DEFAULT_SR_REGISTRY
 EXPECTED_BASE_CHANNEL_COUNT = 34
 EXPECTED_FINAL_CHANNEL_COUNT = 132
 LEGACY_MISSING_PARTON_BRANCH = "tllq"
@@ -113,7 +118,24 @@ class channel_appl_contract:
         return self.base_to_sr_appl[self.base_channel(channel)]
 
 
-def _parse_njet_source_label(source_label: str) -> int:
+def normalize_sr_registry(sr_registry: str | None = None) -> str:
+    registry = DEFAULT_SR_REGISTRY if sr_registry is None else sr_registry
+    if registry not in SUPPORTED_SR_REGISTRIES:
+        raise ValueError(f"Unsupported SR registry {registry!r}; expected one of {SUPPORTED_SR_REGISTRIES!r}.")
+    return registry
+
+
+def load_or_validate_selected_registry(sr_registry: str | None = None, config_path=None):
+    registry = normalize_sr_registry(sr_registry)
+    path = topeft_path("channels/ch_lst.json") if config_path is None else config_path
+    with open(path, encoding="utf-8") as handle:
+        config = json.load(handle)
+    if registry not in config:
+        raise ValueError(f"Selected SR registry {registry!r} is absent from {path}.")
+    return registry, config[registry]
+
+
+def parse_sr_njet_token(source_label: str) -> tuple[str, int, str]:
     source_label = str(source_label)
     if not source_label.startswith(("=", ">")):
         raise ValueError(
@@ -130,7 +152,11 @@ def _parse_njet_source_label(source_label: str) -> int:
         raise ValueError(
             f"Negative n-jet threshold {source_label!r} in {SR_CHANNEL_CONFIG_KEY}."
         )
-    return threshold
+    return ("exactly" if source_label.startswith("=") else "atleast", threshold, f"_{threshold}j")
+
+
+def _parse_njet_source_label(source_label: str) -> int:
+    return parse_sr_njet_token(source_label)[1]
 
 
 def _final_channel_name(base_channel: str, source_label: str) -> str:

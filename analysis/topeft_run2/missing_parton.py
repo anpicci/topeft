@@ -20,11 +20,14 @@ from pathlib import Path
 from typing import Iterable, Mapping, Sequence
 
 from topeft.modules.missing_parton_contract import (
+    DEFAULT_SR_REGISTRY,
     LEGACY_MISSING_PARTON_BASE_CHANNELS,
     LEGACY_MISSING_PARTON_BRANCH,
     legacy_missing_parton_payload_lengths,
     validate_legacy_missing_parton_payload,
     validate_legacy_missing_parton_values,
+    normalize_sr_registry,
+    SUPPORTED_SR_REGISTRIES,
 )
 from topeft.modules.paths import topeft_path
 
@@ -141,6 +144,7 @@ class ResolvedConfig:
     years: tuple[str, ...]
     time: bool
     var: str
+    sr_registry: str
 
     def to_printable_dict(self) -> dict[str, object]:
         return {
@@ -162,6 +166,9 @@ class ResolvedConfig:
             "years": list(self.years),
             "time": self.time,
             "var": self.var,
+            "sr_registry": self.sr_registry,
+            "ch_lst_json": topeft_path("channels/ch_lst.json"),
+            "ch_lst_sha256": hashlib.sha256(Path(topeft_path("channels/ch_lst.json")).read_bytes()).hexdigest(),
         }
 
 
@@ -182,6 +189,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
             "parton_datacards/Run2 layout is used."
         ),
     )
+    parser.add_argument("--sr-registry", choices=SUPPORTED_SR_REGISTRIES, default=DEFAULT_SR_REGISTRY)
     parser.add_argument(
         "--private-card-dir",
         "--private-dir",
@@ -269,6 +277,9 @@ def resolve_config(args: argparse.Namespace) -> ResolvedConfig:
         if explicit_private
         else LEGACY_PRIVATE_CARD_DIR
     )
+    sr_registry = normalize_sr_registry(args.sr_registry)
+    if sr_registry != DEFAULT_SR_REGISTRY and args.output_file is None:
+        raise ConfigError("A nondefault --sr-registry requires an explicit --output-file.")
     output_file = (
         Path(args.output_file) if args.output_file else LEGACY_OUTPUT_FILE
     )
@@ -284,6 +295,7 @@ def resolve_config(args: argparse.Namespace) -> ResolvedConfig:
         years=years,
         time=bool(args.time),
         var=args.var,
+        sr_registry=sr_registry,
     )
     if output_file.exists() and not config.overwrite:
         raise ConfigError(

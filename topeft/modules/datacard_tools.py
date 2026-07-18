@@ -16,8 +16,10 @@ from topeft.modules.paths import topeft_path
 from topeft.modules.axes import info as axes_info
 from topeft.modules.compatibility import add_sumw2_stub
 from topeft.modules.missing_parton_contract import (
+    DEFAULT_SR_REGISTRY,
     SR_CHANNEL_CONFIG_KEY,
     load_missing_parton_channel_contract,
+    normalize_sr_registry,
 )
 
 
@@ -587,18 +589,24 @@ class DatacardMaker():
         return cls.MISSING_PARTON_NUISANCE_NAME
 
     @classmethod
-    def resolve_missing_parton_payload_path(cls, year_or_periods, payload_path=None):
+    def resolve_missing_parton_payload_path(cls, year_or_periods, payload_path=None, sr_registry=DEFAULT_SR_REGISTRY):
         if payload_path == "":
             raise ValueError(
                 "An explicit missing-parton payload path must be non-empty. Omit the "
                 "option to select the run-era default."
             )
+        registry = normalize_sr_registry(sr_registry)
         era = cls.missing_parton_run_era_for_years(
             year_or_periods,
             payload_path=payload_path,
         )
         if payload_path is not None:
             return payload_path
+        if registry != DEFAULT_SR_REGISTRY:
+            raise ValueError(
+                f"Selected SR registry {registry!r} has no canonical implicit missing-parton payload. "
+                "Use --miss-parton-file with a payload generated for the same registry."
+            )
         return cls.MISSING_PARTON_DEFAULT_PAYLOADS[era]
 
     @classmethod
@@ -846,11 +854,13 @@ class DatacardMaker():
         else:
             rate_syst_path = kwargs.pop("rate_systs_path","params/rate_systs_run2.json")
         explicit_missing_parton_path = kwargs.pop("missing_parton_path",None)
+        self.sr_registry = normalize_sr_registry(kwargs.pop("sr_registry", DEFAULT_SR_REGISTRY))
         self.missing_parton_payload_path = None
         if self.do_nuisance and not self.skip_missing_parton_rate_syst:
             self.missing_parton_payload_path = self.resolve_missing_parton_payload_path(
                 self.year_lst,
                 explicit_missing_parton_path,
+                self.sr_registry,
             )
 
         # TODO: Need to find a better name for this variable

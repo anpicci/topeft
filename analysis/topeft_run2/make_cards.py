@@ -79,6 +79,9 @@ def build_arg_parser():
             "from the resolved card era."
         ),
     )
+    from topeft.modules.missing_parton_contract import SUPPORTED_SR_REGISTRIES, DEFAULT_SR_REGISTRY
+    parser.add_argument("--sr-registry", choices=SUPPORTED_SR_REGISTRIES, default=DEFAULT_SR_REGISTRY,
+                        help="SR registry associated with missing-parton payload selection.")
     parser.add_argument("--skip-missing-parton-rate-syst",action="store_true",default=False,help="Skip loading/inserting only the missing-parton rate systematic; preserves other nuisances.")
     parser.add_argument("--selected-wcs-ref",default="test/selectedWCs.json",help="Reference file for selected wcs")
     parser.add_argument("--out-dir","-d",default=".",help="Output directory to write root and text datacard files to")
@@ -190,6 +193,7 @@ def _build_condor_base_other_opts(dc,on_process_collision):
     missing_parton_payload_path = getattr(dc, "missing_parton_payload_path", None)
     if missing_parton_payload_path is not None:
         base_other_opts.extend(["--miss-parton-file", missing_parton_payload_path])
+    base_other_opts.extend(["--sr-registry", dc.sr_registry])
     if getattr(dc, "skip_missing_parton_rate_syst", False):
         base_other_opts.append("--skip-missing-parton-rate-syst")
     base_other_opts.extend(["--on-process-collision",on_process_collision])
@@ -297,6 +301,7 @@ def main():
     do_nuis    = args.do_nuisance
     drop_syst  = args.drop_syst
     skip_missing_parton_rate_syst = args.skip_missing_parton_rate_syst
+    sr_registry = args.sr_registry
     unblind    = args.unblind
     verbose    = args.verbose
     use_AAC     = args.use_AAC
@@ -316,6 +321,7 @@ def main():
         "wcs": wcs,
         "rate_syst_path": rs_json,
         "missing_parton_path": mp_file,
+        "sr_registry": sr_registry,
         "out_dir": out_dir,
         "var_lst": var_lst,
         "do_mc_stat": do_mc_stat,
