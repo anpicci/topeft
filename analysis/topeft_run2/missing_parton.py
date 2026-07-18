@@ -27,6 +27,7 @@ from topeft.modules.missing_parton_contract import (
     validate_legacy_missing_parton_payload,
     validate_legacy_missing_parton_values,
     normalize_sr_registry,
+    load_or_validate_selected_registry,
     SUPPORTED_SR_REGISTRIES,
 )
 from topeft.modules.paths import topeft_path
@@ -278,6 +279,7 @@ def resolve_config(args: argparse.Namespace) -> ResolvedConfig:
         else LEGACY_PRIVATE_CARD_DIR
     )
     sr_registry = normalize_sr_registry(args.sr_registry)
+    load_or_validate_selected_registry(sr_registry)
     if sr_registry != DEFAULT_SR_REGISTRY and args.output_file is None:
         raise ConfigError("A nondefault --sr-registry requires an explicit --output-file.")
     output_file = (
@@ -1141,6 +1143,12 @@ def write_legacy_payload_atomic(
 
 
 def run_producer(config: ResolvedConfig) -> tuple[payload_plan, str | None]:
+    if not config.dry_run and config.sr_registry != DEFAULT_SR_REGISTRY:
+        raise ConfigError(
+            f"SR registry {config.sr_registry!r} was accepted, but registry-specific "
+            "payload layout generation is not yet enabled; MP010B7 must implement "
+            "the selected-registry layout contract. No output was written."
+        )
     plan = build_payload_plan(config)
     if config.dry_run:
         return plan, None
