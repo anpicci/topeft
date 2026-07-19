@@ -12,13 +12,13 @@ the [missing-parton uncertainties guide](../../../docs/missing_parton_uncertaint
 
 ## Source authority
 
-- Run 2 uses source cards derived from the accepted MP004W Run 2 production
-  inputs.
+- Run 2 uses the accepted Run 2 all-analysis missing-parton source-card
+  production.
 - Run 3 uses source cards from the accepted Run 3 fixyield production used by
   the maintained analysis workflow.
-- The accepted Run 2 production used the same upstream Run 2 histogram PKLs.
-  This provenance statement does not assert byte identity for unavailable
-  private PKL inputs.
+- The accepted Run 2 source-card production and the corresponding maintained
+  Run 2 production used the same upstream histogram PKLs. This provenance
+  statement does not assert byte identity for unavailable private PKL inputs.
 
 Source manifests must identify every consumed ROOT/TXT pair, its category and
 role, and a content hash. Site-specific storage paths are environment details,

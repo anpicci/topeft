@@ -62,14 +62,15 @@ correction payload and how the later card-making step consumes it.
 
 ## 4. Source authority by era
 
-- **Run 2:** source cards derived from the accepted MP004W Run 2 production
-  inputs.
+- **Run 2:** the accepted Run 2 all-analysis missing-parton source-card
+  production.
 - **Run 3:** source cards from the accepted Run 3 fixyield production used by
   the maintained analysis workflow.
 
-The accepted Run 2 production used the same upstream Run 2 histogram PKLs.
-Exact private PKL hashes are not available, so this statement records source
-provenance without claiming byte-for-byte identity between PKLs and cards.
+The accepted Run 2 source-card production and the corresponding maintained
+Run 2 production used the same upstream histogram PKLs. Exact private PKL
+hashes are not available, so this statement records source provenance without
+claiming byte-for-byte identity between PKLs and cards.
 
 A reproducible source manifest records each ROOT/TXT pair, its era, category,
 central or private role, process identity, and content hash. Storage locations
