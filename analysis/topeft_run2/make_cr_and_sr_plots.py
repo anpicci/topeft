@@ -45,7 +45,7 @@ from topeft.modules.get_rate_systs import (
     get_syst_lst as te_get_syst_lst,
 )
 from topeft.modules.datacard_tools import load_and_merge_histogram_pkls
-from topeft.modules.deferred_np_metadata import build_histogram_output_metadata
+from topeft.modules.histogram_artifact import write_histogram_artifact
 from topeft.modules.nominal_schema import materialize_scalar_histogram_dict
 
 
@@ -8508,15 +8508,19 @@ def _cache_merged_histograms(merged_hists, cache_path, out_dir, merge_report=Non
     if out_parent:
         os.makedirs(out_parent, exist_ok=True)
     print(f"Caching merged histograms to {out_fpath}")
-    with gzip.open(out_fpath, "wb") as fout:
-        pickle.dump(merged_hists, fout, protocol=pickle.HIGHEST_PROTOCOL)
     if merge_report and merge_report.get("schema") == "split_sibling_v1":
-        metadata = build_histogram_output_metadata(
-            input_histogram=out_fpath,
+        write_histogram_artifact(
+            out_fpath,
+            histograms=merged_hists,
+            artifact_kind=merge_report["artifact_kind"],
             sumw2_storage_provenance=merge_report["sumw2_storage_provenance"],
+            merged=True,
+            lineage_inputs=merge_report["lineage_inputs"],
+            required_sumw2_processes=merge_report["required_sumw2_processes"],
         )
-        with open(f"{out_fpath}.metadata.json", "w", encoding="utf-8") as stream:
-            json.dump(metadata, stream, indent=2, sort_keys=True)
+    else:
+        with gzip.open(out_fpath, "wb") as fout:
+            pickle.dump(merged_hists, fout, protocol=pickle.HIGHEST_PROTOCOL)
     return out_fpath
 
 

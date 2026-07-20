@@ -1,6 +1,7 @@
 import argparse
 import gzip
 import re
+import warnings
 from collections import defaultdict
 
 import cloudpickle
@@ -10,6 +11,11 @@ from topcoffea.modules.hist_utils import iterate_hist_from_pkl
 from topcoffea.modules.get_param_from_jsons import GetParam
 from topcoffea.modules.utils import canonicalize_process_name
 from topeft.modules.axes import info_2d as axes_info_2d
+from topeft.modules.histogram_artifact import (
+    lineage_input_from_sidecar,
+    validate_histogram_artifact,
+    write_histogram_artifact,
+)
 from topeft.modules.nominal_schema import EFT_NOMINAL_SUFFIX, SCALAR_NOMINAL_SUFFIX
 from topeft.modules.paths import topeft_path
 get_te_param = GetParam(topeft_path("params/params.json"))
@@ -29,6 +35,19 @@ class DataDrivenProducer:
         self.promptSubtractionSamples=get_te_param('prompt_subtraction_samples')
         self._name_pattern = re.compile(self._NAME_REGEX)
         self._dd_report_by_key = {} if dd_report else None
+        self._input_artifact_validation = None
+        if self._is_histogram_path(self._input_source):
+            self._input_artifact_validation = validate_histogram_artifact(
+                self._input_source
+            )
+            if self._input_artifact_validation["schema"] == "legacy_uniform":
+                warnings.warn(
+                    "Transforming a legacy uniform histogram PKL without a "
+                    "schema-v2 sidecar; the output remains on the explicit legacy "
+                    "path and no schema-v2 sidecar will be synthesized.",
+                    UserWarning,
+                    stacklevel=2,
+                )
         if not self.iterator_mode:
             self.DDFakes()
 
@@ -565,8 +584,26 @@ class DataDrivenProducer:
     def dumpToPickle(self):
         if not self.outputName.endswith(".pkl.gz"):
             self.outputName = self.outputName + ".pkl.gz"
-        with gzip.open(self.outputName, "wb") as fout:
-            cloudpickle.dump(self.outHist, fout)
+        if self.outHist is None:
+            self.DDFakes()
+        input_sidecar = (
+            self._input_artifact_validation["metadata"]
+            if self._input_artifact_validation is not None
+            else None
+        )
+        if input_sidecar is not None:
+            write_histogram_artifact(
+                self.outputName,
+                histograms=self.outHist,
+                artifact_kind="nonprompt_output",
+                sumw2_storage_provenance=input_sidecar[
+                    "sumw2_storage_provenance"
+                ],
+                lineage_inputs=[lineage_input_from_sidecar(input_sidecar)],
+            )
+        else:
+            with gzip.open(self.outputName, "wb") as fout:
+                cloudpickle.dump(self.outHist, fout)
 
 
     def getDataDrivenHistogram(self):

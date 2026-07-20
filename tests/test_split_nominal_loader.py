@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import gzip
-import json
 import pickle
 
 import hist
@@ -13,7 +12,7 @@ from topcoffea.modules.sparseHist import SparseHist
 from topeft.modules.axes import info as axes_info
 from topeft.modules.axes import info_2d as axes_info_2d
 from topeft.modules.datacard_tools import load_and_merge_histogram_pkls
-from topeft.modules.deferred_np_metadata import build_histogram_output_metadata
+from topeft.modules.histogram_artifact import write_histogram_artifact
 from topeft.modules.nominal_schema import (
     eft_nominal_key,
     evaluate_nominal_at_wc,
@@ -86,14 +85,17 @@ def policy():
 
 
 def _write_versioned(path, payload, policy):
-    with gzip.open(path, "wb") as stream:
-        pickle.dump(payload, stream, protocol=pickle.HIGHEST_PROTOCOL)
-    metadata = build_histogram_output_metadata(
-        input_histogram=str(path),
+    write_histogram_artifact(
+        path,
+        histograms=payload,
+        artifact_kind="processor_output",
         sumw2_storage_provenance=policy.to_provenance(),
     )
-    with open(f"{path}.metadata.json", "w", encoding="utf-8") as stream:
-        json.dump(metadata, stream, sort_keys=True)
+
+
+def _replace_payload(path, payload):
+    with gzip.open(path, "wb") as stream:
+        pickle.dump(payload, stream, protocol=pickle.HIGHEST_PROTOCOL)
 
 
 def _total_sparse(histogram):
@@ -150,19 +152,33 @@ def test_required_missing_partial_orphan_and_present_unselected_are_rejected(tmp
     missing_path = tmp_path / "missing.pkl.gz"
     _write_versioned(
         missing_path,
-        {scalar_nominal_key("njets"): _scalar("background", 2.0)},
+        {
+            scalar_nominal_key("njets"): _scalar("background", 2.0),
+            "njets_sumw2": _scalar("background", 4.0, companion=True),
+        },
         policy,
     )
-    with pytest.raises(ValueError, match="missing its required companion"):
+    _replace_payload(
+        missing_path,
+        {scalar_nominal_key("njets"): _scalar("background", 2.0)},
+    )
+    with pytest.raises(RuntimeError, match="content mismatch|missing required"):
         load_and_merge_histogram_pkls([str(missing_path)])
 
     orphan_path = tmp_path / "orphan.pkl.gz"
     _write_versioned(
         orphan_path,
-        {"njets_sumw2": _scalar("background", 4.0, companion=True)},
+        {
+            scalar_nominal_key("njets"): _scalar("background", 2.0),
+            "njets_sumw2": _scalar("background", 4.0, companion=True),
+        },
         policy,
     )
-    with pytest.raises(ValueError, match="no nominal component|orphan"):
+    _replace_payload(
+        orphan_path,
+        {"njets_sumw2": _scalar("background", 4.0, companion=True)},
+    )
+    with pytest.raises(RuntimeError, match="content mismatch"):
         load_and_merge_histogram_pkls([str(orphan_path)])
 
     disabled = resolve_sumw2_storage_policy(
@@ -182,13 +198,17 @@ def test_required_missing_partial_orphan_and_present_unselected_are_rejected(tmp
     unselected_path = tmp_path / "unselected.pkl.gz"
     _write_versioned(
         unselected_path,
+        {scalar_nominal_key("njets"): _scalar("background", 2.0)},
+        disabled,
+    )
+    _replace_payload(
+        unselected_path,
         {
             scalar_nominal_key("njets"): _scalar("background", 2.0),
             "njets_sumw2": _scalar("background", 4.0, companion=True),
         },
-        disabled,
     )
-    with pytest.raises(ValueError, match="policy-unselected"):
+    with pytest.raises(RuntimeError, match="content mismatch"):
         load_and_merge_histogram_pkls([str(unselected_path)])
 
 
@@ -196,7 +216,7 @@ def test_split_without_sidecar_and_policy_identity_mismatch_are_rejected(tmp_pat
     no_metadata = tmp_path / "no_metadata.pkl.gz"
     with gzip.open(no_metadata, "wb") as stream:
         pickle.dump({scalar_nominal_key("njets"): _scalar("background", 2.0)}, stream)
-    with pytest.raises(RuntimeError, match="no versioned metadata"):
+    with pytest.raises(RuntimeError, match="expected_sidecar_path=.*no_metadata"):
         load_and_merge_histogram_pkls([str(no_metadata)])
 
     first = tmp_path / "first.pkl.gz"
@@ -208,14 +228,13 @@ def test_split_without_sidecar_and_policy_identity_mismatch_are_rejected(tmp_pat
     _write_versioned(first, payload, policy)
     altered = policy.to_provenance()
     altered["warnings"] = ["different"]
-    with gzip.open(second, "wb") as stream:
-        pickle.dump(payload, stream)
-    metadata = build_histogram_output_metadata(
-        input_histogram=str(second), sumw2_storage_provenance=altered
+    write_histogram_artifact(
+        second,
+        histograms=payload,
+        artifact_kind="processor_output",
+        sumw2_storage_provenance=altered,
     )
-    with open(f"{second}.metadata.json", "w", encoding="utf-8") as stream:
-        json.dump(metadata, stream)
-    with pytest.raises(ValueError, match="policy identities"):
+    with pytest.raises(RuntimeError, match="source-allocation provenance|policy identities"):
         load_and_merge_histogram_pkls(
             [str(first), str(second)], on_process_collision="allow"
         )

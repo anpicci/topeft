@@ -3,10 +3,9 @@
 import argparse
 import json
 import time
-import cloudpickle
-import gzip
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import tempfile
@@ -19,10 +18,9 @@ import topcoffea.modules.remote_environment as remote_environment
 from topcoffea.modules.paths import topcoffea_path
 
 from topeft.modules.dataDrivenEstimation import DataDrivenProducer
-from topeft.modules.deferred_np_metadata import (
-    build_deferred_np_metadata,
-    build_histogram_output_metadata,
-    build_np_followup_command,
+from topeft.modules.histogram_artifact import (
+    lineage_input_from_sidecar,
+    write_histogram_artifact,
 )
 from topeft.modules.nominal_schema import (
     NOMINAL_CONTAINER_LAYOUT,
@@ -1078,7 +1076,6 @@ if __name__ == "__main__":
 
     out_pkl_file = os.path.join(outpath, outname + ".pkl.gz")
     out_pkl_file_name_np = os.path.join(outpath, outname + "_np.pkl.gz")
-    np_metadata_file = out_pkl_file_name_np + ".metadata.json"
 
     # Check if we have valid options
     if executor_name not in LST_OF_KNOWN_EXECUTORS:
@@ -1602,85 +1599,32 @@ if __name__ == "__main__":
         )
     )
 
-    def _build_np_metadata_payload():
-        resolved_year_list = (
-            sorted(requested_years) if requested_years is not None else sample_years_from_inputs
-        )
-        payload = build_deferred_np_metadata(
-            input_histogram=out_pkl_file,
-            output_histogram=out_pkl_file_name_np,
-            metadata_path=np_metadata_file,
-            np_postprocess=np_postprocess_mode,
-            pretend_mode=pretend,
-            do_np=do_np,
-            apply_renormfact_envelope=do_renormfact_envelope,
-            resolved_years=resolved_year_list,
-            sample_years=sample_years_from_inputs,
-            input_jsons=resolved_input_jsons,
-            analysis_mode=analysis_mode,
-            hist_list=hist_lst,
-            wc_list=wc_lst,
-            executor=executor_name,
-            options_file=args.options,
-            flags={
-                "split_lep_flavor": split_lep_flavor,
-                "offZ_split": offZ_split,
-                "tau_h_analysis": tau_h_analysis,
-                "fwd_analysis": fwd_analysis,
-                "all_analysis": all_analysis,
-                "category_groups": list(
-                    category_group_selection["requested_category_groups"] or []
-                ),
-                "skip_sr": skip_sr,
-                "skip_cr": skip_cr,
-                "do_systs": do_systs,
-                "ttgamma_sample_role_policy": ttgamma_sample_role_policy,
-                "fwd_eta_band_pt_apply": fwd_eta_band_pt_apply,
-                "fill_sumw2": fill_sumw2,
-                "useRun3MVA": useRun3MVA,
-            },
-            sumw2_storage_provenance=sumw2_policy.to_provenance(),
-            nominal_container_schema_version=NOMINAL_CONTAINER_SCHEMA_VERSION,
-            nominal_container_layout=NOMINAL_CONTAINER_LAYOUT,
-        )
-        payload["timestamp"] = time.time()
-        return payload
+    def _build_np_followup_command():
+        command = [
+            "python",
+            "analysis/topeft_run2/run_data_driven.py",
+            "--input-pkl",
+            out_pkl_file,
+            "--output-pkl",
+            out_pkl_file_name_np,
+        ]
+        if do_renormfact_envelope:
+            command.append("--apply-renormfact-envelope")
+        return shlex.join(command)
 
-    def _write_output_metadata_sidecar(histogram_path):
-        metadata_path = histogram_path + ".metadata.json"
-        payload = build_histogram_output_metadata(
-            input_histogram=histogram_path,
-            sumw2_storage_provenance=sumw2_policy.to_provenance(),
-        )
-        with open(metadata_path, "w", encoding="utf-8") as metadata_stream:
-            json.dump(payload, metadata_stream, indent=2, sort_keys=True)
-        return metadata_path
-
-    def _write_np_metadata_sidecar(*, pretend_override=None):
-        payload = _build_np_metadata_payload()
-        if pretend_override is not None:
-            payload["pretend_mode"] = pretend_override
-        os.makedirs(outpath, exist_ok=True)
-        with open(np_metadata_file, "w") as metadata_stream:
-            json.dump(payload, metadata_stream, indent=2, sort_keys=True)
-        return payload
-
-    def _print_np_defer_instructions(metadata_payload):
-        followup_command = metadata_payload.get(
-            "followup_command", build_np_followup_command(np_metadata_file)
-        )
+    def _print_np_defer_instructions():
         print(
-            "Nonprompt estimation deferred. Metadata saved to {}.\n"
+            "Nonprompt estimation deferred. The processor sidecar is discovered "
+            "automatically from the input PKL.\n"
             "Run the following command to finalize the nonprompt histograms:\n  {}".format(
-                metadata_payload.get("metadata_path", np_metadata_file), followup_command
+                _build_np_followup_command()
             )
         )
 
     if pretend:
         print("pretending...")
         if do_np and np_postprocess_mode == "defer":
-            metadata_payload = _write_np_metadata_sidecar(pretend_override=True)
-            _print_np_defer_instructions(metadata_payload)
+            _print_np_defer_instructions()
         exit()
 
     # Extract the list of all WCs, as long as we haven't already specified one.
@@ -1921,35 +1865,37 @@ if __name__ == "__main__":
         # Save the output
         os.makedirs(outpath, exist_ok=True)
         print(f"\nSaving output in {out_pkl_file}...")
-        with gzip.open(out_pkl_file, "wb") as fout:
-            cloudpickle.dump(output, fout)
-        _write_output_metadata_sidecar(out_pkl_file)
+        processor_sidecar = write_histogram_artifact(
+            out_pkl_file,
+            histograms=output,
+            artifact_kind="processor_output",
+            sumw2_storage_provenance=sumw2_policy.to_provenance(),
+        )
         print("Done!")
 
         # Run the data driven estimation, save the output
         if do_np:
             if np_postprocess_mode == "inline":
                 print("\nDoing the nonprompt estimation...")
-                ddp = DataDrivenProducer(out_pkl_file, out_pkl_file_name_np)
-                print(f"Saving output in {out_pkl_file_name_np}...")
-                ddp.dumpToPickle()
-                _write_output_metadata_sidecar(out_pkl_file_name_np)
-                print("Done!")
+                ddp = DataDrivenProducer(out_pkl_file, "")
+                data_driven_histograms = ddp.getDataDrivenHistogram()
                 if do_renormfact_envelope:
                     print("\nDoing the renorm. fact. envelope calculation...")
-                    dict_of_histos = utils.get_hist_from_pkl(
-                        out_pkl_file_name_np, allow_empty=False
+                    data_driven_histograms = get_renormfact_envelope(
+                        data_driven_histograms
                     )
-                    dict_of_histos_after_applying_envelope = get_renormfact_envelope(
-                        dict_of_histos
-                    )
-                    utils.dump_to_pkl(
-                        out_pkl_file_name_np, dict_of_histos_after_applying_envelope
-                    )
+                print(f"Saving output in {out_pkl_file_name_np}...")
+                write_histogram_artifact(
+                    out_pkl_file_name_np,
+                    histograms=data_driven_histograms,
+                    artifact_kind="nonprompt_output",
+                    sumw2_storage_provenance=sumw2_policy.to_provenance(),
+                    lineage_inputs=[lineage_input_from_sidecar(processor_sidecar)],
+                )
+                print("Done!")
             elif np_postprocess_mode == "defer":
-                print("\nDeferring the nonprompt estimation and writing metadata...")
-                metadata_payload = _write_np_metadata_sidecar()
-                _print_np_defer_instructions(metadata_payload)
+                print("\nDeferring the nonprompt estimation...")
+                _print_np_defer_instructions()
             else:
                 print("\nSkipping the nonprompt estimation as requested (--np-postprocess=skip).")
             run_succeeded = True

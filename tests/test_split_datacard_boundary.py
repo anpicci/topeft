@@ -10,11 +10,19 @@ uproot = pytest.importorskip("uproot")
 
 from topcoffea.modules.histEFT import HistEFT
 from topcoffea.modules.sparseHist import SparseHist
+from topeft.modules.axes import info as axes_info
+from topeft.modules.axes import info_2d as axes_info_2d
+from topeft.modules.datacard_tools import load_and_merge_histogram_pkls
+from topeft.modules.histogram_artifact import (
+    lineage_input_from_sidecar,
+    write_histogram_artifact,
+)
 from topeft.modules.nominal_schema import (
     eft_nominal_key,
     materialize_legacy_histogram_dict,
     scalar_nominal_key,
 )
+from topeft.modules.sumw2_policy import resolve_sumw2_storage_policy
 
 
 def _categorical_axes():
@@ -90,6 +98,42 @@ def test_datacard_transient_view_preserves_rates_shapes_coefficients_scalings_an
         eft_nominal_key("njets"): eft,
         "njets_sumw2": companion,
     }
+    policy = resolve_sumw2_storage_policy(
+        {"mode": "full_diagnostics"},
+        samples={
+            "background_dataset": {
+                "histAxisName": "background",
+                "isData": False,
+                "WCnames": [],
+            },
+            "signal_dataset": {
+                "histAxisName": "signal",
+                "isData": False,
+                "WCnames": ["ctG"],
+            },
+        },
+        runtime_families=("njets",),
+        axes_info=axes_info,
+        axes_info_2d=axes_info_2d,
+        sumw2_storage_present=True,
+    )
+    source_path = tmp_path / "processor.pkl.gz"
+    source_sidecar = write_histogram_artifact(
+        source_path,
+        histograms=split,
+        artifact_kind="processor_output",
+        sumw2_storage_provenance=policy.to_provenance(),
+    )
+    transformed_path = tmp_path / "nonprompt.pkl.gz"
+    write_histogram_artifact(
+        transformed_path,
+        histograms=split,
+        artifact_kind="nonprompt_output",
+        sumw2_storage_provenance=policy.to_provenance(),
+        lineage_inputs=[lineage_input_from_sidecar(source_sidecar)],
+    )
+    split, merge_report = load_and_merge_histogram_pkls([str(transformed_path)])
+    assert merge_report["artifact_kind"] == "nonprompt_output"
     transient = materialize_legacy_histogram_dict(
         split,
         runtime_families=("njets",),

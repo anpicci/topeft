@@ -9,6 +9,7 @@ import re
 import json
 import time
 import copy
+import warnings
 
 from collections import defaultdict
 
@@ -17,7 +18,10 @@ from topeft.modules.paths import topeft_path
 from topeft.modules.axes import info as axes_info
 from topeft.modules.axes import info_2d as axes_info_2d
 from topeft.modules.compatibility import add_sumw2_stub
-from topeft.modules.deferred_np_metadata import load_histogram_output_metadata
+from topeft.modules.histogram_artifact import (
+    merge_histogram_sidecars,
+    validate_histogram_artifact,
+)
 from topeft.modules.nominal_schema import (
     NOMINAL_CONTAINER_SCHEMA_VERSION,
     is_split_nominal_mapping,
@@ -197,7 +201,6 @@ def load_and_merge_histogram_pkls(
     *,
     on_process_collision="error",
     require_sumw2=True,
-    metadata_paths=None,
     consumer_required_families=(),
 ):
     """
@@ -212,9 +215,6 @@ def load_and_merge_histogram_pkls(
     if not pkl_paths:
         raise ValueError("No input pickle files were provided for merging.")
 
-    if metadata_paths is not None and len(metadata_paths) != len(pkl_paths):
-        raise ValueError("metadata_paths must align one-to-one with pkl_paths.")
-
     report = {
         "num_inputs": len(pkl_paths),
         "inputs": list(pkl_paths),
@@ -227,7 +227,8 @@ def load_and_merge_histogram_pkls(
 
     loaded_inputs = []
     input_metadata = []
-    for input_index, path in enumerate(pkl_paths):
+    legacy_inputs = []
+    for path in pkl_paths:
         print(f"Opening: {path}")
         tic = time.time()
         hist_dict = get_hist_from_pkl(path, allow_empty=False)
@@ -244,26 +245,25 @@ def load_and_merge_histogram_pkls(
                 f"Histogram input '{path}' contains non-string keys: "
                 f"{_short_examples(non_string_keys)}"
             )
-
-
-        metadata_path = (
-            metadata_paths[input_index]
-            if metadata_paths is not None
-            else f"{path}.metadata.json"
-        )
-        if metadata_path and os.path.exists(metadata_path):
-            metadata = load_histogram_output_metadata(metadata_path)
-        else:
-            metadata = None
-        if is_split_nominal_mapping(hist_dict) and metadata is None:
-            raise RuntimeError(
-                f"Input '{path}' contains split siblings but has no versioned metadata sidecar."
-            )
+        artifact_validation = validate_histogram_artifact(path, hist_dict)
+        metadata = artifact_validation["metadata"]
+        if artifact_validation["schema"] == "legacy_uniform":
+            legacy_inputs.append(path)
         loaded_inputs.append(hist_dict)
         input_metadata.append(metadata)
 
+    if legacy_inputs:
+        warnings.warn(
+            "Loading legacy uniform histogram PKL(s) without schema-v2 sidecars through "
+            "the explicit compatibility path: " + ", ".join(legacy_inputs),
+            UserWarning,
+            stacklevel=2,
+        )
+
     schema_versions = {
-        None if metadata is None else metadata["nominal_container_schema_version"]
+        None
+        if metadata is None
+        else metadata["artifact"]["nominal_container_schema_version"]
         for metadata in input_metadata
     }
     if len(schema_versions) != 1:
@@ -273,6 +273,8 @@ def load_and_merge_histogram_pkls(
 
     merged_hists = {}
     if schema_version == NOMINAL_CONTAINER_SCHEMA_VERSION:
+        merged_sidecar = merge_histogram_sidecars(input_metadata)
+        artifact_kind = merged_sidecar["artifact_kind"]
         policies = [
             resolved_policy_from_provenance(metadata["sumw2_storage_provenance"])
             for metadata in input_metadata
@@ -282,14 +284,26 @@ def load_and_merge_histogram_pkls(
         policy = policies[0]
         runtime_families = policy.runtime_histogram_families
         required_families = frozenset(consumer_required_families)
-        missing_policy_requirements = sorted(
-            family
-            for family in required_families
-            if not policy.selects_family(family)
-        )
+        if artifact_kind == "processor_output":
+            missing_policy_requirements = sorted(
+                family
+                for family in required_families
+                if not policy.selects_family(family)
+            )
+        else:
+            manifest_families = input_metadata[0]["sumw2_content_manifest"][
+                "families"
+            ]
+            missing_policy_requirements = sorted(
+                family
+                for family in required_families
+                if not manifest_families.get(family, {}).get(
+                    "required_sumw2_processes"
+                )
+            )
         if missing_policy_requirements:
             raise RuntimeError(
-                "Active consumer requirements are absent from the resolved policy: "
+                "Active consumer requirements are absent from the artifact contract: "
                 + ", ".join(missing_policy_requirements)
             )
         for path, hist_dict in zip(pkl_paths, loaded_inputs):
@@ -297,7 +311,7 @@ def load_and_merge_histogram_pkls(
                 hist_dict,
                 runtime_families=runtime_families,
                 schema_version=schema_version,
-                policy=policy,
+                policy=policy if artifact_kind == "processor_output" else None,
             )
             keys = set(hist_dict)
             report["files"].append(
@@ -343,11 +357,19 @@ def load_and_merge_histogram_pkls(
             loaded_inputs,
             runtime_families=runtime_families,
             schema_version=schema_version,
-            policy=policy,
+            policy=policy if artifact_kind == "processor_output" else None,
         )
         report["sumw2_storage_provenance"] = policy.to_provenance()
         report["runtime_histogram_families"] = list(runtime_families)
+        report["artifact_kind"] = artifact_kind
+        report["artifact_merged"] = True
+        report["required_sumw2_processes"] = merged_sidecar[
+            "required_sumw2_processes"
+        ]
+        report["lineage_inputs"] = merged_sidecar["lineage_inputs"]
     elif schema_version is None:
+        report["artifact_kind"] = "legacy_uniform"
+        report["artifact_merged"] = len(pkl_paths) > 1
         for path, hist_dict in zip(pkl_paths, loaded_inputs):
             keys = set(hist_dict.keys())
             base_keys = sorted(k for k in keys if not _is_sumw2_key(k))

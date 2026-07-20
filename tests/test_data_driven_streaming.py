@@ -65,6 +65,11 @@ def test_data_driven_producer_streams_histograms(monkeypatch, tmp_path):
         return iter(())
 
     monkeypatch.setattr(dataDrivenEstimation, "iterate_hist_from_pkl", fake_iterate)
+    monkeypatch.setattr(
+        dataDrivenEstimation,
+        "validate_histogram_artifact",
+        lambda _path: {"schema": "split_sibling_v1", "metadata": {}},
+    )
 
     producer = DataDrivenProducer(str(input_path), "")
     assert producer.getDataDrivenHistogram() == {}
@@ -83,14 +88,16 @@ def test_run_data_driven_matches_inline_output(tmp_path, sparse_hist_axes):
         cloudpickle.dump(input_histograms, stream)
 
     output_path = tmp_path / "output_np.pkl.gz"
-    run_data_driven._finalize_histograms(
-        str(input_path),
-        str(output_path),
-        only_flips=False,
-        apply_envelope=False,
-        heartbeat_seconds=0.0,
-        quiet=True,
-    )
+    with pytest.warns(UserWarning, match="legacy uniform") as warning_records:
+        run_data_driven._finalize_histograms(
+            str(input_path),
+            str(output_path),
+            only_flips=False,
+            apply_envelope=False,
+            heartbeat_seconds=0.0,
+            quiet=True,
+        )
+    assert len(warning_records) == 1
 
     streamed_histograms = get_hist_from_pkl(str(output_path))
 

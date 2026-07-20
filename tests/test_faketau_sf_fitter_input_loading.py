@@ -8,7 +8,12 @@ np = pytest.importorskip("numpy")
 
 from topcoffea.modules.histEFT import HistEFT
 from topcoffea.modules.sparseHist import SparseHist
+from topeft.modules.axes import info as axes_info
+from topeft.modules.axes import info_2d as axes_info_2d
+from topeft.modules.datacard_tools import load_and_merge_histogram_pkls
+from topeft.modules.histogram_artifact import write_histogram_artifact
 from topeft.modules.nominal_schema import eft_nominal_key, scalar_nominal_key
+from topeft.modules.sumw2_policy import resolve_sumw2_storage_policy
 
 from analysis.topeft_run2 import faketau_sf_fitter as fitter
 from analysis.topeft_run2 import tauFitter as legacy_fitter
@@ -248,3 +253,48 @@ def test_split_faketau_boundary_uses_wc_zero_scalar_view_and_strict_companions()
     assert all(isinstance(value, SparseHist) for value in legacy_view.values())
     with pytest.raises(RuntimeError, match="requires selected companion"):
         legacy_fitter.prepare_taufitter_histograms(missing)
+
+
+def test_schema_v2_tau_consumers_discover_sidecar_from_pkl_only(tmp_path):
+    policy = resolve_sumw2_storage_policy(
+        {"mode": "full_diagnostics"},
+        samples={
+            "ttbar_dataset": {
+                "histAxisName": "ttbar",
+                "isData": False,
+                "WCnames": [],
+            }
+        },
+        runtime_families=fitter.FAKETAU_REQUIRED_HISTOGRAMS,
+        axes_info=axes_info,
+        axes_info_2d=axes_info_2d,
+        sumw2_storage_present=True,
+    )
+    split = {}
+    for family in fitter.FAKETAU_REQUIRED_HISTOGRAMS:
+        split[scalar_nominal_key(family)] = _make_tau_sparse(
+            family, "ttbar", 3.0
+        )
+        split[f"{family}_sumw2"] = _make_tau_sparse(
+            f"{family}_sumw2", "ttbar", 9.0
+        )
+    path = tmp_path / "tau.pkl.gz"
+    write_histogram_artifact(
+        path,
+        histograms=split,
+        artifact_kind="processor_output",
+        sumw2_storage_provenance=policy.to_provenance(),
+    )
+
+    fake_tau_view, summary = fitter.combine_faketau_histogram_pkls([str(path)])
+    assert summary["schema"] == "split_sibling_v1"
+    assert tuple(fake_tau_view) == (
+        "tau0Fpt",
+        "tau0Fpt_sumw2",
+        "tau0Tpt",
+        "tau0Tpt_sumw2",
+    )
+    loaded, report = load_and_merge_histogram_pkls([str(path)])
+    assert report["artifact_kind"] == "processor_output"
+    legacy_tau_view = legacy_fitter.prepare_taufitter_histograms(loaded)
+    assert tuple(legacy_tau_view) == tuple(fake_tau_view)

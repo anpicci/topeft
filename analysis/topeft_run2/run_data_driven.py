@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
-"""Standalone helper to build data driven histograms from saved metadata.
+"""Standalone helper to build data-driven histograms from a saved PKL.
 
 Quickstart examples:
-  - Metadata sidecar: python run_data_driven.py --metadata-json histos/plotsTopEFT_np.pkl.gz.metadata.json
   - Direct pickle paths: python run_data_driven.py --input-pkl histos/plotsTopEFT.pkl.gz \
       --output-pkl histos/plotsTopEFT_np.pkl.gz --apply-renormfact-envelope
   - Legacy/materialized fallback: add --legacy-dict-mode to restore the
@@ -17,7 +16,6 @@ from __future__ import annotations
 import argparse
 import ctypes
 import gc
-import json
 import os
 import resource
 import sys
@@ -29,10 +27,10 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 import topcoffea.modules.utils as utils
 
 from topeft.modules.dataDrivenEstimation import DataDrivenProducer
-from topeft.modules.deferred_np_metadata import (
-    build_histogram_output_metadata,
-    load_deferred_np_metadata,
-    load_histogram_output_metadata,
+from topeft.modules.histogram_artifact import (
+    lineage_input_from_sidecar,
+    validate_histogram_artifact,
+    write_histogram_artifact,
 )
 from topeft.modules.get_renormfact_envelope import (
     apply_renormfact_envelope_to_histogram,
@@ -48,10 +46,10 @@ _DD_REPORT_FAMILY_ORDER = {"sr": 0, "nonprompt": 1, "flips": 2}
 def _build_argument_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "Finalize deferred nonprompt/flips histograms using the metadata emitted by run_analysis.py.\n\n"
+            "Finalize nonprompt/flips histograms from a processor PKL. Its metadata "
+            "sidecar is discovered automatically.\n\n"
             "Quickstart:\n"
-            "  - Metadata sidecar: python run_data_driven.py --metadata-json histos/plotsTopEFT_np.pkl.gz.metadata.json\n"
-            "  - Direct pickle paths: python run_data_driven.py --input-pkl histos/plotsTopEFT.pkl.gz\\\n"
+            "  python run_data_driven.py --input-pkl histos/plotsTopEFT.pkl.gz\\\n"
             "      --output-pkl histos/plotsTopEFT_np.pkl.gz --apply-renormfact-envelope\n"
             "Default mode is streaming iterator mode (lower peak RSS). "
             "Pass --legacy-dict-mode to restore the original materialized-dict behavior.\n"
@@ -61,14 +59,8 @@ def _build_argument_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument(
-        "--metadata-json",
-        help=(
-            "Path to the metadata file created by run_analysis.py when using "
-            "--np-postprocess=defer."
-        ),
-    )
-    parser.add_argument(
         "--input-pkl",
+        required=True,
         help="Path to the histogram pickle emitted by run_analysis.py (pre data-driven step).",
     )
     parser.add_argument(
@@ -160,10 +152,6 @@ def _build_argument_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _load_metadata(metadata_path: str) -> Dict[str, Any]:
-    return load_deferred_np_metadata(metadata_path)
-
-
 def _default_output_path(input_path: str) -> str:
     if input_path.endswith(".pkl.gz"):
         base = input_path[:-7]
@@ -172,21 +160,6 @@ def _default_output_path(input_path: str) -> str:
     else:
         base = input_path
     return f"{base}_np.pkl.gz"
-
-
-def _resolve_path(
-    arg_value: Optional[str],
-    metadata_value: Optional[str],
-    *,
-    metadata_dir: Optional[str] = None,
-) -> Optional[str]:
-    if arg_value:
-        return arg_value
-    if not metadata_value:
-        return None
-    if metadata_dir and not os.path.isabs(metadata_value):
-        return os.path.normpath(os.path.join(metadata_dir, metadata_value))
-    return os.path.normpath(metadata_value)
 
 
 def _validate_input_path(input_path: str) -> None:
@@ -659,7 +632,9 @@ def _finalize_histograms(
     mem_report: bool = False,
     mem_tracemalloc: bool = False,
     mem_top_n: int = 20,
+    serialization_path: Optional[str] = None,
 ) -> None:
+    serialization_path = serialization_path or output_pkl
     collect_dd_report = dd_report_stdout or bool(dd_report_md)
     memory_reporter = _MemoryReporter(
         enabled=(mem_report or mem_tracemalloc),
@@ -729,7 +704,7 @@ def _finalize_histograms(
 
             memory_reporter.mark("before dump_dict_streaming()", include_top=mem_tracemalloc)
             utils.dump_dict_streaming(
-                output_pkl,
+                serialization_path,
                 _iter_output_items(),
                 protocol=_STREAMING_PICKLE_PROTOCOL,
                 clear_memo_interval=_STREAMING_MEMO_CLEAR_INTERVAL,
@@ -775,7 +750,7 @@ def _finalize_histograms(
                 memory_reporter.mark("after get_renormfact_envelope()", include_top=mem_tracemalloc)
 
             memory_reporter.mark("before dump_to_pkl()", include_top=mem_tracemalloc)
-            utils.dump_to_pkl(output_pkl, histograms)
+            utils.dump_to_pkl(serialization_path, histograms)
             memory_reporter.mark("after dump_to_pkl()")
 
         if not quiet and processed:
@@ -795,61 +770,51 @@ def main(argv: Optional[List[str]] = None) -> int:
     dd_report_stdout = args.dd_report
     dd_report_md = args.dd_report_md
 
-    metadata: Dict[str, Any] = {}
-    metadata_dir: Optional[str] = None
-    if args.metadata_json:
-        metadata = _load_metadata(args.metadata_json)
-        metadata_dir = os.path.dirname(os.path.abspath(args.metadata_json))
-
-    input_pkl = _resolve_path(
-        args.input_pkl, metadata.get("input_histogram"), metadata_dir=metadata_dir
-    )
-    if not input_pkl:
-        raise ValueError("Input histogram path must be provided via --input-pkl or the metadata file.")
+    input_pkl = os.path.normpath(args.input_pkl)
     _validate_input_path(input_pkl)
 
-    output_pkl = _resolve_path(
-        args.output_pkl, metadata.get("output_histogram"), metadata_dir=metadata_dir
-    )
+    output_pkl = os.path.normpath(args.output_pkl) if args.output_pkl else None
     if not output_pkl:
         output_pkl = _default_output_path(input_pkl)
 
-    apply_envelope = args.apply_renormfact_envelope or metadata.get(
-        "apply_renormfact_envelope", False
-    )
-
-    _finalize_histograms(
-        input_pkl,
-        output_pkl,
-        only_flips=args.only_flips,
-        apply_envelope=apply_envelope,
-        dd_report_stdout=dd_report_stdout,
-        dd_report_md=dd_report_md,
-        iterator_mode=not args.legacy_dict_mode,
-        heartbeat_seconds=args.heartbeat_seconds,
-        quiet=args.quiet,
-        mem_report=args.mem_report,
-        mem_tracemalloc=args.mem_tracemalloc,
-        mem_top_n=args.mem_top_n,
-    )
-
-    if "sumw2_storage_provenance" in metadata:
-        output_metadata = build_histogram_output_metadata(
-            input_histogram=output_pkl,
-            sumw2_storage_provenance=metadata["sumw2_storage_provenance"],
-        )
+    input_validation = validate_histogram_artifact(input_pkl)
+    input_sidecar = input_validation["metadata"]
+    finalize_kwargs = {
+        "only_flips": args.only_flips,
+        "apply_envelope": args.apply_renormfact_envelope,
+        "dd_report_stdout": dd_report_stdout,
+        "dd_report_md": dd_report_md,
+        "iterator_mode": not args.legacy_dict_mode,
+        "heartbeat_seconds": args.heartbeat_seconds,
+        "quiet": args.quiet,
+        "mem_report": args.mem_report,
+        "mem_tracemalloc": args.mem_tracemalloc,
+        "mem_top_n": args.mem_top_n,
+    }
+    if input_sidecar is None:
+        _finalize_histograms(input_pkl, output_pkl, **finalize_kwargs)
     else:
-        input_metadata_path = f"{input_pkl}.metadata.json"
-        output_metadata = (
-            load_histogram_output_metadata(input_metadata_path)
-            if os.path.exists(input_metadata_path)
-            else None
+        if input_sidecar["artifact"]["artifact_kind"] != "processor_output":
+            raise RuntimeError(
+                "run_data_driven requires a processor_output input artifact; got "
+                f"{input_sidecar['artifact']['artifact_kind']!r} for '{input_pkl}'."
+            )
+
+        def _write_payload(staged_path: str) -> None:
+            _finalize_histograms(
+                input_pkl,
+                output_pkl,
+                serialization_path=staged_path,
+                **finalize_kwargs,
+            )
+
+        write_histogram_artifact(
+            output_pkl,
+            payload_writer=_write_payload,
+            artifact_kind="flips_output" if args.only_flips else "nonprompt_output",
+            sumw2_storage_provenance=input_sidecar["sumw2_storage_provenance"],
+            lineage_inputs=[lineage_input_from_sidecar(input_sidecar)],
         )
-        if output_metadata is not None:
-            output_metadata["input_histogram"] = output_pkl
-    if output_metadata is not None:
-        with open(f"{output_pkl}.metadata.json", "w", encoding="utf-8") as stream:
-            json.dump(output_metadata, stream, indent=2, sort_keys=True)
 
     return 0
 

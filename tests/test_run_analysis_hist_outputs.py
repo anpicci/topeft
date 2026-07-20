@@ -26,11 +26,15 @@ def _mock_data_driven(monkeypatch):
     fake_data_driven = types.ModuleType("topeft.modules.dataDrivenEstimation")
 
     class DummyProducer:
-        def __init__(self, *_, **__):
-            pass
+        def __init__(self, input_path, *_, **__):
+            self.input_path = input_path
 
         def dumpToPickle(self):
             return None
+
+        def getDataDrivenHistogram(self):
+            with gzip.open(self.input_path, "rb") as stream:
+                return cloudpickle.load(stream)
 
     fake_data_driven.DataDrivenProducer = DummyProducer
     monkeypatch.setitem(sys.modules, "topeft.modules.dataDrivenEstimation", fake_data_driven)
@@ -122,6 +126,18 @@ def test_hist_list_cr_includes_sumw2(monkeypatch, tmp_path):
         assert f"{hist_name}_sumw2" in output
 
     assert set(output) == expected_output_keys
+    sidecar_path = (
+        tmp_path
+        / "hist-output-with-sumw2"
+        / "with-sumw2.pkl.gz.metadata.json"
+    )
+    sidecar = json.loads(sidecar_path.read_text(encoding="utf-8"))
+    assert sidecar["metadata_schema_version"] == 2
+    assert sidecar["artifact"]["artifact_kind"] == "processor_output"
+    assert sidecar["artifact"]["pkl_basename"] == "with-sumw2.pkl.gz"
+    assert list(sidecar["sumw2_content_manifest"]["families"]) == sidecar[
+        "sumw2_storage_provenance"
+    ]["runtime_histogram_families"]
 
 
 def test_hist_list_cr_respects_no_sumw2(monkeypatch, tmp_path):
@@ -162,7 +178,24 @@ def test_custom_hist_list_accepts_fwd0pt(monkeypatch, tmp_path):
     assert set(output) == {"fwd0pt__eft_nominal", "fwd0pt_sumw2"}
 
 
-def test_np_postprocess_defer_creates_metadata(tmp_path):
+def test_np_postprocess_inline_writes_transformed_artifact_sidecar(
+    monkeypatch, tmp_path
+):
+    _run_run_analysis(
+        monkeypatch,
+        tmp_path,
+        ["--hist-list", "cr", "--do-np", "--np-postprocess=inline"],
+        "inline-np",
+    )
+    output_path = tmp_path / "hist-output-inline-np" / "inline-np_np.pkl.gz"
+    sidecar_path = Path(f"{output_path}.metadata.json")
+    assert output_path.is_file()
+    sidecar = json.loads(sidecar_path.read_text(encoding="utf-8"))
+    assert sidecar["artifact"]["artifact_kind"] == "nonprompt_output"
+    assert sidecar["lineage"]["inputs"][0]["pkl_basename"] == "inline-np.pkl.gz"
+
+
+def test_np_postprocess_defer_prints_pkl_only_followup(tmp_path, capsys):
     output_dir = tmp_path / "np-defer"
     output_dir.mkdir()
     outname = "np-defer"
@@ -191,22 +224,16 @@ def test_np_postprocess_defer_creates_metadata(tmp_path):
         sys.path = original_sys_path
 
     metadata_file = output_dir / f"{outname}_np.pkl.gz.metadata.json"
-    assert metadata_file.is_file()
+    assert not metadata_file.exists()
     np_pickle = output_dir / f"{outname}_np.pkl.gz"
     assert not np_pickle.exists()
-
-    with open(metadata_file) as fin:
-        payload = json.load(fin)
-
-    assert payload["metadata_version"] == 2
-    assert payload["np_postprocess"] == "defer"
-    assert payload["pretend_mode"] is True
-    assert payload["apply_renormfact_envelope"] is False
-    assert payload["output_histogram"] == str(np_pickle)
-    assert "run_data_driven.py --metadata-json" in payload["followup_command"]
+    output = capsys.readouterr().out
+    assert "run_data_driven.py --input-pkl" in output
+    assert "--output-pkl" in output
+    assert "metadata-json" not in output
 
 
-def test_np_postprocess_defer_records_envelope_contract(tmp_path):
+def test_np_postprocess_defer_records_envelope_in_followup_command(tmp_path, capsys):
     output_dir = tmp_path / "np-defer-envelope"
     output_dir.mkdir()
     outname = "np-defer-envelope"
@@ -236,11 +263,9 @@ def test_np_postprocess_defer_records_envelope_contract(tmp_path):
     finally:
         sys.path = original_sys_path
 
-    metadata_file = output_dir / f"{outname}_np.pkl.gz.metadata.json"
-    with open(metadata_file) as fin:
-        payload = json.load(fin)
-
-    assert payload["apply_renormfact_envelope"] is True
+    output = capsys.readouterr().out
+    assert "--apply-renormfact-envelope" in output
+    assert not (output_dir / f"{outname}_np.pkl.gz.metadata.json").exists()
 
 
 def test_missing_topcoffea_data_reports_guidance(monkeypatch):
