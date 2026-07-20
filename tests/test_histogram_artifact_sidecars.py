@@ -19,6 +19,7 @@ from topeft.modules.axes import info_2d as axes_info_2d
 from topeft.modules.datacard_tools import load_and_merge_histogram_pkls
 from topeft.modules.dataDrivenEstimation import DataDrivenProducer
 from topeft.modules.histogram_artifact import (
+    derive_transformed_required_sumw2_processes,
     histogram_artifact_error,
     lineage_input_from_sidecar,
     metadata_sidecar_path,
@@ -32,6 +33,7 @@ from topeft.modules.nominal_schema import (
     evaluate_nominal_at_wc,
     materialize_legacy_histogram_dict,
     scalar_nominal_key,
+    is_split_nominal_mapping,
 )
 from topeft.modules.sumw2_policy import resolve_sumw2_storage_policy
 
@@ -310,7 +312,10 @@ def test_flips_persisted_flow_has_separate_stage_contract(tmp_path, policy):
     merged, report = load_and_merge_histogram_pkls([str(output_path)])
     assert report["artifact_kind"] == "flips_output"
     assert _processes(merged[scalar_nominal_key("njets")]) == ["flipsUL18"]
-    assert _processes(merged["njets_sumw2"]) == ["flipsUL18"]
+    assert _processes(merged["njets_sumw2"]) == [
+        "flipsUL18",
+        "signal_centralUL18",
+    ]
     assert _processes(merged[eft_nominal_key("njets")]) == [
         "signal_centralUL18"
     ]
@@ -319,8 +324,11 @@ def test_flips_persisted_flow_has_separate_stage_contract(tmp_path, policy):
         for values in merged[eft_nominal_key("njets")].eval({}).values()
     ) == pytest.approx(6.25)
     family = sidecar["sumw2_content_manifest"]["families"]["njets"]
-    assert family["sumw2_processes"] == ["flipsUL18"]
-    assert family["required_sumw2_processes"] == ["flipsUL18"]
+    assert family["sumw2_processes"] == ["flipsUL18", "signal_centralUL18"]
+    assert family["required_sumw2_processes"] == [
+        "flipsUL18",
+        "signal_centralUL18",
+    ]
     scalar_view = evaluate_nominal_at_wc(merged, "njets", {})
     assert sorted(str(process) for process in scalar_view.axes["process"]) == [
         "flipsUL18",
@@ -346,6 +354,28 @@ def _transformed_payload(artifact_kind):
     }
 
 
+def _transformed_context(source_sidecar, artifact_kind):
+    source = source_sidecar["sumw2_content_manifest"]["families"]["njets"]
+    return {
+        "families": {
+            "njets": {
+                "source_scalar_processes": source["scalar_nominal_processes"],
+                "source_eft_processes": source["eft_nominal_processes"],
+                "retained_scalar_processes": [],
+                "retained_eft_processes": [],
+                "generated_nonprompt_processes": (
+                    ["nonpromptUL18"]
+                    if artifact_kind == "nonprompt_output"
+                    else []
+                ),
+                "generated_flips_processes": (
+                    ["flipsUL18"] if artifact_kind == "flips_output" else []
+                ),
+            }
+        }
+    }
+
+
 @pytest.mark.parametrize(
     "artifact_kind",
     ["processor_output", "nonprompt_output", "flips_output"],
@@ -367,6 +397,10 @@ def test_compatible_stage_merges_regenerate_deterministic_sidecar(
                 artifact_kind=artifact_kind,
                 sumw2_storage_provenance=policy.to_provenance(),
                 lineage_inputs=[lineage_input_from_sidecar(source_sidecar)],
+                input_sidecar=source_sidecar,
+                transformation_context=_transformed_context(
+                    source_sidecar, artifact_kind
+                ),
             )
         paths.append(str(path))
     merged, report = load_and_merge_histogram_pkls(
@@ -423,6 +457,10 @@ def test_incompatible_artifact_stage_merges_are_rejected(tmp_path, policy):
             artifact_kind=artifact_kind,
             sumw2_storage_provenance=policy.to_provenance(),
             lineage_inputs=[lineage_input_from_sidecar(processor_sidecar)],
+            input_sidecar=processor_sidecar,
+            transformation_context=_transformed_context(
+                processor_sidecar, artifact_kind
+            ),
         )
     with pytest.raises(RuntimeError, match="incompatible histogram artifact kinds"):
         load_and_merge_histogram_pkls(
@@ -453,6 +491,8 @@ def test_transformed_missing_and_unexpected_companions_are_actionable(
         artifact_kind=artifact_kind,
         sumw2_storage_provenance=policy.to_provenance(),
         lineage_inputs=[lineage_input_from_sidecar(source_sidecar)],
+        input_sidecar=source_sidecar,
+        transformation_context=_transformed_context(source_sidecar, artifact_kind),
     )
 
     missing_payload = {scalar_nominal_key("njets"): payload[scalar_nominal_key("njets")]}
@@ -473,6 +513,8 @@ def test_transformed_missing_and_unexpected_companions_are_actionable(
         artifact_kind=artifact_kind,
         sumw2_storage_provenance=policy.to_provenance(),
         lineage_inputs=[lineage_input_from_sidecar(source_sidecar)],
+        input_sidecar=source_sidecar,
+        transformation_context=_transformed_context(source_sidecar, artifact_kind),
     )
     unexpected_payload = copy.deepcopy(payload)
     unexpected_payload["njets_sumw2"].fill(
@@ -493,7 +535,7 @@ def test_transformed_missing_and_unexpected_companions_are_actionable(
     producer_path = tmp_path / f"producer_rejects_{artifact_kind}.pkl.gz"
     with pytest.raises(
         histogram_artifact_error,
-        match="unexpected transformed companions.*unexpectedUL18",
+        match="unexpected_companions=.*unexpectedUL18",
     ):
         write_histogram_artifact(
             producer_path,
@@ -501,9 +543,372 @@ def test_transformed_missing_and_unexpected_companions_are_actionable(
             artifact_kind=artifact_kind,
             sumw2_storage_provenance=policy.to_provenance(),
             lineage_inputs=[lineage_input_from_sidecar(source_sidecar)],
+            input_sidecar=source_sidecar,
+            transformation_context=_transformed_context(
+                source_sidecar, artifact_kind
+            ),
         )
     assert not producer_path.exists()
     assert not metadata_sidecar_path(producer_path).exists()
+
+
+@pytest.mark.parametrize(
+    "missing_process",
+    [
+        "signal_centralUL18",
+        "TTTo2L2Nu_centralUL18",
+        "nonpromptUL18",
+        "flipsUL18",
+    ],
+)
+def test_independent_nonprompt_contract_rejects_partial_companion_loss_before_publish(
+    tmp_path, policy, missing_process
+):
+    source_path = tmp_path / "processor.pkl.gz"
+    output_path = tmp_path / f"missing_{missing_process}.pkl.gz"
+    source_sidecar = _write_processor(source_path, policy)
+    producer = DataDrivenProducer(str(source_path), "")
+    transformed = copy.deepcopy(producer.getDataDrivenHistogram())
+    context = producer.get_transformation_context("nonprompt_output")
+    contract, required = derive_transformed_required_sumw2_processes(
+        input_sidecar=source_sidecar,
+        transformation_context=context,
+        artifact_kind="nonprompt_output",
+        transformed_histograms=transformed,
+    )
+    assert required["njets"] == [
+        "TTTo2L2Nu_centralUL18",
+        "flipsUL18",
+        "nonpromptUL18",
+        "signal_centralUL18",
+    ]
+    assert contract["families"]["njets"]["consumed_source_processes"] == [
+        "dataUL18"
+    ]
+
+    transformed["njets_sumw2"] = transformed["njets_sumw2"].remove(
+        "process", [missing_process]
+    )
+    _, after_loss = derive_transformed_required_sumw2_processes(
+        input_sidecar=source_sidecar,
+        transformation_context=context,
+        artifact_kind="nonprompt_output",
+    )
+    assert after_loss == required
+    with pytest.raises(
+        histogram_artifact_error,
+        match=f"requires sumw2 processes absent.*{missing_process}",
+    ):
+        write_histogram_artifact(
+            output_path,
+            histograms=transformed,
+            artifact_kind="nonprompt_output",
+            sumw2_storage_provenance=policy.to_provenance(),
+            lineage_inputs=[lineage_input_from_sidecar(source_sidecar)],
+            input_sidecar=source_sidecar,
+            transformation_context=context,
+        )
+    assert not output_path.exists()
+    assert not metadata_sidecar_path(output_path).exists()
+
+
+def test_selected_and_unselected_retained_sources_are_derived_from_policy(tmp_path):
+    selective_policy = resolve_sumw2_storage_policy(
+        {
+            "mode": "full_custom",
+            "rules": [
+                {
+                    "process_names": ["signal_centralUL18"],
+                    "variables": ["njets"],
+                }
+            ],
+        },
+        samples={
+            "data_dataset": {
+                "histAxisName": "dataUL18",
+                "isData": True,
+                "WCnames": [],
+            },
+            "prompt_dataset": {
+                "histAxisName": "TTTo2L2Nu_centralUL18",
+                "isData": False,
+                "WCnames": [],
+            },
+            "signal_dataset": {
+                "histAxisName": "signal_centralUL18",
+                "isData": False,
+                "WCnames": ["ctG"],
+            },
+        },
+        runtime_families=("njets",),
+        axes_info=axes_info,
+        axes_info_2d=axes_info_2d,
+        sumw2_storage_present=True,
+    )
+    source_payload = _processor_payload()
+    source_payload["njets_sumw2"] = _fill_sparse(
+        "njets_sumw2",
+        (("signal_centralUL18", "isSR_3l", 25.0),),
+    )
+    source_path = tmp_path / "selective_processor.pkl.gz"
+    source_sidecar = write_histogram_artifact(
+        source_path,
+        histograms=source_payload,
+        artifact_kind="processor_output",
+        sumw2_storage_provenance=selective_policy.to_provenance(),
+    )
+    source_family = source_sidecar["sumw2_content_manifest"]["families"]["njets"]
+    context = {
+        "families": {
+            "njets": {
+                "source_scalar_processes": source_family[
+                    "scalar_nominal_processes"
+                ],
+                "source_eft_processes": source_family["eft_nominal_processes"],
+                "retained_scalar_processes": source_family[
+                    "scalar_nominal_processes"
+                ],
+                "retained_eft_processes": source_family[
+                    "eft_nominal_processes"
+                ],
+                "generated_nonprompt_processes": [],
+                "generated_flips_processes": [],
+            }
+        }
+    }
+    _, required = derive_transformed_required_sumw2_processes(
+        input_sidecar=source_sidecar,
+        transformation_context=context,
+        artifact_kind="nonprompt_output",
+    )
+    assert required == {"njets": ["signal_centralUL18"]}
+
+
+def test_flips_contract_requires_every_generated_year_label(tmp_path):
+    multi_year_policy = resolve_sumw2_storage_policy(
+        {"mode": "full_diagnostics"},
+        samples={
+            "data_ul18": {
+                "histAxisName": "dataUL18",
+                "isData": True,
+                "WCnames": [],
+            },
+            "data_2022": {
+                "histAxisName": "data2022",
+                "isData": True,
+                "WCnames": [],
+            },
+        },
+        runtime_families=("njets",),
+        axes_info=axes_info,
+        axes_info_2d=axes_info_2d,
+        sumw2_storage_present=True,
+    )
+    entries = (
+        ("dataUL18", "isAR_2lSS_OS", 4.0),
+        ("data2022", "isAR_2lSS_OS", 5.0),
+    )
+    source_payload = {
+        scalar_nominal_key("njets"): _fill_sparse("njets", entries),
+        "njets_sumw2": _fill_sparse("njets_sumw2", entries),
+    }
+    source_path = tmp_path / "multi_year_processor.pkl.gz"
+    output_path = tmp_path / "multi_year_flips.pkl.gz"
+    source_sidecar = write_histogram_artifact(
+        source_path,
+        histograms=source_payload,
+        artifact_kind="processor_output",
+        sumw2_storage_provenance=multi_year_policy.to_provenance(),
+    )
+    run_data_driven.main(
+        [
+            "--input-pkl",
+            str(source_path),
+            "--output-pkl",
+            str(output_path),
+            "--only-flips",
+            "--quiet",
+        ]
+    )
+    sidecar = read_histogram_sidecar(output_path)
+    family = sidecar["sumw2_content_manifest"]["families"]["njets"]
+    assert family["required_sumw2_processes"] == ["flips2022", "flipsUL18"]
+    output = get_hist_from_pkl(str(output_path))
+    producer = DataDrivenProducer(str(source_path), "")
+    context = producer.get_transformation_context("flips_output")
+    output["njets_sumw2"] = output["njets_sumw2"].remove(
+        "process", ["flipsUL18"]
+    )
+    rejected_path = tmp_path / "partial_flips.pkl.gz"
+    with pytest.raises(
+        histogram_artifact_error,
+        match="requires sumw2 processes absent.*flipsUL18",
+    ):
+        write_histogram_artifact(
+            rejected_path,
+            histograms=output,
+            artifact_kind="flips_output",
+            sumw2_storage_provenance=multi_year_policy.to_provenance(),
+            lineage_inputs=[lineage_input_from_sidecar(source_sidecar)],
+            input_sidecar=source_sidecar,
+            transformation_context=context,
+        )
+
+
+def test_merged_flips_contract_unions_independently_validated_requirements(
+    tmp_path, policy
+):
+    source_path = tmp_path / "processor.pkl.gz"
+    source_sidecar = _write_processor(source_path, policy)
+    source_family = source_sidecar["sumw2_content_manifest"]["families"]["njets"]
+    paths = []
+    for process in ("flips2022", "flipsUL18"):
+        path = tmp_path / f"{process}.pkl.gz"
+        context = {
+            "families": {
+                "njets": {
+                    "source_scalar_processes": source_family[
+                        "scalar_nominal_processes"
+                    ],
+                    "source_eft_processes": source_family[
+                        "eft_nominal_processes"
+                    ],
+                    "retained_scalar_processes": [],
+                    "retained_eft_processes": [],
+                    "generated_nonprompt_processes": [],
+                    "generated_flips_processes": [process],
+                }
+            }
+        }
+        payload = {
+            scalar_nominal_key("njets"): _fill_sparse(
+                "njets", ((process, "isSR_3l", 2.0),)
+            ),
+            "njets_sumw2": _fill_sparse(
+                "njets_sumw2", ((process, "isSR_3l", 4.0),)
+            ),
+        }
+        write_histogram_artifact(
+            path,
+            histograms=payload,
+            artifact_kind="flips_output",
+            sumw2_storage_provenance=policy.to_provenance(),
+            lineage_inputs=[lineage_input_from_sidecar(source_sidecar)],
+            input_sidecar=source_sidecar,
+            transformation_context=context,
+        )
+        paths.append(str(path))
+    merged, report = load_and_merge_histogram_pkls(paths)
+    assert report["required_sumw2_processes"] == {
+        "njets": ["flips2022", "flipsUL18"]
+    }
+    assert report["transformation_contract"]["families"]["njets"][
+        "generated_flips_processes"
+    ] == ["flips2022", "flipsUL18"]
+    cached_path = make_cards._cache_merged_histograms(
+        merged,
+        "merged_flips_union",
+        str(tmp_path),
+        report,
+    )
+    assert validate_histogram_artifact(cached_path)["metadata"][
+        "sumw2_content_manifest"
+    ]["families"]["njets"]["required_sumw2_processes"] == [
+        "flips2022",
+        "flipsUL18",
+    ]
+
+
+def test_transformed_required_tampering_cannot_authorize_partial_payload(tmp_path, policy):
+    source_path = tmp_path / "processor.pkl.gz"
+    output_path = tmp_path / "nonprompt.pkl.gz"
+    _write_processor(source_path, policy)
+    run_data_driven.main(
+        ["--input-pkl", str(source_path), "--output-pkl", str(output_path), "--quiet"]
+    )
+    payload = get_hist_from_pkl(str(output_path))
+    payload["njets_sumw2"] = payload["njets_sumw2"].remove(
+        "process", ["signal_centralUL18"]
+    )
+    _write_raw(output_path, payload)
+    sidecar_path = metadata_sidecar_path(output_path)
+    sidecar = json.loads(sidecar_path.read_text(encoding="utf-8"))
+    family = sidecar["sumw2_content_manifest"]["families"]["njets"]
+    family["sumw2_processes"].remove("signal_centralUL18")
+    family["required_sumw2_processes"].remove("signal_centralUL18")
+    sidecar_path.write_text(json.dumps(sidecar), encoding="utf-8")
+    with pytest.raises(
+        histogram_artifact_error,
+        match="required_sumw2_processes disagree.*signal_centralUL18",
+    ):
+        validate_histogram_artifact(output_path)
+
+
+def test_pre_contract_transformed_metadata_requires_regeneration(tmp_path, policy):
+    source_path = tmp_path / "processor.pkl.gz"
+    output_path = tmp_path / "nonprompt.pkl.gz"
+    _write_processor(source_path, policy)
+    run_data_driven.main(
+        ["--input-pkl", str(source_path), "--output-pkl", str(output_path), "--quiet"]
+    )
+    sidecar_path = metadata_sidecar_path(output_path)
+    sidecar = json.loads(sidecar_path.read_text(encoding="utf-8"))
+    sidecar.pop("transformation_contract")
+    sidecar_path.write_text(json.dumps(sidecar), encoding="utf-8")
+    with pytest.raises(
+        histogram_artifact_error,
+        match="predates independent transformed-companion validation.*run_data_driven",
+    ):
+        validate_histogram_artifact(output_path)
+
+
+def test_original_transformed_publication_preserves_source_provenance(tmp_path, policy):
+    source_path = tmp_path / "processor.pkl.gz"
+    source_sidecar = _write_processor(source_path, policy)
+    producer = DataDrivenProducer(str(source_path), "")
+    altered_provenance = copy.deepcopy(policy.to_provenance())
+    altered_provenance["warnings"] = ["not immutable"]
+    with pytest.raises(
+        histogram_artifact_error,
+        match="preserve.*sumw2_storage_provenance unchanged",
+    ):
+        write_histogram_artifact(
+            tmp_path / "altered.pkl.gz",
+            histograms=producer.getDataDrivenHistogram(),
+            artifact_kind="nonprompt_output",
+            sumw2_storage_provenance=altered_provenance,
+            lineage_inputs=[lineage_input_from_sidecar(source_sidecar)],
+            input_sidecar=source_sidecar,
+            transformation_context=producer.get_transformation_context(
+                "nonprompt_output"
+            ),
+        )
+
+
+def test_sidecar_free_two_dimensional_only_payload_is_structurally_ambiguous(tmp_path):
+    family = "lepton_pt_vs_eta"
+    dense_axes = tuple(
+        hist.axis.Regular(*axis_spec["regular"], name=axis_spec["name"])
+        for axis_spec in axes_info_2d[family]["axes"]
+    )
+    payload = {
+        family: SparseHist(
+            hist.axis.StrCategory([], name="process", growth=True),
+            hist.axis.StrCategory([], name="channel", growth=True),
+            hist.axis.StrCategory([], name="systematic", growth=True),
+            hist.axis.StrCategory([], name="appl", growth=True),
+            *dense_axes,
+            storage="Double",
+        )
+    }
+    path = tmp_path / "two_dimensional_only.pkl.gz"
+    _write_raw(path, payload)
+    assert not is_split_nominal_mapping(payload)
+    assert validate_histogram_artifact(path) == {
+        "schema": "legacy_uniform",
+        "metadata": None,
+        "legacy_metadata_present": False,
+    }
 
 
 @pytest.mark.parametrize(

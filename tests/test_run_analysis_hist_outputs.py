@@ -36,6 +36,30 @@ def _mock_data_driven(monkeypatch):
             with gzip.open(self.input_path, "rb") as stream:
                 return cloudpickle.load(stream)
 
+        def get_transformation_context(self, artifact_kind):
+            assert artifact_kind == "nonprompt_output"
+            sidecar_path = Path(f"{self.input_path}.metadata.json")
+            sidecar = json.loads(sidecar_path.read_text(encoding="utf-8"))
+            families = {}
+            for family, manifest in sidecar["sumw2_content_manifest"][
+                "families"
+            ].items():
+                families[family] = {
+                    "source_scalar_processes": manifest[
+                        "scalar_nominal_processes"
+                    ],
+                    "source_eft_processes": manifest["eft_nominal_processes"],
+                    "retained_scalar_processes": manifest[
+                        "scalar_nominal_processes"
+                    ],
+                    "retained_eft_processes": manifest[
+                        "eft_nominal_processes"
+                    ],
+                    "generated_nonprompt_processes": [],
+                    "generated_flips_processes": [],
+                }
+            return {"families": families}
+
     fake_data_driven.DataDrivenProducer = DummyProducer
     monkeypatch.setitem(sys.modules, "topeft.modules.dataDrivenEstimation", fake_data_driven)
 

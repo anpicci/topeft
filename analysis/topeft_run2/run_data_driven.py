@@ -36,6 +36,7 @@ from topeft.modules.get_renormfact_envelope import (
     apply_renormfact_envelope_to_histogram,
     get_renormfact_envelope,
 )
+from topeft.modules.sumw2_policy import resolved_policy_from_provenance
 
 _STREAMING_PICKLE_PROTOCOL = 3
 _STREAMING_MEMO_CLEAR_INTERVAL = 1
@@ -306,6 +307,22 @@ def _filter_to_flips(histo: Any) -> Any:
     if not to_remove:
         return histo
     if not hasattr(histo, "remove"):
+        return histo
+    return histo.remove("process", to_remove)
+
+
+def _filter_to_allowed_processes(histo: Any, allowed_processes: Iterable[str]) -> Any:
+    """Retain an exact generated/selected role set in a companion histogram."""
+
+    if histo is None:
+        return histo
+    try:
+        process_axis = [str(process) for process in histo.axes["process"]]
+    except Exception:
+        return histo
+    allowed = set(allowed_processes)
+    to_remove = [process for process in process_axis if process not in allowed]
+    if not to_remove or not hasattr(histo, "remove"):
         return histo
     return histo.remove("process", to_remove)
 
@@ -633,7 +650,8 @@ def _finalize_histograms(
     mem_tracemalloc: bool = False,
     mem_top_n: int = 20,
     serialization_path: Optional[str] = None,
-) -> None:
+    input_sidecar: Optional[Dict[str, Any]] = None,
+) -> Optional[Dict[str, Any]]:
     serialization_path = serialization_path or output_pkl
     collect_dd_report = dd_report_stdout or bool(dd_report_md)
     memory_reporter = _MemoryReporter(
@@ -658,6 +676,18 @@ def _finalize_histograms(
         if collect_dd_report:
             ddp_kwargs["dd_report"] = True
         ddp = DataDrivenProducer(input_pkl, output_pkl, **ddp_kwargs)
+        retained_selected_eft_by_family: Dict[str, List[str]] = {}
+        if only_flips and input_sidecar is not None:
+            policy = resolved_policy_from_provenance(
+                input_sidecar["sumw2_storage_provenance"]
+            )
+            for family, manifest in input_sidecar["sumw2_content_manifest"][
+                "families"
+            ].items():
+                retained_selected_eft_by_family[family] = sorted(
+                    set(manifest["eft_nominal_processes"])
+                    & set(policy.selected_processes(family))
+                )
         memory_reporter.mark("after DataDrivenProducer(...)", include_top=mem_tracemalloc)
         os.makedirs(os.path.dirname(output_pkl) or ".", exist_ok=True)
 
@@ -689,7 +719,20 @@ def _finalize_histograms(
                         _emit_dd_report(report)
                     if markdown_writer is not None:
                         markdown_writer.write_report(report)
-                    working_histo = _filter_to_flips(histo) if only_flips else histo
+                    if only_flips and key.endswith("_sumw2"):
+                        family = key[: -len("_sumw2")]
+                        generated_flips = {
+                            str(process)
+                            for process in histo.axes["process"]
+                            if "flips" in str(process).lower()
+                        }
+                        working_histo = _filter_to_allowed_processes(
+                            histo,
+                            generated_flips
+                            | set(retained_selected_eft_by_family.get(family, ())),
+                        )
+                    else:
+                        working_histo = _filter_to_flips(histo) if only_flips else histo
                     if apply_envelope:
                         working_histo = _envelope_single_histogram(key, working_histo)
 
@@ -732,7 +775,20 @@ def _finalize_histograms(
                     markdown_writer.write_report(report)
                 if only_flips:
                     assert filtered is not None
-                    filtered[key] = _filter_to_flips(histo)
+                    if key.endswith("_sumw2"):
+                        family = key[: -len("_sumw2")]
+                        generated_flips = {
+                            str(process)
+                            for process in histo.axes["process"]
+                            if "flips" in str(process).lower()
+                        }
+                        filtered[key] = _filter_to_allowed_processes(
+                            histo,
+                            generated_flips
+                            | set(retained_selected_eft_by_family.get(family, ())),
+                        )
+                    else:
+                        filtered[key] = _filter_to_flips(histo)
 
                 if emitted_heartbeat:
                     memory_reporter.mark(f"processed {processed} histograms")
@@ -757,11 +813,19 @@ def _finalize_histograms(
             elapsed = time.monotonic() - start_time
             print(f"[run_data_driven] Finalized {processed} histograms in {elapsed:.1f}s.")
 
+        transformation_context = (
+            ddp.get_transformation_context(
+                "flips_output" if only_flips else "nonprompt_output"
+            )
+            if input_sidecar is not None
+            else None
+        )
         del ddp
     finally:
         if markdown_writer is not None:
             markdown_writer.close()
         memory_reporter.stop()
+    return transformation_context
 
 
 def main(argv: Optional[List[str]] = None) -> int:
@@ -800,13 +864,16 @@ def main(argv: Optional[List[str]] = None) -> int:
                 f"{input_sidecar['artifact']['artifact_kind']!r} for '{input_pkl}'."
             )
 
-        def _write_payload(staged_path: str) -> None:
-            _finalize_histograms(
+        def _write_payload(staged_path: str) -> Dict[str, Any]:
+            transformation_context = _finalize_histograms(
                 input_pkl,
                 output_pkl,
                 serialization_path=staged_path,
+                input_sidecar=input_sidecar,
                 **finalize_kwargs,
             )
+            assert transformation_context is not None
+            return transformation_context
 
         write_histogram_artifact(
             output_pkl,
@@ -814,6 +881,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             artifact_kind="flips_output" if args.only_flips else "nonprompt_output",
             sumw2_storage_provenance=input_sidecar["sumw2_storage_provenance"],
             lineage_inputs=[lineage_input_from_sidecar(input_sidecar)],
+            input_sidecar=input_sidecar,
         )
 
     return 0

@@ -48,6 +48,7 @@ class DataDrivenProducer:
                     UserWarning,
                     stacklevel=2,
                 )
+        self._transformation_role_context = self._initialize_transformation_role_context()
         if not self.iterator_mode:
             self.DDFakes()
 
@@ -81,6 +82,91 @@ class DataDrivenProducer:
         raise TypeError(
             "Streaming nonprompt input must be a histogram path or keyed mapping."
         )
+
+    def _initialize_transformation_role_context(self):
+        if self._input_artifact_validation is None:
+            return None
+        input_sidecar = self._input_artifact_validation["metadata"]
+        if not input_sidecar or "sumw2_content_manifest" not in input_sidecar:
+            return None
+        families = {}
+        for family, manifest in input_sidecar["sumw2_content_manifest"][
+            "families"
+        ].items():
+            families[family] = {
+                "source_scalar_processes": list(
+                    manifest["scalar_nominal_processes"]
+                ),
+                "source_eft_processes": list(manifest["eft_nominal_processes"]),
+                "retained_scalar_processes": [],
+                "retained_eft_processes": [],
+                "generated_nonprompt_processes": [],
+                "generated_flips_processes": [],
+            }
+        return families
+
+    @staticmethod
+    def _family_from_nominal_key(key):
+        if key.endswith(SCALAR_NOMINAL_SUFFIX):
+            return key[: -len(SCALAR_NOMINAL_SUFFIX)], "scalar"
+        if key.endswith(EFT_NOMINAL_SUFFIX):
+            return key[: -len(EFT_NOMINAL_SUFFIX)], "eft"
+        if key in axes_info_2d:
+            return key, "scalar"
+        return None, None
+
+    def _record_transformation_roles(
+        self,
+        key,
+        output,
+        *,
+        generated_nonprompt_processes=(),
+        generated_flips_processes=(),
+    ):
+        if self._transformation_role_context is None:
+            return
+        family, component = self._family_from_nominal_key(key)
+        if family is None:
+            return
+        roles = self._transformation_role_context[family]
+        output_processes = {
+            str(process) for process in self._axis_labels(output, "process")
+        }
+        if component == "eft":
+            roles["retained_eft_processes"] = sorted(
+                output_processes & set(roles["source_eft_processes"])
+            )
+            return
+        generated_nonprompt = {
+            str(process) for process in generated_nonprompt_processes
+        }
+        generated_flips = {str(process) for process in generated_flips_processes}
+        roles["retained_scalar_processes"] = sorted(
+            output_processes & set(roles["source_scalar_processes"])
+        )
+        roles["generated_nonprompt_processes"] = sorted(generated_nonprompt)
+        roles["generated_flips_processes"] = sorted(generated_flips)
+
+    def get_transformation_context(self, artifact_kind="nonprompt_output"):
+        if self._transformation_role_context is None:
+            raise RuntimeError(
+                "Transformation roles are available only for validated schema-v2 inputs."
+            )
+        if artifact_kind not in {"nonprompt_output", "flips_output"}:
+            raise RuntimeError(
+                f"Unknown data-driven artifact kind {artifact_kind!r}."
+            )
+        families = {}
+        for family, raw_roles in self._transformation_role_context.items():
+            roles = {
+                field_name: sorted(set(processes))
+                for field_name, processes in raw_roles.items()
+            }
+            if artifact_kind == "flips_output":
+                roles["retained_scalar_processes"] = []
+                roles["generated_nonprompt_processes"] = []
+            families[family] = roles
+        return {"families": families}
 
     def _parse_process(self, process_name):
         match = self._name_pattern.search(process_name)
@@ -424,13 +510,16 @@ class DataDrivenProducer:
             if output is None:
                 output = histo.integrate("appl")
                 output.reset()
+            self._record_transformation_roles(key, output)
             return output
 
         if histo.empty():  # histo is empty, so we just integrate over appl and keep an empty histo
             if self._dd_report_enabled and not key.endswith("_sumw2"):
                 self._dd_report_by_key[key] = self._init_dd_report(key, histo, empty=True)
             print(f"[W]: Histogram {key} is empty, returning an empty histo")
-            return histo.integrate("appl")
+            output = histo.integrate("appl")
+            self._record_transformation_roles(key, output)
+            return output
 
         process_metadata = self._build_process_metadata(histo)
         report = None
@@ -439,6 +528,8 @@ class DataDrivenProducer:
 
         # now for each year we actually perform the subtraction and integrate out the application regions
         newhist = None
+        generated_nonprompt_processes = set()
+        generated_flips_processes = set()
         for ident in histo.axes["appl"]:
             hAR = histo.integrate("appl", ident)
 
@@ -459,6 +550,7 @@ class DataDrivenProducer:
                     flips_name = self._flips_process_name(year)
                     if self.dataName == sampleName:
                         newNameDictData[flips_name].append(process_name)
+                generated_flips_processes.update(newNameDictData)
                 hFlips = hAR.group("process", newNameDictData)
                 hFlipsRaw = hFlips
 
@@ -507,6 +599,8 @@ class DataDrivenProducer:
                     else:
                         pass
                         # print(f"We won't consider {sampleName} for the prompt subtraction in the appl. region")
+                generated_nonprompt_processes.update(newNameDictData)
+                generated_nonprompt_processes.update(newNameDictNoData)
                 hFakes = hAR.group("process", newNameDictData)
                 # now we take all the stuff that is not data in the AR to make the prompt subtraction and assign them to nonprompt.
                 hPromptSub = hAR.group("process", newNameDictNoData)
@@ -551,6 +645,13 @@ class DataDrivenProducer:
 
         if report is not None:
             self._dd_report_by_key[key] = report
+        if not key.endswith("_sumw2"):
+            self._record_transformation_roles(
+                key,
+                newhist,
+                generated_nonprompt_processes=generated_nonprompt_processes,
+                generated_flips_processes=generated_flips_processes,
+            )
         return newhist
 
     def iter_data_driven_histograms(self):
@@ -600,6 +701,10 @@ class DataDrivenProducer:
                     "sumw2_storage_provenance"
                 ],
                 lineage_inputs=[lineage_input_from_sidecar(input_sidecar)],
+                input_sidecar=input_sidecar,
+                transformation_context=self.get_transformation_context(
+                    "nonprompt_output"
+                ),
             )
         else:
             with gzip.open(self.outputName, "wb") as fout:

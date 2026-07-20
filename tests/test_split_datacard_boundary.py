@@ -131,6 +131,19 @@ def test_datacard_transient_view_preserves_rates_shapes_coefficients_scalings_an
         artifact_kind="nonprompt_output",
         sumw2_storage_provenance=policy.to_provenance(),
         lineage_inputs=[lineage_input_from_sidecar(source_sidecar)],
+        input_sidecar=source_sidecar,
+        transformation_context={
+            "families": {
+                "njets": {
+                    "source_scalar_processes": ["background"],
+                    "source_eft_processes": ["signal"],
+                    "retained_scalar_processes": ["background"],
+                    "retained_eft_processes": ["signal"],
+                    "generated_nonprompt_processes": [],
+                    "generated_flips_processes": [],
+                }
+            }
+        },
     )
     split, merge_report = load_and_merge_histogram_pkls([str(transformed_path)])
     assert merge_report["artifact_kind"] == "nonprompt_output"

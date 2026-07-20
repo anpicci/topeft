@@ -29,6 +29,7 @@ from topeft.modules.sumw2_policy import resolved_policy_from_provenance
 
 METADATA_SCHEMA_VERSION = 2
 SUMW2_CONTENT_MANIFEST_VERSION = 1
+TRANSFORMATION_CONTRACT_VERSION = 1
 ARTIFACT_KINDS = frozenset(
     {"processor_output", "nonprompt_output", "flips_output"}
 )
@@ -147,7 +148,11 @@ def build_sumw2_content_manifest(
                 nominal_processes & set(policy.selected_processes(family))
             )
         else:
-            required = list(content["sumw2_processes"])
+            raise histogram_sidecar_error(
+                f"{artifact_kind} requires independently derived "
+                "required_sumw2_processes; observed companion content cannot "
+                "define the requirement."
+            )
         families[family] = {
             **content,
             "required_sumw2_processes": required,
@@ -205,9 +210,44 @@ def _build_sidecar_payload(
     sumw2_storage_provenance: Mapping[str, Any],
     lineage_inputs: Iterable[Mapping[str, Any]],
     required_sumw2_processes: Mapping[str, Iterable[str]] | None,
+    transformation_contract: Mapping[str, Any] | None,
 ) -> dict[str, Any]:
     identity = _file_identity(identity_path, pkl_basename=pkl_path.name)
-    return {
+    if artifact_kind == "processor_output":
+        if transformation_contract is not None:
+            raise histogram_sidecar_error(
+                "processor_output must not contain a transformation_contract."
+            )
+        normalized_contract = None
+    else:
+        if transformation_contract is None:
+            raise histogram_sidecar_error(
+                f"{artifact_kind} requires an independently generated "
+                "transformation_contract. Regenerate the artifact with "
+                "run_data_driven."
+            )
+        normalized_contract = _normalize_transformation_contract(
+            transformation_contract,
+            sumw2_storage_provenance=sumw2_storage_provenance,
+            artifact_kind=artifact_kind,
+        )
+        derived_required = required_sumw2_processes_from_transformation_contract(
+            normalized_contract,
+            sumw2_storage_provenance=sumw2_storage_provenance,
+        )
+        if required_sumw2_processes is not None:
+            requested_required = _normalize_required_processes(
+                required_sumw2_processes
+            )
+            if requested_required != derived_required:
+                raise histogram_sidecar_error(
+                    f"{artifact_kind} required_sumw2_processes must be derived from "
+                    "the transformation contract; "
+                    f"derived={derived_required} requested={requested_required}."
+                )
+        required_sumw2_processes = derived_required
+
+    payload = {
         "metadata_schema_version": METADATA_SCHEMA_VERSION,
         "artifact": {
             **identity,
@@ -227,6 +267,9 @@ def _build_sidecar_payload(
         ),
         "lineage": {"inputs": _normalize_lineage_inputs(lineage_inputs)},
     }
+    if normalized_contract is not None:
+        payload["transformation_contract"] = normalized_contract
+    return payload
 
 
 def lineage_input_from_sidecar(sidecar: Mapping[str, Any]) -> dict[str, str]:
@@ -264,6 +307,302 @@ def _require_sorted_unique_strings(value: Any, *, label: str) -> list[str]:
     return list(value)
 
 
+_TRANSFORMATION_CONTEXT_FIELDS = (
+    "source_scalar_processes",
+    "source_eft_processes",
+    "retained_scalar_processes",
+    "retained_eft_processes",
+    "generated_nonprompt_processes",
+    "generated_flips_processes",
+)
+_TRANSFORMATION_CONTRACT_FAMILY_FIELDS = (
+    *_TRANSFORMATION_CONTEXT_FIELDS,
+    "consumed_source_processes",
+)
+
+
+def _normalize_transformation_contract(
+    transformation_contract: Mapping[str, Any],
+    *,
+    sumw2_storage_provenance: Mapping[str, Any],
+    artifact_kind: str,
+) -> dict[str, Any]:
+    if not isinstance(transformation_contract, Mapping):
+        raise histogram_sidecar_error("transformation_contract must be an object.")
+    _require_exact_keys(
+        transformation_contract,
+        {"contract_version", "artifact_kind", "families"},
+        label="transformation_contract",
+    )
+    if transformation_contract["contract_version"] != TRANSFORMATION_CONTRACT_VERSION:
+        raise histogram_sidecar_error(
+            "Unsupported transformed-content contract version "
+            f"{transformation_contract['contract_version']!r}."
+        )
+    if transformation_contract["artifact_kind"] != artifact_kind:
+        raise histogram_sidecar_error(
+            "transformation_contract artifact kind does not match the artifact: "
+            f"expected={artifact_kind!r} "
+            f"observed={transformation_contract['artifact_kind']!r}."
+        )
+    if artifact_kind == "processor_output":
+        raise histogram_sidecar_error(
+            "processor_output must not contain a transformation_contract."
+        )
+
+    policy = resolved_policy_from_provenance(sumw2_storage_provenance)
+    families = transformation_contract["families"]
+    if not isinstance(families, Mapping):
+        raise histogram_sidecar_error("transformation_contract.families must be an object.")
+    if list(families) != list(policy.runtime_histogram_families):
+        raise histogram_sidecar_error(
+            "Transformation-contract families must match authoritative runtime "
+            f"family order: expected={list(policy.runtime_histogram_families)} "
+            f"observed={list(families)}."
+        )
+
+    normalized_families = {}
+    for family, raw_roles in families.items():
+        if not isinstance(raw_roles, Mapping):
+            raise histogram_sidecar_error(
+                f"Transformation roles for family '{family}' must be an object."
+            )
+        _require_exact_keys(
+            raw_roles,
+            set(_TRANSFORMATION_CONTRACT_FAMILY_FIELDS),
+            label=f"transformation roles for family '{family}'",
+        )
+        roles = {
+            field_name: _require_sorted_unique_strings(
+                raw_roles[field_name],
+                label=f"transformation family '{family}' field '{field_name}'",
+            )
+            for field_name in _TRANSFORMATION_CONTRACT_FAMILY_FIELDS
+        }
+        source_scalar = set(roles["source_scalar_processes"])
+        source_eft = set(roles["source_eft_processes"])
+        retained_scalar = set(roles["retained_scalar_processes"])
+        retained_eft = set(roles["retained_eft_processes"])
+        generated_nonprompt = set(roles["generated_nonprompt_processes"])
+        generated_flips = set(roles["generated_flips_processes"])
+        source_processes = source_scalar | source_eft
+        retained_processes = retained_scalar | retained_eft
+        generated_processes = generated_nonprompt | generated_flips
+
+        if not retained_scalar <= source_scalar:
+            raise histogram_sidecar_error(
+                f"Family '{family}' retains scalar processes absent from the input: "
+                f"{sorted(retained_scalar - source_scalar)}."
+            )
+        if not retained_eft <= source_eft:
+            raise histogram_sidecar_error(
+                f"Family '{family}' retains EFT processes absent from the input: "
+                f"{sorted(retained_eft - source_eft)}."
+            )
+        if generated_nonprompt & generated_flips:
+            raise histogram_sidecar_error(
+                f"Family '{family}' assigns generated processes to both nonprompt "
+                "and flips roles."
+            )
+        if generated_processes & source_processes:
+            raise histogram_sidecar_error(
+                f"Family '{family}' classifies source processes as generated: "
+                f"{sorted(generated_processes & source_processes)}."
+            )
+        if artifact_kind == "flips_output" and generated_nonprompt:
+            raise histogram_sidecar_error(
+                f"flips_output family '{family}' cannot contain generated nonprompt roles."
+            )
+        expected_consumed = sorted(source_processes - retained_processes)
+        if roles["consumed_source_processes"] != expected_consumed:
+            raise histogram_sidecar_error(
+                f"Family '{family}' consumed-source roles are inconsistent: "
+                f"expected={expected_consumed} "
+                f"observed={roles['consumed_source_processes']}."
+            )
+        normalized_families[family] = roles
+
+    return {
+        "contract_version": TRANSFORMATION_CONTRACT_VERSION,
+        "artifact_kind": artifact_kind,
+        "families": normalized_families,
+    }
+
+
+def required_sumw2_processes_from_transformation_contract(
+    transformation_contract: Mapping[str, Any],
+    *,
+    sumw2_storage_provenance: Mapping[str, Any],
+) -> dict[str, list[str]]:
+    """Derive required transformed companions without reading companion content."""
+
+    artifact_kind = transformation_contract.get("artifact_kind")
+    normalized = _normalize_transformation_contract(
+        transformation_contract,
+        sumw2_storage_provenance=sumw2_storage_provenance,
+        artifact_kind=artifact_kind,
+    )
+    policy = resolved_policy_from_provenance(sumw2_storage_provenance)
+    output = {}
+    for family, roles in normalized["families"].items():
+        selected_source_processes = set(policy.selected_processes(family))
+        retained_selected = selected_source_processes & (
+            set(roles["retained_scalar_processes"])
+            | set(roles["retained_eft_processes"])
+        )
+        generated = set(roles["generated_flips_processes"])
+        if artifact_kind == "nonprompt_output":
+            generated |= set(roles["generated_nonprompt_processes"])
+        output[family] = sorted(retained_selected | generated)
+    return output
+
+
+def _expected_nominal_processes_from_transformation_contract(
+    transformation_contract: Mapping[str, Any],
+    family: str,
+) -> tuple[list[str], list[str]]:
+    roles = transformation_contract["families"][family]
+    generated = set(roles["generated_flips_processes"])
+    if transformation_contract["artifact_kind"] == "nonprompt_output":
+        generated |= set(roles["generated_nonprompt_processes"])
+    expected_scalar = sorted(set(roles["retained_scalar_processes"]) | generated)
+    return expected_scalar, list(roles["retained_eft_processes"])
+
+
+def derive_transformed_required_sumw2_processes(
+    *,
+    input_sidecar: Mapping[str, Any],
+    transformation_context: Mapping[str, Any],
+    artifact_kind: str,
+    transformed_histograms: Mapping[str, Any] | None = None,
+) -> tuple[dict[str, Any], dict[str, list[str]]]:
+    """Build expected transformed roles and their independent companion contract."""
+
+    if artifact_kind not in {"nonprompt_output", "flips_output"}:
+        raise histogram_sidecar_error(
+            f"Cannot derive transformed requirements for {artifact_kind!r}."
+        )
+    if input_sidecar.get("artifact", {}).get("artifact_kind") != "processor_output":
+        raise histogram_sidecar_error(
+            "Transformed requirements require a validated processor_output input sidecar."
+        )
+    input_manifest = input_sidecar["sumw2_content_manifest"]["families"]
+    context_families = transformation_context.get("families")
+    if not isinstance(context_families, Mapping):
+        raise histogram_sidecar_error(
+            "transformation_context.families must be an object generated by "
+            "DataDrivenProducer."
+        )
+    if list(context_families) != list(input_manifest):
+        raise histogram_sidecar_error(
+            "Transformation context must cover the input runtime families in "
+            f"authoritative order: expected={list(input_manifest)} "
+            f"observed={list(context_families)}."
+        )
+
+    contract_families = {}
+    for family, input_family in input_manifest.items():
+        raw_roles = context_families[family]
+        if not isinstance(raw_roles, Mapping):
+            raise histogram_sidecar_error(
+                f"Transformation context for family '{family}' must be an object."
+            )
+        _require_exact_keys(
+            raw_roles,
+            set(_TRANSFORMATION_CONTEXT_FIELDS),
+            label=f"transformation context for family '{family}'",
+        )
+        roles = {
+            field_name: _require_sorted_unique_strings(
+                list(raw_roles[field_name]),
+                label=f"transformation context family '{family}' field '{field_name}'",
+            )
+            for field_name in _TRANSFORMATION_CONTEXT_FIELDS
+        }
+        expected_source_scalar = input_family["scalar_nominal_processes"]
+        expected_source_eft = input_family["eft_nominal_processes"]
+        if roles["source_scalar_processes"] != expected_source_scalar:
+            raise histogram_sidecar_error(
+                f"Family '{family}' scalar source roles do not match the validated "
+                f"input manifest: expected={expected_source_scalar} "
+                f"observed={roles['source_scalar_processes']}."
+            )
+        if roles["source_eft_processes"] != expected_source_eft:
+            raise histogram_sidecar_error(
+                f"Family '{family}' EFT source roles do not match the validated input "
+                f"manifest: expected={expected_source_eft} "
+                f"observed={roles['source_eft_processes']}."
+            )
+        source_processes = set(expected_source_scalar) | set(expected_source_eft)
+        retained_processes = set(roles["retained_scalar_processes"]) | set(
+            roles["retained_eft_processes"]
+        )
+        contract_families[family] = {
+            **roles,
+            "consumed_source_processes": sorted(
+                source_processes - retained_processes
+            ),
+        }
+
+    contract = _normalize_transformation_contract(
+        {
+            "contract_version": TRANSFORMATION_CONTRACT_VERSION,
+            "artifact_kind": artifact_kind,
+            "families": contract_families,
+        },
+        sumw2_storage_provenance=input_sidecar["sumw2_storage_provenance"],
+        artifact_kind=artifact_kind,
+    )
+    if transformed_histograms is not None:
+        for family in contract["families"]:
+            content = _family_process_content(transformed_histograms, family)
+            expected_scalar, expected_eft = (
+                _expected_nominal_processes_from_transformation_contract(
+                    contract,
+                    family,
+                )
+            )
+            if content["scalar_nominal_processes"] != expected_scalar:
+                raise histogram_content_error(
+                    f"{artifact_kind} family '{family}' scalar nominal roles differ "
+                    f"from the maintained transformation contract: "
+                    f"expected={expected_scalar} "
+                    f"observed={content['scalar_nominal_processes']}."
+                )
+            if content["eft_nominal_processes"] != expected_eft:
+                raise histogram_content_error(
+                    f"{artifact_kind} family '{family}' EFT nominal roles differ from "
+                    f"the maintained transformation contract: expected={expected_eft} "
+                    f"observed={content['eft_nominal_processes']}."
+                )
+    required = required_sumw2_processes_from_transformation_contract(
+        contract,
+        sumw2_storage_provenance=input_sidecar["sumw2_storage_provenance"],
+    )
+    return contract, required
+
+
+def _require_immutable_input_provenance(
+    input_sidecar: Mapping[str, Any],
+    output_provenance: Mapping[str, Any],
+) -> None:
+    input_identity = json.dumps(
+        input_sidecar["sumw2_storage_provenance"],
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    output_identity = json.dumps(
+        output_provenance,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    if input_identity != output_identity:
+        raise histogram_sidecar_error(
+            "Transformed output must preserve its validated input "
+            "sumw2_storage_provenance unchanged."
+        )
+
+
 def _validate_sidecar_structure(
     sidecar: Mapping[str, Any],
     *,
@@ -271,17 +610,18 @@ def _validate_sidecar_structure(
 ) -> dict[str, Any]:
     if not isinstance(sidecar, Mapping):
         raise histogram_sidecar_error("Histogram sidecar must be a JSON object.")
-    _require_exact_keys(
-        sidecar,
-        {
-            "metadata_schema_version",
-            "artifact",
-            "sumw2_storage_provenance",
-            "sumw2_content_manifest",
-            "lineage",
-        },
-        label="histogram sidecar",
-    )
+    common_fields = {
+        "metadata_schema_version",
+        "artifact",
+        "sumw2_storage_provenance",
+        "sumw2_content_manifest",
+        "lineage",
+    }
+    missing_common = sorted(common_fields - set(sidecar))
+    if missing_common:
+        raise histogram_sidecar_error(
+            f"Invalid histogram sidecar fields; missing={missing_common}."
+        )
     if sidecar["metadata_schema_version"] != METADATA_SCHEMA_VERSION:
         raise histogram_sidecar_error(
             "Unsupported histogram metadata schema version "
@@ -329,6 +669,34 @@ def _validate_sidecar_structure(
         raise histogram_sidecar_error("Artifact nominal schema version is incompatible.")
     if artifact["nominal_container_layout"] != NOMINAL_CONTAINER_LAYOUT:
         raise histogram_sidecar_error("Artifact nominal container layout is incompatible.")
+
+    expected_sidecar_fields = set(common_fields)
+    transformation_contract = None
+    if artifact["artifact_kind"] == "processor_output":
+        if "transformation_contract" in sidecar:
+            raise histogram_sidecar_error(
+                "processor_output must not contain a transformation_contract."
+            )
+    else:
+        expected_sidecar_fields.add("transformation_contract")
+        if "transformation_contract" not in sidecar:
+            raise histogram_sidecar_error(
+                f"{artifact['artifact_kind']} metadata schema version 2 predates "
+                "independent transformed-companion validation and lacks "
+                f"transformation_contract: pkl_path={pkl_path} "
+                f"sidecar_path={metadata_sidecar_path(pkl_path)}. Regenerate this "
+                "PKL and sidecar with run_data_driven before reuse."
+            )
+        transformation_contract = _normalize_transformation_contract(
+            sidecar["transformation_contract"],
+            sumw2_storage_provenance=sidecar["sumw2_storage_provenance"],
+            artifact_kind=artifact["artifact_kind"],
+        )
+    _require_exact_keys(
+        sidecar,
+        expected_sidecar_fields,
+        label="histogram sidecar",
+    )
 
     policy = resolved_policy_from_provenance(sidecar["sumw2_storage_provenance"])
     manifest = sidecar["sumw2_content_manifest"]
@@ -378,8 +746,31 @@ def _validate_sidecar_structure(
         observed = set(family_manifest["sumw2_processes"])
         if not required <= observed:
             raise histogram_sidecar_error(
-                f"Manifest family '{family}' requires sumw2 processes absent from its content: "
-                + ", ".join(sorted(required - observed))
+                "Manifest requires sumw2 processes absent from artifact content: "
+                f"pkl_path={pkl_path} "
+                f"sidecar_path={metadata_sidecar_path(pkl_path)} "
+                f"artifact_kind={artifact['artifact_kind']} family={family} "
+                f"expected_processes={sorted(required)} "
+                f"observed_processes={sorted(observed)} "
+                f"missing_required_companions={sorted(required - observed)} "
+                "unexpected_companions=[]. Regenerate it with run_data_driven."
+            )
+
+    if transformation_contract is not None:
+        derived_required = required_sumw2_processes_from_transformation_contract(
+            transformation_contract,
+            sumw2_storage_provenance=sidecar["sumw2_storage_provenance"],
+        )
+        serialized_required = {
+            family: list(family_manifest["required_sumw2_processes"])
+            for family, family_manifest in families.items()
+        }
+        if serialized_required != derived_required:
+            raise histogram_sidecar_error(
+                f"{artifact['artifact_kind']} required_sumw2_processes disagree "
+                "with the independently generated transformation contract: "
+                f"expected={derived_required} observed={serialized_required}. "
+                "Regenerate the transformed artifact with run_data_driven."
             )
 
     lineage = sidecar["lineage"]
@@ -548,53 +939,47 @@ def _validate_transformed_output(
         policy=None,
     )
     manifest_families = sidecar["sumw2_content_manifest"]["families"]
+    transformation_contract = _normalize_transformation_contract(
+        sidecar["transformation_contract"],
+        sumw2_storage_provenance=sidecar["sumw2_storage_provenance"],
+        artifact_kind=artifact_kind,
+    )
+    independently_required = required_sumw2_processes_from_transformation_contract(
+        transformation_contract,
+        sumw2_storage_provenance=sidecar["sumw2_storage_provenance"],
+    )
     for family in policy.runtime_histogram_families:
         family_manifest = manifest_families[family]
-        if not policy.selects_family(family) and sumw2_key(family) in histograms:
-            raise histogram_content_error(
-                f"{artifact_kind} pkl_path={pkl_path} family={family} contains a "
-                "companion for a source-policy-unselected family. Regenerate it "
-                "with run_data_driven."
+        expected_scalar, expected_eft = (
+            _expected_nominal_processes_from_transformation_contract(
+                transformation_contract,
+                family,
             )
-        if policy.selects_family(family) and sumw2_key(family) not in histograms:
-            raise histogram_content_error(
-                f"{artifact_kind} pkl_path={pkl_path} family={family} is missing its "
-                f"required transformed companion. Regenerate it with run_data_driven."
-            )
-        if family_manifest["required_sumw2_processes"] != family_manifest[
-            "sumw2_processes"
-        ]:
-            raise histogram_content_error(
-                f"{artifact_kind} family '{family}' must require exactly its generated "
-                "transformed sumw2 process content."
-            )
-        nominal_processes = set(family_manifest["scalar_nominal_processes"]) | set(
-            family_manifest["eft_nominal_processes"]
         )
-        unexpected_companions = sorted(
-            set(family_manifest["sumw2_processes"]) - nominal_processes
-        )
-        if unexpected_companions:
+        expected_sumw2 = independently_required[family]
+        observed_scalar = family_manifest["scalar_nominal_processes"]
+        observed_eft = family_manifest["eft_nominal_processes"]
+        observed_sumw2 = family_manifest["sumw2_processes"]
+        if observed_scalar != expected_scalar or observed_eft != expected_eft:
             raise histogram_content_error(
-                f"{artifact_kind} pkl_path={pkl_path} family={family} contains "
-                f"unexpected transformed companions {unexpected_companions} without "
-                "matching nominal process content. Regenerate it with run_data_driven."
+                f"{artifact_kind} pkl_path={pkl_path} family={family} has nominal "
+                "process roles inconsistent with the maintained transformation: "
+                f"expected_scalar={expected_scalar} observed_scalar={observed_scalar} "
+                f"expected_eft={expected_eft} observed_eft={observed_eft}. "
+                "Regenerate it with run_data_driven."
             )
-        if artifact_kind == "flips_output":
-            for field_name in (
-                "scalar_nominal_processes",
-                "sumw2_processes",
-            ):
-                unexpected = [
-                    process
-                    for process in family_manifest[field_name]
-                    if "flips" not in process.lower()
-                ]
-                if unexpected:
-                    raise histogram_content_error(
-                        f"flips_output family '{family}' contains non-flips processes in "
-                        f"{field_name}: {unexpected}. Regenerate with run_data_driven --only-flips."
-                    )
+        if observed_sumw2 != expected_sumw2:
+            missing = sorted(set(expected_sumw2) - set(observed_sumw2))
+            unexpected = sorted(set(observed_sumw2) - set(expected_sumw2))
+            raise histogram_content_error(
+                "Transformed histogram companion contract mismatch: "
+                f"pkl_path={pkl_path} sidecar_path={metadata_sidecar_path(pkl_path)} "
+                f"artifact_kind={artifact_kind} family={family} "
+                f"expected_processes={expected_sumw2} observed_processes={observed_sumw2} "
+                f"missing_required_companions={missing} "
+                f"unexpected_companions={unexpected}. Regenerate it with "
+                "run_data_driven."
+            )
 
 
 def validate_nonprompt_output(
@@ -777,11 +1162,55 @@ def merge_histogram_sidecars(
                 ]
             }
         )
+    merged_contract = None
+    if kind != "processor_output":
+        merged_contract_families = {}
+        for family in family_orders[0]:
+            merged_roles = {}
+            for field_name in _TRANSFORMATION_CONTEXT_FIELDS:
+                merged_roles[field_name] = sorted(
+                    {
+                        process
+                        for sidecar in sidecars
+                        for process in sidecar["transformation_contract"]["families"][
+                            family
+                        ][field_name]
+                    }
+                )
+            source_processes = set(merged_roles["source_scalar_processes"]) | set(
+                merged_roles["source_eft_processes"]
+            )
+            retained_processes = set(merged_roles["retained_scalar_processes"]) | set(
+                merged_roles["retained_eft_processes"]
+            )
+            merged_roles["consumed_source_processes"] = sorted(
+                source_processes - retained_processes
+            )
+            merged_contract_families[family] = merged_roles
+        merged_contract = _normalize_transformation_contract(
+            {
+                "contract_version": TRANSFORMATION_CONTRACT_VERSION,
+                "artifact_kind": kind,
+                "families": merged_contract_families,
+            },
+            sumw2_storage_provenance=provenance,
+            artifact_kind=kind,
+        )
+        independently_required = required_sumw2_processes_from_transformation_contract(
+            merged_contract,
+            sumw2_storage_provenance=provenance,
+        )
+        if required != independently_required:
+            raise histogram_merge_error(
+                "Merged transformed requirements disagree with the union of "
+                "independently validated transformation contracts."
+            )
     return {
         "artifact_kind": kind,
         "merged": True,
         "sumw2_storage_provenance": provenance,
         "required_sumw2_processes": required,
+        "transformation_contract": merged_contract,
         "lineage_inputs": [lineage_input_from_sidecar(sidecar) for sidecar in sidecars],
     }
 
@@ -802,10 +1231,61 @@ def write_histogram_sidecar(
     merged: bool = False,
     lineage_inputs: Iterable[Mapping[str, Any]] = (),
     required_sumw2_processes: Mapping[str, Iterable[str]] | None = None,
+    input_sidecar: Mapping[str, Any] | None = None,
+    transformation_context: Mapping[str, Any] | None = None,
+    transformation_contract: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Write one automatic sidecar for an already finalized PKL."""
 
     pkl_path = Path(pkl_path)
+    if artifact_kind != "processor_output":
+        if merged:
+            if input_sidecar is not None or transformation_context is not None:
+                raise histogram_sidecar_error(
+                    "Merged transformed publication accepts only the merged "
+                    "transformation_contract derived from validated inputs."
+                )
+        elif transformation_contract is not None:
+            raise histogram_sidecar_error(
+                "Original transformed publication cannot accept a caller-authored "
+                "transformation_contract; provide its validated input sidecar and "
+                "generated transformation context."
+            )
+        elif input_sidecar is None:
+            raise histogram_sidecar_error(
+                "Original transformed publication requires its validated input "
+                "sidecar and generated transformation context."
+            )
+    if input_sidecar is not None or transformation_context is not None:
+        if input_sidecar is None or transformation_context is None:
+            raise histogram_sidecar_error(
+                "Original transformed publication requires both input_sidecar and "
+                "transformation_context."
+            )
+        _require_immutable_input_provenance(
+            input_sidecar,
+            sumw2_storage_provenance,
+        )
+        derived_contract, derived_required = derive_transformed_required_sumw2_processes(
+            input_sidecar=input_sidecar,
+            transformation_context=transformation_context,
+            artifact_kind=artifact_kind,
+            transformed_histograms=histograms,
+        )
+        if transformation_contract is not None and dict(transformation_contract) != derived_contract:
+            raise histogram_sidecar_error(
+                "Explicit transformation_contract disagrees with the independently "
+                "derived original transformation contract."
+            )
+        transformation_contract = derived_contract
+        if required_sumw2_processes is not None and _normalize_required_processes(
+            required_sumw2_processes
+        ) != derived_required:
+            raise histogram_sidecar_error(
+                "Explicit required_sumw2_processes disagree with the independently "
+                "derived transformed requirements."
+            )
+        required_sumw2_processes = derived_required
     payload = _build_sidecar_payload(
         pkl_path,
         histograms,
@@ -815,6 +1295,7 @@ def write_histogram_sidecar(
         sumw2_storage_provenance=sumw2_storage_provenance,
         lineage_inputs=lineage_inputs,
         required_sumw2_processes=required_sumw2_processes,
+        transformation_contract=transformation_contract,
     )
     _validate_sidecar_structure(payload, pkl_path=pkl_path)
     temporary_path = metadata_sidecar_path(pkl_path).with_name(
@@ -839,15 +1320,36 @@ def write_histogram_artifact(
     artifact_kind: str,
     sumw2_storage_provenance: Mapping[str, Any],
     histograms: Mapping[str, Any] | None = None,
-    payload_writer: Callable[[str], None] | None = None,
+    payload_writer: Callable[[str], Mapping[str, Any] | None] | None = None,
     merged: bool = False,
     lineage_inputs: Iterable[Mapping[str, Any]] = (),
     required_sumw2_processes: Mapping[str, Iterable[str]] | None = None,
+    input_sidecar: Mapping[str, Any] | None = None,
+    transformation_context: Mapping[str, Any] | None = None,
+    transformation_contract: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Stage, validate, and publish a PKL/sidecar pair as one logical output."""
 
     if (histograms is None) == (payload_writer is None):
         raise ValueError("Provide exactly one of histograms or payload_writer.")
+    if artifact_kind != "processor_output":
+        if merged:
+            if input_sidecar is not None or transformation_context is not None:
+                raise histogram_sidecar_error(
+                    "Merged transformed publication accepts only the merged "
+                    "transformation_contract derived from validated inputs."
+                )
+        elif transformation_contract is not None:
+            raise histogram_sidecar_error(
+                "Original transformed publication cannot accept a caller-authored "
+                "transformation_contract; provide its validated input sidecar and "
+                "generated transformation context."
+            )
+        elif input_sidecar is None:
+            raise histogram_sidecar_error(
+                "Original transformed publication requires its validated input "
+                "sidecar and generated transformation context."
+            )
     pkl_path = Path(pkl_path)
     pkl_path.parent.mkdir(parents=True, exist_ok=True)
     token = uuid.uuid4().hex
@@ -862,7 +1364,14 @@ def write_histogram_artifact(
     published_sidecar = False
     try:
         if payload_writer is not None:
-            payload_writer(str(staged_pkl))
+            generated_context = payload_writer(str(staged_pkl))
+            if generated_context is not None:
+                if transformation_context is not None:
+                    raise histogram_sidecar_error(
+                        "Transformation context was supplied both directly and by "
+                        "the payload writer."
+                    )
+                transformation_context = generated_context
         else:
             assert histograms is not None
             _default_pickle_writer(str(staged_pkl), histograms)
@@ -871,6 +1380,36 @@ def write_histogram_artifact(
             if histograms is not None
             else _load_histograms(staged_pkl)
         )
+        if input_sidecar is not None or transformation_context is not None:
+            if input_sidecar is None or transformation_context is None:
+                raise histogram_sidecar_error(
+                    "Original transformed publication requires both input_sidecar "
+                    "and transformation_context."
+                )
+            _require_immutable_input_provenance(
+                input_sidecar,
+                sumw2_storage_provenance,
+            )
+            derived_contract, derived_required = derive_transformed_required_sumw2_processes(
+                input_sidecar=input_sidecar,
+                transformation_context=transformation_context,
+                artifact_kind=artifact_kind,
+                transformed_histograms=manifest_histograms,
+            )
+            if transformation_contract is not None and dict(transformation_contract) != derived_contract:
+                raise histogram_sidecar_error(
+                    "Explicit transformation_contract disagrees with the independently "
+                    "derived original transformation contract."
+                )
+            transformation_contract = derived_contract
+            if required_sumw2_processes is not None and _normalize_required_processes(
+                required_sumw2_processes
+            ) != derived_required:
+                raise histogram_sidecar_error(
+                    "Explicit required_sumw2_processes disagree with the independently "
+                    "derived transformed requirements."
+                )
+            required_sumw2_processes = derived_required
         sidecar = _build_sidecar_payload(
             pkl_path,
             manifest_histograms,
@@ -880,6 +1419,7 @@ def write_histogram_artifact(
             sumw2_storage_provenance=sumw2_storage_provenance,
             lineage_inputs=lineage_inputs,
             required_sumw2_processes=required_sumw2_processes,
+            transformation_contract=transformation_contract,
         )
         _validate_sidecar_structure(sidecar, pkl_path=pkl_path)
         _validate_content_manifest(pkl_path, manifest_histograms, sidecar)

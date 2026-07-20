@@ -8517,6 +8517,7 @@ def _cache_merged_histograms(merged_hists, cache_path, out_dir, merge_report=Non
             merged=True,
             lineage_inputs=merge_report["lineage_inputs"],
             required_sumw2_processes=merge_report["required_sumw2_processes"],
+            transformation_contract=merge_report["transformation_contract"],
         )
     else:
         with gzip.open(out_fpath, "wb") as fout:

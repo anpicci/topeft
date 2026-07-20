@@ -1891,6 +1891,10 @@ if __name__ == "__main__":
                     artifact_kind="nonprompt_output",
                     sumw2_storage_provenance=sumw2_policy.to_provenance(),
                     lineage_inputs=[lineage_input_from_sidecar(processor_sidecar)],
+                    input_sidecar=processor_sidecar,
+                    transformation_context=ddp.get_transformation_context(
+                        "nonprompt_output"
+                    ),
                 )
                 print("Done!")
             elif np_postprocess_mode == "defer":

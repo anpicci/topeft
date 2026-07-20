@@ -366,6 +366,9 @@ def load_and_merge_histogram_pkls(
         report["required_sumw2_processes"] = merged_sidecar[
             "required_sumw2_processes"
         ]
+        report["transformation_contract"] = merged_sidecar[
+            "transformation_contract"
+        ]
         report["lineage_inputs"] = merged_sidecar["lineage_inputs"]
     elif schema_version is None:
         report["artifact_kind"] = "legacy_uniform"
