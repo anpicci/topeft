@@ -17,6 +17,7 @@ from __future__ import annotations
 import argparse
 import ctypes
 import gc
+import json
 import os
 import resource
 import sys
@@ -28,7 +29,11 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 import topcoffea.modules.utils as utils
 
 from topeft.modules.dataDrivenEstimation import DataDrivenProducer
-from topeft.modules.deferred_np_metadata import load_deferred_np_metadata
+from topeft.modules.deferred_np_metadata import (
+    build_histogram_output_metadata,
+    load_deferred_np_metadata,
+    load_histogram_output_metadata,
+)
 from topeft.modules.get_renormfact_envelope import (
     apply_renormfact_envelope_to_histogram,
     get_renormfact_envelope,
@@ -827,6 +832,24 @@ def main(argv: Optional[List[str]] = None) -> int:
         mem_tracemalloc=args.mem_tracemalloc,
         mem_top_n=args.mem_top_n,
     )
+
+    if "sumw2_storage_provenance" in metadata:
+        output_metadata = build_histogram_output_metadata(
+            input_histogram=output_pkl,
+            sumw2_storage_provenance=metadata["sumw2_storage_provenance"],
+        )
+    else:
+        input_metadata_path = f"{input_pkl}.metadata.json"
+        output_metadata = (
+            load_histogram_output_metadata(input_metadata_path)
+            if os.path.exists(input_metadata_path)
+            else None
+        )
+        if output_metadata is not None:
+            output_metadata["input_histogram"] = output_pkl
+    if output_metadata is not None:
+        with open(f"{output_pkl}.metadata.json", "w", encoding="utf-8") as stream:
+            json.dump(output_metadata, stream, indent=2, sort_keys=True)
 
     return 0
 

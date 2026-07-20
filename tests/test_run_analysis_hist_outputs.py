@@ -16,10 +16,9 @@ from analysis.topeft_run2.analysis_processor import ANALYSIS_MODE_EXCLUSIVE_ERRO
 _SAMPLE_JSON = Path("input_samples/sample_jsons/test_samples/UL17_private_ttH_for_CI.json")
 _SCRIPT_PATH = Path("analysis/topeft_run2/run_analysis.py")
 _EXPECTED_CR_BASE_HISTS = {
+    "ptz",
     "met",
-    "l0conept",
-    "l0eta",
-    "njets",
+    "lt",
 }
 
 
@@ -116,9 +115,10 @@ def test_hist_list_cr_includes_sumw2(monkeypatch, tmp_path):
 
     expected_output_keys = set()
     for hist_name in _EXPECTED_CR_BASE_HISTS:
-        expected_output_keys.add(hist_name)
+        expected_output_keys.add(f"{hist_name}__eft_nominal")
         expected_output_keys.add(f"{hist_name}_sumw2")
-        assert hist_name in output
+        assert f"{hist_name}__eft_nominal" in output
+        assert hist_name not in output
         assert f"{hist_name}_sumw2" in output
 
     assert set(output) == expected_output_keys
@@ -133,10 +133,11 @@ def test_hist_list_cr_respects_no_sumw2(monkeypatch, tmp_path):
     )
 
     for hist_name in _EXPECTED_CR_BASE_HISTS:
-        assert hist_name in output
+        assert f"{hist_name}__eft_nominal" in output
+        assert hist_name not in output
         assert f"{hist_name}_sumw2" not in output
 
-    assert set(output) == _EXPECTED_CR_BASE_HISTS
+    assert set(output) == {f"{name}__eft_nominal" for name in _EXPECTED_CR_BASE_HISTS}
 
 
 def test_custom_hist_list_accepts_fwd0eta(monkeypatch, tmp_path):
@@ -147,7 +148,7 @@ def test_custom_hist_list_accepts_fwd0eta(monkeypatch, tmp_path):
         "custom-fwd0eta",
     )
 
-    assert set(output) == {"fwd0eta", "fwd0eta_sumw2"}
+    assert set(output) == {"fwd0eta__eft_nominal", "fwd0eta_sumw2"}
 
 
 def test_custom_hist_list_accepts_fwd0pt(monkeypatch, tmp_path):
@@ -158,7 +159,7 @@ def test_custom_hist_list_accepts_fwd0pt(monkeypatch, tmp_path):
         "custom-fwd0pt",
     )
 
-    assert set(output) == {"fwd0pt", "fwd0pt_sumw2"}
+    assert set(output) == {"fwd0pt__eft_nominal", "fwd0pt_sumw2"}
 
 
 def test_np_postprocess_defer_creates_metadata(tmp_path):

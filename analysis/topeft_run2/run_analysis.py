@@ -21,7 +21,20 @@ from topcoffea.modules.paths import topcoffea_path
 from topeft.modules.dataDrivenEstimation import DataDrivenProducer
 from topeft.modules.deferred_np_metadata import (
     build_deferred_np_metadata,
+    build_histogram_output_metadata,
     build_np_followup_command,
+)
+from topeft.modules.nominal_schema import (
+    NOMINAL_CONTAINER_LAYOUT,
+    NOMINAL_CONTAINER_SCHEMA_VERSION,
+    canonicalize_nominal_keys,
+    validate_nominal_mapping,
+)
+from topeft.modules.axes import info as axes_info
+from topeft.modules.axes import info_2d as axes_info_2d
+from topeft.modules.sumw2_policy import (
+    resolve_sumw2_storage_policy,
+    sumw2_target,
 )
 from topeft.modules.get_renormfact_envelope import get_renormfact_envelope
 from topeft.modules.ttgamma_photon_history import (
@@ -939,6 +952,10 @@ if __name__ == "__main__":
     pretend = args.pretend
     treename = args.treename
     fill_sumw2 = not args.no_sumw2
+    legacy_no_sumw2_present = bool(args.no_sumw2)
+    legacy_no_sumw2_value = bool(args.no_sumw2)
+    sumw2_storage_present = False
+    sumw2_storage_config = None
     do_systs = args.do_systs
     suppress_forward_eta_stochastic_jer = args.suppress_forward_eta_stochastic_jer
     fwd_eta_band_pt_apply = args.fwd_eta_band_pt_apply
@@ -980,13 +997,32 @@ if __name__ == "__main__":
         outpath = ops.pop("outpath", outpath)
         pretend = ops.pop("pretend", pretend)
         treename = ops.pop("treename", treename)
-        no_sumw2_opt = ops.pop("no_sumw2", None)
-        if no_sumw2_opt is not None:
-            fill_sumw2 = not no_sumw2_opt
-        else:
-            legacy_do_errors = ops.pop("do_errors", None)
-            if legacy_do_errors is not None:
-                fill_sumw2 = bool(legacy_do_errors)
+        sumw2_storage_present = "sumw2_storage" in ops
+        sumw2_storage_config = ops.pop("sumw2_storage", None)
+        yaml_no_sumw2_present = "no_sumw2" in ops
+        yaml_do_errors_present = "do_errors" in ops
+        if yaml_no_sumw2_present and yaml_do_errors_present:
+            raise ValueError(
+                "Specify at most one legacy statistical flag: no_sumw2 or do_errors."
+            )
+        if args.no_sumw2 and (yaml_no_sumw2_present or yaml_do_errors_present):
+            raise ValueError(
+                "The command line and options file both explicitly set a legacy "
+                "statistical flag."
+            )
+        if yaml_no_sumw2_present:
+            yaml_no_sumw2_value = ops.pop("no_sumw2")
+            if not isinstance(yaml_no_sumw2_value, bool):
+                raise ValueError("Legacy no_sumw2 must be a boolean.")
+            legacy_no_sumw2_present = True
+            legacy_no_sumw2_value = yaml_no_sumw2_value
+        elif yaml_do_errors_present:
+            legacy_do_errors = ops.pop("do_errors")
+            if not isinstance(legacy_do_errors, bool):
+                raise ValueError("Legacy do_errors must be a boolean.")
+            legacy_no_sumw2_present = True
+            legacy_no_sumw2_value = not legacy_do_errors
+        fill_sumw2 = not legacy_no_sumw2_value
         do_systs = ops.pop("do_systs", do_systs)
         suppress_forward_eta_stochastic_jer = ops.pop(
             "suppress_forward_eta_stochastic_jer",
@@ -1198,7 +1234,11 @@ if __name__ == "__main__":
         # If we don't specify this argument, it will be None, and the processor will fill all hists
         hist_lst = hist_list
 
-    print("Resolved histogram list: {}".format(", ".join(hist_lst)))
+    print(
+        "Resolved histogram list: {}".format(
+            ", ".join(hist_lst) if hist_lst is not None else "all registered families"
+        )
+    )
     print(
         "Resolved ttgamma sample-role policy: {}".format(
             ttgamma_sample_role_policy
@@ -1500,6 +1540,68 @@ if __name__ == "__main__":
         }
     )
 
+    runtime_histogram_families = (
+        list(axes_info.keys()) + list(axes_info_2d.keys())
+        if hist_lst is None
+        else list(hist_lst)
+    )
+    runtime_histogram_families = [
+        family[:-6] if family.endswith("_sumw2") else family
+        for family in runtime_histogram_families
+    ]
+    runtime_histogram_families = list(dict.fromkeys(runtime_histogram_families))
+
+    required_sumw2_targets = []
+    if do_np:
+        for dataset_key, sample in samplesdict.items():
+            for family in runtime_histogram_families:
+                required_sumw2_targets.append(
+                    sumw2_target(dataset_key, sample["histAxisName"], family)
+                )
+    if analysis_mode == "taufitter":
+        taufitter_families = ("tau0Fpt", "tau0Tpt")
+        missing_taufitter_families = sorted(
+            set(taufitter_families) - set(runtime_histogram_families)
+        )
+        if missing_taufitter_families:
+            raise ValueError(
+                "The taufitter workflow requires runtime histogram families: "
+                + ", ".join(missing_taufitter_families)
+            )
+        for dataset_key, sample in samplesdict.items():
+            for family in taufitter_families:
+                required_sumw2_targets.append(
+                    sumw2_target(dataset_key, sample["histAxisName"], family)
+                )
+
+    sumw2_policy = resolve_sumw2_storage_policy(
+        sumw2_storage_config,
+        samples=samplesdict,
+        runtime_families=runtime_histogram_families,
+        axes_info=axes_info,
+        axes_info_2d=axes_info_2d,
+        analysis_mode=analysis_mode,
+        sumw2_storage_present=sumw2_storage_present,
+        legacy_no_sumw2_present=legacy_no_sumw2_present,
+        legacy_no_sumw2_value=legacy_no_sumw2_value,
+        consumer_requirements=required_sumw2_targets,
+    )
+    fill_sumw2 = bool(sumw2_policy.selected_families())
+    print(
+        "Resolved sumw2 storage: mode={} source={} targets={} families={}".format(
+            sumw2_policy.requested_mode,
+            sumw2_policy.source,
+            len(sumw2_policy.resolved_targets),
+            ",".join(sumw2_policy.selected_families()) or "<none>",
+        )
+    )
+    print(
+        "Resolved nominal container: version={} layout={}".format(
+            NOMINAL_CONTAINER_SCHEMA_VERSION,
+            NOMINAL_CONTAINER_LAYOUT,
+        )
+    )
+
     def _build_np_metadata_payload():
         resolved_year_list = (
             sorted(requested_years) if requested_years is not None else sample_years_from_inputs
@@ -1537,9 +1639,22 @@ if __name__ == "__main__":
                 "fill_sumw2": fill_sumw2,
                 "useRun3MVA": useRun3MVA,
             },
+            sumw2_storage_provenance=sumw2_policy.to_provenance(),
+            nominal_container_schema_version=NOMINAL_CONTAINER_SCHEMA_VERSION,
+            nominal_container_layout=NOMINAL_CONTAINER_LAYOUT,
         )
         payload["timestamp"] = time.time()
         return payload
+
+    def _write_output_metadata_sidecar(histogram_path):
+        metadata_path = histogram_path + ".metadata.json"
+        payload = build_histogram_output_metadata(
+            input_histogram=histogram_path,
+            sumw2_storage_provenance=sumw2_policy.to_provenance(),
+        )
+        with open(metadata_path, "w", encoding="utf-8") as metadata_stream:
+            json.dump(payload, metadata_stream, indent=2, sort_keys=True)
+        return metadata_path
 
     def _write_np_metadata_sidecar(*, pretend_override=None):
         payload = _build_np_metadata_payload()
@@ -1625,6 +1740,7 @@ if __name__ == "__main__":
         suppress_forward_eta_stochastic_jer=suppress_forward_eta_stochastic_jer,
         fwd_eta_band_pt_apply=fwd_eta_band_pt_apply,
         ttgamma_sample_role_policy=ttgamma_sample_role_policy,
+        sumw2_policy=sumw2_policy,
     )
 
     if executor_name in ["work_queue", "taskvine"]:
@@ -1771,6 +1887,18 @@ if __name__ == "__main__":
 
         print("Finished running the processor...")
 
+        validate_nominal_mapping(
+            output,
+            runtime_families=runtime_histogram_families,
+            schema_version=NOMINAL_CONTAINER_SCHEMA_VERSION,
+            policy=sumw2_policy,
+        )
+        output = canonicalize_nominal_keys(
+            output,
+            runtime_families=runtime_histogram_families,
+            schema_version=NOMINAL_CONTAINER_SCHEMA_VERSION,
+        )
+
         dt = time.time() - tstart
 
         if executor_name in ["work_queue", "taskvine"]:
@@ -1795,6 +1923,7 @@ if __name__ == "__main__":
         print(f"\nSaving output in {out_pkl_file}...")
         with gzip.open(out_pkl_file, "wb") as fout:
             cloudpickle.dump(output, fout)
+        _write_output_metadata_sidecar(out_pkl_file)
         print("Done!")
 
         # Run the data driven estimation, save the output
@@ -1804,6 +1933,7 @@ if __name__ == "__main__":
                 ddp = DataDrivenProducer(out_pkl_file, out_pkl_file_name_np)
                 print(f"Saving output in {out_pkl_file_name_np}...")
                 ddp.dumpToPickle()
+                _write_output_metadata_sidecar(out_pkl_file_name_np)
                 print("Done!")
                 if do_renormfact_envelope:
                     print("\nDoing the renorm. fact. envelope calculation...")

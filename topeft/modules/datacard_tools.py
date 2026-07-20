@@ -8,13 +8,27 @@ import os
 import re
 import json
 import time
+import copy
 
 from collections import defaultdict
 
 from topcoffea.modules.utils import regex_match, get_hist_from_pkl
 from topeft.modules.paths import topeft_path
 from topeft.modules.axes import info as axes_info
+from topeft.modules.axes import info_2d as axes_info_2d
 from topeft.modules.compatibility import add_sumw2_stub
+from topeft.modules.deferred_np_metadata import load_histogram_output_metadata
+from topeft.modules.nominal_schema import (
+    NOMINAL_CONTAINER_SCHEMA_VERSION,
+    is_split_nominal_mapping,
+    materialize_legacy_histogram_dict,
+    merge_nominal_mappings,
+    validate_nominal_mapping,
+)
+from topeft.modules.sumw2_policy import (
+    resolved_policy_from_provenance,
+    validate_policy_identity,
+)
 from topeft.modules.missing_parton_contract import (
     DEFAULT_SR_REGISTRY,
     SR_CHANNEL_CONFIG_KEY,
@@ -183,6 +197,8 @@ def load_and_merge_histogram_pkls(
     *,
     on_process_collision="error",
     require_sumw2=True,
+    metadata_paths=None,
+    consumer_required_families=(),
 ):
     """
         Load one or more histogram pkls and merge them in memory with strict validation.
@@ -196,6 +212,9 @@ def load_and_merge_histogram_pkls(
     if not pkl_paths:
         raise ValueError("No input pickle files were provided for merging.")
 
+    if metadata_paths is not None and len(metadata_paths) != len(pkl_paths):
+        raise ValueError("metadata_paths must align one-to-one with pkl_paths.")
+
     report = {
         "num_inputs": len(pkl_paths),
         "inputs": list(pkl_paths),
@@ -203,10 +222,12 @@ def load_and_merge_histogram_pkls(
         "require_sumw2": bool(require_sumw2),
         "files": [],
         "process_collisions": [],
+        "schema": None,
     }
 
-    merged_hists = {}
-    for path in pkl_paths:
+    loaded_inputs = []
+    input_metadata = []
+    for input_index, path in enumerate(pkl_paths):
         print(f"Opening: {path}")
         tic = time.time()
         hist_dict = get_hist_from_pkl(path, allow_empty=False)
@@ -224,47 +245,145 @@ def load_and_merge_histogram_pkls(
                 f"{_short_examples(non_string_keys)}"
             )
 
-        keys = set(hist_dict.keys())
-        base_keys = sorted(k for k in keys if not _is_sumw2_key(k))
-        sumw2_keys = sorted(k for k in keys if _is_sumw2_key(k))
 
-        orphan_sumw2 = sorted(k for k in sumw2_keys if _base_key(k) not in keys)
-        if orphan_sumw2:
-            raise RuntimeError(
-                f"Input '{path}' contains *_sumw2 keys without base histograms: "
-                f"{_short_examples(orphan_sumw2)}"
-            )
-
-        missing_sumw2 = []
-        if require_sumw2:
-            missing_sumw2 = sorted(k for k in base_keys if f"{k}{SUMW2_SUFFIX}" not in keys)
-            if missing_sumw2:
-                raise RuntimeError(
-                    f"Input '{path}' is missing required *_sumw2 companions for: "
-                    f"{_short_examples(missing_sumw2)}"
-                )
-
-        report["files"].append(
-            {
-                "path": path,
-                "num_keys": len(keys),
-                "num_base_keys": len(base_keys),
-                "num_sumw2_keys": len(sumw2_keys),
-            }
+        metadata_path = (
+            metadata_paths[input_index]
+            if metadata_paths is not None
+            else f"{path}.metadata.json"
         )
+        if metadata_path and os.path.exists(metadata_path):
+            metadata = load_histogram_output_metadata(metadata_path)
+        else:
+            metadata = None
+        if is_split_nominal_mapping(hist_dict) and metadata is None:
+            raise RuntimeError(
+                f"Input '{path}' contains split siblings but has no versioned metadata sidecar."
+            )
+        loaded_inputs.append(hist_dict)
+        input_metadata.append(metadata)
 
-        for key, incoming_hist in hist_dict.items():
-            if key not in merged_hists:
-                merged_hists[key] = incoming_hist
-                continue
+    schema_versions = {
+        None if metadata is None else metadata["nominal_container_schema_version"]
+        for metadata in input_metadata
+    }
+    if len(schema_versions) != 1:
+        raise RuntimeError("Cannot merge legacy and versioned nominal schemas together.")
+    schema_version = next(iter(schema_versions))
+    report["schema"] = "legacy_uniform" if schema_version is None else "split_sibling_v1"
 
-            existing_hist = merged_hists[key]
-            _validate_hist_compatibility(key, existing_hist, incoming_hist, path)
-
-            existing_procs = _process_labels(existing_hist)
-            incoming_procs = _process_labels(incoming_hist)
-            if existing_procs is not None and incoming_procs is not None:
-                overlap = sorted(existing_procs & incoming_procs)
+    merged_hists = {}
+    if schema_version == NOMINAL_CONTAINER_SCHEMA_VERSION:
+        policies = [
+            resolved_policy_from_provenance(metadata["sumw2_storage_provenance"])
+            for metadata in input_metadata
+        ]
+        for policy in policies[1:]:
+            validate_policy_identity(policies[0], policy)
+        policy = policies[0]
+        runtime_families = policy.runtime_histogram_families
+        required_families = frozenset(consumer_required_families)
+        missing_policy_requirements = sorted(
+            family
+            for family in required_families
+            if not policy.selects_family(family)
+        )
+        if missing_policy_requirements:
+            raise RuntimeError(
+                "Active consumer requirements are absent from the resolved policy: "
+                + ", ".join(missing_policy_requirements)
+            )
+        for path, hist_dict in zip(pkl_paths, loaded_inputs):
+            validate_nominal_mapping(
+                hist_dict,
+                runtime_families=runtime_families,
+                schema_version=schema_version,
+                policy=policy,
+            )
+            keys = set(hist_dict)
+            report["files"].append(
+                {
+                    "path": path,
+                    "num_keys": len(keys),
+                    "num_base_keys": len(runtime_families),
+                    "num_sumw2_keys": sum(_is_sumw2_key(key) for key in keys),
+                }
+            )
+        seen_processes_by_key = {}
+        for input_index, (path, hist_dict) in enumerate(zip(pkl_paths, loaded_inputs)):
+            for key, histogram in hist_dict.items():
+                incoming_procs = _process_labels(histogram) or set()
+                existing_procs = seen_processes_by_key.setdefault(key, set())
+                if input_index == 0:
+                    existing_procs.update(incoming_procs)
+                    continue
+                incoming_procs = _process_labels(hist_dict[key])
+                overlap = sorted((existing_procs or set()) & (incoming_procs or set()))
+                if not overlap:
+                    existing_procs.update(incoming_procs or set())
+                    continue
+                collision = {
+                    "key": key,
+                    "path": path,
+                    "overlap_count": len(overlap),
+                    "overlap_examples": _short_examples(overlap, max_items=15),
+                    "existing_process_count": len(existing_procs),
+                    "incoming_process_count": len(incoming_procs),
+                }
+                report["process_collisions"].append(collision)
+                message = (
+                    f"Process-label overlap detected while merging key '{key}' from "
+                    f"'{path}': {len(overlap)} overlapping labels."
+                )
+                if on_process_collision == "error":
+                    raise RuntimeError(message)
+                if on_process_collision == "warn":
+                    print(f"WARNING: {message}")
+                existing_procs.update(incoming_procs or set())
+        merged_hists = merge_nominal_mappings(
+            loaded_inputs,
+            runtime_families=runtime_families,
+            schema_version=schema_version,
+            policy=policy,
+        )
+        report["sumw2_storage_provenance"] = policy.to_provenance()
+        report["runtime_histogram_families"] = list(runtime_families)
+    elif schema_version is None:
+        for path, hist_dict in zip(pkl_paths, loaded_inputs):
+            keys = set(hist_dict.keys())
+            base_keys = sorted(k for k in keys if not _is_sumw2_key(k))
+            sumw2_keys = sorted(k for k in keys if _is_sumw2_key(k))
+            orphan_sumw2 = sorted(k for k in sumw2_keys if _base_key(k) not in keys)
+            if orphan_sumw2:
+                raise RuntimeError(
+                    f"Input '{path}' contains *_sumw2 keys without base histograms: "
+                    f"{_short_examples(orphan_sumw2)}"
+                )
+            if require_sumw2:
+                missing_sumw2 = sorted(
+                    key for key in base_keys if f"{key}{SUMW2_SUFFIX}" not in keys
+                )
+                if missing_sumw2:
+                    raise RuntimeError(
+                        f"Input '{path}' is missing required *_sumw2 companions for: "
+                        f"{_short_examples(missing_sumw2)}"
+                    )
+            report["files"].append(
+                {
+                    "path": path,
+                    "num_keys": len(keys),
+                    "num_base_keys": len(base_keys),
+                    "num_sumw2_keys": len(sumw2_keys),
+                }
+            )
+            for key, incoming_hist in hist_dict.items():
+                if key not in merged_hists:
+                    merged_hists[key] = copy.deepcopy(incoming_hist)
+                    continue
+                existing_hist = merged_hists[key]
+                _validate_hist_compatibility(key, existing_hist, incoming_hist, path)
+                existing_procs = _process_labels(existing_hist)
+                incoming_procs = _process_labels(incoming_hist)
+                overlap = sorted((existing_procs or set()) & (incoming_procs or set()))
                 if overlap:
                     collision = {
                         "key": key,
@@ -275,32 +394,17 @@ def load_and_merge_histogram_pkls(
                         "incoming_process_count": len(incoming_procs),
                     }
                     report["process_collisions"].append(collision)
-
-                    msg = (
-                        f"Process-label overlap detected while merging key '{key}' from '{path}': "
-                        f"{len(overlap)} overlapping labels (examples: {collision['overlap_examples']}). "
-                        "If this overlap is intentional (e.g. chunked outputs), rerun with "
-                        "`--on-process-collision allow`. "
-                        "If you just want diagnostics, use "
-                        "`--merge-only --on-process-collision warn`."
+                    message = (
+                        f"Process-label overlap detected while merging key '{key}' from "
+                        f"'{path}': {len(overlap)} overlapping labels."
                     )
                     if on_process_collision == "error":
-                        raise RuntimeError(msg)
+                        raise RuntimeError(message)
                     if on_process_collision == "warn":
-                        print(f"WARNING: {msg}")
-
-            try:
+                        print(f"WARNING: {message}")
                 merged_hists[key] += incoming_hist
-            except Exception as inplace_err:
-                try:
-                    merged_hists[key] = merged_hists[key] + incoming_hist
-                except Exception as add_err:
-                    raise RuntimeError(
-                        f"Failed to merge key '{key}' from '{path}'. "
-                        f"In-place add error: {inplace_err!r}. Add error: {add_err!r}."
-                    ) from add_err
-
-        del hist_dict
+    else:
+        raise RuntimeError(f"Unsupported nominal schema version {schema_version!r}.")
 
     report["num_merged_keys"] = len(merged_hists)
     report["num_process_collisions"] = len(report["process_collisions"])
@@ -1014,15 +1118,45 @@ class DatacardMaker():
                     f"Expected 'hists' to be a dict, got {type(hists)}"
                 )
             self.hists = hists
+            merge_report = None
             print(f"Using preloaded histogram dictionary ({len(self.hists)} keys)")
         elif fpath is not None:
             print(f"Opening: {fpath}")
             tic = time.time()
-            self.hists = get_hist_from_pkl(fpath, allow_empty=True)
+            self.hists, merge_report = load_and_merge_histogram_pkls(
+                [fpath],
+                on_process_collision="allow",
+                require_sumw2=False,
+            )
             dt = time.time() - tic
             print(f"Pkl Open Time: {dt:.2f} s")
         else:
             raise ValueError("Need either fpath or hists for read().")
+
+        if is_split_nominal_mapping(self.hists):
+            if merge_report is not None and merge_report.get(
+                "runtime_histogram_families"
+            ):
+                runtime_families = merge_report["runtime_histogram_families"]
+            else:
+                runtime_families = [
+                    family
+                    for family in list(axes_info) + list(axes_info_2d)
+                    if (
+                        family in self.hists
+                        or f"{family}__scalar_nominal" in self.hists
+                        or f"{family}__eft_nominal" in self.hists
+                    )
+                ]
+            self.hists = materialize_legacy_histogram_dict(
+                self.hists,
+                runtime_families=runtime_families,
+                schema_version=NOMINAL_CONTAINER_SCHEMA_VERSION,
+            )
+            if is_split_nominal_mapping(self.hists):
+                raise RuntimeError(
+                    "DatacardMaker transient materialization retained split source keys."
+                )
 
         for km_dist, h in self.hists.items():
             if h.empty():
@@ -1447,6 +1581,10 @@ class DatacardMaker():
                     continue
                 if 'nonprompt' in p and '4l' in ch:
                     continue
+                if p == "fakes" and h_sumw2 is None:
+                    raise RuntimeError(
+                        f"DatacardMaker requires '{km_dist}_sumw2' for the final fakes process."
+                    )
                 if 'flip' in p and '2los' in ch:
                     continue
 

@@ -9,6 +9,7 @@ import numpy as np
 
 from topcoffea.modules.utils import regex_match,clean_dir,dict_comp
 from topeft.modules.datacard_tools import *
+from topeft.modules.deferred_np_metadata import build_histogram_output_metadata
 
 # Note:
 #   Not sure if constructing the condor related files this way is good or bad practice. It already
@@ -154,7 +155,7 @@ def _emit_merge_report(report_obj, report_path, out_dir):
     print(f"Wrote merge report: {report_fpath}")
 
 
-def _cache_merged_histograms(merged_hists, cache_path, out_dir):
+def _cache_merged_histograms(merged_hists, cache_path, out_dir, merge_report=None):
     out_fpath = cache_path
     if not os.path.isabs(out_fpath):
         out_fpath = os.path.join(out_dir, out_fpath)
@@ -166,6 +167,13 @@ def _cache_merged_histograms(merged_hists, cache_path, out_dir):
     print(f"Caching merged histograms to {out_fpath}")
     with gzip.open(out_fpath, "wb") as fout:
         pickle.dump(merged_hists, fout, protocol=pickle.HIGHEST_PROTOCOL)
+    if merge_report and merge_report.get("schema") == "split_sibling_v1":
+        metadata = build_histogram_output_metadata(
+            input_histogram=out_fpath,
+            sumw2_storage_provenance=merge_report["sumw2_storage_provenance"],
+        )
+        with open(f"{out_fpath}.metadata.json", "w", encoding="utf-8") as stream:
+            json.dump(metadata, stream, indent=2, sort_keys=True)
     return out_fpath
 
 def run_local(dc,km_dists,channels,selected_wcs, crop_negative_bins, wcs_dict):
@@ -355,7 +363,9 @@ def main():
     )
     _emit_merge_report(merge_report, args.merge_report, out_dir)
     if args.cache_merged_pkl:
-        _cache_merged_histograms(merged_hists, args.cache_merged_pkl, out_dir)
+        _cache_merged_histograms(
+            merged_hists, args.cache_merged_pkl, out_dir, merge_report
+        )
     if args.merge_only:
         print("Merge-only mode enabled, stopping after successful merge validation.")
         return

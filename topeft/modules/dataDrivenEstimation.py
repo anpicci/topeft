@@ -9,6 +9,8 @@ from topcoffea.modules.hist_utils import iterate_hist_from_pkl
 
 from topcoffea.modules.get_param_from_jsons import GetParam
 from topcoffea.modules.utils import canonicalize_process_name
+from topeft.modules.axes import info_2d as axes_info_2d
+from topeft.modules.nominal_schema import EFT_NOMINAL_SUFFIX, SCALAR_NOMINAL_SUFFIX
 from topeft.modules.paths import topeft_path
 get_te_param = GetParam(topeft_path("params/params.json"))
 
@@ -45,6 +47,21 @@ class DataDrivenProducer:
             return
 
         yield from source
+
+    def _input_histogram_keys(self):
+        source = self._input_source
+        if self._is_histogram_path(source):
+            return tuple(
+                key
+                for key, _histogram in iterate_hist_from_pkl(
+                    source, allow_empty=True, materialize=False
+                )
+            )
+        if hasattr(source, "keys"):
+            return tuple(source.keys())
+        raise TypeError(
+            "Streaming nonprompt input must be a histogram path or keyed mapping."
+        )
 
     def _parse_process(self, process_name):
         match = self._name_pattern.search(process_name)
@@ -376,6 +393,20 @@ class DataDrivenProducer:
                 )
 
     def _build_data_driven_histogram(self, key, histo):
+        if key.endswith(EFT_NOMINAL_SUFFIX):
+            # EFT signal content remains polynomial and separate. The nonprompt
+            # estimator is scalar; retain only non-application-region EFT content.
+            output = None
+            for appl in histo.axes["appl"]:
+                selected = histo.integrate("appl", appl)
+                if "isAR" in appl:
+                    continue
+                output = selected if output is None else output + selected
+            if output is None:
+                output = histo.integrate("appl")
+                output.reset()
+            return output
+
         if histo.empty():  # histo is empty, so we just integrate over appl and keep an empty histo
             if self._dd_report_enabled and not key.endswith("_sumw2"):
                 self._dd_report_by_key[key] = self._init_dd_report(key, histo, empty=True)
@@ -508,6 +539,20 @@ class DataDrivenProducer:
             yield from self.outHist.items()
             return
 
+        seen_keys = set(self._input_histogram_keys())
+        required_companions = set()
+        for key in seen_keys:
+            if key.endswith(SCALAR_NOMINAL_SUFFIX):
+                family = key[: -len(SCALAR_NOMINAL_SUFFIX)]
+                required_companions.add(f"{family}_sumw2")
+            elif key in axes_info_2d:
+                required_companions.add(f"{key}_sumw2")
+        missing = sorted(required_companions - seen_keys)
+        if missing:
+            raise RuntimeError(
+                "Nonprompt construction requires scalar statistical companions: "
+                + ", ".join(missing)
+            )
         for key, histo in self._iter_input_histograms():
             yield key, self._build_data_driven_histogram(key, histo)
 

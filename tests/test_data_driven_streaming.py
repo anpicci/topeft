@@ -9,9 +9,11 @@ import pytest
 
 from analysis.topeft_run2 import run_data_driven
 from topcoffea.modules.sparseHist import SparseHist
+from topcoffea.modules.histEFT import HistEFT
 from topeft.modules import dataDrivenEstimation
 from topeft.modules.dataDrivenEstimation import DataDrivenProducer
 from topcoffea.modules.utils import get_hist_from_pkl
+from topeft.modules.nominal_schema import eft_nominal_key, scalar_nominal_key
 
 
 @pytest.fixture
@@ -56,17 +58,20 @@ def test_data_driven_producer_streams_histograms(monkeypatch, tmp_path):
     input_path = tmp_path / "input.pkl.gz"
     input_path.write_bytes(b"placeholder")
 
-    calls = {}
+    calls = []
 
     def fake_iterate(path, *, allow_empty, materialize=False):
-        calls["args"] = (path, allow_empty, materialize)
+        calls.append((path, allow_empty, materialize))
         return iter(())
 
     monkeypatch.setattr(dataDrivenEstimation, "iterate_hist_from_pkl", fake_iterate)
 
     producer = DataDrivenProducer(str(input_path), "")
     assert producer.getDataDrivenHistogram() == {}
-    assert calls["args"] == (str(input_path), True, False)
+    assert calls == [
+        (str(input_path), True, False),
+        (str(input_path), True, False),
+    ]
 
 
 def test_run_data_driven_matches_inline_output(tmp_path, sparse_hist_axes):
@@ -97,3 +102,83 @@ def test_run_data_driven_matches_inline_output(tmp_path, sparse_hist_axes):
             np.asarray(expected_hist.values(flow=True)),
         )
         assert list(streamed_hist.axes["process"]) == list(expected_hist.axes["process"])
+
+
+def _split_axes(dense_name):
+    return (
+        hist.axis.StrCategory([], name="process", growth=True),
+        hist.axis.StrCategory([], name="appl", growth=True),
+        hist.axis.StrCategory([], name="systematic", growth=True),
+        hist.axis.Regular(1, 0.0, 1.0, name=dense_name),
+    )
+
+
+def _total_for_process(histogram, process):
+    selected = histogram.integrate("process", process)
+    if isinstance(selected, HistEFT):
+        values = selected.eval({})
+    else:
+        values = selected.view(flow=True, as_dict=True)
+    return sum(float(np.asarray(value).sum()) for value in values.values())
+
+
+def test_split_nonprompt_uses_scalar_subtraction_sumw2_addition_and_eft_passthrough():
+    scalar = SparseHist(*_split_axes("njets"), storage="Double")
+    companion = SparseHist(*_split_axes("njets_sumw2"), storage="Double")
+    for process, nominal, second_moment in (
+        ("dataUL18", 10.0, 100.0),
+        ("TTTo2L2Nu_centralUL18", 3.0, 9.0),
+    ):
+        scalar.fill(
+            process=process,
+            appl="isAR_3l",
+            systematic="nominal",
+            njets=np.asarray([0.5]),
+            weight=np.asarray([nominal]),
+        )
+        companion.fill(
+            process=process,
+            appl="isAR_3l",
+            systematic="nominal",
+            njets_sumw2=np.asarray([0.5]),
+            weight=np.asarray([second_moment]),
+        )
+    eft = HistEFT(*_split_axes("njets"), wc_names=["ctG"], label="Events")
+    for appl, weight in (("isAR_3l", 9.0), ("isSR_3l", 5.0)):
+        eft.fill(
+            process="signal_centralUL18",
+            appl=appl,
+            systematic="nominal",
+            njets=np.asarray([0.5]),
+            weight=np.asarray([weight]),
+            eft_coeff=np.asarray([[1.0, 2.0, 3.0]]),
+        )
+
+    output = DataDrivenProducer(
+        {
+            scalar_nominal_key("njets"): scalar,
+            eft_nominal_key("njets"): eft,
+            "njets_sumw2": companion,
+        },
+        "",
+    ).getDataDrivenHistogram()
+    assert _total_for_process(output[scalar_nominal_key("njets")], "nonpromptUL18") == pytest.approx(7.0)
+    assert _total_for_process(output["njets_sumw2"], "nonpromptUL18") == pytest.approx(109.0)
+    assert _total_for_process(output[eft_nominal_key("njets")], "signal_centralUL18") == pytest.approx(5.0)
+    assert "appl" not in [axis.name for axis in output[eft_nominal_key("njets")].axes]
+
+
+def test_split_nonprompt_rejects_missing_selected_scalar_companion():
+    scalar = SparseHist(*_split_axes("njets"), storage="Double")
+    scalar.fill(
+        process="dataUL18",
+        appl="isAR_3l",
+        systematic="nominal",
+        njets=np.asarray([0.5]),
+        weight=np.asarray([1.0]),
+    )
+    producer = DataDrivenProducer(
+        {scalar_nominal_key("njets"): scalar}, "", iterator_mode=True
+    )
+    with pytest.raises(RuntimeError, match="requires scalar statistical companions"):
+        producer.getDataDrivenHistogram()

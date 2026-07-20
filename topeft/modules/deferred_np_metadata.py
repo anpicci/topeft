@@ -5,8 +5,15 @@ import os
 import shlex
 from typing import Any, Dict, Mapping
 
+from topeft.modules.nominal_schema import (
+    NOMINAL_CONTAINER_LAYOUT,
+    NOMINAL_CONTAINER_SCHEMA_VERSION,
+)
+from topeft.modules.sumw2_policy import resolved_policy_from_provenance
+
 
 DEFERRED_NP_METADATA_VERSION = 2
+HISTOGRAM_OUTPUT_METADATA_VERSION = 1
 RUN_DATA_DRIVEN_ENTRYPOINT = "analysis/topeft_run2/run_data_driven.py"
 
 _REQUIRED_KEYS = frozenset(
@@ -51,8 +58,11 @@ def build_deferred_np_metadata(
     executor: str,
     options_file: str | None,
     flags: Mapping[str, Any],
+    sumw2_storage_provenance: Mapping[str, Any] | None = None,
+    nominal_container_schema_version: int | None = None,
+    nominal_container_layout: str | None = None,
 ) -> Dict[str, Any]:
-    return {
+    payload = {
         "metadata_version": DEFERRED_NP_METADATA_VERSION,
         "input_histogram": input_histogram,
         "output_histogram": output_histogram,
@@ -72,6 +82,67 @@ def build_deferred_np_metadata(
         "flags": dict(flags),
         "followup_command": build_np_followup_command(metadata_path),
     }
+    if sumw2_storage_provenance is not None:
+        payload.update(
+            {
+                "sumw2_storage_provenance": dict(sumw2_storage_provenance),
+                "nominal_container_schema_version": nominal_container_schema_version,
+                "nominal_container_layout": nominal_container_layout,
+            }
+        )
+        _validate_nominal_policy_metadata(payload)
+    return payload
+
+
+def build_histogram_output_metadata(
+    *,
+    input_histogram: str,
+    sumw2_storage_provenance: Mapping[str, Any],
+    nominal_container_schema_version: int = NOMINAL_CONTAINER_SCHEMA_VERSION,
+    nominal_container_layout: str = NOMINAL_CONTAINER_LAYOUT,
+) -> Dict[str, Any]:
+    payload = {
+        "metadata_version": HISTOGRAM_OUTPUT_METADATA_VERSION,
+        "input_histogram": input_histogram,
+        "sumw2_storage_provenance": dict(sumw2_storage_provenance),
+        "nominal_container_schema_version": nominal_container_schema_version,
+        "nominal_container_layout": nominal_container_layout,
+    }
+    return validate_histogram_output_metadata(payload)
+
+
+def load_histogram_output_metadata(metadata_path: str) -> Dict[str, Any]:
+    if not os.path.exists(metadata_path):
+        raise FileNotFoundError(f"Histogram metadata file not found: {metadata_path}")
+    with open(metadata_path, encoding="utf-8") as metadata_stream:
+        payload = json.load(metadata_stream)
+    return validate_histogram_output_metadata(payload)
+
+
+def validate_histogram_output_metadata(payload: Mapping[str, Any]) -> Dict[str, Any]:
+    if not isinstance(payload, Mapping):
+        raise ValueError("Histogram output metadata must be a JSON object.")
+    expected_keys = {
+        "metadata_version",
+        "input_histogram",
+        "sumw2_storage_provenance",
+        "nominal_container_schema_version",
+        "nominal_container_layout",
+    }
+    missing = sorted(expected_keys - set(payload))
+    unknown = sorted(set(payload) - expected_keys)
+    if missing or unknown:
+        raise ValueError(
+            f"Invalid histogram output metadata fields; missing={missing} unknown={unknown}."
+        )
+    if payload["metadata_version"] != HISTOGRAM_OUTPUT_METADATA_VERSION:
+        raise ValueError(
+            "Unsupported histogram output metadata version "
+            f"{payload['metadata_version']!r}."
+        )
+    _require_nonempty_string(payload, "input_histogram")
+    _validate_nominal_policy_metadata(payload)
+    return dict(payload)
 
 
 def load_deferred_np_metadata(metadata_path: str) -> Dict[str, Any]:
@@ -137,7 +208,34 @@ def validate_deferred_np_metadata(payload: Mapping[str, Any]) -> Dict[str, Any]:
     if flags is not None and not isinstance(flags, Mapping):
         raise ValueError("Deferred nonprompt metadata key 'flags' must be a JSON object.")
 
+    nominal_metadata_fields = {
+        "sumw2_storage_provenance",
+        "nominal_container_schema_version",
+        "nominal_container_layout",
+    }
+    present_nominal_fields = nominal_metadata_fields & set(payload)
+    if present_nominal_fields and present_nominal_fields != nominal_metadata_fields:
+        raise ValueError(
+            "Deferred metadata must contain the complete nominal/policy metadata block."
+        )
+    if present_nominal_fields:
+        _validate_nominal_policy_metadata(payload)
+
     return dict(payload)
+
+
+def _validate_nominal_policy_metadata(payload: Mapping[str, Any]) -> None:
+    if payload.get("nominal_container_schema_version") != NOMINAL_CONTAINER_SCHEMA_VERSION:
+        raise ValueError(
+            "Unsupported nominal container schema version "
+            f"{payload.get('nominal_container_schema_version')!r}."
+        )
+    if payload.get("nominal_container_layout") != NOMINAL_CONTAINER_LAYOUT:
+        raise ValueError(
+            "Unsupported nominal container layout "
+            f"{payload.get('nominal_container_layout')!r}."
+        )
+    resolved_policy_from_provenance(payload.get("sumw2_storage_provenance"))
 
 
 def _require_nonempty_string(payload: Mapping[str, Any], key: str) -> str:
