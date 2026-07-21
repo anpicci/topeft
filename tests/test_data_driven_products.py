@@ -75,7 +75,14 @@ def _explicit_block(*, nonprompt=True, flips=True):
     }
 
 
-def _resolve_products(block, samples, *, present=True, legacy_do_np=False):
+def _resolve_products(
+    block,
+    samples,
+    *,
+    present=True,
+    legacy_do_np=False,
+    required_prompt_signal_processes=(),
+):
     return resolve_data_driven_products(
         block,
         data_driven_products_present=present,
@@ -83,6 +90,7 @@ def _resolve_products(block, samples, *, present=True, legacy_do_np=False):
         samples=samples,
         runtime_families=("njets", "met"),
         metadata_path="run_options.yml",
+        required_prompt_signal_processes=required_prompt_signal_processes,
     )
 
 
@@ -199,7 +207,19 @@ def test_both_disabled_is_valid_and_requires_no_targets(samples):
 
 
 def test_implicit_production_selects_only_requested_source_targets(samples):
-    products = _resolve_products(_explicit_block(), samples)
+    required_signals = ("ttHJet_privateUL18",)
+    block = _explicit_block()
+    block["nonprompt"]["source_contributors"]["prompt_mc"] = {
+        "process_names": [
+            "TTTo2L2Nu_centralUL18",
+            "ttHJet_privateUL18",
+        ]
+    }
+    products = _resolve_products(
+        block,
+        samples,
+        required_prompt_signal_processes=required_signals,
+    )
     policy = resolve_sumw2_storage_policy(
         None,
         samples=samples,
@@ -215,11 +235,19 @@ def test_implicit_production_selects_only_requested_source_targets(samples):
     assert set(policy.selected_processes("njets")) == {
         "dataUL18",
         "TTTo2L2Nu_centralUL18",
+        "ttHJet_privateUL18",
     }
     assert "other_centralUL18" not in policy.selected_processes("njets")
     assert requested["products"]["nonprompt"]["enabled"] is True
-    assert set(contract) == {"contract_version", "products"}
-    assert contract["contract_version"] == 2
+    assert set(contract) == {
+        "contract_version",
+        "required_prompt_signal_processes",
+        "products",
+    }
+    assert contract["contract_version"] == 3
+    assert contract["required_prompt_signal_processes"] == [
+        "ttHJet_privateUL18"
+    ]
     assert contract["products"]["flips"]["generated_outputs"]["flipsUL18"][
         "required_source_sumw2_processes"
     ] == ["dataUL18"]
@@ -248,9 +276,24 @@ def test_full_diagnostics_and_complete_full_custom_pass_all_families(samples):
 
 
 def test_explicit_production_and_taufitter_require_complete_product_sources(samples):
-    products = _resolve_products(_explicit_block(), samples)
+    block = _explicit_block()
+    block["nonprompt"]["source_contributors"]["prompt_mc"] = {
+        "process_names": [
+            "TTTo2L2Nu_centralUL18",
+            "ttHJet_privateUL18",
+        ]
+    }
+    products = _resolve_products(
+        block,
+        samples,
+        required_prompt_signal_processes=("ttHJet_privateUL18",),
+    )
     source_rule = {
-        "process_names": ["dataUL18", "TTTo2L2Nu_centralUL18"],
+        "process_names": [
+            "dataUL18",
+            "TTTo2L2Nu_centralUL18",
+            "ttHJet_privateUL18",
+        ],
     }
     explicit_production = _resolve_policy(
         {"mode": "production", "rules": [source_rule]},

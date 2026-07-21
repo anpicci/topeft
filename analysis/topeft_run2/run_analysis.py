@@ -42,6 +42,7 @@ from topeft.modules.sumw2_policy import (
 from topeft.modules.production_sample_profile import (
     build_active_sample_universe,
     certify_production_sample_contract,
+    derive_required_prompt_signal_processes,
     production_sample_profile_error,
     validate_active_sample_profile,
 )
@@ -1601,6 +1602,11 @@ if __name__ == "__main__":
         samples=samplesdict,
         runtime_families=runtime_histogram_families,
         metadata_path=args.options,
+        required_prompt_signal_processes=derive_required_prompt_signal_processes(
+            active_universe.processes,
+            signal_sample_profile=sumw2_mode.signal_sample_profile,
+            nonprompt_enabled=True,
+        ),
     )
     if do_np and not resolved_data_driven_products.enabled_products():
         raise ValueError(

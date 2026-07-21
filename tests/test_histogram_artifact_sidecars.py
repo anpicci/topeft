@@ -226,8 +226,13 @@ def test_processor_sidecar_uses_family_free_generated_output_contract(
     path = tmp_path / "processor.pkl.gz"
     sidecar = _write_processor(path, policy)
     contract = sidecar["resolved_data_driven_contract"]
-    assert contract["contract_version"] == 2
-    assert set(contract) == {"contract_version", "products"}
+    assert contract["contract_version"] == 3
+    assert set(contract) == {
+        "contract_version",
+        "required_prompt_signal_processes",
+        "products",
+    }
+    assert contract["required_prompt_signal_processes"] == []
     assert "families" not in contract
     assert contract["products"]["nonprompt"] == {
         "enabled": True,
@@ -995,7 +1000,7 @@ def test_private_and_central_profile_transformed_artifacts_do_not_merge(tmp_path
             "signal_dataset": {
                 "histAxisName": signal_process,
                 "isData": False,
-                "WCnames": ["ctW"] if profile == "production" else [],
+                "WCnames": [],
             },
         }
         policy = resolve_sumw2_storage_policy(
@@ -1006,6 +1011,7 @@ def test_private_and_central_profile_transformed_artifacts_do_not_merge(tmp_path
                         "process_names": [
                             "dataUL18",
                             "TTTo2L2Nu_centralUL18",
+                            signal_process,
                         ],
                         "variables": ["njets"],
                     }
@@ -1024,7 +1030,10 @@ def test_private_and_central_profile_transformed_artifacts_do_not_merge(tmp_path
                     "source_contributors": {
                         "data": {"process_names": ["dataUL18"]},
                         "prompt_mc": {
-                            "process_names": ["TTTo2L2Nu_centralUL18"]
+                            "process_names": [
+                                "TTTo2L2Nu_centralUL18",
+                                signal_process,
+                            ]
                         },
                     },
                 },
@@ -1051,6 +1060,7 @@ def test_private_and_central_profile_transformed_artifacts_do_not_merge(tmp_path
                         (
                             ("dataUL18", "isAR_3l", 10.0),
                             ("TTTo2L2Nu_centralUL18", "isAR_3l", 3.0),
+                            (signal_process, "isAR_3l", 1.0),
                             ("dataUL18", "isAR_2lSS_OS", 4.0),
                         ),
                 ),
@@ -1059,6 +1069,7 @@ def test_private_and_central_profile_transformed_artifacts_do_not_merge(tmp_path
                         (
                             ("dataUL18", "isAR_3l", 100.0),
                             ("TTTo2L2Nu_centralUL18", "isAR_3l", 9.0),
+                            (signal_process, "isAR_3l", 1.0),
                             ("dataUL18", "isAR_2lSS_OS", 16.0),
                         ),
                 ),

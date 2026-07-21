@@ -310,7 +310,7 @@ def test_np_postprocess_inline_writes_transformed_artifact_sidecar(
         "nonprompt": {"enabled": True},
         "flips": {"enabled": True},
     }
-    assert sidecar["resolved_data_driven_contract"]["contract_version"] == 2
+    assert sidecar["resolved_data_driven_contract"]["contract_version"] == 3
     assert sidecar["resolved_data_driven_contract"]["products"]["nonprompt"][
         "generated_outputs"
     ] == {
@@ -386,6 +386,84 @@ data_driven_products:
                 error_info.value
             )
             assert "Recommended correction" in str(error_info.value)
+    finally:
+        sys.path = original_sys_path
+
+    assert processor_calls == []
+
+
+@pytest.mark.parametrize(
+    "mode,signal_process",
+    [
+        ("production", "tllq_private2022"),
+        ("production_central", "tZq_central2022"),
+    ],
+)
+def test_required_signal_omission_fails_before_processor_construction(
+    monkeypatch,
+    tmp_path,
+    mode,
+    signal_process,
+):
+    sample_paths = _write_data_driven_sample_jsons(tmp_path)
+    sample_paths.extend(_write_signal_variant_jsons(tmp_path, [signal_process]))
+    options_path = tmp_path / f"missing_required_signal_{mode}.yml"
+    options_path.write_text(
+        f"""sumw2_storage:
+  mode: {mode}
+  rules:
+    - process_names: [dataUL17, TTTo2L2Nu_centralUL17, {signal_process}]
+      variables: [met]
+data_driven_products:
+  nonprompt:
+    enabled: true
+    source_contributors:
+      data:
+        process_names: [dataUL17]
+      prompt_mc:
+        process_names: [TTTo2L2Nu_centralUL17]
+  flips:
+    enabled: false
+""",
+        encoding="utf-8",
+    )
+    processor_calls = []
+
+    def forbidden_processor(*args, **kwargs):
+        processor_calls.append((args, kwargs))
+        raise AssertionError("processor construction must not begin")
+
+    original_sys_path = list(sys.path)
+    sys.path.insert(0, str(_SCRIPT_PATH.parent))
+    try:
+        processor_module = importlib.import_module("analysis_processor")
+        monkeypatch.setattr(
+            processor_module,
+            "AnalysisProcessor",
+            forbidden_processor,
+        )
+        argv = [
+            "run_analysis.py",
+            ",".join(sample_paths),
+            "--executor",
+            "futures",
+            "--hist-list",
+            "met",
+            "--options",
+            str(options_path),
+            "--skip-topcoffea-data-check",
+            "--sample-universe-wrapper",
+            "required-signal-test",
+        ]
+        with mock.patch.object(sys, "argv", argv):
+            with pytest.raises(SystemExit) as error_info:
+                runpy.run_path(str(_SCRIPT_PATH), run_name="__main__")
+        message = str(error_info.value)
+        assert "SUMW2-PROFILE-E007" in message
+        assert f"resolved_mode='{mode}'" in message
+        assert signal_process in message
+        assert "metadata_source='explicit'" in message
+        assert "Recommended correction" in message
     finally:
         sys.path = original_sys_path
 
