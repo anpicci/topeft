@@ -81,23 +81,73 @@ storage plan.
 
 ## Running the CLI
 
-Use a role configuration matching the selected input exactly:
+Use role configurations matching each selected input exactly. A single-input
+invocation keeps the original one-config form:
+
+```bash
+python analysis/diboson_njets/diboson_sf_run3.py \
+  --pkl input_2022.pkl.gz \
+  --config roles_2022.yml \
+  --channel 3l_CR \
+  --year 2022 \
+  --output-dir output
+```
+
+A shared multi-year input reuses one exhaustive config containing the full role
+set for every selected period:
 
 ```bash
 python analysis/diboson_njets/diboson_sf_run3.py \
   --pkl combined.pkl.gz \
-  --config my_diboson_roles.yml \
+  --config roles_combined.yml \
   --channel 3l_CR \
-  --year 2022 2023 \
+  --year 2022 2022EE \
   --output-dir output
 ```
 
-One path per year, a `{year}` path template, and a single shared pickle are
-supported. With a shared pickle, process labels must encode the requested year.
-`--year all` discovers those labels and writes both per-year and combined
-results. A single tracked example configuration cannot cover inputs with
-different resolved labels, so those workflows must provide a matching
-`--config` file.
+The same shared form supports automatic discovery and writes each discovered
+period plus the combined `all` result:
+
+```bash
+python analysis/diboson_njets/diboson_sf_run3.py \
+  --pkl combined.pkl.gz \
+  --config roles_combined.yml \
+  --channel 3l_CR \
+  --year all \
+  --output-dir output
+```
+
+Independent year files require matching configs in the same positional order:
+
+```bash
+python analysis/diboson_njets/diboson_sf_run3.py \
+  --pkl input_2022.pkl.gz input_2022EE.pkl.gz \
+  --config roles_2022.yml roles_2022EE.yml \
+  --channel 3l_CR \
+  --year 2022 2022EE \
+  --output-dir output
+```
+
+Input and config templates may instead use the literal `{year}` placeholder:
+
+```bash
+python analysis/diboson_njets/diboson_sf_run3.py \
+  --pkl 'input_{year}.pkl.gz' \
+  --config 'roles_{year}.yml' \
+  --channel 3l_CR \
+  --year 2022 2022EE \
+  --output-dir output
+```
+
+An input template may also be paired with an explicit config list, or an
+explicit input list with one config template. Configs always contain exact
+resolved labels: one config can be reused only for a shared input containing
+its full role set, while independent files require one matching config per
+input. The CLI propagation flags apply uniformly to the whole invocation. When
+there is no CLI override, every assigned config must resolve the same
+`propagate_statistical_uncertainties` state. A `{year}` config template is not
+valid with `--year all`, because discovery requires one shared exhaustive
+config.
 
 ## Outputs and provenance
 

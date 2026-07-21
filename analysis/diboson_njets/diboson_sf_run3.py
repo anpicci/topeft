@@ -18,7 +18,7 @@ import pickle
 import re
 from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 import awkward as ak
 import numpy as np
@@ -37,6 +37,15 @@ ROLE_NAMES = ("data", "background", "diboson", "ignored")
 
 class DibosonContractError(RuntimeError):
     """The configured diboson statistical contract is not satisfied."""
+
+
+class resolved_diboson_input(NamedTuple):
+    """One calculation year paired with its exact input and role config."""
+
+    year: str
+    pkl_path: str
+    config_path: str
+    shared_input: bool
 
 
 def load_pkl_file(pkl_file: str) -> dict[str, Any]:
@@ -912,7 +921,85 @@ def save_scale_factor_plot(
     return metadata
 
 
-def _resolve_cli_inputs(args: argparse.Namespace, parser: argparse.ArgumentParser):
+def _has_year_template(
+    path: str,
+    *,
+    option_name: str,
+    parser: argparse.ArgumentParser,
+) -> bool:
+    has_year = "{year}" in path
+    unresolved = path.replace("{year}", "")
+    if "{" in unresolved or "}" in unresolved:
+        parser.error(
+            f"{option_name} template supports only the literal '{{year}}' "
+            f"placeholder; received {path!r}."
+        )
+    return has_year
+
+
+def _resolve_config_paths(
+    raw_config_paths: Sequence[str],
+    years: Sequence[str],
+    *,
+    shared_input: bool,
+    has_all_years: bool,
+    parser: argparse.ArgumentParser,
+) -> list[str]:
+    config_paths = [str(path) for path in raw_config_paths]
+    if not config_paths:
+        parser.error("At least one path must be provided via --config.")
+    template_flags = [
+        _has_year_template(
+            path,
+            option_name="--config",
+            parser=parser,
+        )
+        for path in config_paths
+    ]
+    if has_all_years and any(template_flags):
+        parser.error("--year all cannot be used with a template --config path.")
+    if any(template_flags) and (len(config_paths) != 1 or sum(template_flags) != 1):
+        parser.error(
+            "A template --config must be the only config argument and contain "
+            "the literal {year} placeholder."
+        )
+
+    if shared_input:
+        if len(config_paths) != 1 or template_flags[0]:
+            parser.error("A shared input requires exactly one non-template --config path.")
+        resolved = [config_paths[0]] * len(years)
+    elif template_flags[0]:
+        resolved = [config_paths[0].format(year=year) for year in years]
+    elif len(config_paths) == len(years):
+        resolved = list(config_paths)
+    elif len(config_paths) == 1 and len(years) > 1:
+        parser.error(
+            "Multiple independent input files require one matching --config per "
+            "input, or a --config path containing {year}."
+        )
+    else:
+        parser.error(
+            "Number of --config paths must match the number of independent "
+            "input/year records."
+        )
+
+    missing = list(dict.fromkeys(path for path in resolved if not os.path.exists(path)))
+    if missing:
+        parser.error(
+            "Resolved config path(s) do not exist: " + ", ".join(missing)
+        )
+    return [str(Path(path).resolve()) for path in resolved]
+
+
+def _resolve_cli_inputs(
+    args: argparse.Namespace,
+    parser: argparse.ArgumentParser,
+) -> tuple[
+    list[resolved_diboson_input],
+    dict[str, list[str]],
+    list[str],
+    dict[str, dict[str, Any]],
+]:
     years = [str(year) for year in args.year]
     if not years:
         parser.error("At least one year must be provided via -y/--year.")
@@ -922,10 +1009,30 @@ def _resolve_cli_inputs(args: argparse.Namespace, parser: argparse.ArgumentParse
     ]
     shared = False
     year_process_map: dict[str, list[str]] = {}
+    raw_config_paths = (
+        [str(args.config)]
+        if isinstance(args.config, (str, os.PathLike))
+        else [str(path) for path in args.config]
+    )
+    config_template_flags = [
+        _has_year_template(
+            path,
+            option_name="--config",
+            parser=parser,
+        )
+        for path in raw_config_paths
+    ]
+    if has_all_years and any(config_template_flags):
+        parser.error("--year all cannot be used with a template --config path.")
 
     if len(args.pkl) == 1:
         pkl_arg = args.pkl[0]
-        if "{year}" in pkl_arg:
+        pkl_is_template = _has_year_template(
+            pkl_arg,
+            option_name="--pkl",
+            parser=parser,
+        )
+        if pkl_is_template:
             if has_all_years:
                 parser.error("--year all cannot be used with a template --pkl path.")
             pkl_paths = [pkl_arg.format(year=year) for year in years]
@@ -974,13 +1081,78 @@ def _resolve_cli_inputs(args: argparse.Namespace, parser: argparse.ArgumentParse
             )
     if any(year.lower() == ALL_YEARS_SENTINEL for year in years) and not shared:
         parser.error("--year all requires one shared input pickle.")
-    return years, pkl_paths, shared, year_process_map, requested_specific_years, cache
+
+    config_paths = _resolve_config_paths(
+        raw_config_paths,
+        years,
+        shared_input=shared,
+        has_all_years=has_all_years,
+        parser=parser,
+    )
+    records = [
+        resolved_diboson_input(
+            year=year,
+            pkl_path=pkl_path,
+            config_path=config_path,
+            shared_input=shared,
+        )
+        for year, pkl_path, config_path in zip(years, pkl_paths, config_paths)
+    ]
+    return records, year_process_map, requested_specific_years, cache
+
+
+def _load_resolved_configs(
+    records: Sequence[resolved_diboson_input],
+    cli_value: bool | None,
+) -> dict[str, dict[str, Any]]:
+    config_cache: dict[str, dict[str, Any]] = {}
+    for record in records:
+        if record.config_path in config_cache:
+            continue
+        diboson_config = load_diboson_config(record.config_path)
+        process_roles = _normalize_process_roles(diboson_config)
+        propagation_enabled, configuration_source = resolve_propagation_state(
+            diboson_config,
+            cli_value,
+        )
+        config_cache[record.config_path] = {
+            "diboson_config": diboson_config,
+            "process_roles": process_roles,
+            "propagation_enabled": propagation_enabled,
+            "configuration_source": configuration_source,
+        }
+
+    if cli_value is None:
+        resolved_states = {
+            bool(config["propagation_enabled"])
+            for config in config_cache.values()
+        }
+        if len(resolved_states) > 1:
+            details = [
+                {
+                    "config_path": path,
+                    "enabled": bool(config["propagation_enabled"]),
+                    "configuration_source": str(config["configuration_source"]),
+                }
+                for path, config in config_cache.items()
+            ]
+            raise DibosonContractError(
+                "Assigned diboson configs resolve inconsistent statistical "
+                "propagation states without a CLI override: "
+                + json.dumps(details, sort_keys=True)
+            )
+    return config_cache
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
     parser.add_argument("--pkl", nargs="+", required=True)
-    parser.add_argument("--config", default=str(DEFAULT_CONFIG_PATH))
+    parser.add_argument(
+        "--config",
+        nargs="+",
+        default=[str(DEFAULT_CONFIG_PATH)],
+        metavar="CONFIG",
+    )
     parser.add_argument("--hist-name", default="njets")
     parser.add_argument("--channel", default="3l_CR")
     parser.add_argument(
@@ -1002,62 +1174,82 @@ def main(argv: Sequence[str] | None = None) -> dict[str, dict[str, Any]]:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
     parser = build_parser()
     args = parser.parse_args(argv)
-    diboson_config = load_diboson_config(args.config)
-    propagation_enabled, configuration_source = resolve_propagation_state(
-        diboson_config, args.propagate_statistical_uncertainties
-    )
-    process_roles = _normalize_process_roles(diboson_config)
     if args.hist_name != "njets":
         parser.error("The maintained contract accepts only --hist-name njets.")
-    years, pkl_paths, shared, year_process_map, requested_years, cache = (
-        _resolve_cli_inputs(args, parser)
+    records, year_process_map, requested_years, cache = _resolve_cli_inputs(
+        args,
+        parser,
     )
+    config_cache = _load_resolved_configs(
+        records,
+        args.propagate_statistical_uncertainties,
+    )
+    for record in records:
+        if record.pkl_path not in cache:
+            cache[record.pkl_path] = load_pkl_file(record.pkl_path)
     bins = [0, 1, 2, 3, 4, 5, 6]
 
-    logger.info(
-        "resolved_propagation enabled=%s configuration_source=%s config=%s",
-        propagation_enabled,
-        configuration_source,
-        args.config,
-    )
-
     results: dict[str, dict[str, Any]] = {}
-    for year, pkl_path in zip(years, pkl_paths):
+    for record in records:
+        resolved_config = config_cache[record.config_path]
+        propagation_enabled = bool(resolved_config["propagation_enabled"])
+        configuration_source = str(resolved_config["configuration_source"])
+        process_roles = resolved_config["process_roles"]
         allowed_years = None
-        if shared:
-            if str(year).lower() != ALL_YEARS_SENTINEL:
-                allowed_years = [str(year)]
+        if record.shared_input:
+            if record.year.lower() != ALL_YEARS_SENTINEL:
+                allowed_years = [record.year]
             else:
                 allowed_years = requested_years or sorted(year_process_map)
-        results[str(year)] = process_year(
-            pkl_path,
-            str(year),
-            args.hist_name,
-            args.channel,
-            bins,
-            process_roles=process_roles,
-            propagation_enabled=propagation_enabled,
-            configuration_source=configuration_source,
-            cache=cache,
-            allowed_years=allowed_years,
+        logger.info(
+            "resolved_diboson_input year=%s pkl_path=%s config_path=%s "
+            "shared_input=%s propagation_enabled=%s configuration_source=%s "
+            "role_counts=%s roles=%s",
+            record.year,
+            record.pkl_path,
+            record.config_path,
+            record.shared_input,
+            propagation_enabled,
+            configuration_source,
+            {role: len(processes) for role, processes in process_roles.items()},
+            {role: list(processes) for role, processes in process_roles.items()},
         )
+        try:
+            results[record.year] = process_year(
+                record.pkl_path,
+                record.year,
+                args.hist_name,
+                args.channel,
+                bins,
+                process_roles=process_roles,
+                propagation_enabled=propagation_enabled,
+                configuration_source=configuration_source,
+                cache=cache,
+                allowed_years=allowed_years,
+            )
+        except DibosonContractError as error:
+            raise DibosonContractError(
+                "Diboson input/config pair failed: "
+                f"year={record.year!r} pkl_path={record.pkl_path!r} "
+                f"config_path={record.config_path!r}: {error}"
+            ) from error
 
     # All validation and numerical calculation is complete before any final output.
-    for year in years:
-        result = results[str(year)]
-        year_output_dir = os.path.join(args.output_dir, str(year))
-        make_diboson_sf_json(bins, result, str(year), year_output_dir)
+    for record in records:
+        result = results[record.year]
+        year_output_dir = os.path.join(args.output_dir, record.year)
+        make_diboson_sf_json(bins, result, record.year, year_output_dir)
         save_linear_fit_coefficients(
-            str(year), result["fit_coefficients"], year_output_dir
+            record.year, result["fit_coefficients"], year_output_dir
         )
         result["plot_metadata"] = save_scale_factor_plot(
-            str(year),
+            record.year,
             args.channel,
             result["bin_centers"],
             result["scale_factors"],
             result["fitted_values"],
             result["scale_factor_statistical_uncertainties"],
-            propagation_enabled=propagation_enabled,
+            propagation_enabled=bool(result["propagation_enabled"]),
             output_dir=year_output_dir,
         )
 
@@ -1066,11 +1258,11 @@ def main(argv: Sequence[str] | None = None) -> dict[str, dict[str, Any]]:
         header = f"{'Year':<8}{'Mean SF':>12}{'Slope':>12}{'Intercept':>14}"
         print(header)
         print("-" * len(header))
-        for year in years:
-            result = results[str(year)]
+        for record in records:
+            result = results[record.year]
             coefficients = result["fit_coefficients"] or {}
             print(
-                f"{str(year):<8}{float(np.mean(result['scale_factors'])):>12.6f}"
+                f"{record.year:<8}{float(np.mean(result['scale_factors'])):>12.6f}"
                 f"{coefficients.get('slope', float('nan')):>12.6f}"
                 f"{coefficients.get('intercept', float('nan')):>14.6f}"
             )
