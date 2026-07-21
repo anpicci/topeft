@@ -13,10 +13,7 @@ from topcoffea.modules.sparseHist import SparseHist
 from topeft.modules.axes import info as axes_info
 from topeft.modules.axes import info_2d as axes_info_2d
 from topeft.modules.datacard_tools import load_and_merge_histogram_pkls
-from topeft.modules.histogram_artifact import (
-    lineage_input_from_sidecar,
-    write_histogram_artifact,
-)
+from topeft.modules.histogram_artifact import write_histogram_artifact
 from topeft.modules.nominal_schema import (
     eft_nominal_key,
     materialize_legacy_histogram_dict,
@@ -118,35 +115,14 @@ def test_datacard_transient_view_preserves_rates_shapes_coefficients_scalings_an
         sumw2_storage_present=True,
     )
     source_path = tmp_path / "processor.pkl.gz"
-    source_sidecar = write_histogram_artifact(
+    write_histogram_artifact(
         source_path,
         histograms=split,
         artifact_kind="processor_output",
         sumw2_storage_provenance=policy.to_provenance(),
     )
-    transformed_path = tmp_path / "nonprompt.pkl.gz"
-    write_histogram_artifact(
-        transformed_path,
-        histograms=split,
-        artifact_kind="nonprompt_output",
-        sumw2_storage_provenance=policy.to_provenance(),
-        lineage_inputs=[lineage_input_from_sidecar(source_sidecar)],
-        input_sidecar=source_sidecar,
-        transformation_context={
-            "families": {
-                "njets": {
-                    "source_scalar_processes": ["background"],
-                    "source_eft_processes": ["signal"],
-                    "retained_scalar_processes": ["background"],
-                    "retained_eft_processes": ["signal"],
-                    "generated_nonprompt_processes": [],
-                    "generated_flips_processes": [],
-                }
-            }
-        },
-    )
-    split, merge_report = load_and_merge_histogram_pkls([str(transformed_path)])
-    assert merge_report["artifact_kind"] == "nonprompt_output"
+    split, merge_report = load_and_merge_histogram_pkls([str(source_path)])
+    assert merge_report["artifact_kind"] == "processor_output"
     transient = materialize_legacy_histogram_dict(
         split,
         runtime_families=("njets",),

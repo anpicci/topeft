@@ -191,6 +191,339 @@ def _write_processor(path, policy, products_block=None):
     )
 
 
+def test_processor_sidecar_uses_family_free_generated_output_contract(
+    tmp_path, policy
+):
+    path = tmp_path / "processor.pkl.gz"
+    sidecar = _write_processor(path, policy)
+    contract = sidecar["resolved_data_driven_contract"]
+    assert contract["contract_version"] == 2
+    assert set(contract) == {"contract_version", "products"}
+    assert "families" not in contract
+    assert contract["products"]["nonprompt"] == {
+        "enabled": True,
+        "generated_outputs": {
+            "nonpromptUL18": {
+                "year": "UL18",
+                "source_contributors": {
+                    "data": ["dataUL18"],
+                    "prompt_mc": ["TTTo2L2Nu_centralUL18"],
+                },
+                "required_source_sumw2_processes": [
+                    "TTTo2L2Nu_centralUL18",
+                    "dataUL18",
+                ],
+            }
+        },
+        "output_processes": ["nonpromptUL18"],
+    }
+
+
+@pytest.mark.parametrize("tamper", ["delete_contributor", "move_contributor", "output_year", "orphan_output"])
+def test_processor_sidecar_rejects_generated_output_contract_tampering(
+    tmp_path, policy, tamper
+):
+    path = tmp_path / f"processor_{tamper}.pkl.gz"
+    _write_processor(path, policy)
+    sidecar_path = metadata_sidecar_path(path)
+    sidecar = json.loads(sidecar_path.read_text(encoding="utf-8"))
+    product = sidecar["resolved_data_driven_contract"]["products"]["nonprompt"]
+    output = product["generated_outputs"]["nonpromptUL18"]
+    if tamper == "delete_contributor":
+        output["source_contributors"]["prompt_mc"].clear()
+    elif tamper == "move_contributor":
+        output["source_contributors"]["prompt_mc"] = [
+            "TTTo2L2Nu_centralUL17"
+        ]
+        output["required_source_sumw2_processes"] = [
+            "TTTo2L2Nu_centralUL17",
+            "dataUL18",
+        ]
+    elif tamper == "output_year":
+        output["year"] = "UL17"
+    else:
+        product["generated_outputs"] = {
+            "nonpromptUL17": {
+                "year": "UL17",
+                "source_contributors": {
+                    "data": [],
+                    "prompt_mc": ["TTTo2L2Nu_centralUL17"],
+                },
+                "required_source_sumw2_processes": [
+                    "TTTo2L2Nu_centralUL17"
+                ],
+            },
+            **product["generated_outputs"],
+        }
+        product["output_processes"] = ["nonpromptUL17", "nonpromptUL18"]
+    sidecar_path.write_text(json.dumps(sidecar), encoding="utf-8")
+    with pytest.raises(histogram_artifact_error):
+        validate_histogram_artifact(path)
+
+
+def test_contract_version_one_processor_reopens_but_cannot_transform(
+    tmp_path, policy
+):
+    input_path = tmp_path / "processor_v1.pkl.gz"
+    output_path = tmp_path / "nonprompt_from_v1.pkl.gz"
+    sidecar = _write_processor(input_path, policy)
+    targets_by_process = {}
+    for target in policy.resolved_targets:
+        targets_by_process.setdefault(target.process, []).append(target.to_dict())
+    sidecar["resolved_data_driven_contract"] = {
+        "contract_version": 1,
+        "families": {
+            "njets": {
+                "nonprompt": {
+                    "enabled": True,
+                    "output_processes": ["nonpromptUL18"],
+                    "source_contributors": {
+                        "data": ["dataUL18"],
+                        "prompt_mc": ["TTTo2L2Nu_centralUL18"],
+                    },
+                    "required_source_sumw2_processes": [
+                        "TTTo2L2Nu_centralUL18",
+                        "dataUL18",
+                    ],
+                    "required_source_sumw2_targets": sorted(
+                        targets_by_process["TTTo2L2Nu_centralUL18"]
+                        + targets_by_process["dataUL18"],
+                        key=lambda target: (
+                            target["dataset"],
+                            target["process"],
+                            target["family"],
+                        ),
+                    ),
+                    "requirements_satisfied": True,
+                },
+                "flips": {
+                    "enabled": True,
+                    "output_processes": ["flipsUL18"],
+                    "source_contributors": {"data": ["dataUL18"]},
+                    "required_source_sumw2_processes": ["dataUL18"],
+                    "required_source_sumw2_targets": targets_by_process[
+                        "dataUL18"
+                    ],
+                    "requirements_satisfied": True,
+                },
+            }
+        },
+    }
+    metadata_sidecar_path(input_path).write_text(
+        json.dumps(sidecar), encoding="utf-8"
+    )
+    reopened = validate_histogram_artifact(input_path)
+    assert reopened["metadata"]["resolved_data_driven_contract"][
+        "contract_version"
+    ] == 1
+    with pytest.raises(
+        ValueError,
+        match=r"contract_version=1.*read-only reopening.*Regenerate.*run_analysis",
+    ):
+        run_data_driven.main(
+            [
+                "--input-pkl",
+                str(input_path),
+                "--output-pkl",
+                str(output_path),
+                "--quiet",
+            ]
+        )
+    assert not output_path.exists()
+    assert not metadata_sidecar_path(output_path).exists()
+
+
+def test_nonprompt_transformation_uses_certified_multi_year_output_map(
+    tmp_path,
+):
+    samples = {
+        "data_17": {"histAxisName": "dataUL17", "isData": True, "WCnames": []},
+        "data_18": {"histAxisName": "dataUL18", "isData": True, "WCnames": []},
+        "prompt_17": {
+            "histAxisName": "TTTo2L2Nu_centralUL17",
+            "isData": False,
+            "WCnames": [],
+        },
+        "ignored_17": {
+            "histAxisName": "other_centralUL17",
+            "isData": False,
+            "WCnames": [],
+        },
+    }
+    local_policy = resolve_sumw2_storage_policy(
+        {"mode": "full_diagnostics"},
+        samples=samples,
+        runtime_families=("njets",),
+        axes_info=axes_info,
+        axes_info_2d=axes_info_2d,
+        sumw2_storage_present=True,
+    )
+    products = resolve_data_driven_products(
+        {
+            "nonprompt": {
+                "enabled": True,
+                "source_contributors": {
+                    "data": {"process_prefixes": ["data"]},
+                    "prompt_mc": {
+                        "process_names": ["TTTo2L2Nu_centralUL17"]
+                    },
+                },
+            },
+            "flips": {"enabled": False},
+        },
+        data_driven_products_present=True,
+        legacy_do_np=False,
+        samples=samples,
+        runtime_families=("njets",),
+        metadata_path="test_options.yml",
+    )
+    requested, contract = certify_data_driven_preflight(products, local_policy)
+    scalar_entries = (
+        ("dataUL17", "isAR_3l", 10.0),
+        ("TTTo2L2Nu_centralUL17", "isAR_3l", 3.0),
+        ("other_centralUL17", "isAR_3l", 50.0),
+        ("dataUL18", "isAR_3l", 4.0),
+    )
+    companion_entries = (
+        ("dataUL17", "isAR_3l", 100.0),
+        ("TTTo2L2Nu_centralUL17", "isAR_3l", 9.0),
+        ("other_centralUL17", "isAR_3l", 2500.0),
+        ("dataUL18", "isAR_3l", 16.0),
+    )
+    input_path = tmp_path / "multi_year_processor.pkl.gz"
+    output_path = tmp_path / "multi_year_nonprompt.pkl.gz"
+    write_histogram_artifact(
+        input_path,
+        histograms={
+            scalar_nominal_key("njets"): _fill_sparse("njets", scalar_entries),
+            "njets_sumw2": _fill_sparse("njets_sumw2", companion_entries),
+        },
+        artifact_kind="processor_output",
+        sumw2_storage_provenance=local_policy.to_provenance(),
+        requested_data_driven_products=requested,
+        resolved_data_driven_contract=contract,
+    )
+    run_data_driven.main(
+        [
+            "--input-pkl",
+            str(input_path),
+            "--output-pkl",
+            str(output_path),
+            "--quiet",
+        ]
+    )
+    output = get_hist_from_pkl(str(output_path))
+    assert _processes(output[scalar_nominal_key("njets")]) == [
+        "nonpromptUL17",
+        "nonpromptUL18",
+    ]
+    assert _total_for_process(
+        output[scalar_nominal_key("njets")], "nonpromptUL17"
+    ) == pytest.approx(7.0)
+    assert _total_for_process(
+        output[scalar_nominal_key("njets")], "nonpromptUL18"
+    ) == pytest.approx(4.0)
+    assert _total_for_process(output["njets_sumw2"], "nonpromptUL17") == pytest.approx(
+        109.0
+    )
+    assert _total_for_process(output["njets_sumw2"], "nonpromptUL18") == pytest.approx(
+        16.0
+    )
+    sidecar = read_histogram_sidecar(output_path)
+    assert sidecar["transformation_contract"]["families"]["njets"][
+        "generated_nonprompt_processes"
+    ] == ["nonpromptUL17", "nonpromptUL18"]
+    assert sidecar["resolved_data_driven_contract"] == contract
+
+
+@pytest.mark.parametrize("mutation", ["missing_generated_nominal", "extra_generated_year"])
+def test_transformed_nominal_labels_must_match_generated_output_map(
+    tmp_path, policy, mutation
+):
+    source_path = tmp_path / f"processor_{mutation}.pkl.gz"
+    output_path = tmp_path / f"nonprompt_{mutation}.pkl.gz"
+    source_sidecar = _write_processor(source_path, policy)
+    producer = DataDrivenProducer(
+        str(source_path),
+        "",
+        artifact_kind="nonprompt_output",
+    )
+    transformed = copy.deepcopy(producer.getDataDrivenHistogram())
+    if mutation == "missing_generated_nominal":
+        transformed[scalar_nominal_key("njets")] = transformed[
+            scalar_nominal_key("njets")
+        ].remove("process", ["nonpromptUL18"])
+    else:
+        transformed[scalar_nominal_key("njets")].fill(
+            process="nonpromptUL17",
+            channel="3l",
+            systematic="nominal",
+            njets=np.asarray([0.5]),
+            weight=np.asarray([1.0]),
+        )
+    with pytest.raises(
+        histogram_artifact_error,
+        match="scalar nominal roles differ.*nonpromptUL",
+    ):
+        write_histogram_artifact(
+            output_path,
+            histograms=transformed,
+            artifact_kind="nonprompt_output",
+            sumw2_storage_provenance=policy.to_provenance(),
+            lineage_inputs=[lineage_input_from_sidecar(source_sidecar)],
+            input_sidecar=source_sidecar,
+            transformation_context=producer.get_transformation_context(
+                "nonprompt_output"
+            ),
+        )
+    assert not output_path.exists()
+    assert not metadata_sidecar_path(output_path).exists()
+
+
+def test_transformed_sidecar_roles_cannot_disagree_with_output_map(tmp_path, policy):
+    source_path = tmp_path / "processor_role_mismatch.pkl.gz"
+    output_path = tmp_path / "nonprompt_role_mismatch.pkl.gz"
+    _write_processor(source_path, policy)
+    run_data_driven.main(
+        [
+            "--input-pkl",
+            str(source_path),
+            "--output-pkl",
+            str(output_path),
+            "--quiet",
+        ]
+    )
+    sidecar_path = metadata_sidecar_path(output_path)
+    sidecar = json.loads(sidecar_path.read_text(encoding="utf-8"))
+    sidecar["transformation_contract"]["families"]["njets"][
+        "generated_nonprompt_processes"
+    ] = []
+    sidecar_path.write_text(json.dumps(sidecar), encoding="utf-8")
+    with pytest.raises(
+        histogram_artifact_error,
+        match="Transformed nonprompt processes disagree.*expected=.*nonpromptUL18",
+    ):
+        validate_histogram_artifact(output_path)
+
+
+def test_merge_rejects_incompatible_generated_output_maps(tmp_path, policy):
+    first_path = tmp_path / "processor_first.pkl.gz"
+    second_path = tmp_path / "processor_second.pkl.gz"
+    first = _write_processor(first_path, policy)
+    second = _write_processor(second_path, policy)
+    second = copy.deepcopy(second)
+    output = second["resolved_data_driven_contract"]["products"]["nonprompt"][
+        "generated_outputs"
+    ]["nonpromptUL18"]
+    output["source_contributors"]["prompt_mc"] = []
+    output["required_source_sumw2_processes"] = ["dataUL18"]
+    with pytest.raises(
+        histogram_artifact_error,
+        match="identical requested data-driven product contracts",
+    ):
+        merge_histogram_sidecars([first, second])
+
+
 def test_explicit_nonprompt_only_contract_suppresses_unrequested_flips(
     tmp_path, policy
 ):
@@ -277,6 +610,12 @@ def _write_raw(path, payload):
 
 def _processes(histogram):
     return sorted(str(process) for process in histogram.axes["process"])
+
+
+def _total_for_process(histogram, process):
+    selected = histogram.integrate("process", process)
+    values = selected.view(flow=True, as_dict=True)
+    return sum(float(np.asarray(value).sum()) for value in values.values())
 
 
 def test_metadata_sidecar_path_preserves_full_suffixes(tmp_path, monkeypatch):
@@ -752,7 +1091,7 @@ def test_independent_nonprompt_contract_rejects_partial_companion_loss_before_pu
     assert not metadata_sidecar_path(output_path).exists()
 
 
-def test_selected_and_unselected_retained_sources_are_derived_from_policy(tmp_path):
+def test_pre_product_contract_cannot_authorize_new_transformed_requirements(tmp_path):
     selective_policy = resolve_sumw2_storage_policy(
         {
             "mode": "full_custom",
@@ -816,12 +1155,15 @@ def test_selected_and_unselected_retained_sources_are_derived_from_policy(tmp_pa
             }
         }
     }
-    _, required = derive_transformed_required_sumw2_processes(
-        input_sidecar=source_sidecar,
-        transformation_context=context,
-        artifact_kind="nonprompt_output",
-    )
-    assert required == {"njets": ["signal_centralUL18"]}
+    with pytest.raises(
+        histogram_artifact_error,
+        match="lacks the requested data-driven product contract.*Regenerate.*run_analysis",
+    ):
+        derive_transformed_required_sumw2_processes(
+            input_sidecar=source_sidecar,
+            transformation_context=context,
+            artifact_kind="nonprompt_output",
+        )
 
 
 def test_flips_contract_requires_every_generated_year_label(tmp_path):

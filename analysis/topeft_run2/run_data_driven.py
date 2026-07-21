@@ -27,12 +27,16 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 import topcoffea.modules.utils as utils
 
 from topeft.modules.dataDrivenEstimation import DataDrivenProducer
-from topeft.modules.data_driven_products import validate_requested_product_input
+from topeft.modules.data_driven_products import (
+    generated_output_processes_from_contract,
+    validate_requested_product_input,
+)
 from topeft.modules.histogram_artifact import (
     lineage_input_from_sidecar,
     validate_histogram_artifact,
     write_histogram_artifact,
 )
+from topeft.modules.nominal_schema import EFT_NOMINAL_SUFFIX
 from topeft.modules.get_renormfact_envelope import (
     apply_renormfact_envelope_to_histogram,
     get_renormfact_envelope,
@@ -681,6 +685,14 @@ def _finalize_histograms(
             ddp_kwargs["dd_report"] = True
         ddp = DataDrivenProducer(input_pkl, output_pkl, **ddp_kwargs)
         retained_selected_eft_by_family: Dict[str, List[str]] = {}
+        certified_flips_outputs = None
+        if input_sidecar is not None:
+            certified_flips_outputs = set(
+                generated_output_processes_from_contract(
+                    input_sidecar["resolved_data_driven_contract"],
+                    "flips",
+                )
+            )
         if only_flips and input_sidecar is not None:
             policy = resolved_policy_from_provenance(
                 input_sidecar["sumw2_storage_provenance"]
@@ -725,18 +737,23 @@ def _finalize_histograms(
                         markdown_writer.write_report(report)
                     if only_flips and key.endswith("_sumw2"):
                         family = key[: -len("_sumw2")]
-                        generated_flips = {
-                            str(process)
-                            for process in histo.axes["process"]
-                            if "flips" in str(process).lower()
-                        }
+                        generated_flips = set(certified_flips_outputs or ())
                         working_histo = _filter_to_allowed_processes(
                             histo,
                             generated_flips
                             | set(retained_selected_eft_by_family.get(family, ())),
                         )
+                    elif only_flips:
+                        working_histo = (
+                            histo
+                            if key.endswith(EFT_NOMINAL_SUFFIX)
+                            else _filter_to_allowed_processes(
+                                histo,
+                                certified_flips_outputs,
+                            )
+                        ) if certified_flips_outputs is not None else _filter_to_flips(histo)
                     else:
-                        working_histo = _filter_to_flips(histo) if only_flips else histo
+                        working_histo = histo
                     if apply_envelope:
                         working_histo = _envelope_single_histogram(key, working_histo)
 
@@ -781,15 +798,20 @@ def _finalize_histograms(
                     assert filtered is not None
                     if key.endswith("_sumw2"):
                         family = key[: -len("_sumw2")]
-                        generated_flips = {
-                            str(process)
-                            for process in histo.axes["process"]
-                            if "flips" in str(process).lower()
-                        }
+                        generated_flips = set(certified_flips_outputs or ())
                         filtered[key] = _filter_to_allowed_processes(
                             histo,
                             generated_flips
                             | set(retained_selected_eft_by_family.get(family, ())),
+                        )
+                    elif certified_flips_outputs is not None:
+                        filtered[key] = (
+                            histo
+                            if key.endswith(EFT_NOMINAL_SUFFIX)
+                            else _filter_to_allowed_processes(
+                                histo,
+                                certified_flips_outputs,
+                            )
                         )
                     else:
                         filtered[key] = _filter_to_flips(histo)

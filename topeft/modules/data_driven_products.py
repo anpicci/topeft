@@ -16,7 +16,8 @@ from topeft.modules.sumw2_policy import resolved_sumw2_policy, sumw2_target
 
 
 DATA_DRIVEN_PRODUCTS_SCHEMA_VERSION = 1
-RESOLVED_DATA_DRIVEN_CONTRACT_VERSION = 1
+RESOLVED_DATA_DRIVEN_CONTRACT_VERSION = 2
+LEGACY_RESOLVED_DATA_DRIVEN_CONTRACT_VERSION = 1
 DATA_DRIVEN_PRODUCT_NAMES = ("nonprompt", "flips")
 _PRODUCT_ROLES = {
     "nonprompt": ("data", "prompt_mc"),
@@ -24,12 +25,20 @@ _PRODUCT_ROLES = {
 }
 _SELECTOR_FIELDS = frozenset({"process_names", "process_prefixes"})
 _PRODUCT_FIELDS = frozenset({"enabled", "source_contributors"})
+CANONICAL_DATA_DRIVEN_YEARS = (
+    "UL16APV",
+    "UL16",
+    "UL17",
+    "UL18",
+    "2022",
+    "2022EE",
+    "2023",
+    "2023BPix",
+)
 _NAME_REGEX = re.compile(
-    r"^(?P<process>.*?)(?:UL)?(?P<year>(?:\d{2}(?:APV|EE|BPix)?|\d{4}(?:EE|BPix)?))$"
+    r"^(?P<process>.*?)(?P<year>UL16APV|UL16|UL17|UL18|2022EE|2022|2023BPix|2023)$"
 )
-_KNOWN_YEARS = frozenset(
-    {"16APV", "16", "17", "18", "2022", "2022EE", "2023", "2023BPix"}
-)
+_KNOWN_YEARS = frozenset(CANONICAL_DATA_DRIVEN_YEARS)
 _get_te_param = GetParam(topeft_path("params/params.json"))
 _LEGACY_PROMPT_BASE_NAMES = tuple(
     sorted(set(_get_te_param("prompt_subtraction_samples")))
@@ -55,12 +64,32 @@ class normalized_process_selector:
 
 
 @dataclass(frozen=True)
+class resolved_generated_output:
+    year: str
+    source_contributors: tuple[tuple[str, tuple[str, ...]], ...]
+
+    def contributors_for(self, role: str) -> tuple[str, ...]:
+        return dict(self.source_contributors)[role]
+
+    def required_source_processes(self) -> tuple[str, ...]:
+        return tuple(
+            sorted(
+                {
+                    process
+                    for _role, processes in self.source_contributors
+                    for process in processes
+                }
+            )
+        )
+
+
+@dataclass(frozen=True)
 class resolved_product:
     enabled: bool
     configured_selectors: tuple[tuple[str, normalized_process_selector], ...]
     source_contributors: tuple[tuple[str, tuple[str, ...]], ...]
     source_datasets: tuple[tuple[str, tuple[str, ...]], ...]
-    output_processes: tuple[str, ...]
+    generated_outputs: tuple[tuple[str, resolved_generated_output], ...]
 
     def selector_for(self, role: str) -> normalized_process_selector:
         return dict(self.configured_selectors)[role]
@@ -71,15 +100,13 @@ class resolved_product:
     def datasets_for(self, role: str) -> tuple[str, ...]:
         return dict(self.source_datasets)[role]
 
+    @property
+    def output_processes(self) -> tuple[str, ...]:
+        return tuple(output_process for output_process, _record in self.generated_outputs)
+
     def required_processes(self) -> tuple[str, ...]:
-        return tuple(
-            sorted(
-                {
-                    process
-                    for _role, processes in self.source_contributors
-                    for process in processes
-                }
-            )
+        return required_source_processes_from_generated_outputs(
+            self.generated_outputs
         )
 
 
@@ -144,14 +171,16 @@ class resolved_data_driven_products:
         )
 
 
-def _parse_process_name(process_name: str) -> tuple[str, str]:
+def parse_process_name(process_name: str) -> tuple[str, str]:
+    """Return the maintained process base and exact canonical year token."""
+
     match = _NAME_REGEX.search(process_name)
     if not match:
         raise data_driven_product_error(
             f"DATA-DRIVEN-E004: process {process_name!r} does not follow the maintained year naming convention."
         )
     base_name = match.group("process")
-    year = match.group("year").replace("central", "").replace("UL", "")
+    year = match.group("year")
     if year not in _KNOWN_YEARS:
         raise data_driven_product_error(
             f"DATA-DRIVEN-E004: process {process_name!r} has unsupported year {year!r}."
@@ -169,8 +198,137 @@ def generated_process_name(product: str, year: str) -> str:
             f"DATA-DRIVEN-E004: unsupported data-driven year {year!r}."
         )
     prefix = product
-    raw_name = f"{prefix}{year}" if year.startswith("202") else f"{prefix}UL{year}"
+    raw_name = f"{prefix}{year}"
     return canonicalize_process_name(raw_name)
+
+
+def _canonical_year_mapping(
+    processes: Sequence[str],
+) -> dict[str, tuple[str, ...]]:
+    grouped: dict[str, list[str]] = {}
+    for process in processes:
+        _base_name, year = parse_process_name(process)
+        grouped.setdefault(year, []).append(process)
+    return {
+        year: tuple(sorted(grouped[year]))
+        for year in CANONICAL_DATA_DRIVEN_YEARS
+        if year in grouped
+    }
+
+
+def group_contributors_by_generated_output(
+    product_name: str,
+    source_contributors: Mapping[str, Sequence[str]],
+    *,
+    metadata_path: str,
+    metadata_source: str,
+) -> tuple[tuple[str, resolved_generated_output], ...]:
+    """Resolve global role selectors into one exact same-year output map."""
+
+    if product_name not in DATA_DRIVEN_PRODUCT_NAMES:
+        raise data_driven_product_error(
+            f"DATA-DRIVEN-E001: unknown product {product_name!r}."
+        )
+    grouped_roles = {
+        role: _canonical_year_mapping(source_contributors.get(role, ()))
+        for role in _PRODUCT_ROLES[product_name]
+    }
+    data_by_year = grouped_roles["data"]
+    if product_name == "nonprompt":
+        prompt_by_year = grouped_roles["prompt_mc"]
+        orphan_years = [
+            year
+            for year in CANONICAL_DATA_DRIVEN_YEARS
+            if year in prompt_by_year and year not in data_by_year
+        ]
+        if orphan_years:
+            orphan_processes = {
+                year: list(prompt_by_year[year]) for year in orphan_years
+            }
+            configured_data = {
+                year: list(processes) for year, processes in data_by_year.items()
+            }
+            configured_prompt = {
+                year: list(processes) for year, processes in prompt_by_year.items()
+            }
+            raise data_driven_product_error(
+                "DATA-DRIVEN-E005: incoherent same-year contributor mapping "
+                f"metadata_path={metadata_path!r} metadata_source={metadata_source!r} "
+                f"product={product_name!r} orphan_years={orphan_years} "
+                f"orphan_prompt_processes={orphan_processes} "
+                f"configured_data_processes={sorted(source_contributors.get('data', ()))} "
+                f"configured_data_processes_and_years={configured_data} "
+                f"configured_prompt_processes={sorted(source_contributors.get('prompt_mc', ()))} "
+                f"configured_prompt_processes_and_years={configured_prompt}. "
+                "Recommended correction: add at least one configured same-year data "
+                "contributor for every orphan prompt year, remove the orphan prompt "
+                "contributor, or disable nonprompt."
+            )
+
+    outputs = []
+    for year in CANONICAL_DATA_DRIVEN_YEARS:
+        data_processes = data_by_year.get(year)
+        if not data_processes:
+            continue
+        role_entries = []
+        for role in _PRODUCT_ROLES[product_name]:
+            role_entries.append((role, grouped_roles[role].get(year, ())))
+        output_process = generated_process_name(product_name, year)
+        outputs.append(
+            (
+                output_process,
+                resolved_generated_output(
+                    year=year,
+                    source_contributors=tuple(role_entries),
+                ),
+            )
+        )
+    return tuple(outputs)
+
+
+def required_source_processes_from_generated_outputs(
+    generated_outputs: Mapping[str, Any]
+    | Sequence[tuple[str, resolved_generated_output]],
+) -> tuple[str, ...]:
+    """Return the deterministic source-process union from per-output records."""
+
+    records = (
+        generated_outputs.values()
+        if isinstance(generated_outputs, Mapping)
+        else (record for _output_process, record in generated_outputs)
+    )
+    required = set()
+    for record in records:
+        if isinstance(record, resolved_generated_output):
+            required.update(record.required_source_processes())
+        else:
+            for processes in record["source_contributors"].values():
+                required.update(processes)
+    return tuple(sorted(required))
+
+
+def generated_output_processes_from_contract(
+    contract: Mapping[str, Any],
+    product_name: str,
+) -> tuple[str, ...]:
+    """Read generated labels without deriving them from observed payload content."""
+
+    version = contract.get("contract_version")
+    if version == RESOLVED_DATA_DRIVEN_CONTRACT_VERSION:
+        return tuple(contract["products"][product_name]["generated_outputs"])
+    if version == LEGACY_RESOLVED_DATA_DRIVEN_CONTRACT_VERSION:
+        family_outputs = {
+            tuple(family_products[product_name]["output_processes"])
+            for family_products in contract["families"].values()
+        }
+        if len(family_outputs) != 1:
+            raise data_driven_product_error(
+                "Contract-version-1 generated output lists disagree across families."
+            )
+        return next(iter(family_outputs), ())
+    raise data_driven_product_error(
+        f"Unsupported resolved_data_driven_contract version {version!r}."
+    )
 
 
 def _require_unique_strings(value: Any, *, label: str) -> tuple[str, ...]:
@@ -321,7 +479,7 @@ def _implicit_product_configuration(
     data_processes = []
     prompt_processes = []
     for process in available_processes:
-        base_name, _year = _parse_process_name(process)
+        base_name, _year = parse_process_name(process)
         entries = by_process[process]
         if base_name == "data" and all(sample["isData"] for _dataset, sample in entries):
             data_processes.append(process)
@@ -483,15 +641,16 @@ def resolve_data_driven_products(
                 raise data_driven_product_error(
                     f"DATA-DRIVEN-E002: nonprompt data and prompt_mc roles overlap: {overlap}."
                 )
-        data_processes = dict(resolved_roles).get("data", ())
-        output_processes = tuple(
-            sorted(
-                {
-                    generated_process_name(product_name, _parse_process_name(process)[1])
-                    for process in data_processes
-                }
+        generated_outputs = (
+            group_contributors_by_generated_output(
+                product_name,
+                dict(resolved_roles),
+                metadata_path=metadata_path or "<command-line/default>",
+                metadata_source=source,
             )
-        ) if enabled else ()
+            if enabled
+            else ()
+        )
         resolved_entries.append(
             (
                 product_name,
@@ -500,7 +659,7 @@ def resolve_data_driven_products(
                     configured_selectors=tuple(configured_selectors),
                     source_contributors=tuple(resolved_roles),
                     source_datasets=tuple(dataset_roles),
-                    output_processes=output_processes,
+                    generated_outputs=generated_outputs,
                 ),
             )
         )
@@ -561,45 +720,36 @@ def certify_data_driven_preflight(
         )
 
     requested = resolved_products.requested_provenance()
-    families: dict[str, Any] = {}
-    for family in resolved_products.runtime_families:
-        family_products = {}
-        for product_name, product in resolved_products.products:
-            source_contributors = {
-                role: list(processes)
-                for role, processes in product.source_contributors
+    serialized_products: dict[str, Any] = {}
+    for product_name, product in resolved_products.products:
+        generated_outputs = {}
+        for output_process, output_record in product.generated_outputs:
+            generated_outputs[output_process] = {
+                "year": output_record.year,
+                "source_contributors": {
+                    role: list(processes)
+                    for role, processes in output_record.source_contributors
+                },
+                "required_source_sumw2_processes": list(
+                    output_record.required_source_processes()
+                ),
             }
-            required_processes = list(product.required_processes()) if product.enabled else []
-            required_family_targets = [
-                target.to_dict()
-                for target in resolved_products.required_targets()
-                if target.family == family
-                and target.process in set(required_processes)
-            ]
-            family_products[product_name] = {
-                "enabled": product.enabled,
-                "output_processes": list(product.output_processes),
-                "source_contributors": source_contributors,
-                "required_source_sumw2_processes": required_processes,
-                "required_source_sumw2_targets": required_family_targets,
-                "requirements_satisfied": True,
-            }
-        families[family] = family_products
+        serialized_products[product_name] = {
+            "enabled": product.enabled,
+            "generated_outputs": generated_outputs,
+            "output_processes": list(generated_outputs),
+        }
     contract = {
         "contract_version": RESOLVED_DATA_DRIVEN_CONTRACT_VERSION,
-        "families": families,
+        "products": serialized_products,
     }
+    validate_serialized_data_driven_contract(requested, contract, policy=policy)
     return requested, contract
 
 
-def validate_serialized_data_driven_contract(
+def _validate_requested_data_driven_products(
     requested: Mapping[str, Any],
-    contract: Mapping[str, Any],
-    *,
-    policy: resolved_sumw2_policy,
-) -> tuple[dict[str, Any], dict[str, Any]]:
-    """Validate the portable requested-product and resolved-family records."""
-
+) -> None:
     if not isinstance(requested, Mapping) or set(requested) != {
         "schema_version",
         "source",
@@ -636,19 +786,186 @@ def validate_serialized_data_driven_contract(
             raise data_driven_product_error(
                 f"Invalid requested product record for {product_name!r}."
             )
+
+
+def validate_generated_output_contract(
+    requested: Mapping[str, Any],
+    contract: Mapping[str, Any],
+) -> None:
+    """Validate the version-2 family-independent generated-output mapping."""
+
     if not isinstance(contract, Mapping) or set(contract) != {
         "contract_version",
-        "families",
+        "products",
     }:
         raise data_driven_product_error("Invalid resolved_data_driven_contract fields.")
     if contract["contract_version"] != RESOLVED_DATA_DRIVEN_CONTRACT_VERSION:
         raise data_driven_product_error(
             "Unsupported resolved_data_driven_contract version."
         )
+    products = contract["products"]
+    if not isinstance(products, Mapping) or list(products) != list(DATA_DRIVEN_PRODUCT_NAMES):
+        raise data_driven_product_error(
+            "resolved_data_driven_contract products must use canonical order."
+        )
+    product_fields = {"enabled", "generated_outputs", "output_processes"}
+    output_fields = {
+        "year",
+        "source_contributors",
+        "required_source_sumw2_processes",
+    }
+    requested_products = requested["products"]
+    for product_name, product in products.items():
+        if not isinstance(product, Mapping) or set(product) != product_fields:
+            raise data_driven_product_error(
+                f"Invalid resolved product fields for {product_name!r}."
+            )
+        enabled = requested_products[product_name]["enabled"]
+        if product["enabled"] is not enabled:
+            raise data_driven_product_error(
+                f"Requested/resolved product mismatch for {product_name!r}."
+            )
+        generated_outputs = product["generated_outputs"]
+        if not isinstance(generated_outputs, Mapping):
+            raise data_driven_product_error(
+                f"Generated outputs for {product_name!r} must be an object."
+            )
+        if product["output_processes"] != list(generated_outputs):
+            raise data_driven_product_error(
+                f"output_processes must equal generated_outputs keys for {product_name!r}."
+            )
+        if not enabled and generated_outputs:
+            raise data_driven_product_error(
+                f"Disabled product {product_name!r} cannot contain generated outputs."
+            )
+        if enabled and not generated_outputs:
+            raise data_driven_product_error(
+                f"Enabled product {product_name!r} requires generated outputs."
+            )
+        observed_years = []
+        observed_role_processes = {
+            role: set() for role in _PRODUCT_ROLES[product_name]
+        }
+        for output_process, output_record in generated_outputs.items():
+            if not isinstance(output_process, str) or not output_process:
+                raise data_driven_product_error(
+                    f"Generated output names for {product_name!r} must be nonempty strings."
+                )
+            if not isinstance(output_record, Mapping) or set(output_record) != output_fields:
+                raise data_driven_product_error(
+                    f"Invalid generated output fields for {product_name}/{output_process}."
+                )
+            year = output_record["year"]
+            if year not in _KNOWN_YEARS:
+                raise data_driven_product_error(
+                    f"Generated output {output_process!r} has unsupported canonical year {year!r}."
+                )
+            observed_years.append(year)
+            expected_output = generated_process_name(product_name, year)
+            if output_process != expected_output:
+                raise data_driven_product_error(
+                    f"Generated output label/year mismatch for {product_name!r}: "
+                    f"expected={expected_output!r} observed={output_process!r}."
+                )
+            contributors = output_record["source_contributors"]
+            expected_roles = list(_PRODUCT_ROLES[product_name])
+            if not isinstance(contributors, Mapping) or list(contributors) != expected_roles:
+                raise data_driven_product_error(
+                    f"Invalid contributor roles for {product_name}/{output_process}; "
+                    f"expected={expected_roles} observed={list(contributors) if isinstance(contributors, Mapping) else contributors!r}."
+                )
+            for role, processes_for_role in contributors.items():
+                if not isinstance(processes_for_role, list) or processes_for_role != sorted(set(processes_for_role)):
+                    raise data_driven_product_error(
+                        f"Contributor role {product_name}/{output_process}/{role} must be sorted and unique."
+                    )
+                observed_role_processes[role].update(processes_for_role)
+                for process in processes_for_role:
+                    _base_name, process_year = parse_process_name(process)
+                    if process_year != year:
+                        raise data_driven_product_error(
+                            f"Contributor {process!r} has year {process_year!r} but is assigned "
+                            f"to generated output {output_process!r} with year {year!r}."
+                        )
+            if not contributors["data"]:
+                raise data_driven_product_error(
+                    f"Generated output {output_process!r} requires at least one same-year data contributor."
+                )
+            if product_name == "nonprompt" and set(contributors["data"]) & set(
+                contributors["prompt_mc"]
+            ):
+                raise data_driven_product_error(
+                    f"Generated output {output_process!r} assigns a process to both data and prompt_mc roles."
+                )
+            required_processes = list(
+                required_source_processes_from_generated_outputs(
+                    {output_process: output_record}
+                )
+            )
+            if output_record["required_source_sumw2_processes"] != required_processes:
+                raise data_driven_product_error(
+                    f"Required source processes disagree with contributor roles for {product_name}/{output_process}."
+                )
+        expected_years = [
+            year for year in CANONICAL_DATA_DRIVEN_YEARS if year in observed_years
+        ]
+        if observed_years != expected_years or len(observed_years) != len(set(observed_years)):
+            raise data_driven_product_error(
+                f"Generated outputs for {product_name!r} must use unique canonical year order: "
+                f"expected={expected_years} observed={observed_years}."
+            )
+        if (
+            product_name == "nonprompt"
+            and enabled
+            and not observed_role_processes["prompt_mc"]
+        ):
+            raise data_driven_product_error(
+                "Enabled nonprompt contract requires at least one configured prompt_mc "
+                "contributor across its generated outputs; individual data-only years "
+                "remain valid."
+            )
+
+
+def validate_generated_outputs_against_sumw2_policy(
+    contract: Mapping[str, Any],
+    *,
+    policy: resolved_sumw2_policy,
+) -> None:
+    """Combine the family-free output map with sumw2's family/process authority."""
+
+    for product_name, product in contract["products"].items():
+        required_processes = set(
+            required_source_processes_from_generated_outputs(
+                product["generated_outputs"]
+            )
+        )
+        for family in policy.runtime_histogram_families:
+            selected_processes = set(policy.selected_processes(family))
+            missing = sorted(required_processes - selected_processes)
+            if missing:
+                raise data_driven_product_error(
+                    "Resolved generated-output sources are not selected by the immutable "
+                    f"sumw2 policy for product={product_name!r} family={family!r}: "
+                    f"missing_processes={missing}."
+                )
+
+
+def _validate_legacy_serialized_data_driven_contract(
+    requested: Mapping[str, Any],
+    contract: Mapping[str, Any],
+    *,
+    policy: resolved_sumw2_policy,
+) -> None:
+    """Validate contract-version-1 sidecars for read-only compatibility."""
+
+    if set(contract) != {"contract_version", "families"}:
+        raise data_driven_product_error(
+            "Invalid contract-version-1 resolved_data_driven_contract fields."
+        )
     families = contract["families"]
     if not isinstance(families, Mapping) or list(families) != list(policy.runtime_histogram_families):
         raise data_driven_product_error(
-            "resolved_data_driven_contract families must match runtime family order."
+            "Contract-version-1 families must match runtime family order."
         )
     selected_targets = set(policy.resolved_targets)
     product_fields = {
@@ -662,73 +979,71 @@ def validate_serialized_data_driven_contract(
     for family, family_products in families.items():
         if not isinstance(family_products, Mapping) or list(family_products) != list(DATA_DRIVEN_PRODUCT_NAMES):
             raise data_driven_product_error(
-                f"Family {family!r} must contain canonical data-driven products."
+                f"Contract-version-1 family {family!r} must contain canonical products."
             )
         for product_name, product in family_products.items():
             if not isinstance(product, Mapping) or set(product) != product_fields:
                 raise data_driven_product_error(
-                    f"Invalid resolved product fields for {family}/{product_name}."
+                    f"Invalid contract-version-1 product fields for {family}/{product_name}."
                 )
-            enabled = products[product_name]["enabled"]
+            enabled = requested["products"][product_name]["enabled"]
             if product["enabled"] is not enabled or product["requirements_satisfied"] is not True:
                 raise data_driven_product_error(
-                    f"Requested/resolved product mismatch for {family}/{product_name}."
+                    f"Requested/contract-version-1 product mismatch for {family}/{product_name}."
                 )
-            expected_roles = set(_PRODUCT_ROLES[product_name])
             contributors = product["source_contributors"]
+            expected_roles = set(_PRODUCT_ROLES[product_name])
             if not isinstance(contributors, Mapping) or set(contributors) != expected_roles:
                 raise data_driven_product_error(
-                    f"Invalid contributor roles for {family}/{product_name}."
+                    f"Invalid contract-version-1 contributor roles for {family}/{product_name}."
                 )
             for role, processes_for_role in contributors.items():
                 if not isinstance(processes_for_role, list) or processes_for_role != sorted(set(processes_for_role)):
                     raise data_driven_product_error(
-                        f"Contributor role {family}/{product_name}/{role} must be sorted and unique."
+                        f"Contract-version-1 contributor role {family}/{product_name}/{role} must be sorted and unique."
                     )
             required_processes = sorted(
-                {
-                    process
-                    for processes_for_role in contributors.values()
-                    for process in processes_for_role
-                }
+                process
+                for processes_for_role in contributors.values()
+                for process in processes_for_role
             ) if enabled else []
+            required_processes = sorted(set(required_processes))
             if product["required_source_sumw2_processes"] != required_processes:
                 raise data_driven_product_error(
-                    f"Required source processes disagree with contributor roles for {family}/{product_name}."
+                    f"Contract-version-1 required processes disagree with roles for {family}/{product_name}."
                 )
-            output_processes = product["output_processes"]
             expected_outputs = sorted(
                 {
-                    generated_process_name(product_name, _parse_process_name(process)[1])
+                    generated_process_name(product_name, parse_process_name(process)[1])
                     for process in contributors.get("data", [])
                 }
             ) if enabled else []
-            if output_processes != expected_outputs:
+            if product["output_processes"] != expected_outputs:
                 raise data_driven_product_error(
-                    f"Generated output labels disagree with source data years for {family}/{product_name}."
+                    f"Contract-version-1 output labels disagree with data years for {family}/{product_name}."
                 )
             raw_targets = product["required_source_sumw2_targets"]
             if not isinstance(raw_targets, list):
                 raise data_driven_product_error(
-                    f"Required source targets must be a list for {family}/{product_name}."
+                    f"Contract-version-1 source targets must be a list for {family}/{product_name}."
                 )
             normalized_targets = []
             for raw_target in raw_targets:
                 if not isinstance(raw_target, Mapping) or set(raw_target) != {"dataset", "process", "family"}:
                     raise data_driven_product_error(
-                        f"Malformed source target for {family}/{product_name}."
+                        f"Malformed contract-version-1 source target for {family}/{product_name}."
                     )
                 target = sumw2_target(
                     raw_target["dataset"], raw_target["process"], raw_target["family"]
                 )
                 if target.family != family or target.process not in required_processes:
                     raise data_driven_product_error(
-                        f"Source target disagrees with family/process roles for {family}/{product_name}."
+                        f"Contract-version-1 target disagrees with roles for {family}/{product_name}."
                     )
                 normalized_targets.append(target)
             if normalized_targets != sorted(set(normalized_targets)):
                 raise data_driven_product_error(
-                    f"Source targets must be unique and deterministic for {family}/{product_name}."
+                    f"Contract-version-1 targets must be deterministic for {family}/{product_name}."
                 )
             expected_targets = sorted(
                 target
@@ -737,15 +1052,37 @@ def validate_serialized_data_driven_contract(
             ) if enabled else []
             if normalized_targets != expected_targets:
                 raise data_driven_product_error(
-                    f"Required source targets disagree with the immutable sumw2 policy for {family}/{product_name}: "
-                    f"expected={[target.to_dict() for target in expected_targets]} "
-                    f"observed={[target.to_dict() for target in normalized_targets]}."
+                    f"Contract-version-1 targets disagree with immutable sumw2 policy for {family}/{product_name}."
                 )
-            missing = sorted(set(normalized_targets) - selected_targets)
-            if missing:
-                raise data_driven_product_error(
-                    f"Resolved source targets are not selected by sumw2 policy for {family}/{product_name}: {[target.to_dict() for target in missing]}."
-                )
+
+
+def validate_serialized_data_driven_contract(
+    requested: Mapping[str, Any],
+    contract: Mapping[str, Any],
+    *,
+    policy: resolved_sumw2_policy,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Validate current contracts and safe read-only version-1 sidecars."""
+
+    _validate_requested_data_driven_products(requested)
+    if not isinstance(contract, Mapping):
+        raise data_driven_product_error(
+            "resolved_data_driven_contract must be an object."
+        )
+    version = contract.get("contract_version")
+    if version == RESOLVED_DATA_DRIVEN_CONTRACT_VERSION:
+        validate_generated_output_contract(requested, contract)
+        validate_generated_outputs_against_sumw2_policy(contract, policy=policy)
+    elif version == LEGACY_RESOLVED_DATA_DRIVEN_CONTRACT_VERSION:
+        _validate_legacy_serialized_data_driven_contract(
+            requested,
+            contract,
+            policy=policy,
+        )
+    else:
+        raise data_driven_product_error(
+            f"Unsupported resolved_data_driven_contract version {version!r}."
+        )
     return copy.deepcopy(dict(requested)), copy.deepcopy(dict(contract))
 
 
@@ -765,21 +1102,35 @@ def validate_requested_product_input(
         )
     policy = resolved_sumw2_policy_from_sidecar(sidecar)
     validate_serialized_data_driven_contract(requested, contract, policy=policy)
-    product_name = "flips" if artifact_kind == "flips_output" else "nonprompt"
     if artifact_kind not in {"nonprompt_output", "flips_output"}:
         raise data_driven_product_error(
             f"Unknown requested transformed artifact kind {artifact_kind!r}."
         )
+    if contract["contract_version"] != RESOLVED_DATA_DRIVEN_CONTRACT_VERSION:
+        raise data_driven_product_error(
+            "Processor artifact has resolved_data_driven_contract contract_version=1, "
+            "which contains flattened contributor roles rather than the exact certified "
+            "per-generated-output mapping required for a new data-driven transformation. "
+            "The artifact remains valid for read-only reopening, but run_data_driven and "
+            "DataDrivenProducer cannot use it as transformation authority. Regenerate the "
+            "processor PKL and automatic sidecar with the current run_analysis before "
+            "running the data-driven transformation; do not convert or relabel the version-1 "
+            "record as version 2."
+        )
+    product_name = "flips" if artifact_kind == "flips_output" else "nonprompt"
     if not requested["products"][product_name]["enabled"]:
         raise data_driven_product_error(
             f"Data-driven product {product_name!r} was not requested in the processor sidecar. "
             "Regenerate the processor PKL with the appropriate data_driven_products entry."
         )
+    product = contract["products"][product_name]
+    required = set(
+        required_source_processes_from_generated_outputs(
+            product["generated_outputs"]
+        )
+    )
     manifest_families = sidecar["sumw2_content_manifest"]["families"]
-    for family, family_products in contract["families"].items():
-        product = family_products[product_name]
-        required = set(product["required_source_sumw2_processes"])
-        manifest = manifest_families[family]
+    for family, manifest in manifest_families.items():
         nominal = set(manifest["scalar_nominal_processes"])
         companions = set(manifest["sumw2_processes"])
         missing_nominal = sorted(required - nominal)

@@ -287,9 +287,22 @@ def test_np_postprocess_inline_writes_transformed_artifact_sidecar(
         "nonprompt": {"enabled": True},
         "flips": {"enabled": True},
     }
-    assert sidecar["resolved_data_driven_contract"]["families"]["met"][
-        "nonprompt"
-    ]["requirements_satisfied"] is True
+    assert sidecar["resolved_data_driven_contract"]["contract_version"] == 2
+    assert sidecar["resolved_data_driven_contract"]["products"]["nonprompt"][
+        "generated_outputs"
+    ] == {
+        "nonpromptUL17": {
+            "year": "UL17",
+            "source_contributors": {
+                "data": ["dataUL17"],
+                "prompt_mc": ["TTTo2L2Nu_centralUL17"],
+            },
+            "required_source_sumw2_processes": [
+                "TTTo2L2Nu_centralUL17",
+                "dataUL17",
+            ],
+        }
+    }
 
 
 def test_incomplete_requested_product_fails_before_processor_construction(
@@ -346,6 +359,88 @@ data_driven_products:
             with pytest.raises(
                 data_driven_product_error,
                 match="requested data-driven product.*missing_contributors=.*Correct one of",
+            ):
+                runpy.run_path(str(_SCRIPT_PATH), run_name="__main__")
+    finally:
+        sys.path = original_sys_path
+
+    assert processor_calls == []
+
+
+def test_orphan_prompt_year_fails_before_processor_construction(
+    monkeypatch, tmp_path
+):
+    with open(_SAMPLE_JSON) as stream:
+        template = json.load(stream)
+    sample_paths = []
+    for filename, process, is_data in (
+        ("data_18.json", "dataUL18", True),
+        ("prompt_17.json", "TTTo2L2Nu_centralUL17", False),
+    ):
+        payload = dict(template)
+        payload.update(
+            {
+                "histAxisName": process,
+                "isData": is_data,
+                "WCnames": [],
+            }
+        )
+        if process.endswith("UL18"):
+            payload["year"] = "2018"
+            payload["files"] = [
+                filename.replace("UL17", "UL18")
+                for filename in payload["files"]
+            ]
+        path = tmp_path / filename
+        path.write_text(json.dumps(payload), encoding="utf-8")
+        sample_paths.append(str(path))
+    options_path = tmp_path / "orphan_year.yml"
+    options_path.write_text(
+        """sumw2_storage:
+  mode: full_diagnostics
+data_driven_products:
+  nonprompt:
+    enabled: true
+    source_contributors:
+      data:
+        process_names: [dataUL18]
+      prompt_mc:
+        process_names: [TTTo2L2Nu_centralUL17]
+  flips:
+    enabled: false
+""",
+        encoding="utf-8",
+    )
+    processor_calls = []
+
+    def forbidden_processor(*args, **kwargs):
+        processor_calls.append((args, kwargs))
+        raise AssertionError("processor construction must not begin")
+
+    original_sys_path = list(sys.path)
+    sys.path.insert(0, str(_SCRIPT_PATH.parent))
+    try:
+        processor_module = importlib.import_module("analysis_processor")
+        monkeypatch.setattr(
+            processor_module,
+            "AnalysisProcessor",
+            forbidden_processor,
+        )
+        argv = [
+            "run_analysis.py",
+            ",".join(sample_paths),
+            "--executor",
+            "futures",
+            "--hist-list",
+            "met",
+            "--options",
+            str(options_path),
+            "--skip-topcoffea-data-check",
+        ]
+        with mock.patch.object(sys, "argv", argv):
+            with pytest.raises(
+                data_driven_product_error,
+                match=r"orphan_years=\['UL17'\].*Recommended correction",
             ):
                 runpy.run_path(str(_SCRIPT_PATH), run_name="__main__")
     finally:

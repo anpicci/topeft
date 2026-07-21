@@ -1,6 +1,5 @@
 import argparse
 import gzip
-import re
 import warnings
 from collections import defaultdict
 
@@ -11,7 +10,9 @@ from topcoffea.modules.hist_utils import iterate_hist_from_pkl
 from topcoffea.modules.get_param_from_jsons import GetParam
 from topeft.modules.axes import info_2d as axes_info_2d
 from topeft.modules.data_driven_products import (
+    data_driven_product_error,
     generated_process_name,
+    parse_process_name,
     validate_requested_product_input,
 )
 from topeft.modules.histogram_artifact import (
@@ -24,9 +25,6 @@ from topeft.modules.paths import topeft_path
 get_te_param = GetParam(topeft_path("params/params.json"))
 
 class DataDrivenProducer:
-    _NAME_REGEX = r"^(?P<process>.*?)(?:UL)?(?P<year>(?:\d{2}(?:APV|EE|BPix)?|\d{4}(?:EE|BPix)?))$"
-    _KNOWN_YEARS = {"16APV", "16", "17", "18", "2022", "2022EE", "2023", "2023BPix"}
-
     def __init__(
         self,
         inputHist,
@@ -46,7 +44,6 @@ class DataDrivenProducer:
             raise RuntimeError(f"Unknown data-driven artifact kind {artifact_kind!r}.")
         self._artifact_kind = artifact_kind
         self.promptSubtractionSamples=get_te_param('prompt_subtraction_samples')
-        self._name_pattern = re.compile(self._NAME_REGEX)
         self._dd_report_by_key = {} if dd_report else None
         self._input_artifact_validation = None
         if self._is_histogram_path(self._input_source):
@@ -187,18 +184,10 @@ class DataDrivenProducer:
         return {"families": families}
 
     def _parse_process(self, process_name):
-        match = self._name_pattern.search(process_name)
-        if not match:
-            raise RuntimeError(f"Sample {process_name} does not match the naming convention.")
-
-        sample_name = match.group("process")
-        year = match.group("year").replace("central", "").replace("UL", "")
-        if year not in self._KNOWN_YEARS:
-            raise RuntimeError(
-                f"Sample {process_name} does not match the naming convention, year \"{year}\" is unknown."
-            )
-
-        return sample_name, year
+        try:
+            return parse_process_name(str(process_name))
+        except data_driven_product_error as error:
+            raise RuntimeError(str(error)) from error
 
     def _build_process_metadata(self, histo):
         # Parse process names once per histogram and reuse the mapping across appl regions.
@@ -355,18 +344,18 @@ class DataDrivenProducer:
             return {
                 "nonprompt": {
                     "enabled": self._artifact_kind == "nonprompt_output",
-                    "source_contributors": None,
+                    "generated_outputs": None,
                 },
                 "flips": {
                     "enabled": True,
-                    "source_contributors": None,
+                    "generated_outputs": None,
                 },
             }
-        if family not in input_sidecar["resolved_data_driven_contract"]["families"]:
+        if family not in input_sidecar["sumw2_content_manifest"]["families"]:
             raise RuntimeError(
                 f"Missing resolved data-driven contract for family {family!r}."
             )
-        products = input_sidecar["resolved_data_driven_contract"]["families"][family]
+        products = input_sidecar["resolved_data_driven_contract"]["products"]
         return {
             "nonprompt": {
                 **products["nonprompt"],
@@ -571,19 +560,8 @@ class DataDrivenProducer:
         resolved_products = self._resolved_family_products(key)
         nonprompt_enabled = resolved_products["nonprompt"]["enabled"]
         flips_enabled = resolved_products["flips"]["enabled"]
-        nonprompt_sources = resolved_products["nonprompt"]["source_contributors"]
-        flips_sources = resolved_products["flips"]["source_contributors"]
-        explicit_nonprompt_data = (
-            set(nonprompt_sources["data"]) if nonprompt_sources is not None else None
-        )
-        explicit_prompt_mc = (
-            set(nonprompt_sources["prompt_mc"])
-            if nonprompt_sources is not None
-            else None
-        )
-        explicit_flips_data = (
-            set(flips_sources["data"]) if flips_sources is not None else None
-        )
+        nonprompt_outputs = resolved_products["nonprompt"]["generated_outputs"]
+        flips_outputs = resolved_products["flips"]["generated_outputs"]
         report = None
         if self._dd_report_enabled and not key.endswith("_sumw2"):
             report = self._init_dd_report(key, histo)
@@ -608,16 +586,20 @@ class DataDrivenProducer:
                 if not flips_enabled:
                     continue
                 # we are in the flips application region and theres no "prompt" subtraction, so we just have to rename data to flips, put it in the right axis and we are done
-                newNameDictData = defaultdict(list)
-                for process_name in hAR.axes["process"]:
-                    sampleName, year = process_metadata[process_name]
-                    flips_name = self._flips_process_name(year)
-                    if (
-                        process_name in explicit_flips_data
-                        if explicit_flips_data is not None
-                        else self.dataName == sampleName
-                    ):
-                        newNameDictData[flips_name].append(process_name)
+                if flips_outputs is not None:
+                    newNameDictData = {
+                        output_process: list(
+                            output_record["source_contributors"]["data"]
+                        )
+                        for output_process, output_record in flips_outputs.items()
+                    }
+                else:
+                    newNameDictData = defaultdict(list)
+                    for process_name in hAR.axes["process"]:
+                        sampleName, year = process_metadata[process_name]
+                        flips_name = self._flips_process_name(year)
+                        if self.dataName == sampleName:
+                            newNameDictData[flips_name].append(process_name)
                 generated_flips_processes.update(newNameDictData)
                 hFlips = hAR.group("process", newNameDictData)
                 hFlipsRaw = hFlips
@@ -656,27 +638,36 @@ class DataDrivenProducer:
                 # if we are in the nonprompt application region, we also integrate the application region axis
                 # and construct the new process 'nonprompt'
                 # we look at data only, and rename it to fakes
-                newNameDictData = defaultdict(list)
-                newNameDictNoData = defaultdict(list)
-                for process_name in hAR.axes["process"]:
-                    sampleName, year = process_metadata[process_name]
+                if nonprompt_outputs is not None:
+                    newNameDictData = {
+                        output_process: list(
+                            output_record["source_contributors"]["data"]
+                        )
+                        for output_process, output_record in nonprompt_outputs.items()
+                    }
+                    newNameDictNoData = {
+                        output_process: list(prompt_processes)
+                        for output_process, output_record in nonprompt_outputs.items()
+                        if (
+                            prompt_processes := output_record["source_contributors"][
+                                "prompt_mc"
+                            ]
+                        )
+                    }
+                else:
+                    newNameDictData = defaultdict(list)
+                    newNameDictNoData = defaultdict(list)
+                    for process_name in hAR.axes["process"]:
+                        sampleName, year = process_metadata[process_name]
 
-                    nonprompt_name = self._nonprompt_process_name(year)
-                    if (
-                        process_name in explicit_nonprompt_data
-                        if explicit_nonprompt_data is not None
-                        else self.dataName == sampleName
-                    ):
-                        newNameDictData[nonprompt_name].append(process_name)
-                    elif (
-                        process_name in explicit_prompt_mc
-                        if explicit_prompt_mc is not None
-                        else sampleName in self.promptSubtractionSamples
-                    ):
-                        newNameDictNoData[nonprompt_name].append(process_name)
-                    else:
-                        pass
-                        # print(f"We won't consider {sampleName} for the prompt subtraction in the appl. region")
+                        nonprompt_name = self._nonprompt_process_name(year)
+                        if self.dataName == sampleName:
+                            newNameDictData[nonprompt_name].append(process_name)
+                        elif sampleName in self.promptSubtractionSamples:
+                            newNameDictNoData[nonprompt_name].append(process_name)
+                        else:
+                            pass
+                            # print(f"We won't consider {sampleName} for the prompt subtraction in the appl. region")
                 generated_nonprompt_processes.update(newNameDictData)
                 generated_nonprompt_processes.update(newNameDictNoData)
                 hFakes = hAR.group("process", newNameDictData)

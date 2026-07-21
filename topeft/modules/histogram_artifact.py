@@ -15,7 +15,9 @@ from typing import Any
 import cloudpickle
 
 from topeft.modules.data_driven_products import (
+    RESOLVED_DATA_DRIVEN_CONTRACT_VERSION,
     data_driven_product_error,
+    generated_output_processes_from_contract,
     validate_requested_product_input,
     validate_serialized_data_driven_contract,
 )
@@ -241,6 +243,7 @@ def _build_sidecar_payload(
         derived_required = required_sumw2_processes_from_transformation_contract(
             normalized_contract,
             sumw2_storage_provenance=sumw2_storage_provenance,
+            resolved_data_driven_contract=resolved_data_driven_contract,
         )
         if required_sumw2_processes is not None:
             requested_required = _normalize_required_processes(
@@ -312,17 +315,23 @@ def _validate_transformation_against_data_driven_contract(
 ) -> None:
     artifact_kind = transformation_contract["artifact_kind"]
     for family, roles in transformation_contract["families"].items():
-        family_products = data_driven_contract["families"][family]
         expected_nonprompt = (
-            family_products["nonprompt"]["output_processes"]
+            sorted(
+                generated_output_processes_from_contract(
+                    data_driven_contract,
+                    "nonprompt",
+                )
+            )
             if artifact_kind == "nonprompt_output"
-            and family_products["nonprompt"]["enabled"]
             else []
         )
         expected_flips = (
-            family_products["flips"]["output_processes"]
-            if family_products["flips"]["enabled"]
-            else []
+            sorted(
+                generated_output_processes_from_contract(
+                    data_driven_contract,
+                    "flips",
+                )
+            )
         )
         if artifact_kind == "flips_output":
             expected_nonprompt = []
@@ -503,6 +512,7 @@ def required_sumw2_processes_from_transformation_contract(
     transformation_contract: Mapping[str, Any],
     *,
     sumw2_storage_provenance: Mapping[str, Any],
+    resolved_data_driven_contract: Mapping[str, Any] | None = None,
 ) -> dict[str, list[str]]:
     """Derive required transformed companions without reading companion content."""
 
@@ -512,17 +522,50 @@ def required_sumw2_processes_from_transformation_contract(
         sumw2_storage_provenance=sumw2_storage_provenance,
         artifact_kind=artifact_kind,
     )
+    if resolved_data_driven_contract is not None:
+        _validate_transformation_against_data_driven_contract(
+            normalized,
+            resolved_data_driven_contract,
+        )
     policy = resolved_policy_from_provenance(sumw2_storage_provenance)
     output = {}
+    certified_nonprompt = (
+        set(
+            generated_output_processes_from_contract(
+                resolved_data_driven_contract,
+                "nonprompt",
+            )
+        )
+        if resolved_data_driven_contract is not None
+        else None
+    )
+    certified_flips = (
+        set(
+            generated_output_processes_from_contract(
+                resolved_data_driven_contract,
+                "flips",
+            )
+        )
+        if resolved_data_driven_contract is not None
+        else None
+    )
     for family, roles in normalized["families"].items():
         selected_source_processes = set(policy.selected_processes(family))
         retained_selected = selected_source_processes & (
             set(roles["retained_scalar_processes"])
             | set(roles["retained_eft_processes"])
         )
-        generated = set(roles["generated_flips_processes"])
+        generated = (
+            set(roles["generated_flips_processes"])
+            if certified_flips is None
+            else set(certified_flips)
+        )
         if artifact_kind == "nonprompt_output":
-            generated |= set(roles["generated_nonprompt_processes"])
+            generated |= (
+                set(roles["generated_nonprompt_processes"])
+                if certified_nonprompt is None
+                else set(certified_nonprompt)
+            )
         output[family] = sorted(retained_selected | generated)
     return output
 
@@ -530,11 +573,31 @@ def required_sumw2_processes_from_transformation_contract(
 def _expected_nominal_processes_from_transformation_contract(
     transformation_contract: Mapping[str, Any],
     family: str,
+    *,
+    resolved_data_driven_contract: Mapping[str, Any] | None = None,
 ) -> tuple[list[str], list[str]]:
     roles = transformation_contract["families"][family]
-    generated = set(roles["generated_flips_processes"])
+    generated = (
+        set(roles["generated_flips_processes"])
+        if resolved_data_driven_contract is None
+        else set(
+            generated_output_processes_from_contract(
+                resolved_data_driven_contract,
+                "flips",
+            )
+        )
+    )
     if transformation_contract["artifact_kind"] == "nonprompt_output":
-        generated |= set(roles["generated_nonprompt_processes"])
+        generated |= (
+            set(roles["generated_nonprompt_processes"])
+            if resolved_data_driven_contract is None
+            else set(
+                generated_output_processes_from_contract(
+                    resolved_data_driven_contract,
+                    "nonprompt",
+                )
+            )
+        )
     expected_scalar = sorted(set(roles["retained_scalar_processes"]) | generated)
     return expected_scalar, list(roles["retained_eft_processes"])
 
@@ -556,6 +619,14 @@ def derive_transformed_required_sumw2_processes(
         raise histogram_sidecar_error(
             "Transformed requirements require a validated processor_output input sidecar."
         )
+    try:
+        validate_requested_product_input(
+            input_sidecar,
+            artifact_kind=artifact_kind,
+        )
+    except data_driven_product_error as error:
+        raise histogram_sidecar_error(str(error)) from error
+    data_driven_contract = input_sidecar["resolved_data_driven_contract"]
     input_manifest = input_sidecar["sumw2_content_manifest"]["families"]
     context_families = transformation_context.get("families")
     if not isinstance(context_families, Mapping):
@@ -623,6 +694,10 @@ def derive_transformed_required_sumw2_processes(
         sumw2_storage_provenance=input_sidecar["sumw2_storage_provenance"],
         artifact_kind=artifact_kind,
     )
+    _validate_transformation_against_data_driven_contract(
+        contract,
+        data_driven_contract,
+    )
     if transformed_histograms is not None:
         for family in contract["families"]:
             content = _family_process_content(transformed_histograms, family)
@@ -630,6 +705,7 @@ def derive_transformed_required_sumw2_processes(
                 _expected_nominal_processes_from_transformation_contract(
                     contract,
                     family,
+                    resolved_data_driven_contract=data_driven_contract,
                 )
             )
             if content["scalar_nominal_processes"] != expected_scalar:
@@ -648,6 +724,7 @@ def derive_transformed_required_sumw2_processes(
     required = required_sumw2_processes_from_transformation_contract(
         contract,
         sumw2_storage_provenance=input_sidecar["sumw2_storage_provenance"],
+        resolved_data_driven_contract=data_driven_contract,
     )
     return contract, required
 
@@ -858,6 +935,9 @@ def _validate_sidecar_structure(
         derived_required = required_sumw2_processes_from_transformation_contract(
             transformation_contract,
             sumw2_storage_provenance=sidecar["sumw2_storage_provenance"],
+            resolved_data_driven_contract=sidecar.get(
+                "resolved_data_driven_contract"
+            ),
         )
         serialized_required = {
             family: list(family_manifest["required_sumw2_processes"])
@@ -1023,16 +1103,20 @@ def validate_processor_output(
             requested_products = sidecar["requested_data_driven_products"][
                 "products"
             ]
-            if requested_products["nonprompt"]["enabled"]:
-                validate_requested_product_input(
-                    sidecar,
-                    artifact_kind="nonprompt_output",
-                )
-            if requested_products["flips"]["enabled"]:
-                validate_requested_product_input(
-                    sidecar,
-                    artifact_kind="flips_output",
-                )
+            if (
+                sidecar["resolved_data_driven_contract"]["contract_version"]
+                == RESOLVED_DATA_DRIVEN_CONTRACT_VERSION
+            ):
+                if requested_products["nonprompt"]["enabled"]:
+                    validate_requested_product_input(
+                        sidecar,
+                        artifact_kind="nonprompt_output",
+                    )
+                if requested_products["flips"]["enabled"]:
+                    validate_requested_product_input(
+                        sidecar,
+                        artifact_kind="flips_output",
+                    )
         except data_driven_product_error as error:
             raise histogram_content_error(str(error)) from error
 
@@ -1062,6 +1146,9 @@ def _validate_transformed_output(
     independently_required = required_sumw2_processes_from_transformation_contract(
         transformation_contract,
         sumw2_storage_provenance=sidecar["sumw2_storage_provenance"],
+        resolved_data_driven_contract=sidecar.get(
+            "resolved_data_driven_contract"
+        ),
     )
     for family in policy.runtime_histogram_families:
         family_manifest = manifest_families[family]
@@ -1069,6 +1156,9 @@ def _validate_transformed_output(
             _expected_nominal_processes_from_transformation_contract(
                 transformation_contract,
                 family,
+                resolved_data_driven_contract=sidecar.get(
+                    "resolved_data_driven_contract"
+                ),
             )
         )
         expected_sumw2 = independently_required[family]
@@ -1354,6 +1444,7 @@ def merge_histogram_sidecars(
         independently_required = required_sumw2_processes_from_transformation_contract(
             merged_contract,
             sumw2_storage_provenance=provenance,
+            resolved_data_driven_contract=resolved_data_driven_contract,
         )
         if required != independently_required:
             raise histogram_merge_error(
