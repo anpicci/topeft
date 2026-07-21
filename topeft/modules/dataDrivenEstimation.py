@@ -20,7 +20,11 @@ from topeft.modules.histogram_artifact import (
     validate_histogram_artifact,
     write_histogram_artifact,
 )
-from topeft.modules.nominal_schema import EFT_NOMINAL_SUFFIX, SCALAR_NOMINAL_SUFFIX
+from topeft.modules.nominal_schema import (
+    EFT_NOMINAL_SUFFIX,
+    SCALAR_NOMINAL_SUFFIX,
+    evaluate_eft_histogram_at_wc,
+)
 from topeft.modules.paths import topeft_path
 get_te_param = GetParam(topeft_path("params/params.json"))
 
@@ -64,6 +68,11 @@ class DataDrivenProducer:
                     artifact_kind=artifact_kind,
                 )
         self._transformation_role_context = self._initialize_transformation_role_context()
+        (
+            self._eft_prompt_processes_by_family,
+            self._eft_prompt_projection_context,
+        ) = self._initialize_eft_prompt_projection_context()
+        self._eft_prompt_projections = self._build_eft_prompt_projections()
         if not self.iterator_mode:
             self.DDFakes()
 
@@ -119,6 +128,94 @@ class DataDrivenProducer:
                 "generated_flips_processes": [],
             }
         return families
+
+    def _initialize_eft_prompt_projection_context(self):
+        input_sidecar = (
+            self._input_artifact_validation["metadata"]
+            if self._input_artifact_validation is not None
+            else None
+        )
+        empty_context = {
+            "mode": "sm_point",
+            "required_processes": [],
+            "generated_nonprompt_eft_dependence": False,
+        }
+        if (
+            not input_sidecar
+            or self._artifact_kind != "nonprompt_output"
+            or "resolved_data_driven_contract" not in input_sidecar
+        ):
+            return {}, empty_context
+
+        contract = input_sidecar["resolved_data_driven_contract"]
+        required_prompt_signals = set(
+            contract["required_prompt_signal_processes"]
+        )
+        processes_by_family = {}
+        projected_processes = set()
+        for family, manifest in input_sidecar["sumw2_content_manifest"][
+            "families"
+        ].items():
+            scalar_processes = set(manifest["scalar_nominal_processes"])
+            eft_processes = set(manifest["eft_nominal_processes"])
+            duplicates = sorted(
+                required_prompt_signals & scalar_processes & eft_processes
+            )
+            if duplicates:
+                raise RuntimeError(
+                    f"Family {family!r} has required private EFT source(s) duplicated "
+                    "in scalar and EFT nominal siblings: "
+                    + ", ".join(duplicates)
+                )
+            missing = sorted(
+                required_prompt_signals - scalar_processes - eft_processes
+            )
+            if missing:
+                raise RuntimeError(
+                    f"Family {family!r} is missing required private EFT source(s): "
+                    + ", ".join(missing)
+                )
+            family_processes = sorted(required_prompt_signals & eft_processes)
+            processes_by_family[family] = family_processes
+            projected_processes.update(family_processes)
+        return processes_by_family, {
+            **empty_context,
+            "required_processes": sorted(projected_processes),
+        }
+
+    @staticmethod
+    def _filter_to_processes(histogram, process_names):
+        allowed = {str(process) for process in process_names}
+        observed = {
+            str(process) for process in histogram.axes["process"]
+        }
+        return histogram.remove("process", sorted(observed - allowed))
+
+    def _build_eft_prompt_projections(self):
+        required_families = {
+            family: processes
+            for family, processes in self._eft_prompt_processes_by_family.items()
+            if processes
+        }
+        if not required_families:
+            return {}
+        projections = {}
+        for key, histogram in self._iter_input_histograms():
+            if not key.endswith(EFT_NOMINAL_SUFFIX):
+                continue
+            family = key[: -len(EFT_NOMINAL_SUFFIX)]
+            required_processes = required_families.get(family)
+            if not required_processes:
+                continue
+            selected = self._filter_to_processes(histogram, required_processes)
+            projections[family] = evaluate_eft_histogram_at_wc(selected, {})
+        missing = sorted(set(required_families) - set(projections))
+        if missing:
+            raise RuntimeError(
+                "Required private EFT source sibling is missing for family/families: "
+                + ", ".join(missing)
+            )
+        return projections
 
     @staticmethod
     def _family_from_nominal_key(key):
@@ -181,7 +278,10 @@ class DataDrivenProducer:
                 roles["retained_scalar_processes"] = []
                 roles["generated_nonprompt_processes"] = []
             families[family] = roles
-        return {"families": families}
+        return {
+            "eft_prompt_projection": dict(self._eft_prompt_projection_context),
+            "families": families,
+        }
 
     def _parse_process(self, process_name):
         try:
@@ -534,13 +634,24 @@ class DataDrivenProducer:
 
     def _build_data_driven_histogram(self, key, histo):
         if key.endswith(EFT_NOMINAL_SUFFIX):
-            # EFT signal content remains polynomial and separate. The nonprompt
-            # estimator is scalar; retain only non-application-region EFT content.
+            family = key[: -len(EFT_NOMINAL_SUFFIX)]
+            projected_processes = set(
+                self._eft_prompt_processes_by_family.get(family, ())
+            )
             output = None
             for appl in histo.axes["appl"]:
                 selected = histo.integrate("appl", appl)
                 if "isAR" in appl:
-                    continue
+                    if not self._eft_prompt_processes_by_family:
+                        # Preserve the established sidecar-free and flips-only path.
+                        continue
+                    if appl != "isAR_2lSS_OS" and projected_processes:
+                        retained_processes = set(
+                            str(process) for process in selected.axes["process"]
+                        ) - projected_processes
+                        selected = self._filter_to_processes(
+                            selected, retained_processes
+                        )
                 output = selected if output is None else output + selected
             if output is None:
                 output = histo.integrate("appl")
@@ -645,14 +756,19 @@ class DataDrivenProducer:
                         )
                         for output_process, output_record in nonprompt_outputs.items()
                     }
+                    scalar_processes = {
+                        str(process) for process in hAR.axes["process"]
+                    }
                     newNameDictNoData = {
-                        output_process: list(prompt_processes)
+                        output_process: sorted(
+                            set(prompt_processes) & scalar_processes
+                        )
                         for output_process, output_record in nonprompt_outputs.items()
                         if (
                             prompt_processes := output_record["source_contributors"][
                                 "prompt_mc"
                             ]
-                        )
+                        ) and set(prompt_processes) & scalar_processes
                     }
                 else:
                     newNameDictData = defaultdict(list)
@@ -673,6 +789,35 @@ class DataDrivenProducer:
                 hFakes = hAR.group("process", newNameDictData)
                 # now we take all the stuff that is not data in the AR to make the prompt subtraction and assign them to nonprompt.
                 hPromptSub = hAR.group("process", newNameDictNoData)
+                prompt_source_hist = hAR
+                family, _component = self._family_from_nominal_key(key)
+                projection = self._eft_prompt_projections.get(family)
+                if projection is not None and not key.endswith("_sumw2"):
+                    projected_ar = projection.integrate("appl", ident)
+                    projected_processes = {
+                        str(process) for process in projected_ar.axes["process"]
+                    }
+                    projection_groups = {
+                        output_process: sorted(
+                            set(output_record["source_contributors"]["prompt_mc"])
+                            & projected_processes
+                        )
+                        for output_process, output_record in nonprompt_outputs.items()
+                        if set(output_record["source_contributors"]["prompt_mc"])
+                        & projected_processes
+                    }
+                    projected_prompt = projected_ar.group(
+                        "process", projection_groups
+                    )
+                    try:
+                        hPromptSub += projected_prompt
+                        prompt_source_hist = hAR + projected_ar
+                    except Exception as error:
+                        raise RuntimeError(
+                            f"Incompatible axes while projecting private EFT prompt "
+                            f"sources at the SM point for family={family!r} "
+                            f"application_region={ident!r}."
+                        ) from error
                 hPromptSubRaw = hPromptSub
 
                 # remove the up/down variations (if any) from the prompt subtraction histo
@@ -697,7 +842,7 @@ class DataDrivenProducer:
                     self._record_nonprompt_report(
                         report,
                         ident,
-                        hAR,
+                        prompt_source_hist,
                         hAR.group("process", newNameDictData),
                         hPromptSubRaw,
                         hPromptSub,

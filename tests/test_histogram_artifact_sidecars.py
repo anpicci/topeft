@@ -895,6 +895,11 @@ def _transformed_payload(artifact_kind):
 def _transformed_context(source_sidecar, artifact_kind):
     source = source_sidecar["sumw2_content_manifest"]["families"]["njets"]
     return {
+        "eft_prompt_projection": {
+            "mode": "sm_point",
+            "required_processes": [],
+            "generated_nonprompt_eft_dependence": False,
+        },
         "families": {
             "njets": {
                 "source_scalar_processes": source["scalar_nominal_processes"],
@@ -1479,6 +1484,11 @@ def test_merged_flips_contract_unions_independently_validated_requirements(
         process = "flipsUL18"
         path = tmp_path / f"flips_{index}.pkl.gz"
         context = {
+            "eft_prompt_projection": {
+                "mode": "sm_point",
+                "required_processes": [],
+                "generated_nonprompt_eft_dependence": False,
+            },
             "families": {
                 "njets": {
                     "source_scalar_processes": source_family[

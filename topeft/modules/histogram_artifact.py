@@ -40,7 +40,7 @@ from topeft.modules.production_sample_profile import (
 
 METADATA_SCHEMA_VERSION = 2
 SUMW2_CONTENT_MANIFEST_VERSION = 1
-TRANSFORMATION_CONTRACT_VERSION = 1
+TRANSFORMATION_CONTRACT_VERSION = 2
 ARTIFACT_KINDS = frozenset(
     {"processor_output", "nonprompt_output", "flips_output"}
 )
@@ -341,6 +341,51 @@ def _validate_transformation_against_data_driven_contract(
     data_driven_contract: Mapping[str, Any],
 ) -> None:
     artifact_kind = transformation_contract["artifact_kind"]
+    projection = transformation_contract["eft_prompt_projection"]
+    required_prompt_signals = set(
+        data_driven_contract["required_prompt_signal_processes"]
+    )
+    expected_projected_processes = set()
+    for family, roles in transformation_contract["families"].items():
+        source_scalar_processes = set(roles["source_scalar_processes"])
+        source_eft_processes = set(roles["source_eft_processes"])
+        duplicated_required = sorted(
+            required_prompt_signals
+            & source_scalar_processes
+            & source_eft_processes
+        )
+        if duplicated_required:
+            raise histogram_sidecar_error(
+                f"Family '{family}' duplicates required private EFT sources in "
+                "scalar and EFT nominal source roles: "
+                + ", ".join(duplicated_required)
+            )
+        missing_required = sorted(
+            required_prompt_signals
+            - source_scalar_processes
+            - source_eft_processes
+        )
+        if missing_required:
+            raise histogram_sidecar_error(
+                f"Family '{family}' is missing required private EFT source roles: "
+                + ", ".join(missing_required)
+            )
+        if artifact_kind == "nonprompt_output":
+            expected_projected_processes.update(
+                required_prompt_signals & source_eft_processes
+            )
+    expected_projected = sorted(expected_projected_processes)
+    if projection["required_processes"] != expected_projected:
+        raise histogram_sidecar_error(
+            "EFT prompt projection provenance is tampered or inconsistent with "
+            "the certified source roles: "
+            f"expected={expected_projected} "
+            f"observed={projection['required_processes']}."
+        )
+    if artifact_kind == "flips_output" and projection["required_processes"]:
+        raise histogram_sidecar_error(
+            "flips_output cannot certify private EFT prompt projection."
+        )
     for family, roles in transformation_contract["families"].items():
         expected_nonprompt = (
             sorted(
@@ -427,6 +472,35 @@ _TRANSFORMATION_CONTRACT_FAMILY_FIELDS = (
 )
 
 
+def _normalize_eft_prompt_projection(value: Any) -> dict[str, Any]:
+    if not isinstance(value, Mapping):
+        raise histogram_sidecar_error(
+            "transformation_contract.eft_prompt_projection must be an object."
+        )
+    _require_exact_keys(
+        value,
+        {"mode", "required_processes", "generated_nonprompt_eft_dependence"},
+        label="transformation_contract.eft_prompt_projection",
+    )
+    if value["mode"] != "sm_point":
+        raise histogram_sidecar_error(
+            "EFT prompt projection provenance must use mode='sm_point'."
+        )
+    required_processes = _require_sorted_unique_strings(
+        value["required_processes"],
+        label="transformation_contract.eft_prompt_projection.required_processes",
+    )
+    if value["generated_nonprompt_eft_dependence"] is not False:
+        raise histogram_sidecar_error(
+            "Generated nonprompt EFT dependence must be false."
+        )
+    return {
+        "mode": "sm_point",
+        "required_processes": required_processes,
+        "generated_nonprompt_eft_dependence": False,
+    }
+
+
 def _normalize_transformation_contract(
     transformation_contract: Mapping[str, Any],
     *,
@@ -437,7 +511,12 @@ def _normalize_transformation_contract(
         raise histogram_sidecar_error("transformation_contract must be an object.")
     _require_exact_keys(
         transformation_contract,
-        {"contract_version", "artifact_kind", "families"},
+        {
+            "contract_version",
+            "artifact_kind",
+            "eft_prompt_projection",
+            "families",
+        },
         label="transformation_contract",
     )
     if transformation_contract["contract_version"] != TRANSFORMATION_CONTRACT_VERSION:
@@ -457,6 +536,15 @@ def _normalize_transformation_contract(
         )
 
     policy = resolved_policy_from_provenance(sumw2_storage_provenance)
+    eft_prompt_projection = _normalize_eft_prompt_projection(
+        transformation_contract["eft_prompt_projection"]
+    )
+    if artifact_kind == "flips_output" and eft_prompt_projection[
+        "required_processes"
+    ]:
+        raise histogram_sidecar_error(
+            "flips_output cannot certify private EFT prompt projection."
+        )
     families = transformation_contract["families"]
     if not isinstance(families, Mapping):
         raise histogram_sidecar_error("transformation_contract.families must be an object.")
@@ -531,6 +619,7 @@ def _normalize_transformation_contract(
     return {
         "contract_version": TRANSFORMATION_CONTRACT_VERSION,
         "artifact_kind": artifact_kind,
+        "eft_prompt_projection": eft_prompt_projection,
         "families": normalized_families,
     }
 
@@ -655,6 +744,18 @@ def derive_transformed_required_sumw2_processes(
         raise histogram_sidecar_error(str(error)) from error
     data_driven_contract = input_sidecar["resolved_data_driven_contract"]
     input_manifest = input_sidecar["sumw2_content_manifest"]["families"]
+    if not isinstance(transformation_context, Mapping):
+        raise histogram_sidecar_error(
+            "transformation_context must be an object generated by DataDrivenProducer."
+        )
+    _require_exact_keys(
+        transformation_context,
+        {"eft_prompt_projection", "families"},
+        label="transformation_context",
+    )
+    context_projection = _normalize_eft_prompt_projection(
+        transformation_context["eft_prompt_projection"]
+    )
     context_families = transformation_context.get("families")
     if not isinstance(context_families, Mapping):
         raise histogram_sidecar_error(
@@ -669,6 +770,10 @@ def derive_transformed_required_sumw2_processes(
         )
 
     contract_families = {}
+    required_prompt_signals = set(
+        data_driven_contract["required_prompt_signal_processes"]
+    )
+    expected_projected_processes = set()
     for family, input_family in input_manifest.items():
         raw_roles = context_families[family]
         if not isinstance(raw_roles, Mapping):
@@ -689,6 +794,29 @@ def derive_transformed_required_sumw2_processes(
         }
         expected_source_scalar = input_family["scalar_nominal_processes"]
         expected_source_eft = input_family["eft_nominal_processes"]
+        scalar_sources = set(expected_source_scalar)
+        eft_sources = set(expected_source_eft)
+        duplicated_required = sorted(
+            required_prompt_signals & scalar_sources & eft_sources
+        )
+        if duplicated_required:
+            raise histogram_sidecar_error(
+                f"Family '{family}' has the same required private EFT source in "
+                "scalar and EFT nominal siblings: "
+                + ", ".join(duplicated_required)
+            )
+        missing_required = sorted(
+            required_prompt_signals - scalar_sources - eft_sources
+        )
+        if missing_required:
+            raise histogram_sidecar_error(
+                f"Family '{family}' is missing required private EFT source(s): "
+                + ", ".join(missing_required)
+            )
+        if artifact_kind == "nonprompt_output":
+            expected_projected_processes.update(
+                required_prompt_signals & eft_sources
+            )
         if roles["source_scalar_processes"] != expected_source_scalar:
             raise histogram_sidecar_error(
                 f"Family '{family}' scalar source roles do not match the validated "
@@ -712,10 +840,23 @@ def derive_transformed_required_sumw2_processes(
             ),
         }
 
+    expected_projection = {
+        "mode": "sm_point",
+        "required_processes": sorted(expected_projected_processes),
+        "generated_nonprompt_eft_dependence": False,
+    }
+    if context_projection != expected_projection:
+        raise histogram_sidecar_error(
+            "EFT prompt projection provenance is tampered or inconsistent with "
+            "the validated input nominal siblings: "
+            f"expected={expected_projection} observed={context_projection}."
+        )
+
     contract = _normalize_transformation_contract(
         {
             "contract_version": TRANSFORMATION_CONTRACT_VERSION,
             "artifact_kind": artifact_kind,
+            "eft_prompt_projection": context_projection,
             "families": contract_families,
         },
         sumw2_storage_provenance=input_sidecar["sumw2_storage_provenance"],
@@ -747,6 +888,21 @@ def derive_transformed_required_sumw2_processes(
                     f"{artifact_kind} family '{family}' EFT nominal roles differ from "
                     f"the maintained transformation contract: expected={expected_eft} "
                     f"observed={content['eft_nominal_processes']}."
+                )
+            generated_nonprompt = set(
+                generated_output_processes_from_contract(
+                    data_driven_contract,
+                    "nonprompt",
+                )
+            )
+            unexpected_generated_eft = sorted(
+                generated_nonprompt & set(content["eft_nominal_processes"])
+            )
+            if unexpected_generated_eft:
+                raise histogram_content_error(
+                    f"{artifact_kind} family '{family}' contains an unexpected "
+                    "generated nonprompt EFT component: "
+                    + ", ".join(unexpected_generated_eft)
                 )
     required = required_sumw2_processes_from_transformation_contract(
         contract,
@@ -1475,6 +1631,33 @@ def merge_histogram_sidecars(
         )
     merged_contract = None
     if kind != "processor_output":
+        projection_modes = {
+            sidecar["transformation_contract"]["eft_prompt_projection"]["mode"]
+            for sidecar in sidecars
+        }
+        projection_dependence = {
+            sidecar["transformation_contract"]["eft_prompt_projection"][
+                "generated_nonprompt_eft_dependence"
+            ]
+            for sidecar in sidecars
+        }
+        if projection_modes != {"sm_point"} or projection_dependence != {False}:
+            raise histogram_merge_error(
+                "Cannot merge inconsistent EFT prompt projection provenance."
+            )
+        merged_projection = {
+            "mode": "sm_point",
+            "required_processes": sorted(
+                {
+                    process
+                    for sidecar in sidecars
+                    for process in sidecar["transformation_contract"][
+                        "eft_prompt_projection"
+                    ]["required_processes"]
+                }
+            ),
+            "generated_nonprompt_eft_dependence": False,
+        }
         merged_contract_families = {}
         for family in family_orders[0]:
             merged_roles = {}
@@ -1502,6 +1685,7 @@ def merge_histogram_sidecars(
             {
                 "contract_version": TRANSFORMATION_CONTRACT_VERSION,
                 "artifact_kind": kind,
+                "eft_prompt_projection": merged_projection,
                 "families": merged_contract_families,
             },
             sumw2_storage_provenance=provenance,

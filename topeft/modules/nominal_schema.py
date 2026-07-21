@@ -465,7 +465,14 @@ def merge_nominal_mappings(
     return merged
 
 
-def _sparse_from_eft_evaluation(eft_histogram: HistEFT, wc_values: Any) -> SparseHist:
+def evaluate_eft_histogram_at_wc(
+    eft_histogram: HistEFT,
+    wc_values: Any = None,
+) -> SparseHist:
+    """Evaluate one EFT histogram into a scalar histogram without changing axes."""
+
+    if type(eft_histogram) is not HistEFT:
+        raise TypeError("EFT evaluation requires an exact HistEFT object.")
     output = SparseHist(
         *list(eft_histogram.categorical_axes),
         eft_histogram.dense_axis,
@@ -514,7 +521,7 @@ def evaluate_nominal_at_wc(
     if "uniform_nominal" in components:
         uniform = components["uniform_nominal"]
         if type(uniform) is HistEFT:
-            return _sparse_from_eft_evaluation(uniform, wc_values)
+            return evaluate_eft_histogram_at_wc(uniform, wc_values)
         if type(uniform) is SparseHist:
             return copy.deepcopy(uniform)
         raise TypeError(f"Unsupported legacy nominal type for '{family}'.")
@@ -523,7 +530,7 @@ def evaluate_nominal_at_wc(
     eft = components.get("eft_nominal")
     output = copy.deepcopy(scalar) if scalar is not None else None
     if eft is not None:
-        evaluated_eft = _sparse_from_eft_evaluation(eft, wc_values)
+        evaluated_eft = evaluate_eft_histogram_at_wc(eft, wc_values)
         if output is None:
             output = evaluated_eft
         else:

@@ -1211,7 +1211,17 @@ def validate_requested_product_input(
     )
     manifest_families = sidecar["sumw2_content_manifest"]["families"]
     for family, manifest in manifest_families.items():
-        nominal = set(manifest["scalar_nominal_processes"])
+        scalar_nominal = set(manifest["scalar_nominal_processes"])
+        eft_nominal = set(manifest["eft_nominal_processes"])
+        duplicate_nominal = sorted(scalar_nominal & eft_nominal)
+        if duplicate_nominal:
+            raise data_driven_product_error(
+                f"Cannot build requested product {product_name!r}: family={family!r} "
+                "same source duplicated in scalar and EFT nominal siblings: "
+                f"duplicate_sources={duplicate_nominal}. Regenerate the processor "
+                "artifact with one authoritative nominal sibling per process."
+            )
+        nominal = scalar_nominal | eft_nominal
         companions = set(manifest["sumw2_processes"])
         missing_nominal = sorted(required - nominal)
         missing_companions = sorted(required - companions)
