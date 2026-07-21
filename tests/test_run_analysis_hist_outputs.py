@@ -9,9 +9,11 @@ from unittest import mock
 
 import cloudpickle
 import coffea.processor as processor
+import numpy as np
 import pytest
 
 from analysis.topeft_run2.analysis_processor import ANALYSIS_MODE_EXCLUSIVE_ERROR
+from topeft.modules.data_driven_products import data_driven_product_error
 
 _SAMPLE_JSON = Path("input_samples/sample_jsons/test_samples/UL17_private_ttH_for_CI.json")
 _SCRIPT_PATH = Path("analysis/topeft_run2/run_analysis.py")
@@ -23,42 +25,25 @@ _EXPECTED_CR_BASE_HISTS = {
 
 
 def _mock_data_driven(monkeypatch):
+    from topeft.modules.dataDrivenEstimation import (
+        DataDrivenProducer as RealDataDrivenProducer,
+    )
+
     fake_data_driven = types.ModuleType("topeft.modules.dataDrivenEstimation")
 
     class DummyProducer:
-        def __init__(self, input_path, *_, **__):
+        def __init__(self, input_path, *args, **kwargs):
             self.input_path = input_path
+            self._producer = RealDataDrivenProducer(input_path, *args, **kwargs)
 
         def dumpToPickle(self):
-            return None
+            return self._producer.dumpToPickle()
 
         def getDataDrivenHistogram(self):
-            with gzip.open(self.input_path, "rb") as stream:
-                return cloudpickle.load(stream)
+            return self._producer.getDataDrivenHistogram()
 
         def get_transformation_context(self, artifact_kind):
-            assert artifact_kind == "nonprompt_output"
-            sidecar_path = Path(f"{self.input_path}.metadata.json")
-            sidecar = json.loads(sidecar_path.read_text(encoding="utf-8"))
-            families = {}
-            for family, manifest in sidecar["sumw2_content_manifest"][
-                "families"
-            ].items():
-                families[family] = {
-                    "source_scalar_processes": manifest[
-                        "scalar_nominal_processes"
-                    ],
-                    "source_eft_processes": manifest["eft_nominal_processes"],
-                    "retained_scalar_processes": manifest[
-                        "scalar_nominal_processes"
-                    ],
-                    "retained_eft_processes": manifest[
-                        "eft_nominal_processes"
-                    ],
-                    "generated_nonprompt_processes": [],
-                    "generated_flips_processes": [],
-                }
-            return {"families": families}
+            return self._producer.get_transformation_context(artifact_kind)
 
     fake_data_driven.DataDrivenProducer = DummyProducer
     monkeypatch.setitem(sys.modules, "topeft.modules.dataDrivenEstimation", fake_data_driven)
@@ -92,13 +77,46 @@ def _mock_topcoffea_utils(monkeypatch):
     monkeypatch.setitem(sys.modules, "topcoffea.modules.utils", fake_utils)
 
 
+def _write_data_driven_sample_jsons(tmp_path):
+    with open(_SAMPLE_JSON) as stream:
+        template = json.load(stream)
+    data_payload = dict(template)
+    data_payload.update(
+        {
+            "histAxisName": "dataUL17",
+            "isData": True,
+            "WCnames": [],
+        }
+    )
+    prompt_payload = dict(template)
+    prompt_payload.update(
+        {
+            "histAxisName": "TTTo2L2Nu_centralUL17",
+            "isData": False,
+            "WCnames": [],
+        }
+    )
+    data_path = tmp_path / "data_sample.json"
+    prompt_path = tmp_path / "prompt_sample.json"
+    data_path.write_text(json.dumps(data_payload), encoding="utf-8")
+    prompt_path.write_text(json.dumps(prompt_payload), encoding="utf-8")
+    return [str(data_path), str(prompt_path)]
+
+
+def _full_diagnostics_options(tmp_path):
+    path = tmp_path / "full_diagnostics.yml"
+    path.write_text("sumw2_storage:\n  mode: full_diagnostics\n", encoding="utf-8")
+    return str(path)
+
+
 def _run_run_analysis(monkeypatch, tmp_path, extra_cli_args, outname):
     output_dir = tmp_path / f"hist-output-{outname}"
     output_dir.mkdir()
 
     _mock_data_driven(monkeypatch)
-    _mock_hist_utils(monkeypatch)
-    _mock_topcoffea_utils(monkeypatch)
+    if "--do-np" not in extra_cli_args:
+        _mock_hist_utils(monkeypatch)
+        _mock_topcoffea_utils(monkeypatch)
 
     def dummy_futures_executor(*, workers):
         return object()
@@ -108,14 +126,52 @@ def _run_run_analysis(monkeypatch, tmp_path, extra_cli_args, outname):
             self.exec_instance = exec_instance
 
         def __call__(self, fileset, treename, processor_instance):
-            return processor_instance.accumulator
+            output = processor_instance.accumulator
+            if "--do-np" in extra_cli_args:
+                for key, histogram in output.items():
+                    axis_names = [axis.name for axis in histogram.axes]
+                    dense_names = [
+                        name
+                        for name in axis_names
+                        if name not in {"process", "channel", "systematic", "appl"}
+                        and name != "quadratic_term"
+                    ]
+                    if not dense_names:
+                        continue
+                    dense_values = {
+                        name: np.asarray([0.5]) for name in dense_names
+                    }
+                    for process_name, appl, nominal_weight in (
+                        ("dataUL17", "isAR_3l", 10.0),
+                        ("TTTo2L2Nu_centralUL17", "isAR_3l", 3.0),
+                        ("dataUL17", "isAR_2lSS_OS", 4.0),
+                    ):
+                        weight = (
+                            nominal_weight**2
+                            if key.endswith("_sumw2")
+                            else nominal_weight
+                        )
+                        histogram.fill(
+                            process=process_name,
+                            channel="3l",
+                            systematic="nominal",
+                            appl=appl,
+                            **dense_values,
+                            weight=np.asarray([weight]),
+                        )
+            return output
 
     monkeypatch.setattr(processor, "futures_executor", dummy_futures_executor, raising=False)
     monkeypatch.setattr(processor, "Runner", DummyRunner)
 
+    sample_paths = (
+        _write_data_driven_sample_jsons(tmp_path)
+        if "--do-np" in extra_cli_args
+        else [str(_SAMPLE_JSON)]
+    )
     argv = [
         "run_analysis.py",
-        str(_SAMPLE_JSON),
+        ",".join(sample_paths),
         "-x",
         "futures",
         "-o",
@@ -139,7 +195,17 @@ def _run_run_analysis(monkeypatch, tmp_path, extra_cli_args, outname):
 
 
 def test_hist_list_cr_includes_sumw2(monkeypatch, tmp_path):
-    output = _run_run_analysis(monkeypatch, tmp_path, ["--hist-list", "cr"], "with-sumw2")
+    output = _run_run_analysis(
+        monkeypatch,
+        tmp_path,
+        [
+            "--hist-list",
+            "cr",
+            "--options",
+            _full_diagnostics_options(tmp_path),
+        ],
+        "with-sumw2",
+    )
 
     expected_output_keys = set()
     for hist_name in _EXPECTED_CR_BASE_HISTS:
@@ -188,7 +254,7 @@ def test_custom_hist_list_accepts_fwd0eta(monkeypatch, tmp_path):
         "custom-fwd0eta",
     )
 
-    assert set(output) == {"fwd0eta__eft_nominal", "fwd0eta_sumw2"}
+    assert set(output) == {"fwd0eta__eft_nominal"}
 
 
 def test_custom_hist_list_accepts_fwd0pt(monkeypatch, tmp_path):
@@ -199,7 +265,7 @@ def test_custom_hist_list_accepts_fwd0pt(monkeypatch, tmp_path):
         "custom-fwd0pt",
     )
 
-    assert set(output) == {"fwd0pt__eft_nominal", "fwd0pt_sumw2"}
+    assert set(output) == {"fwd0pt__eft_nominal"}
 
 
 def test_np_postprocess_inline_writes_transformed_artifact_sidecar(
@@ -217,6 +283,75 @@ def test_np_postprocess_inline_writes_transformed_artifact_sidecar(
     sidecar = json.loads(sidecar_path.read_text(encoding="utf-8"))
     assert sidecar["artifact"]["artifact_kind"] == "nonprompt_output"
     assert sidecar["lineage"]["inputs"][0]["pkl_basename"] == "inline-np.pkl.gz"
+    assert sidecar["requested_data_driven_products"]["products"] == {
+        "nonprompt": {"enabled": True},
+        "flips": {"enabled": True},
+    }
+    assert sidecar["resolved_data_driven_contract"]["families"]["met"][
+        "nonprompt"
+    ]["requirements_satisfied"] is True
+
+
+def test_incomplete_requested_product_fails_before_processor_construction(
+    monkeypatch, tmp_path
+):
+    sample_paths = _write_data_driven_sample_jsons(tmp_path)
+    options_path = tmp_path / "incomplete.yml"
+    options_path.write_text(
+        """sumw2_storage:
+  mode: full_custom
+  rules:
+    - process_names: [dataUL17]
+      variables: [met]
+data_driven_products:
+  nonprompt:
+    enabled: true
+    source_contributors:
+      data:
+        process_names: [dataUL17]
+      prompt_mc:
+        process_names: [TTTo2L2Nu_centralUL17]
+  flips:
+    enabled: false
+""",
+        encoding="utf-8",
+    )
+    processor_calls = []
+
+    def forbidden_processor(*args, **kwargs):
+        processor_calls.append((args, kwargs))
+        raise AssertionError("processor construction must not begin")
+
+    original_sys_path = list(sys.path)
+    sys.path.insert(0, str(_SCRIPT_PATH.parent))
+    try:
+        processor_module = importlib.import_module("analysis_processor")
+        monkeypatch.setattr(
+            processor_module,
+            "AnalysisProcessor",
+            forbidden_processor,
+        )
+        argv = [
+            "run_analysis.py",
+            ",".join(sample_paths),
+            "--executor",
+            "futures",
+            "--hist-list",
+            "met",
+            "--options",
+            str(options_path),
+            "--skip-topcoffea-data-check",
+        ]
+        with mock.patch.object(sys, "argv", argv):
+            with pytest.raises(
+                data_driven_product_error,
+                match="requested data-driven product.*missing_contributors=.*Correct one of",
+            ):
+                runpy.run_path(str(_SCRIPT_PATH), run_name="__main__")
+    finally:
+        sys.path = original_sys_path
+
+    assert processor_calls == []
 
 
 def test_np_postprocess_defer_prints_pkl_only_followup(tmp_path, capsys):
@@ -224,9 +359,10 @@ def test_np_postprocess_defer_prints_pkl_only_followup(tmp_path, capsys):
     output_dir.mkdir()
     outname = "np-defer"
 
+    sample_paths = _write_data_driven_sample_jsons(tmp_path)
     argv = [
         "run_analysis.py",
-        str(_SAMPLE_JSON),
+        ",".join(sample_paths),
         "-x",
         "futures",
         "-o",
@@ -262,9 +398,10 @@ def test_np_postprocess_defer_records_envelope_in_followup_command(tmp_path, cap
     output_dir.mkdir()
     outname = "np-defer-envelope"
 
+    sample_paths = _write_data_driven_sample_jsons(tmp_path)
     argv = [
         "run_analysis.py",
-        str(_SAMPLE_JSON),
+        ",".join(sample_paths),
         "-x",
         "futures",
         "-o",

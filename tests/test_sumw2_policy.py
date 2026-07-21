@@ -115,8 +115,8 @@ def test_new_block_with_unset_parser_default_false_uses_explicit_block(samples):
     "legacy_present,legacy_value,expected_source,expected_mode",
     [
         (True, True, "legacy_no_sumw2", "disabled"),
-        (True, False, "implicit_legacy_default", "full_diagnostics"),
-        (False, False, "implicit_legacy_default", "full_diagnostics"),
+        (True, False, "legacy_no_sumw2_false", "full_diagnostics"),
+        (False, False, "implicit_production_default", "production"),
     ],
 )
 def test_legacy_source_presence_truth_table(
@@ -132,6 +132,34 @@ def test_legacy_source_presence_truth_table(
         )
     assert policy.source == expected_source
     assert policy.requested_mode == expected_mode
+
+
+def test_modern_block_with_omitted_mode_uses_production_default(samples):
+    policy = _resolve(
+        {"rules": [{"process_names": ["background"]}]},
+        samples,
+        sumw2_storage_present=True,
+    )
+    assert policy.source == "implicit_production_default"
+    assert policy.requested_mode == "production"
+    assert policy.selected_processes("njets") == ("background",)
+
+
+def test_absent_modern_and_legacy_configuration_production_can_use_requirements(samples):
+    with pytest.warns(UserWarning, match="production default"):
+        policy = _resolve(
+            None,
+            samples,
+            sumw2_storage_present=False,
+            implicit_production_requirements=[
+                ("data_run", "data", "njets"),
+            ],
+        )
+    assert policy.source == "implicit_production_default"
+    assert policy.requested_mode == "production"
+    assert [target.to_dict() for target in policy.resolved_targets] == [
+        {"dataset": "data_run", "process": "data", "family": "njets"}
+    ]
 
 
 def test_selector_union_with_dataset_process_and_variable_and(samples):

@@ -9,8 +9,11 @@ import numpy as np
 from topcoffea.modules.hist_utils import iterate_hist_from_pkl
 
 from topcoffea.modules.get_param_from_jsons import GetParam
-from topcoffea.modules.utils import canonicalize_process_name
 from topeft.modules.axes import info_2d as axes_info_2d
+from topeft.modules.data_driven_products import (
+    generated_process_name,
+    validate_requested_product_input,
+)
 from topeft.modules.histogram_artifact import (
     lineage_input_from_sidecar,
     validate_histogram_artifact,
@@ -24,7 +27,14 @@ class DataDrivenProducer:
     _NAME_REGEX = r"^(?P<process>.*?)(?:UL)?(?P<year>(?:\d{2}(?:APV|EE|BPix)?|\d{4}(?:EE|BPix)?))$"
     _KNOWN_YEARS = {"16APV", "16", "17", "18", "2022", "2022EE", "2023", "2023BPix"}
 
-    def __init__(self, inputHist, outputName, iterator_mode=False, dd_report=False):
+    def __init__(
+        self,
+        inputHist,
+        outputName,
+        iterator_mode=False,
+        dd_report=False,
+        artifact_kind="nonprompt_output",
+    ):
         self._input_source = inputHist
         self.outputName=outputName
         self.verbose=False
@@ -32,6 +42,9 @@ class DataDrivenProducer:
         self.outHist=None
         self.iterator_mode = iterator_mode
         self._dd_report_enabled = dd_report
+        if artifact_kind not in {"nonprompt_output", "flips_output"}:
+            raise RuntimeError(f"Unknown data-driven artifact kind {artifact_kind!r}.")
+        self._artifact_kind = artifact_kind
         self.promptSubtractionSamples=get_te_param('prompt_subtraction_samples')
         self._name_pattern = re.compile(self._NAME_REGEX)
         self._dd_report_by_key = {} if dd_report else None
@@ -47,6 +60,11 @@ class DataDrivenProducer:
                     "path and no schema-v2 sidecar will be synthesized.",
                     UserWarning,
                     stacklevel=2,
+                )
+            elif self._input_artifact_validation["metadata"]:
+                validate_requested_product_input(
+                    self._input_artifact_validation["metadata"],
+                    artifact_kind=artifact_kind,
                 )
         self._transformation_role_context = self._initialize_transformation_role_context()
         if not self.iterator_mode:
@@ -318,19 +336,47 @@ class DataDrivenProducer:
 
     @staticmethod
     def _nonprompt_process_name(year):
-        if ("2022" in year) or ("2023" in year):
-            raw_name = f"nonprompt{year}"
-        else:
-            raw_name = f"nonpromptUL{year}"
-        return canonicalize_process_name(raw_name)
+        return generated_process_name("nonprompt", year)
 
     @staticmethod
     def _flips_process_name(year):
-        if year.startswith("202"):
-            raw_name = f"flips{year}"
-        else:
-            raw_name = f"flipsUL{year}"
-        return canonicalize_process_name(raw_name)
+        return generated_process_name("flips", year)
+
+    def _resolved_family_products(self, key):
+        family, _component = self._family_from_nominal_key(key)
+        if family is None and key.endswith("_sumw2"):
+            family = key[: -len("_sumw2")]
+        input_sidecar = (
+            self._input_artifact_validation["metadata"]
+            if self._input_artifact_validation is not None
+            else None
+        )
+        if input_sidecar is None or "resolved_data_driven_contract" not in input_sidecar:
+            return {
+                "nonprompt": {
+                    "enabled": self._artifact_kind == "nonprompt_output",
+                    "source_contributors": None,
+                },
+                "flips": {
+                    "enabled": True,
+                    "source_contributors": None,
+                },
+            }
+        if family not in input_sidecar["resolved_data_driven_contract"]["families"]:
+            raise RuntimeError(
+                f"Missing resolved data-driven contract for family {family!r}."
+            )
+        products = input_sidecar["resolved_data_driven_contract"]["families"][family]
+        return {
+            "nonprompt": {
+                **products["nonprompt"],
+                "enabled": (
+                    products["nonprompt"]["enabled"]
+                    and self._artifact_kind == "nonprompt_output"
+                ),
+            },
+            "flips": products["flips"],
+        }
 
     @classmethod
     def _systematic_summary(cls, source_hist, used_hist):
@@ -522,6 +568,22 @@ class DataDrivenProducer:
             return output
 
         process_metadata = self._build_process_metadata(histo)
+        resolved_products = self._resolved_family_products(key)
+        nonprompt_enabled = resolved_products["nonprompt"]["enabled"]
+        flips_enabled = resolved_products["flips"]["enabled"]
+        nonprompt_sources = resolved_products["nonprompt"]["source_contributors"]
+        flips_sources = resolved_products["flips"]["source_contributors"]
+        explicit_nonprompt_data = (
+            set(nonprompt_sources["data"]) if nonprompt_sources is not None else None
+        )
+        explicit_prompt_mc = (
+            set(nonprompt_sources["prompt_mc"])
+            if nonprompt_sources is not None
+            else None
+        )
+        explicit_flips_data = (
+            set(flips_sources["data"]) if flips_sources is not None else None
+        )
         report = None
         if self._dd_report_enabled and not key.endswith("_sumw2"):
             report = self._init_dd_report(key, histo)
@@ -543,12 +605,18 @@ class DataDrivenProducer:
                 else:
                     newhist += hAR
             elif ident == "isAR_2lSS_OS":
+                if not flips_enabled:
+                    continue
                 # we are in the flips application region and theres no "prompt" subtraction, so we just have to rename data to flips, put it in the right axis and we are done
                 newNameDictData = defaultdict(list)
                 for process_name in hAR.axes["process"]:
                     sampleName, year = process_metadata[process_name]
                     flips_name = self._flips_process_name(year)
-                    if self.dataName == sampleName:
+                    if (
+                        process_name in explicit_flips_data
+                        if explicit_flips_data is not None
+                        else self.dataName == sampleName
+                    ):
                         newNameDictData[flips_name].append(process_name)
                 generated_flips_processes.update(newNameDictData)
                 hFlips = hAR.group("process", newNameDictData)
@@ -583,6 +651,8 @@ class DataDrivenProducer:
                     newhist += hFlips
 
             else:
+                if not nonprompt_enabled:
+                    continue
                 # if we are in the nonprompt application region, we also integrate the application region axis
                 # and construct the new process 'nonprompt'
                 # we look at data only, and rename it to fakes
@@ -592,9 +662,17 @@ class DataDrivenProducer:
                     sampleName, year = process_metadata[process_name]
 
                     nonprompt_name = self._nonprompt_process_name(year)
-                    if self.dataName == sampleName:
+                    if (
+                        process_name in explicit_nonprompt_data
+                        if explicit_nonprompt_data is not None
+                        else self.dataName == sampleName
+                    ):
                         newNameDictData[nonprompt_name].append(process_name)
-                    elif sampleName in self.promptSubtractionSamples:
+                    elif (
+                        process_name in explicit_prompt_mc
+                        if explicit_prompt_mc is not None
+                        else sampleName in self.promptSubtractionSamples
+                    ):
                         newNameDictNoData[nonprompt_name].append(process_name)
                     else:
                         pass

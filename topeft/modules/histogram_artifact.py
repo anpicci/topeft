@@ -14,6 +14,11 @@ from typing import Any
 
 import cloudpickle
 
+from topeft.modules.data_driven_products import (
+    data_driven_product_error,
+    validate_requested_product_input,
+    validate_serialized_data_driven_contract,
+)
 from topeft.modules.axes import info_2d as axes_info_2d
 from topeft.modules.nominal_schema import (
     NOMINAL_CONTAINER_LAYOUT,
@@ -211,6 +216,8 @@ def _build_sidecar_payload(
     lineage_inputs: Iterable[Mapping[str, Any]],
     required_sumw2_processes: Mapping[str, Iterable[str]] | None,
     transformation_contract: Mapping[str, Any] | None,
+    requested_data_driven_products: Mapping[str, Any] | None,
+    resolved_data_driven_contract: Mapping[str, Any] | None,
 ) -> dict[str, Any]:
     identity = _file_identity(identity_path, pkl_basename=pkl_path.name)
     if artifact_kind == "processor_output":
@@ -267,9 +274,72 @@ def _build_sidecar_payload(
         ),
         "lineage": {"inputs": _normalize_lineage_inputs(lineage_inputs)},
     }
+    if (requested_data_driven_products is None) != (
+        resolved_data_driven_contract is None
+    ):
+        raise histogram_sidecar_error(
+            "requested_data_driven_products and resolved_data_driven_contract "
+            "must be provided together."
+        )
+    if requested_data_driven_products is not None:
+        try:
+            normalized_requested, normalized_data_driven_contract = (
+                validate_serialized_data_driven_contract(
+                    requested_data_driven_products,
+                    resolved_data_driven_contract,
+                    policy=resolved_policy_from_provenance(
+                        sumw2_storage_provenance
+                    ),
+                )
+            )
+        except data_driven_product_error as error:
+            raise histogram_sidecar_error(str(error)) from error
+        payload["requested_data_driven_products"] = normalized_requested
+        payload["resolved_data_driven_contract"] = normalized_data_driven_contract
     if normalized_contract is not None:
         payload["transformation_contract"] = normalized_contract
+        if requested_data_driven_products is not None:
+            _validate_transformation_against_data_driven_contract(
+                normalized_contract,
+                normalized_data_driven_contract,
+            )
     return payload
+
+
+def _validate_transformation_against_data_driven_contract(
+    transformation_contract: Mapping[str, Any],
+    data_driven_contract: Mapping[str, Any],
+) -> None:
+    artifact_kind = transformation_contract["artifact_kind"]
+    for family, roles in transformation_contract["families"].items():
+        family_products = data_driven_contract["families"][family]
+        expected_nonprompt = (
+            family_products["nonprompt"]["output_processes"]
+            if artifact_kind == "nonprompt_output"
+            and family_products["nonprompt"]["enabled"]
+            else []
+        )
+        expected_flips = (
+            family_products["flips"]["output_processes"]
+            if family_products["flips"]["enabled"]
+            else []
+        )
+        if artifact_kind == "flips_output":
+            expected_nonprompt = []
+        if roles["generated_nonprompt_processes"] != expected_nonprompt:
+            raise histogram_sidecar_error(
+                "Transformed nonprompt processes disagree with the certified "
+                f"requested-product contract for family {family!r}: "
+                f"expected={expected_nonprompt} "
+                f"observed={roles['generated_nonprompt_processes']}."
+            )
+        if roles["generated_flips_processes"] != expected_flips:
+            raise histogram_sidecar_error(
+                "Transformed flips processes disagree with the certified "
+                f"requested-product contract for family {family!r}: "
+                f"expected={expected_flips} "
+                f"observed={roles['generated_flips_processes']}."
+            )
 
 
 def lineage_input_from_sidecar(sidecar: Mapping[str, Any]) -> dict[str, str]:
@@ -671,6 +741,20 @@ def _validate_sidecar_structure(
         raise histogram_sidecar_error("Artifact nominal container layout is incompatible.")
 
     expected_sidecar_fields = set(common_fields)
+    has_requested_products = "requested_data_driven_products" in sidecar
+    has_resolved_contract = "resolved_data_driven_contract" in sidecar
+    if has_requested_products != has_resolved_contract:
+        raise histogram_sidecar_error(
+            "requested_data_driven_products and resolved_data_driven_contract "
+            "must be present together."
+        )
+    if has_requested_products:
+        expected_sidecar_fields.update(
+            {
+                "requested_data_driven_products",
+                "resolved_data_driven_contract",
+            }
+        )
     transformation_contract = None
     if artifact["artifact_kind"] == "processor_output":
         if "transformation_contract" in sidecar:
@@ -699,6 +783,20 @@ def _validate_sidecar_structure(
     )
 
     policy = resolved_policy_from_provenance(sidecar["sumw2_storage_provenance"])
+    if has_requested_products:
+        try:
+            validate_serialized_data_driven_contract(
+                sidecar["requested_data_driven_products"],
+                sidecar["resolved_data_driven_contract"],
+                policy=policy,
+            )
+        except data_driven_product_error as error:
+            raise histogram_sidecar_error(str(error)) from error
+        if transformation_contract is not None:
+            _validate_transformation_against_data_driven_contract(
+                transformation_contract,
+                sidecar["resolved_data_driven_contract"],
+            )
     manifest = sidecar["sumw2_content_manifest"]
     if not isinstance(manifest, Mapping):
         raise histogram_sidecar_error("sumw2_content_manifest must be an object.")
@@ -920,6 +1018,23 @@ def validate_processor_output(
                 f"processor_output family '{family}' has required_sumw2_processes "
                 f"{observed_required}, expected {expected_required} from source allocation."
             )
+    if "requested_data_driven_products" in sidecar:
+        try:
+            requested_products = sidecar["requested_data_driven_products"][
+                "products"
+            ]
+            if requested_products["nonprompt"]["enabled"]:
+                validate_requested_product_input(
+                    sidecar,
+                    artifact_kind="nonprompt_output",
+                )
+            if requested_products["flips"]["enabled"]:
+                validate_requested_product_input(
+                    sidecar,
+                    artifact_kind="flips_output",
+                )
+        except data_driven_product_error as error:
+            raise histogram_content_error(str(error)) from error
 
 
 def _validate_transformed_output(
@@ -1137,6 +1252,46 @@ def merge_histogram_sidecars(
             raise histogram_merge_error(
                 "Maintained histogram merging requires identical source-allocation provenance."
             )
+    data_driven_presence = {
+        "requested_data_driven_products" in sidecar for sidecar in sidecars
+    }
+    if len(data_driven_presence) != 1:
+        raise histogram_merge_error(
+            "Cannot merge artifacts with mixed requested data-driven contract presence."
+        )
+    requested_data_driven_products = None
+    resolved_data_driven_contract = None
+    if data_driven_presence == {True}:
+        requested_data_driven_products = copy.deepcopy(
+            sidecars[0]["requested_data_driven_products"]
+        )
+        resolved_data_driven_contract = copy.deepcopy(
+            sidecars[0]["resolved_data_driven_contract"]
+        )
+        requested_identity = json.dumps(
+            requested_data_driven_products,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        contract_identity = json.dumps(
+            resolved_data_driven_contract,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        for sidecar in sidecars[1:]:
+            if json.dumps(
+                sidecar["requested_data_driven_products"],
+                sort_keys=True,
+                separators=(",", ":"),
+            ) != requested_identity or json.dumps(
+                sidecar["resolved_data_driven_contract"],
+                sort_keys=True,
+                separators=(",", ":"),
+            ) != contract_identity:
+                raise histogram_merge_error(
+                    "Maintained histogram merging requires identical requested "
+                    "data-driven product contracts."
+                )
     family_orders = [
         tuple(sidecar["sumw2_content_manifest"]["families"])
         for sidecar in sidecars
@@ -1211,6 +1366,8 @@ def merge_histogram_sidecars(
         "sumw2_storage_provenance": provenance,
         "required_sumw2_processes": required,
         "transformation_contract": merged_contract,
+        "requested_data_driven_products": requested_data_driven_products,
+        "resolved_data_driven_contract": resolved_data_driven_contract,
         "lineage_inputs": [lineage_input_from_sidecar(sidecar) for sidecar in sidecars],
     }
 
@@ -1234,6 +1391,8 @@ def write_histogram_sidecar(
     input_sidecar: Mapping[str, Any] | None = None,
     transformation_context: Mapping[str, Any] | None = None,
     transformation_contract: Mapping[str, Any] | None = None,
+    requested_data_driven_products: Mapping[str, Any] | None = None,
+    resolved_data_driven_contract: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Write one automatic sidecar for an already finalized PKL."""
 
@@ -1286,6 +1445,23 @@ def write_histogram_sidecar(
                 "derived transformed requirements."
             )
         required_sumw2_processes = derived_required
+    if input_sidecar is not None:
+        input_requested = input_sidecar.get("requested_data_driven_products")
+        input_contract = input_sidecar.get("resolved_data_driven_contract")
+        if requested_data_driven_products is not None and dict(
+            requested_data_driven_products
+        ) != input_requested:
+            raise histogram_sidecar_error(
+                "Transformed output must preserve requested_data_driven_products unchanged."
+            )
+        if resolved_data_driven_contract is not None and dict(
+            resolved_data_driven_contract
+        ) != input_contract:
+            raise histogram_sidecar_error(
+                "Transformed output must preserve resolved_data_driven_contract unchanged."
+            )
+        requested_data_driven_products = input_requested
+        resolved_data_driven_contract = input_contract
     payload = _build_sidecar_payload(
         pkl_path,
         histograms,
@@ -1296,6 +1472,8 @@ def write_histogram_sidecar(
         lineage_inputs=lineage_inputs,
         required_sumw2_processes=required_sumw2_processes,
         transformation_contract=transformation_contract,
+        requested_data_driven_products=requested_data_driven_products,
+        resolved_data_driven_contract=resolved_data_driven_contract,
     )
     _validate_sidecar_structure(payload, pkl_path=pkl_path)
     temporary_path = metadata_sidecar_path(pkl_path).with_name(
@@ -1327,6 +1505,8 @@ def write_histogram_artifact(
     input_sidecar: Mapping[str, Any] | None = None,
     transformation_context: Mapping[str, Any] | None = None,
     transformation_contract: Mapping[str, Any] | None = None,
+    requested_data_driven_products: Mapping[str, Any] | None = None,
+    resolved_data_driven_contract: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Stage, validate, and publish a PKL/sidecar pair as one logical output."""
 
@@ -1410,6 +1590,23 @@ def write_histogram_artifact(
                     "derived transformed requirements."
                 )
             required_sumw2_processes = derived_required
+        if input_sidecar is not None:
+            input_requested = input_sidecar.get("requested_data_driven_products")
+            input_contract = input_sidecar.get("resolved_data_driven_contract")
+            if requested_data_driven_products is not None and dict(
+                requested_data_driven_products
+            ) != input_requested:
+                raise histogram_sidecar_error(
+                    "Transformed output must preserve requested_data_driven_products unchanged."
+                )
+            if resolved_data_driven_contract is not None and dict(
+                resolved_data_driven_contract
+            ) != input_contract:
+                raise histogram_sidecar_error(
+                    "Transformed output must preserve resolved_data_driven_contract unchanged."
+                )
+            requested_data_driven_products = input_requested
+            resolved_data_driven_contract = input_contract
         sidecar = _build_sidecar_payload(
             pkl_path,
             manifest_histograms,
@@ -1420,6 +1617,8 @@ def write_histogram_artifact(
             lineage_inputs=lineage_inputs,
             required_sumw2_processes=required_sumw2_processes,
             transformation_contract=transformation_contract,
+            requested_data_driven_products=requested_data_driven_products,
+            resolved_data_driven_contract=resolved_data_driven_contract,
         )
         _validate_sidecar_structure(sidecar, pkl_path=pkl_path)
         _validate_content_manifest(pkl_path, manifest_histograms, sidecar)

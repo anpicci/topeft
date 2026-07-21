@@ -27,6 +27,7 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 import topcoffea.modules.utils as utils
 
 from topeft.modules.dataDrivenEstimation import DataDrivenProducer
+from topeft.modules.data_driven_products import validate_requested_product_input
 from topeft.modules.histogram_artifact import (
     lineage_input_from_sidecar,
     validate_histogram_artifact,
@@ -672,7 +673,10 @@ def _finalize_histograms(
     try:
         memory_reporter.mark("start")
         memory_reporter.mark("before DataDrivenProducer(...)")
+        artifact_kind = "flips_output" if only_flips else "nonprompt_output"
         ddp_kwargs: Dict[str, Any] = {"iterator_mode": iterator_mode}
+        if input_sidecar is not None:
+            ddp_kwargs["artifact_kind"] = artifact_kind
         if collect_dd_report:
             ddp_kwargs["dd_report"] = True
         ddp = DataDrivenProducer(input_pkl, output_pkl, **ddp_kwargs)
@@ -863,6 +867,10 @@ def main(argv: Optional[List[str]] = None) -> int:
                 "run_data_driven requires a processor_output input artifact; got "
                 f"{input_sidecar['artifact']['artifact_kind']!r} for '{input_pkl}'."
             )
+        validate_requested_product_input(
+            input_sidecar,
+            artifact_kind="flips_output" if args.only_flips else "nonprompt_output",
+        )
 
         def _write_payload(staged_path: str) -> Dict[str, Any]:
             transformation_context = _finalize_histograms(

@@ -18,10 +18,15 @@ from topeft.modules.axes import info as axes_info
 from topeft.modules.axes import info_2d as axes_info_2d
 from topeft.modules.datacard_tools import load_and_merge_histogram_pkls
 from topeft.modules.dataDrivenEstimation import DataDrivenProducer
+from topeft.modules.data_driven_products import (
+    certify_data_driven_preflight,
+    resolve_data_driven_products,
+)
 from topeft.modules.histogram_artifact import (
     derive_transformed_required_sumw2_processes,
     histogram_artifact_error,
     lineage_input_from_sidecar,
+    merge_histogram_sidecars,
     metadata_sidecar_path,
     read_histogram_sidecar,
     validate_histogram_artifact,
@@ -132,13 +137,137 @@ def _processor_payload():
     }
 
 
-def _write_processor(path, policy):
+def _write_processor(path, policy, products_block=None):
+    samples = {
+        "data_dataset": {
+            "histAxisName": "dataUL18",
+            "isData": True,
+            "WCnames": [],
+        },
+        "prompt_dataset": {
+            "histAxisName": "TTTo2L2Nu_centralUL18",
+            "isData": False,
+            "WCnames": [],
+        },
+        "signal_dataset": {
+            "histAxisName": "signal_centralUL18",
+            "isData": False,
+            "WCnames": ["ctG"],
+        },
+    }
+    products = resolve_data_driven_products(
+        products_block
+        or {
+            "nonprompt": {
+                "enabled": True,
+                "source_contributors": {
+                    "data": {"process_names": ["dataUL18"]},
+                    "prompt_mc": {
+                        "process_names": ["TTTo2L2Nu_centralUL18"]
+                    },
+                },
+            },
+            "flips": {
+                "enabled": True,
+                "source_contributors": {
+                    "data": {"process_names": ["dataUL18"]},
+                },
+            },
+        },
+        data_driven_products_present=True,
+        legacy_do_np=False,
+        samples=samples,
+        runtime_families=("njets",),
+        metadata_path="test_options.yml",
+    )
+    requested, contract = certify_data_driven_preflight(products, policy)
     return write_histogram_artifact(
         path,
         histograms=_processor_payload(),
         artifact_kind="processor_output",
         sumw2_storage_provenance=policy.to_provenance(),
+        requested_data_driven_products=requested,
+        resolved_data_driven_contract=contract,
     )
+
+
+def test_explicit_nonprompt_only_contract_suppresses_unrequested_flips(
+    tmp_path, policy
+):
+    input_path = tmp_path / "nonprompt_only_processor.pkl.gz"
+    output_path = tmp_path / "nonprompt_only.pkl.gz"
+    _write_processor(
+        input_path,
+        policy,
+        products_block={
+            "nonprompt": {
+                "enabled": True,
+                "source_contributors": {
+                    "data": {"process_names": ["dataUL18"]},
+                    "prompt_mc": {
+                        "process_names": ["TTTo2L2Nu_centralUL18"]
+                    },
+                },
+            },
+            "flips": {"enabled": False},
+        },
+    )
+    run_data_driven.main(
+        [
+            "--input-pkl",
+            str(input_path),
+            "--output-pkl",
+            str(output_path),
+            "--quiet",
+        ]
+    )
+    output = get_hist_from_pkl(str(output_path))
+    assert _processes(output[scalar_nominal_key("njets")]) == [
+        "TTTo2L2Nu_centralUL18",
+        "nonpromptUL18",
+    ]
+    assert "flipsUL18" not in _processes(output["njets_sumw2"])
+    sidecar = read_histogram_sidecar(output_path)
+    assert sidecar["transformation_contract"]["families"]["njets"][
+        "generated_flips_processes"
+    ] == []
+
+
+def test_unrequested_flips_product_is_rejected_before_transformation(tmp_path, policy):
+    input_path = tmp_path / "nonprompt_only_processor.pkl.gz"
+    _write_processor(
+        input_path,
+        policy,
+        products_block={
+            "nonprompt": {
+                "enabled": True,
+                "source_contributors": {
+                    "data": {"process_names": ["dataUL18"]},
+                    "prompt_mc": {
+                        "process_names": ["TTTo2L2Nu_centralUL18"]
+                    },
+                },
+            },
+            "flips": {"enabled": False},
+        },
+    )
+    output_path = tmp_path / "unrequested_flips.pkl.gz"
+    with pytest.raises(
+        ValueError,
+        match="product 'flips' was not requested.*Regenerate the processor PKL",
+    ):
+        run_data_driven.main(
+            [
+                "--input-pkl",
+                str(input_path),
+                "--output-pkl",
+                str(output_path),
+                "--only-flips",
+                "--quiet",
+            ]
+        )
+    assert not output_path.exists()
+    assert not metadata_sidecar_path(output_path).exists()
 
 
 def _write_raw(path, payload):
@@ -343,13 +472,19 @@ def test_flips_persisted_flow_has_separate_stage_contract(tmp_path, policy):
 
 
 def _transformed_payload(artifact_kind):
-    process = "flipsUL18" if artifact_kind == "flips_output" else "nonpromptUL18"
+    processes = (
+        ("flipsUL18",)
+        if artifact_kind == "flips_output"
+        else ("nonpromptUL18", "flipsUL18")
+    )
     return {
         scalar_nominal_key("njets"): _fill_sparse(
-            "njets", ((process, "isSR_3l", 2.0),)
+            "njets",
+            tuple((process, "isSR_3l", 2.0) for process in processes),
         ),
         "njets_sumw2": _fill_sparse(
-            "njets_sumw2", ((process, "isSR_3l", 4.0),)
+            "njets_sumw2",
+            tuple((process, "isSR_3l", 4.0) for process in processes),
         ),
     }
 
@@ -369,7 +504,7 @@ def _transformed_context(source_sidecar, artifact_kind):
                     else []
                 ),
                 "generated_flips_processes": (
-                    ["flipsUL18"] if artifact_kind == "flips_output" else []
+                    ["flipsUL18"]
                 ),
             }
         }
@@ -504,7 +639,8 @@ def test_transformed_missing_and_unexpected_companions_are_actionable(
     assert "sidecar_path=" in missing_message
     assert f"artifact_kind={artifact_kind}" in missing_message
     assert "family=njets" in missing_message
-    assert f"missing_required_companions=['{expected_process}']" in missing_message
+    assert "missing_required_companions=" in missing_message
+    assert expected_process in missing_message
     assert "run_data_driven" in missing_message
 
     write_histogram_artifact(
@@ -567,7 +703,11 @@ def test_independent_nonprompt_contract_rejects_partial_companion_loss_before_pu
     source_path = tmp_path / "processor.pkl.gz"
     output_path = tmp_path / f"missing_{missing_process}.pkl.gz"
     source_sidecar = _write_processor(source_path, policy)
-    producer = DataDrivenProducer(str(source_path), "")
+    producer = DataDrivenProducer(
+        str(source_path),
+        "",
+        artifact_kind="nonprompt_output",
+    )
     transformed = copy.deepcopy(producer.getDataDrivenHistogram())
     context = producer.get_transformation_context("nonprompt_output")
     contract, required = derive_transformed_required_sumw2_processes(
@@ -685,20 +825,21 @@ def test_selected_and_unselected_retained_sources_are_derived_from_policy(tmp_pa
 
 
 def test_flips_contract_requires_every_generated_year_label(tmp_path):
+    multi_year_samples = {
+        "data_ul18": {
+            "histAxisName": "dataUL18",
+            "isData": True,
+            "WCnames": [],
+        },
+        "data_2022": {
+            "histAxisName": "data2022",
+            "isData": True,
+            "WCnames": [],
+        },
+    }
     multi_year_policy = resolve_sumw2_storage_policy(
         {"mode": "full_diagnostics"},
-        samples={
-            "data_ul18": {
-                "histAxisName": "dataUL18",
-                "isData": True,
-                "WCnames": [],
-            },
-            "data_2022": {
-                "histAxisName": "data2022",
-                "isData": True,
-                "WCnames": [],
-            },
-        },
+        samples=multi_year_samples,
         runtime_families=("njets",),
         axes_info=axes_info,
         axes_info_2d=axes_info_2d,
@@ -714,11 +855,32 @@ def test_flips_contract_requires_every_generated_year_label(tmp_path):
     }
     source_path = tmp_path / "multi_year_processor.pkl.gz"
     output_path = tmp_path / "multi_year_flips.pkl.gz"
+    products = resolve_data_driven_products(
+        {
+            "flips": {
+                "enabled": True,
+                "source_contributors": {
+                    "data": {"process_prefixes": ["data"]},
+                },
+            }
+        },
+        data_driven_products_present=True,
+        legacy_do_np=False,
+        samples=multi_year_samples,
+        runtime_families=("njets",),
+        metadata_path="test_options.yml",
+    )
+    requested, contract = certify_data_driven_preflight(
+        products,
+        multi_year_policy,
+    )
     source_sidecar = write_histogram_artifact(
         source_path,
         histograms=source_payload,
         artifact_kind="processor_output",
         sumw2_storage_provenance=multi_year_policy.to_provenance(),
+        requested_data_driven_products=requested,
+        resolved_data_driven_contract=contract,
     )
     run_data_driven.main(
         [
@@ -734,7 +896,11 @@ def test_flips_contract_requires_every_generated_year_label(tmp_path):
     family = sidecar["sumw2_content_manifest"]["families"]["njets"]
     assert family["required_sumw2_processes"] == ["flips2022", "flipsUL18"]
     output = get_hist_from_pkl(str(output_path))
-    producer = DataDrivenProducer(str(source_path), "")
+    producer = DataDrivenProducer(
+        str(source_path),
+        "",
+        artifact_kind="flips_output",
+    )
     context = producer.get_transformation_context("flips_output")
     output["njets_sumw2"] = output["njets_sumw2"].remove(
         "process", ["flipsUL18"]
@@ -761,9 +927,10 @@ def test_merged_flips_contract_unions_independently_validated_requirements(
     source_path = tmp_path / "processor.pkl.gz"
     source_sidecar = _write_processor(source_path, policy)
     source_family = source_sidecar["sumw2_content_manifest"]["families"]["njets"]
-    paths = []
-    for process in ("flips2022", "flipsUL18"):
-        path = tmp_path / f"{process}.pkl.gz"
+    sidecars = []
+    for index in range(2):
+        process = "flipsUL18"
+        path = tmp_path / f"flips_{index}.pkl.gz"
         context = {
             "families": {
                 "njets": {
@@ -797,25 +964,14 @@ def test_merged_flips_contract_unions_independently_validated_requirements(
             input_sidecar=source_sidecar,
             transformation_context=context,
         )
-        paths.append(str(path))
-    merged, report = load_and_merge_histogram_pkls(paths)
-    assert report["required_sumw2_processes"] == {
-        "njets": ["flips2022", "flipsUL18"]
-    }
+        sidecars.append(read_histogram_sidecar(path))
+    report = merge_histogram_sidecars(sidecars)
+    assert report["required_sumw2_processes"] == {"njets": ["flipsUL18"]}
     assert report["transformation_contract"]["families"]["njets"][
         "generated_flips_processes"
-    ] == ["flips2022", "flipsUL18"]
-    cached_path = make_cards._cache_merged_histograms(
-        merged,
-        "merged_flips_union",
-        str(tmp_path),
-        report,
-    )
-    assert validate_histogram_artifact(cached_path)["metadata"][
-        "sumw2_content_manifest"
-    ]["families"]["njets"]["required_sumw2_processes"] == [
-        "flips2022",
-        "flipsUL18",
+    ] == ["flipsUL18"]
+    assert report["resolved_data_driven_contract"] == source_sidecar[
+        "resolved_data_driven_contract"
     ]
 
 

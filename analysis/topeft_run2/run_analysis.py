@@ -18,6 +18,10 @@ import topcoffea.modules.remote_environment as remote_environment
 from topcoffea.modules.paths import topcoffea_path
 
 from topeft.modules.dataDrivenEstimation import DataDrivenProducer
+from topeft.modules.data_driven_products import (
+    certify_data_driven_preflight,
+    resolve_data_driven_products,
+)
 from topeft.modules.histogram_artifact import (
     lineage_input_from_sidecar,
     write_histogram_artifact,
@@ -954,6 +958,8 @@ if __name__ == "__main__":
     legacy_no_sumw2_value = bool(args.no_sumw2)
     sumw2_storage_present = False
     sumw2_storage_config = None
+    data_driven_products_present = False
+    data_driven_products_config = None
     do_systs = args.do_systs
     suppress_forward_eta_stochastic_jer = args.suppress_forward_eta_stochastic_jer
     fwd_eta_band_pt_apply = args.fwd_eta_band_pt_apply
@@ -997,6 +1003,8 @@ if __name__ == "__main__":
         treename = ops.pop("treename", treename)
         sumw2_storage_present = "sumw2_storage" in ops
         sumw2_storage_config = ops.pop("sumw2_storage", None)
+        data_driven_products_present = "data_driven_products" in ops
+        data_driven_products_config = ops.pop("data_driven_products", None)
         yaml_no_sumw2_present = "no_sumw2" in ops
         yaml_do_errors_present = "do_errors" in ops
         if yaml_no_sumw2_present and yaml_do_errors_present:
@@ -1548,13 +1556,21 @@ if __name__ == "__main__":
     ]
     runtime_histogram_families = list(dict.fromkeys(runtime_histogram_families))
 
+    resolved_data_driven_products = resolve_data_driven_products(
+        data_driven_products_config,
+        data_driven_products_present=data_driven_products_present,
+        legacy_do_np=do_np,
+        samples=samplesdict,
+        runtime_families=runtime_histogram_families,
+        metadata_path=args.options,
+    )
+    if do_np and not resolved_data_driven_products.enabled_products():
+        raise ValueError(
+            "do_np requests data-driven postprocessing, but data_driven_products "
+            "has no enabled product. Enable nonprompt or flips, or disable do_np."
+        )
+
     required_sumw2_targets = []
-    if do_np:
-        for dataset_key, sample in samplesdict.items():
-            for family in runtime_histogram_families:
-                required_sumw2_targets.append(
-                    sumw2_target(dataset_key, sample["histAxisName"], family)
-                )
     if analysis_mode == "taufitter":
         taufitter_families = ("tau0Fpt", "tau0Tpt")
         missing_taufitter_families = sorted(
@@ -1582,6 +1598,16 @@ if __name__ == "__main__":
         legacy_no_sumw2_present=legacy_no_sumw2_present,
         legacy_no_sumw2_value=legacy_no_sumw2_value,
         consumer_requirements=required_sumw2_targets,
+        implicit_production_requirements=(
+            resolved_data_driven_products.required_targets()
+        ),
+    )
+    (
+        requested_data_driven_products,
+        resolved_data_driven_contract,
+    ) = certify_data_driven_preflight(
+        resolved_data_driven_products,
+        sumw2_policy,
     )
     fill_sumw2 = bool(sumw2_policy.selected_families())
     print(
@@ -1598,6 +1624,18 @@ if __name__ == "__main__":
             NOMINAL_CONTAINER_LAYOUT,
         )
     )
+    print(
+        "Resolved data-driven products: source={} enabled={}".format(
+            resolved_data_driven_products.source,
+            ",".join(resolved_data_driven_products.enabled_products()) or "<none>",
+        )
+    )
+
+    inline_artifact_kind = (
+        "flips_output"
+        if resolved_data_driven_products.enabled_products() == ("flips",)
+        else "nonprompt_output"
+    )
 
     def _build_np_followup_command():
         command = [
@@ -1610,6 +1648,8 @@ if __name__ == "__main__":
         ]
         if do_renormfact_envelope:
             command.append("--apply-renormfact-envelope")
+        if inline_artifact_kind == "flips_output":
+            command.append("--only-flips")
         return shlex.join(command)
 
     def _print_np_defer_instructions():
@@ -1870,6 +1910,8 @@ if __name__ == "__main__":
             histograms=output,
             artifact_kind="processor_output",
             sumw2_storage_provenance=sumw2_policy.to_provenance(),
+            requested_data_driven_products=requested_data_driven_products,
+            resolved_data_driven_contract=resolved_data_driven_contract,
         )
         print("Done!")
 
@@ -1877,7 +1919,11 @@ if __name__ == "__main__":
         if do_np:
             if np_postprocess_mode == "inline":
                 print("\nDoing the nonprompt estimation...")
-                ddp = DataDrivenProducer(out_pkl_file, "")
+                ddp = DataDrivenProducer(
+                    out_pkl_file,
+                    "",
+                    artifact_kind=inline_artifact_kind,
+                )
                 data_driven_histograms = ddp.getDataDrivenHistogram()
                 if do_renormfact_envelope:
                     print("\nDoing the renorm. fact. envelope calculation...")
@@ -1888,12 +1934,12 @@ if __name__ == "__main__":
                 write_histogram_artifact(
                     out_pkl_file_name_np,
                     histograms=data_driven_histograms,
-                    artifact_kind="nonprompt_output",
+                    artifact_kind=inline_artifact_kind,
                     sumw2_storage_provenance=sumw2_policy.to_provenance(),
                     lineage_inputs=[lineage_input_from_sidecar(processor_sidecar)],
                     input_sidecar=processor_sidecar,
                     transformation_context=ddp.get_transformation_context(
-                        "nonprompt_output"
+                        inline_artifact_kind
                     ),
                 )
                 print("Done!")

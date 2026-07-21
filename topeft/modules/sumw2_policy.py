@@ -293,6 +293,9 @@ def resolve_sumw2_storage_policy(
     legacy_no_sumw2_present: bool = False,
     legacy_no_sumw2_value: bool = False,
     consumer_requirements: Iterable[sumw2_target | Sequence[str]] = (),
+    implicit_production_requirements: Iterable[
+        sumw2_target | Sequence[str]
+    ] = (),
 ) -> resolved_sumw2_policy:
     dataset_processes = _validate_sample_metadata(samples)
     datasets = tuple(sorted(dataset_processes))
@@ -329,8 +332,10 @@ def resolve_sumw2_storage_policy(
             raise ValueError(
                 "SUMW2-E001: unknown sumw2_storage field(s): " + ", ".join(unknown)
             )
-        mode = sumw2_storage.get("mode")
-        source = "explicit"
+        mode = sumw2_storage.get("mode", "production")
+        source = (
+            "explicit" if "mode" in sumw2_storage else "implicit_production_default"
+        )
     elif legacy_no_sumw2_present and legacy_no_sumw2_value:
         mode = "disabled"
         source = "legacy_no_sumw2"
@@ -338,11 +343,18 @@ def resolve_sumw2_storage_policy(
             "SUMW2-W001: explicit legacy no_sumw2=true maps to disabled and is deprecated."
         )
         sumw2_storage = {}
-    else:
+    elif legacy_no_sumw2_present:
         mode = "full_diagnostics"
-        source = "implicit_legacy_default"
+        source = "legacy_no_sumw2_false"
         policy_warnings.append(
-            "SUMW2-W001: sumw2_storage is absent; using implicit full_diagnostics."
+            "SUMW2-W001: explicit legacy no_sumw2=false maps to full_diagnostics and is deprecated."
+        )
+        sumw2_storage = {}
+    else:
+        mode = "production"
+        source = "implicit_production_default"
+        policy_warnings.append(
+            "SUMW2-W001: sumw2_storage is absent; using the production default."
         )
         sumw2_storage = {}
 
@@ -354,9 +366,21 @@ def resolve_sumw2_storage_policy(
 
     rules_present = "rules" in sumw2_storage
     raw_rules = sumw2_storage.get("rules")
+    implicit_production = (
+        mode == "production" and source == "implicit_production_default"
+    )
     if mode in RULE_MODES:
-        if not rules_present or not isinstance(raw_rules, list) or not raw_rules:
+        if (
+            not implicit_production
+            and (not rules_present or not isinstance(raw_rules, list) or not raw_rules)
+        ):
             raise ValueError(f"SUMW2-E002: mode '{mode}' requires nonempty rules.")
+        if implicit_production and rules_present and (
+            not isinstance(raw_rules, list) or not raw_rules
+        ):
+            raise ValueError(
+                "SUMW2-E002: implicit production rules, when provided, must be nonempty."
+            )
     elif rules_present:
         raise ValueError(f"SUMW2-E002: mode '{mode}' forbids rules.")
 
@@ -367,7 +391,7 @@ def resolve_sumw2_storage_policy(
         )
 
     normalized_rules = []
-    if mode in RULE_MODES:
+    if mode in RULE_MODES and rules_present:
         for raw_rule in raw_rules:
             normalized_rules.append(
                 _normalize_rule(
@@ -388,7 +412,7 @@ def resolve_sumw2_storage_policy(
             process = dataset_processes[dataset]
             for family in runtime_families:
                 targets.add(sumw2_target(dataset, process, family))
-    elif mode in RULE_MODES:
+    elif mode in RULE_MODES and rules_present:
         for rule in normalized_rules:
             _validate_selector_coverage(rule, datasets=datasets, processes=processes)
             families = runtime_families if rule.variables_wildcard else rule.variables
@@ -422,6 +446,11 @@ def resolve_sumw2_storage_policy(
                     + examples
                 )
             targets.update(rule_targets)
+
+    if implicit_production and not rules_present:
+        targets.update(
+            _normalize_consumer_requirements(implicit_production_requirements)
+        )
 
     required_targets = _normalize_consumer_requirements(consumer_requirements)
     missing_requirements = sorted(required_targets - targets)
@@ -490,8 +519,9 @@ def resolved_policy_from_provenance(
         )
     if provenance["source"] not in {
         "explicit",
-        "implicit_legacy_default",
+        "implicit_production_default",
         "legacy_no_sumw2",
+        "legacy_no_sumw2_false",
     }:
         raise ValueError("Invalid sumw2 provenance source.")
     if provenance["requested_mode"] not in SUMW2_MODES:
