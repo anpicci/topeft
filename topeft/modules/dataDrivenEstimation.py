@@ -634,24 +634,11 @@ class DataDrivenProducer:
 
     def _build_data_driven_histogram(self, key, histo):
         if key.endswith(EFT_NOMINAL_SUFFIX):
-            family = key[: -len(EFT_NOMINAL_SUFFIX)]
-            projected_processes = set(
-                self._eft_prompt_processes_by_family.get(family, ())
-            )
             output = None
             for appl in histo.axes["appl"]:
                 selected = histo.integrate("appl", appl)
                 if "isAR" in appl:
-                    if not self._eft_prompt_processes_by_family:
-                        # Preserve the established sidecar-free and flips-only path.
-                        continue
-                    if appl != "isAR_2lSS_OS" and projected_processes:
-                        retained_processes = set(
-                            str(process) for process in selected.axes["process"]
-                        ) - projected_processes
-                        selected = self._filter_to_processes(
-                            selected, retained_processes
-                        )
+                    continue
                 output = selected if output is None else output + selected
             if output is None:
                 output = histo.integrate("appl")

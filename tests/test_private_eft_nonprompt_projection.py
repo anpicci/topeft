@@ -194,6 +194,7 @@ def _payload(*, private=True):
         )
     eft_entries = [
         (UNSELECTED_EFT_PROCESS, "isAR_3l", 2.0, [2.0, -1.0, 0.5]),
+        (UNSELECTED_EFT_PROCESS, "isAR_2lSS_OS", 11.0, [2.0, -1.0, 0.5]),
         (UNSELECTED_EFT_PROCESS, "isSR_3l", 3.0, [2.0, -1.0, 0.5]),
     ]
     if private:
@@ -201,6 +202,7 @@ def _payload(*, private=True):
             [
                 (prompt_process, "isAR_3l", 4.0, [1.5, 2.0, 3.0]),
                 (prompt_process, "isAR_3l", -4.0 / 3.0, [1.5, -0.5, 1.0]),
+                (prompt_process, "isAR_2lSS_OS", 7.0, [1.5, 2.0, 3.0]),
                 (prompt_process, "isSR_3l", 5.0, [1.5, 2.0, 3.0]),
             ]
         )
@@ -285,10 +287,10 @@ def test_private_eft_projection_is_sm_only_and_preserves_passthrough(tmp_path):
     )
     assert _total(eft, PRIVATE_PROCESS, {}) == pytest.approx(7.5)
     assert _total(eft, PRIVATE_PROCESS, {"ctW": 1.0}) == pytest.approx(32.5)
-    assert _total(eft, UNSELECTED_EFT_PROCESS, {}) == pytest.approx(10.0)
+    assert _total(eft, UNSELECTED_EFT_PROCESS, {}) == pytest.approx(6.0)
     assert _total(
         eft, UNSELECTED_EFT_PROCESS, {"ctW": 1.0}
-    ) == pytest.approx(7.5)
+    ) == pytest.approx(4.5)
     assert "nonpromptUL18" not in [str(value) for value in eft.axes["process"]]
     assert "appl" not in [axis.name for axis in eft.axes]
     assert "quadratic_term" not in [axis.name for axis in companion.axes]
@@ -308,6 +310,29 @@ def test_private_eft_projection_is_sm_only_and_preserves_passthrough(tmp_path):
     assert validate_histogram_artifact(result["output_path"])["metadata"] == result[
         "sidecar"
     ]
+
+
+def test_ar_only_eft_input_produces_empty_no_appl_sibling():
+    eft_key = eft_nominal_key("njets")
+    source = _fill_eft(
+        [
+            (PRIVATE_PROCESS, "isAR_3l", 4.0, [1.5, 2.0, 3.0]),
+            (
+                UNSELECTED_EFT_PROCESS,
+                "isAR_2lSS_OS",
+                11.0,
+                [2.0, -1.0, 0.5],
+            ),
+        ]
+    )
+
+    output = DataDrivenProducer({eft_key: source}, "").getDataDrivenHistogram()[
+        eft_key
+    ]
+
+    assert isinstance(output, HistEFT)
+    assert output.empty()
+    assert "appl" not in [axis.name for axis in output.axes]
 
 
 def test_private_eft_and_equivalent_central_scalar_agree_at_sm(tmp_path):
