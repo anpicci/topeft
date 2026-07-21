@@ -44,6 +44,26 @@ from topeft.modules.missing_parton_contract import (
 PRECISION = 6   # Decimal point precision in the text datacard output
 SUMW2_SUFFIX = "_sumw2"
 
+# These process rules control which DatacardMaker templates retain stored bin
+# variances in the ROOT output. All other templates are written with zero stored
+# statistical variance.
+stat_uncertainty_process_policy = {
+    "exact_process_names": frozenset({"fakes"}),
+    "process_name_substrings": ("close",),
+}
+
+
+def process_retains_stat_uncertainty(process_name):
+    return (
+        process_name in stat_uncertainty_process_policy["exact_process_names"]
+        or any(
+            substring in process_name
+            for substring in stat_uncertainty_process_policy[
+                "process_name_substrings"
+            ]
+        )
+    )
+
 
 def _is_sumw2_key(key):
     return isinstance(key, str) and key.endswith(SUMW2_SUFFIX)
@@ -1623,7 +1643,18 @@ class DatacardMaker():
                     continue
 
                 proc_hist = ch_hist.integrate("process",[p])
-                proc_sumw2 = ch_sumw2 if ch_sumw2 is None else ch_sumw2.integrate("process",[p])
+                if ch_sumw2 is None:
+                    proc_sumw2 = None
+                elif p in ch_sumw2.axes["process"]:
+                    proc_sumw2 = ch_sumw2.integrate("process",[p])
+                elif process_retains_stat_uncertainty(p):
+                    raise RuntimeError(
+                        "DatacardMaker requires a process companion for "
+                        f"{p!r} in '{km_dist}_sumw2' because it retains stored "
+                        "statistical uncertainty."
+                    )
+                else:
+                    proc_sumw2 = None
                 proc_hist = self.select_final_sr_appl(proc_hist, ch, process=p)
                 proc_sumw2 = self.select_final_sr_appl(proc_sumw2, ch, process=p)
                 if self.verbose:
@@ -1748,7 +1779,7 @@ class DatacardMaker():
                                 if seen[syst_base] == [True, True]:
                                     text_card_info[proc_name]["shapes"].add(syst_base)
                             syst_width = max(len(syst),syst_width)
-                        zero_out_sumw2 = p != "fakes" and "close" not in p # Zero out sumw2 for all proc but fakes, so that we only do auto stats for fakes
+                        zero_out_sumw2 = not process_retains_stat_uncertainty(p)
                         if hist_name in written_hist_names:
                             raise ValueError(
                                 f"Duplicate ROOT template name {hist_name!r} while writing "
@@ -1961,7 +1992,7 @@ class DatacardMaker():
         tic = time.time()
 
         sm = h.eval({})
-        sm_w2 = sumw2.eval(vals)
+        sm_w2 = None if sumw2 is None else sumw2.eval(vals)
         sm = add_sumw2_stub(sm,sm_w2)
 
         # Note: The keys of this dictionary are a pretty contrived, but are useful later on
