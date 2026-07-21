@@ -360,6 +360,9 @@ def load_and_merge_histogram_pkls(
             policy=policy if artifact_kind == "processor_output" else None,
         )
         report["sumw2_storage_provenance"] = policy.to_provenance()
+        report["production_sample_contract"] = merged_sidecar[
+            "production_sample_contract"
+        ]
         report["runtime_histogram_families"] = list(runtime_families)
         report["artifact_kind"] = artifact_kind
         report["artifact_merged"] = True

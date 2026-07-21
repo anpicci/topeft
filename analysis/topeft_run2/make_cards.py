@@ -171,6 +171,9 @@ def _cache_merged_histograms(merged_hists, cache_path, out_dir, merge_report=Non
             histograms=merged_hists,
             artifact_kind=merge_report["artifact_kind"],
             sumw2_storage_provenance=merge_report["sumw2_storage_provenance"],
+            production_sample_contract=merge_report[
+                "production_sample_contract"
+            ],
             merged=True,
             lineage_inputs=merge_report["lineage_inputs"],
             required_sumw2_processes=merge_report["required_sumw2_processes"],

@@ -17,6 +17,7 @@ from topeft.modules.sumw2_policy import resolve_sumw2_storage_policy
 
 from analysis.topeft_run2 import faketau_sf_fitter as fitter
 from analysis.topeft_run2 import tauFitter as legacy_fitter
+from tests.sumw2_profile_test_helpers import certify_test_profile
 
 
 def _make_tau_hist(axis_name, value):
@@ -256,15 +257,16 @@ def test_split_faketau_boundary_uses_wc_zero_scalar_view_and_strict_companions()
 
 
 def test_schema_v2_tau_consumers_discover_sidecar_from_pkl_only(tmp_path):
+    samples = {
+        "ttbar_dataset": {
+            "histAxisName": "ttbar",
+            "isData": False,
+            "WCnames": [],
+        }
+    }
     policy = resolve_sumw2_storage_policy(
         {"mode": "full_diagnostics"},
-        samples={
-            "ttbar_dataset": {
-                "histAxisName": "ttbar",
-                "isData": False,
-                "WCnames": [],
-            }
-        },
+        samples=samples,
         runtime_families=fitter.FAKETAU_REQUIRED_HISTOGRAMS,
         axes_info=axes_info,
         axes_info_2d=axes_info_2d,
@@ -284,6 +286,7 @@ def test_schema_v2_tau_consumers_discover_sidecar_from_pkl_only(tmp_path):
         histograms=split,
         artifact_kind="processor_output",
         sumw2_storage_provenance=policy.to_provenance(),
+        production_sample_contract=certify_test_profile(policy, samples),
     )
 
     fake_tau_view, summary = fitter.combine_faketau_histogram_pkls([str(path)])

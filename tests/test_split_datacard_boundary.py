@@ -20,6 +20,7 @@ from topeft.modules.nominal_schema import (
     scalar_nominal_key,
 )
 from topeft.modules.sumw2_policy import resolve_sumw2_storage_policy
+from tests.sumw2_profile_test_helpers import certify_test_profile
 
 
 def _categorical_axes():
@@ -95,20 +96,21 @@ def test_datacard_transient_view_preserves_rates_shapes_coefficients_scalings_an
         eft_nominal_key("njets"): eft,
         "njets_sumw2": companion,
     }
+    samples = {
+        "background_dataset": {
+            "histAxisName": "background",
+            "isData": False,
+            "WCnames": [],
+        },
+        "signal_dataset": {
+            "histAxisName": "signal",
+            "isData": False,
+            "WCnames": ["ctG"],
+        },
+    }
     policy = resolve_sumw2_storage_policy(
         {"mode": "full_diagnostics"},
-        samples={
-            "background_dataset": {
-                "histAxisName": "background",
-                "isData": False,
-                "WCnames": [],
-            },
-            "signal_dataset": {
-                "histAxisName": "signal",
-                "isData": False,
-                "WCnames": ["ctG"],
-            },
-        },
+        samples=samples,
         runtime_families=("njets",),
         axes_info=axes_info,
         axes_info_2d=axes_info_2d,
@@ -120,6 +122,7 @@ def test_datacard_transient_view_preserves_rates_shapes_coefficients_scalings_an
         histograms=split,
         artifact_kind="processor_output",
         sumw2_storage_provenance=policy.to_provenance(),
+        production_sample_contract=certify_test_profile(policy, samples),
     )
     split, merge_report = load_and_merge_histogram_pkls([str(source_path)])
     assert merge_report["artifact_kind"] == "processor_output"

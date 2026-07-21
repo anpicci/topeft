@@ -8,11 +8,25 @@ from dataclasses import dataclass, field
 from typing import Any, Iterable, Mapping, Sequence
 
 
-SUMW2_PROVENANCE_SCHEMA_VERSION = 1
+SUMW2_PROVENANCE_SCHEMA_VERSION = 2
+LEGACY_SUMW2_PROVENANCE_SCHEMA_VERSION = 1
 SUMW2_MODES = frozenset(
-    {"production", "taufitter", "full_diagnostics", "disabled", "full_custom"}
+    {
+        "production",
+        "production_central",
+        "taufitter",
+        "full_diagnostics",
+        "disabled",
+        "full_custom",
+    }
 )
-RULE_MODES = frozenset({"production", "taufitter", "full_custom"})
+RULE_MODES = frozenset(
+    {"production", "production_central", "taufitter", "full_custom"}
+)
+PRODUCTION_SIGNAL_SAMPLE_PROFILES = {
+    "production": "private",
+    "production_central": "central",
+}
 RULE_KEYS = frozenset(
     {
         "dataset_names",
@@ -37,6 +51,16 @@ class sumw2_target:
             "process": self.process,
             "family": self.family,
         }
+
+
+@dataclass(frozen=True)
+class sumw2_mode_resolution:
+    source: str
+    requested_mode: str
+    resolved_mode: str
+    signal_sample_profile: str
+    sumw2_storage: Mapping[str, Any]
+    warnings: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -71,6 +95,8 @@ class normalized_sumw2_rule:
 class resolved_sumw2_policy:
     source: str
     requested_mode: str
+    resolved_mode: str
+    signal_sample_profile: str
     normalized_rules: tuple[normalized_sumw2_rule, ...]
     runtime_histogram_families: tuple[str, ...]
     resolved_datasets: tuple[str, ...]
@@ -109,7 +135,7 @@ class resolved_sumw2_policy:
         )
 
     def to_provenance(self) -> dict[str, Any]:
-        return {
+        provenance = {
             "schema_version": self.schema_version,
             "source": self.source,
             "requested_mode": self.requested_mode,
@@ -120,6 +146,10 @@ class resolved_sumw2_policy:
             "resolved_targets": [target.to_dict() for target in self.resolved_targets],
             "warnings": list(self.warnings),
         }
+        if self.schema_version == SUMW2_PROVENANCE_SCHEMA_VERSION:
+            provenance["resolved_mode"] = self.resolved_mode
+            provenance["signal_sample_profile"] = self.signal_sample_profile
+        return provenance
 
     def identity(self) -> str:
         return json.dumps(self.to_provenance(), sort_keys=True, separators=(",", ":"))
@@ -281,6 +311,74 @@ def _normalize_consumer_requirements(
     return frozenset(output)
 
 
+def resolve_sumw2_storage_mode(
+    sumw2_storage: Mapping[str, Any] | None,
+    *,
+    sumw2_storage_present: bool | None = None,
+    legacy_no_sumw2_present: bool = False,
+    legacy_no_sumw2_value: bool = False,
+) -> sumw2_mode_resolution:
+    """Resolve the public mode and its signal profile without selecting samples."""
+
+    if sumw2_storage_present is None:
+        sumw2_storage_present = sumw2_storage is not None
+    policy_warnings = []
+    if sumw2_storage_present:
+        if legacy_no_sumw2_present:
+            raise ValueError(
+                "Explicit sumw2_storage and explicit legacy no_sumw2 cannot be combined."
+            )
+        if not isinstance(sumw2_storage, Mapping):
+            raise ValueError("SUMW2-E001: sumw2_storage must be a mapping.")
+        unknown = sorted(set(sumw2_storage) - POLICY_KEYS)
+        if unknown:
+            raise ValueError(
+                "SUMW2-E001: unknown sumw2_storage field(s): " + ", ".join(unknown)
+            )
+        mode = sumw2_storage.get("mode", "production")
+        source = (
+            "explicit" if "mode" in sumw2_storage else "implicit_production_default"
+        )
+        normalized_storage = sumw2_storage
+    elif legacy_no_sumw2_present and legacy_no_sumw2_value:
+        mode = "disabled"
+        source = "legacy_no_sumw2"
+        policy_warnings.append(
+            "SUMW2-W001: explicit legacy no_sumw2=true maps to disabled and is deprecated."
+        )
+        normalized_storage = {}
+    elif legacy_no_sumw2_present:
+        mode = "full_diagnostics"
+        source = "legacy_no_sumw2_false"
+        policy_warnings.append(
+            "SUMW2-W001: explicit legacy no_sumw2=false maps to full_diagnostics and is deprecated."
+        )
+        normalized_storage = {}
+    else:
+        mode = "production"
+        source = "implicit_production_default"
+        policy_warnings.append(
+            "SUMW2-W001: sumw2_storage is absent; using the production default."
+        )
+        normalized_storage = {}
+
+    if mode not in SUMW2_MODES:
+        raise ValueError(
+            f"SUMW2-E001: unknown sumw2_storage mode {mode!r}; expected one of "
+            + ", ".join(sorted(SUMW2_MODES))
+        )
+    return sumw2_mode_resolution(
+        source=source,
+        requested_mode=mode,
+        resolved_mode=mode,
+        signal_sample_profile=PRODUCTION_SIGNAL_SAMPLE_PROFILES.get(
+            mode, "unrestricted"
+        ),
+        sumw2_storage=normalized_storage,
+        warnings=tuple(policy_warnings),
+    )
+
+
 def resolve_sumw2_storage_policy(
     sumw2_storage: Mapping[str, Any] | None,
     *,
@@ -296,6 +394,7 @@ def resolve_sumw2_storage_policy(
     implicit_production_requirements: Iterable[
         sumw2_target | Sequence[str]
     ] = (),
+    mode_resolution: sumw2_mode_resolution | None = None,
 ) -> resolved_sumw2_policy:
     dataset_processes = _validate_sample_metadata(samples)
     datasets = tuple(sorted(dataset_processes))
@@ -317,52 +416,23 @@ def resolve_sumw2_storage_policy(
         for axis_cfg in family_cfg["axes"]
     )
 
-    if sumw2_storage_present is None:
-        sumw2_storage_present = sumw2_storage is not None
-    policy_warnings = []
-    if sumw2_storage_present:
-        if legacy_no_sumw2_present:
-            raise ValueError(
-                "Explicit sumw2_storage and explicit legacy no_sumw2 cannot be combined."
-            )
-        if not isinstance(sumw2_storage, Mapping):
-            raise ValueError("SUMW2-E001: sumw2_storage must be a mapping.")
-        unknown = sorted(set(sumw2_storage) - POLICY_KEYS)
-        if unknown:
-            raise ValueError(
-                "SUMW2-E001: unknown sumw2_storage field(s): " + ", ".join(unknown)
-            )
-        mode = sumw2_storage.get("mode", "production")
-        source = (
-            "explicit" if "mode" in sumw2_storage else "implicit_production_default"
-        )
-    elif legacy_no_sumw2_present and legacy_no_sumw2_value:
-        mode = "disabled"
-        source = "legacy_no_sumw2"
-        policy_warnings.append(
-            "SUMW2-W001: explicit legacy no_sumw2=true maps to disabled and is deprecated."
-        )
-        sumw2_storage = {}
-    elif legacy_no_sumw2_present:
-        mode = "full_diagnostics"
-        source = "legacy_no_sumw2_false"
-        policy_warnings.append(
-            "SUMW2-W001: explicit legacy no_sumw2=false maps to full_diagnostics and is deprecated."
-        )
-        sumw2_storage = {}
-    else:
-        mode = "production"
-        source = "implicit_production_default"
-        policy_warnings.append(
-            "SUMW2-W001: sumw2_storage is absent; using the production default."
-        )
-        sumw2_storage = {}
-
-    if mode not in SUMW2_MODES:
+    independently_resolved_mode = resolve_sumw2_storage_mode(
+        sumw2_storage,
+        sumw2_storage_present=sumw2_storage_present,
+        legacy_no_sumw2_present=legacy_no_sumw2_present,
+        legacy_no_sumw2_value=legacy_no_sumw2_value,
+    )
+    if mode_resolution is None:
+        mode_resolution = independently_resolved_mode
+    elif mode_resolution != independently_resolved_mode:
         raise ValueError(
-            f"SUMW2-E001: unknown sumw2_storage mode {mode!r}; expected one of "
-            + ", ".join(sorted(SUMW2_MODES))
+            "SUMW2-E001: supplied mode resolution disagrees with the active "
+            "sumw2_storage and legacy flags."
         )
+    mode = mode_resolution.resolved_mode
+    source = mode_resolution.source
+    policy_warnings = list(mode_resolution.warnings)
+    sumw2_storage = mode_resolution.sumw2_storage
 
     rules_present = "rules" in sumw2_storage
     raw_rules = sumw2_storage.get("rules")
@@ -479,6 +549,8 @@ def resolve_sumw2_storage_policy(
     return resolved_sumw2_policy(
         source=source,
         requested_mode=mode,
+        resolved_mode=mode_resolution.resolved_mode,
+        signal_sample_profile=mode_resolution.signal_sample_profile,
         normalized_rules=tuple(normalized_rules),
         runtime_histogram_families=runtime_families,
         resolved_datasets=datasets,
@@ -493,7 +565,7 @@ def resolved_policy_from_provenance(
 ) -> resolved_sumw2_policy:
     if not isinstance(provenance, Mapping):
         raise ValueError("sumw2_storage_provenance must be a mapping.")
-    required = {
+    common_required = {
         "schema_version",
         "source",
         "requested_mode",
@@ -504,6 +576,16 @@ def resolved_policy_from_provenance(
         "resolved_targets",
         "warnings",
     }
+    schema_version = provenance.get("schema_version")
+    if schema_version == SUMW2_PROVENANCE_SCHEMA_VERSION:
+        required = common_required | {"resolved_mode", "signal_sample_profile"}
+    elif schema_version == LEGACY_SUMW2_PROVENANCE_SCHEMA_VERSION:
+        required = common_required
+    else:
+        raise ValueError(
+            "Unsupported sumw2 provenance schema version "
+            f"{schema_version!r}."
+        )
     missing = sorted(required - set(provenance))
     unknown = sorted(set(provenance) - required)
     if missing or unknown:
@@ -511,11 +593,6 @@ def resolved_policy_from_provenance(
             "Invalid sumw2_storage_provenance fields; missing={} unknown={}.".format(
                 missing, unknown
             )
-        )
-    if provenance["schema_version"] != SUMW2_PROVENANCE_SCHEMA_VERSION:
-        raise ValueError(
-            "Unsupported sumw2 provenance schema version "
-            f"{provenance['schema_version']!r}."
         )
     if provenance["source"] not in {
         "explicit",
@@ -526,6 +603,21 @@ def resolved_policy_from_provenance(
         raise ValueError("Invalid sumw2 provenance source.")
     if provenance["requested_mode"] not in SUMW2_MODES:
         raise ValueError("Invalid requested_mode in sumw2 provenance.")
+    if (
+        schema_version == LEGACY_SUMW2_PROVENANCE_SCHEMA_VERSION
+        and provenance["requested_mode"] == "production_central"
+    ):
+        raise ValueError(
+            "Legacy sumw2 provenance predates production_central and cannot encode it."
+        )
+    if schema_version == SUMW2_PROVENANCE_SCHEMA_VERSION:
+        if provenance["resolved_mode"] != provenance["requested_mode"]:
+            raise ValueError("sumw2 provenance requested_mode/resolved_mode mismatch.")
+        expected_profile = PRODUCTION_SIGNAL_SAMPLE_PROFILES.get(
+            provenance["resolved_mode"], "unrestricted"
+        )
+        if provenance["signal_sample_profile"] != expected_profile:
+            raise ValueError("Invalid signal_sample_profile in sumw2 provenance.")
 
     rules = []
     for raw_rule in provenance["normalized_rules"]:
@@ -557,12 +649,20 @@ def resolved_policy_from_provenance(
     policy = resolved_sumw2_policy(
         source=provenance["source"],
         requested_mode=provenance["requested_mode"],
+        resolved_mode=provenance.get("resolved_mode", provenance["requested_mode"]),
+        signal_sample_profile=provenance.get(
+            "signal_sample_profile",
+            PRODUCTION_SIGNAL_SAMPLE_PROFILES.get(
+                provenance["requested_mode"], "unrestricted"
+            ),
+        ),
         normalized_rules=tuple(rules),
         runtime_histogram_families=tuple(provenance["runtime_histogram_families"]),
         resolved_datasets=tuple(provenance["resolved_datasets"]),
         resolved_processes=tuple(provenance["resolved_processes"]),
         resolved_targets=tuple(targets),
         warnings=tuple(provenance["warnings"]),
+        schema_version=schema_version,
     )
     if policy.to_provenance() != dict(provenance):
         raise ValueError("sumw2 provenance is not in canonical deterministic form.")

@@ -1100,6 +1100,14 @@ def validate_requested_product_input(
             "Processor artifact lacks the requested data-driven product contract. "
             "Regenerate it with run_analysis and data_driven_products metadata."
         )
+    from topeft.modules.production_sample_profile import (
+        require_data_driven_profile_certification,
+    )
+
+    try:
+        require_data_driven_profile_certification(sidecar)
+    except ValueError as error:
+        raise data_driven_product_error(str(error)) from error
     policy = resolved_sumw2_policy_from_sidecar(sidecar)
     validate_serialized_data_driven_contract(requested, contract, policy=policy)
     if artifact_kind not in {"nonprompt_output", "flips_output"}:

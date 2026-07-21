@@ -20,6 +20,7 @@ from topeft.modules.datacard_tools import load_and_merge_histogram_pkls
 from topeft.modules.dataDrivenEstimation import DataDrivenProducer
 from topeft.modules.data_driven_products import (
     certify_data_driven_preflight,
+    data_driven_product_error,
     resolve_data_driven_products,
 )
 from topeft.modules.histogram_artifact import (
@@ -41,6 +42,29 @@ from topeft.modules.nominal_schema import (
     is_split_nominal_mapping,
 )
 from topeft.modules.sumw2_policy import resolve_sumw2_storage_policy
+from topeft.modules.production_sample_profile import (
+    build_active_sample_universe,
+    certify_production_sample_contract,
+)
+
+
+_POLICY_SAMPLES = {
+    "data_dataset": {
+        "histAxisName": "dataUL18",
+        "isData": True,
+        "WCnames": [],
+    },
+    "prompt_dataset": {
+        "histAxisName": "TTTo2L2Nu_centralUL18",
+        "isData": False,
+        "WCnames": [],
+    },
+    "signal_dataset": {
+        "histAxisName": "signal_centralUL18",
+        "isData": False,
+        "WCnames": ["ctG"],
+    },
+}
 
 
 def _axes(dense_name):
@@ -86,27 +110,31 @@ def _fill_eft(entries):
 def policy():
     return resolve_sumw2_storage_policy(
         {"mode": "full_diagnostics"},
-        samples={
-            "data_dataset": {
-                "histAxisName": "dataUL18",
-                "isData": True,
-                "WCnames": [],
-            },
-            "prompt_dataset": {
-                "histAxisName": "TTTo2L2Nu_centralUL18",
-                "isData": False,
-                "WCnames": [],
-            },
-            "signal_dataset": {
-                "histAxisName": "signal_centralUL18",
-                "isData": False,
-                "WCnames": ["ctG"],
-            },
-        },
+        samples=_POLICY_SAMPLES,
         runtime_families=("njets",),
         axes_info=axes_info,
         axes_info_2d=axes_info_2d,
         sumw2_storage_present=True,
+    )
+
+
+def _certify_profile(policy, samples, products=None):
+    if products is None:
+        products = resolve_data_driven_products(
+            {
+                "nonprompt": {"enabled": False},
+                "flips": {"enabled": False},
+            },
+            data_driven_products_present=True,
+            legacy_do_np=False,
+            samples=samples,
+            runtime_families=policy.runtime_histogram_families,
+            metadata_path="test_options.yml",
+        )
+    return certify_production_sample_contract(
+        build_active_sample_universe(samples, wrapper_identity="pytest"),
+        policy,
+        products,
     )
 
 
@@ -186,6 +214,7 @@ def _write_processor(path, policy, products_block=None):
         histograms=_processor_payload(),
         artifact_kind="processor_output",
         sumw2_storage_provenance=policy.to_provenance(),
+        production_sample_contract=_certify_profile(policy, samples, products),
         requested_data_driven_products=requested,
         resolved_data_driven_contract=contract,
     )
@@ -217,6 +246,30 @@ def test_processor_sidecar_uses_family_free_generated_output_contract(
         },
         "output_processes": ["nonpromptUL18"],
     }
+
+
+def test_legacy_sumw2_profile_sidecar_reopens_but_cannot_transform(
+    tmp_path,
+    policy,
+):
+    path = tmp_path / "legacy_profile_processor.pkl.gz"
+    _write_processor(path, policy)
+    sidecar_path = metadata_sidecar_path(path)
+    sidecar = json.loads(sidecar_path.read_text(encoding="utf-8"))
+    provenance = sidecar["sumw2_storage_provenance"]
+    provenance["schema_version"] = 1
+    provenance.pop("resolved_mode")
+    provenance.pop("signal_sample_profile")
+    sidecar.pop("production_sample_contract")
+    sidecar_path.write_text(json.dumps(sidecar), encoding="utf-8")
+
+    reopened = validate_histogram_artifact(path)
+    assert reopened["metadata"]["sumw2_storage_provenance"]["schema_version"] == 1
+    with pytest.raises(
+        data_driven_product_error,
+        match=r"predates certified production sample profiles.*read-only.*Regenerate",
+    ):
+        DataDrivenProducer(str(path), "")
 
 
 @pytest.mark.parametrize("tamper", ["delete_contributor", "move_contributor", "output_year", "orphan_output"])
@@ -400,6 +453,7 @@ def test_nonprompt_transformation_uses_certified_multi_year_output_map(
         },
         artifact_kind="processor_output",
         sumw2_storage_provenance=local_policy.to_provenance(),
+        production_sample_contract=_certify_profile(local_policy, samples, products),
         requested_data_driven_products=requested,
         resolved_data_driven_contract=contract,
     )
@@ -470,6 +524,7 @@ def test_transformed_nominal_labels_must_match_generated_output_map(
             histograms=transformed,
             artifact_kind="nonprompt_output",
             sumw2_storage_provenance=policy.to_provenance(),
+            production_sample_contract=_certify_profile(policy, _POLICY_SAMPLES),
             lineage_inputs=[lineage_input_from_sidecar(source_sidecar)],
             input_sidecar=source_sidecar,
             transformation_context=producer.get_transformation_context(
@@ -676,6 +731,10 @@ def test_atomic_pair_does_not_publish_pkl_when_sidecar_write_fails(
             histograms=_processor_payload(),
             artifact_kind="processor_output",
             sumw2_storage_provenance=policy.to_provenance(),
+            production_sample_contract=_certify_profile(
+                policy,
+                _POLICY_SAMPLES,
+            ),
         )
     assert not path.exists()
     assert not metadata_sidecar_path(path).exists()
@@ -916,6 +975,132 @@ def test_plotting_merged_cache_writer_preserves_artifact_stage(tmp_path, policy)
     assert len(sidecar["lineage"]["inputs"]) == 2
 
 
+def test_private_and_central_profile_transformed_artifacts_do_not_merge(tmp_path):
+    transformed_sidecars = []
+    for profile, signal_process in (
+        ("production", "tllq_privateUL18"),
+        ("production_central", "tZq_centralUL18"),
+    ):
+        samples = {
+            "data_dataset": {
+                "histAxisName": "dataUL18",
+                "isData": True,
+                "WCnames": [],
+            },
+            "prompt_dataset": {
+                "histAxisName": "TTTo2L2Nu_centralUL18",
+                "isData": False,
+                "WCnames": [],
+            },
+            "signal_dataset": {
+                "histAxisName": signal_process,
+                "isData": False,
+                "WCnames": ["ctW"] if profile == "production" else [],
+            },
+        }
+        policy = resolve_sumw2_storage_policy(
+            {
+                "mode": profile,
+                "rules": [
+                    {
+                        "process_names": [
+                            "dataUL18",
+                            "TTTo2L2Nu_centralUL18",
+                        ],
+                        "variables": ["njets"],
+                    }
+                ],
+            },
+            samples=samples,
+            runtime_families=("njets",),
+            axes_info=axes_info,
+            axes_info_2d=axes_info_2d,
+            sumw2_storage_present=True,
+        )
+        products = resolve_data_driven_products(
+            {
+                "nonprompt": {
+                    "enabled": True,
+                    "source_contributors": {
+                        "data": {"process_names": ["dataUL18"]},
+                        "prompt_mc": {
+                            "process_names": ["TTTo2L2Nu_centralUL18"]
+                        },
+                    },
+                },
+                "flips": {
+                    "enabled": True,
+                    "source_contributors": {
+                        "data": {"process_names": ["dataUL18"]}
+                    },
+                },
+            },
+            data_driven_products_present=True,
+            legacy_do_np=False,
+            samples=samples,
+            runtime_families=("njets",),
+            metadata_path=f"{profile}.yml",
+        )
+        requested, contract = certify_data_driven_preflight(products, policy)
+        processor_path = tmp_path / f"{profile}_processor.pkl.gz"
+        source_sidecar = write_histogram_artifact(
+            processor_path,
+            histograms={
+                scalar_nominal_key("njets"): _fill_sparse(
+                    "njets",
+                        (
+                            ("dataUL18", "isAR_3l", 10.0),
+                            ("TTTo2L2Nu_centralUL18", "isAR_3l", 3.0),
+                            ("dataUL18", "isAR_2lSS_OS", 4.0),
+                        ),
+                ),
+                "njets_sumw2": _fill_sparse(
+                    "njets_sumw2",
+                        (
+                            ("dataUL18", "isAR_3l", 100.0),
+                            ("TTTo2L2Nu_centralUL18", "isAR_3l", 9.0),
+                            ("dataUL18", "isAR_2lSS_OS", 16.0),
+                        ),
+                ),
+            },
+            artifact_kind="processor_output",
+            sumw2_storage_provenance=policy.to_provenance(),
+            production_sample_contract=_certify_profile(policy, samples, products),
+            requested_data_driven_products=requested,
+            resolved_data_driven_contract=contract,
+        )
+        producer = DataDrivenProducer(str(processor_path), "")
+        transformed_path = tmp_path / f"{profile}_nonprompt.pkl.gz"
+        write_histogram_artifact(
+            transformed_path,
+            histograms=producer.getDataDrivenHistogram(),
+            artifact_kind="nonprompt_output",
+            sumw2_storage_provenance=policy.to_provenance(),
+            lineage_inputs=[lineage_input_from_sidecar(source_sidecar)],
+            input_sidecar=source_sidecar,
+            transformation_context=producer.get_transformation_context(
+                "nonprompt_output"
+            ),
+        )
+        transformed_sidecar = read_histogram_sidecar(transformed_path)
+        assert transformed_sidecar["sumw2_storage_provenance"][
+            "signal_sample_profile"
+        ] == ("private" if profile == "production" else "central")
+        assert transformed_sidecar["production_sample_contract"] == source_sidecar[
+            "production_sample_contract"
+        ]
+        assert transformed_sidecar["sumw2_content_manifest"]["families"][
+            "njets"
+        ]["required_sumw2_processes"] == ["flipsUL18", "nonpromptUL18"]
+        transformed_sidecars.append(transformed_sidecar)
+
+    with pytest.raises(
+        RuntimeError,
+        match="source-allocation provenance|sample profile contracts",
+    ):
+        merge_histogram_sidecars(transformed_sidecars)
+
+
 def test_incompatible_artifact_stage_merges_are_rejected(tmp_path, policy):
     processor_path = tmp_path / "processor.pkl.gz"
     processor_sidecar = _write_processor(processor_path, policy)
@@ -1135,6 +1320,10 @@ def test_pre_product_contract_cannot_authorize_new_transformed_requirements(tmp_
         histograms=source_payload,
         artifact_kind="processor_output",
         sumw2_storage_provenance=selective_policy.to_provenance(),
+        production_sample_contract=_certify_profile(
+            selective_policy,
+            _POLICY_SAMPLES,
+        ),
     )
     source_family = source_sidecar["sumw2_content_manifest"]["families"]["njets"]
     context = {
@@ -1221,6 +1410,11 @@ def test_flips_contract_requires_every_generated_year_label(tmp_path):
         histograms=source_payload,
         artifact_kind="processor_output",
         sumw2_storage_provenance=multi_year_policy.to_provenance(),
+        production_sample_contract=_certify_profile(
+            multi_year_policy,
+            multi_year_samples,
+            products,
+        ),
         requested_data_driven_products=requested,
         resolved_data_driven_contract=contract,
     )

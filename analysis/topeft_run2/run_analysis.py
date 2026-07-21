@@ -35,8 +35,15 @@ from topeft.modules.nominal_schema import (
 from topeft.modules.axes import info as axes_info
 from topeft.modules.axes import info_2d as axes_info_2d
 from topeft.modules.sumw2_policy import (
+    resolve_sumw2_storage_mode,
     resolve_sumw2_storage_policy,
     sumw2_target,
+)
+from topeft.modules.production_sample_profile import (
+    build_active_sample_universe,
+    certify_production_sample_contract,
+    production_sample_profile_error,
+    validate_active_sample_profile,
 )
 from topeft.modules.get_renormfact_envelope import get_renormfact_envelope
 from topeft.modules.ttgamma_photon_history import (
@@ -911,6 +918,14 @@ if __name__ == "__main__":
         ),
     )
     parser.add_argument(
+        "--sample-universe-wrapper",
+        default="run_analysis.py",
+        help=(
+            "Portable identity of the maintained wrapper that selected the active "
+            "sample cfgs (recorded in generated sidecar provenance)."
+        ),
+    )
+    parser.add_argument(
         "--env-file",
         default=None,
         help=(
@@ -985,6 +1000,7 @@ if __name__ == "__main__":
     env_file_override = args.env_file
     use_remote_env = args.use_remote_env
     skip_topcoffea_data_check = args.skip_topcoffea_data_check
+    sample_universe_wrapper = args.sample_universe_wrapper
 
     if args.options:
         import yaml
@@ -1556,6 +1572,28 @@ if __name__ == "__main__":
     ]
     runtime_histogram_families = list(dict.fromkeys(runtime_histogram_families))
 
+    try:
+        active_universe = build_active_sample_universe(
+            samplesdict,
+            input_paths=resolved_input_jsons,
+            wrapper_identity=sample_universe_wrapper,
+        )
+        sumw2_mode = resolve_sumw2_storage_mode(
+            sumw2_storage_config,
+            sumw2_storage_present=sumw2_storage_present,
+            legacy_no_sumw2_present=legacy_no_sumw2_present,
+            legacy_no_sumw2_value=legacy_no_sumw2_value,
+        )
+        validate_active_sample_profile(
+            active_universe,
+            sumw2_mode,
+            data_driven_products=data_driven_products_config,
+            data_driven_products_present=data_driven_products_present,
+            metadata_path=args.options,
+        )
+    except production_sample_profile_error as error:
+        raise SystemExit(str(error)) from None
+
     resolved_data_driven_products = resolve_data_driven_products(
         data_driven_products_config,
         data_driven_products_present=data_driven_products_present,
@@ -1601,7 +1639,16 @@ if __name__ == "__main__":
         implicit_production_requirements=(
             resolved_data_driven_products.required_targets()
         ),
+        mode_resolution=sumw2_mode,
     )
+    try:
+        production_sample_contract = certify_production_sample_contract(
+            active_universe,
+            sumw2_policy,
+            resolved_data_driven_products,
+        )
+    except production_sample_profile_error as error:
+        raise SystemExit(str(error)) from None
     (
         requested_data_driven_products,
         resolved_data_driven_contract,
@@ -1616,6 +1663,16 @@ if __name__ == "__main__":
             sumw2_policy.source,
             len(sumw2_policy.resolved_targets),
             ",".join(sumw2_policy.selected_families()) or "<none>",
+        )
+    )
+    print(
+        "Certified production sample profile: profile={} wrapper={} cfgs={}".format(
+            sumw2_policy.signal_sample_profile,
+            active_universe.wrapper_identity,
+            ",".join(
+                identity["basename"]
+                for identity in active_universe.serialized_cfg_identities()
+            ),
         )
     )
     print(
@@ -1910,6 +1967,7 @@ if __name__ == "__main__":
             histograms=output,
             artifact_kind="processor_output",
             sumw2_storage_provenance=sumw2_policy.to_provenance(),
+            production_sample_contract=production_sample_contract,
             requested_data_driven_products=requested_data_driven_products,
             resolved_data_driven_contract=resolved_data_driven_contract,
         )

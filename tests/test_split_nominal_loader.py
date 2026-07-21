@@ -20,6 +20,21 @@ from topeft.modules.nominal_schema import (
 )
 from topeft.modules.sumw2_policy import resolve_sumw2_storage_policy
 from analysis.topeft_run2 import make_cards
+from tests.sumw2_profile_test_helpers import certify_test_profile
+
+
+_SAMPLES = {
+    "background_dataset": {
+        "histAxisName": "background",
+        "isData": False,
+        "WCnames": [],
+    },
+    "signal_dataset": {
+        "histAxisName": "signal",
+        "isData": False,
+        "WCnames": ["ctG"],
+    },
+}
 
 
 def _axes(dense_name):
@@ -62,21 +77,9 @@ def _eft(process, weight):
 
 @pytest.fixture
 def policy():
-    samples = {
-        "background_dataset": {
-            "histAxisName": "background",
-            "isData": False,
-            "WCnames": [],
-        },
-        "signal_dataset": {
-            "histAxisName": "signal",
-            "isData": False,
-            "WCnames": ["ctG"],
-        },
-    }
     return resolve_sumw2_storage_policy(
         {"mode": "full_diagnostics"},
-        samples=samples,
+        samples=_SAMPLES,
         runtime_families=("njets",),
         axes_info=axes_info,
         axes_info_2d=axes_info_2d,
@@ -84,12 +87,13 @@ def policy():
     )
 
 
-def _write_versioned(path, payload, policy):
+def _write_versioned(path, payload, policy, samples=_SAMPLES):
     write_histogram_artifact(
         path,
         histograms=payload,
         artifact_kind="processor_output",
         sumw2_storage_provenance=policy.to_provenance(),
+        production_sample_contract=certify_test_profile(policy, samples),
     )
 
 
@@ -200,6 +204,13 @@ def test_required_missing_partial_orphan_and_present_unselected_are_rejected(tmp
         unselected_path,
         {scalar_nominal_key("njets"): _scalar("background", 2.0)},
         disabled,
+        {
+            "background_dataset": {
+                "histAxisName": "background",
+                "isData": False,
+                "WCnames": [],
+            }
+        },
     )
     _replace_payload(
         unselected_path,
@@ -233,6 +244,7 @@ def test_split_without_sidecar_and_policy_identity_mismatch_are_rejected(tmp_pat
         histograms=payload,
         artifact_kind="processor_output",
         sumw2_storage_provenance=altered,
+        production_sample_contract=certify_test_profile(policy, _SAMPLES),
     )
     with pytest.raises(RuntimeError, match="source-allocation provenance|policy identities"):
         load_and_merge_histogram_pkls(

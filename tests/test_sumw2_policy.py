@@ -62,6 +62,15 @@ def test_component_classification_uses_data_and_validated_wc_metadata(samples):
             2,
         ),
         (
+            "production_central",
+            {
+                "mode": "production_central",
+                "rules": [{"process_prefixes": ["back"]}],
+            },
+            "standard",
+            2,
+        ),
+        (
             "taufitter",
             {"mode": "taufitter", "rules": [{"variables": ["njets"]}]},
             "taufitter",
@@ -75,7 +84,7 @@ def test_component_classification_uses_data_and_validated_wc_metadata(samples):
         ),
     ],
 )
-def test_all_five_modes(mode, block, analysis_mode, expected_count, samples):
+def test_all_six_modes(mode, block, analysis_mode, expected_count, samples):
     policy = _resolve(
         block,
         samples,
@@ -83,6 +92,11 @@ def test_all_five_modes(mode, block, analysis_mode, expected_count, samples):
         analysis_mode=analysis_mode,
     )
     assert policy.requested_mode == mode
+    assert policy.resolved_mode == mode
+    assert policy.signal_sample_profile == {
+        "production": "private",
+        "production_central": "central",
+    }.get(mode, "unrestricted")
     assert len(policy.resolved_targets) == expected_count
     assert resolved_policy_from_provenance(policy.to_provenance()) == policy
 
@@ -261,3 +275,39 @@ def test_missing_parton_contract_is_standard_full_custom_njets(samples):
     )
     assert policy.selected_families() == ("njets",)
     assert policy.requested_mode == "full_custom"
+
+
+def test_unknown_mode_lists_all_six_values(samples):
+    with pytest.raises(ValueError) as error_info:
+        _resolve(
+            {"mode": "unknown"},
+            samples,
+            sumw2_storage_present=True,
+        )
+    message = str(error_info.value)
+    for mode in (
+        "production",
+        "production_central",
+        "taufitter",
+        "full_diagnostics",
+        "disabled",
+        "full_custom",
+    ):
+        assert mode in message
+
+
+def test_two_production_modes_share_ordinary_allocation(samples):
+    rule = [{"process_prefixes": ["back"], "variables": ["njets"]}]
+    private = _resolve(
+        {"mode": "production", "rules": rule},
+        samples,
+        sumw2_storage_present=True,
+    )
+    central = _resolve(
+        {"mode": "production_central", "rules": rule},
+        samples,
+        sumw2_storage_present=True,
+    )
+    assert private.resolved_targets == central.resolved_targets
+    assert private.signal_sample_profile == "private"
+    assert central.signal_sample_profile == "central"

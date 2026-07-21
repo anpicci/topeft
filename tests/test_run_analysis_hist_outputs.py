@@ -103,6 +103,26 @@ def _write_data_driven_sample_jsons(tmp_path):
     return [str(data_path), str(prompt_path)]
 
 
+def _write_signal_variant_jsons(tmp_path, processes):
+    with open(_SAMPLE_JSON) as stream:
+        template = json.load(stream)
+    paths = []
+    for index, process in enumerate(processes):
+        payload = dict(template)
+        payload.update(
+            {
+                "histAxisName": process,
+                "isData": False,
+                "WCnames": ["ctW"] if "private" in process else [],
+                "year": "2022",
+            }
+        )
+        path = tmp_path / f"signal_{index}.json"
+        path.write_text(json.dumps(payload), encoding="utf-8")
+        paths.append(str(path))
+    return paths
+
+
 def _full_diagnostics_options(tmp_path):
     path = tmp_path / "full_diagnostics.yml"
     path.write_text("sumw2_storage:\n  mode: full_diagnostics\n", encoding="utf-8")
@@ -228,6 +248,9 @@ def test_hist_list_cr_includes_sumw2(monkeypatch, tmp_path):
     assert list(sidecar["sumw2_content_manifest"]["families"]) == sidecar[
         "sumw2_storage_provenance"
     ]["runtime_histogram_families"]
+    assert sidecar["sumw2_storage_provenance"]["resolved_mode"] == "full_diagnostics"
+    assert sidecar["sumw2_storage_provenance"]["signal_sample_profile"] == "unrestricted"
+    assert sidecar["production_sample_contract"]["compatibility_validated"] is True
 
 
 def test_hist_list_cr_respects_no_sumw2(monkeypatch, tmp_path):
@@ -356,11 +379,83 @@ data_driven_products:
             "--skip-topcoffea-data-check",
         ]
         with mock.patch.object(sys, "argv", argv):
-            with pytest.raises(
-                data_driven_product_error,
-                match="requested data-driven product.*missing_contributors=.*Correct one of",
-            ):
+            with pytest.raises(SystemExit) as error_info:
                 runpy.run_path(str(_SCRIPT_PATH), run_name="__main__")
+            assert "SUMW2-PROFILE-E005" in str(error_info.value)
+            assert "affected_data_driven_product='nonprompt'" in str(
+                error_info.value
+            )
+            assert "Recommended correction" in str(error_info.value)
+    finally:
+        sys.path = original_sys_path
+
+    assert processor_calls == []
+
+
+@pytest.mark.parametrize(
+    "mode,processes,error_id",
+    [
+        ("production", ["tZq_central2022"], "SUMW2-PROFILE-E001"),
+        ("production_central", ["tllq_private2022"], "SUMW2-PROFILE-E002"),
+        (
+            "full_diagnostics",
+            ["tllq_private2022", "tZq_central2022"],
+            "SUMW2-PROFILE-E003",
+        ),
+    ],
+)
+def test_cfg_mode_profile_mismatch_fails_before_processor_construction(
+    monkeypatch,
+    tmp_path,
+    mode,
+    processes,
+    error_id,
+):
+    sample_paths = _write_signal_variant_jsons(tmp_path, processes)
+    options_path = tmp_path / f"{mode}.yml"
+    if mode == "full_diagnostics":
+        storage = "sumw2_storage:\n  mode: full_diagnostics\n"
+    else:
+        storage = (
+            f"sumw2_storage:\n  mode: {mode}\n  rules:\n"
+            f"    - process_names: [{processes[0]}]\n      variables: [met]\n"
+        )
+    options_path.write_text(storage, encoding="utf-8")
+    processor_calls = []
+
+    def forbidden_processor(*args, **kwargs):
+        processor_calls.append((args, kwargs))
+        raise AssertionError("processor construction must not begin")
+
+    original_sys_path = list(sys.path)
+    sys.path.insert(0, str(_SCRIPT_PATH.parent))
+    try:
+        processor_module = importlib.import_module("analysis_processor")
+        monkeypatch.setattr(
+            processor_module,
+            "AnalysisProcessor",
+            forbidden_processor,
+        )
+        argv = [
+            "run_analysis.py",
+            ",".join(sample_paths),
+            "--executor",
+            "futures",
+            "--hist-list",
+            "met",
+            "--options",
+            str(options_path),
+            "--skip-topcoffea-data-check",
+            "--sample-universe-wrapper",
+            "synthetic-profile-test",
+        ]
+        with mock.patch.object(sys, "argv", argv):
+            with pytest.raises(SystemExit) as error_info:
+                runpy.run_path(str(_SCRIPT_PATH), run_name="__main__")
+            message = str(error_info.value)
+            assert error_id in message
+            assert "wrapper='synthetic-profile-test'" in message
+            assert "Recommended correction" in message
     finally:
         sys.path = original_sys_path
 

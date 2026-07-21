@@ -32,6 +32,10 @@ from topeft.modules.nominal_schema import (
     validate_nominal_mapping,
 )
 from topeft.modules.sumw2_policy import resolved_policy_from_provenance
+from topeft.modules.sumw2_policy import SUMW2_PROVENANCE_SCHEMA_VERSION
+from topeft.modules.production_sample_profile import (
+    validate_production_sample_contract,
+)
 
 
 METADATA_SCHEMA_VERSION = 2
@@ -220,6 +224,7 @@ def _build_sidecar_payload(
     transformation_contract: Mapping[str, Any] | None,
     requested_data_driven_products: Mapping[str, Any] | None,
     resolved_data_driven_contract: Mapping[str, Any] | None,
+    production_sample_contract: Mapping[str, Any] | None,
 ) -> dict[str, Any]:
     identity = _file_identity(identity_path, pkl_basename=pkl_path.name)
     if artifact_kind == "processor_output":
@@ -277,6 +282,28 @@ def _build_sidecar_payload(
         ),
         "lineage": {"inputs": _normalize_lineage_inputs(lineage_inputs)},
     }
+    policy = resolved_policy_from_provenance(sumw2_storage_provenance)
+    if policy.schema_version == SUMW2_PROVENANCE_SCHEMA_VERSION:
+        if production_sample_contract is None:
+            raise histogram_sidecar_error(
+                "Current sumw2 provenance requires a certified "
+                "production_sample_contract."
+            )
+        try:
+            validate_production_sample_contract(
+                production_sample_contract,
+                policy,
+            )
+        except ValueError as error:
+            raise histogram_sidecar_error(str(error)) from error
+        payload["production_sample_contract"] = copy.deepcopy(
+            dict(production_sample_contract)
+        )
+    elif production_sample_contract is not None:
+        raise histogram_sidecar_error(
+            "Legacy sumw2 provenance cannot be upgraded by attaching a current "
+            "production_sample_contract; regenerate the processor artifact."
+        )
     if (requested_data_driven_products is None) != (
         resolved_data_driven_contract is None
     ):
@@ -817,7 +844,27 @@ def _validate_sidecar_structure(
     if artifact["nominal_container_layout"] != NOMINAL_CONTAINER_LAYOUT:
         raise histogram_sidecar_error("Artifact nominal container layout is incompatible.")
 
+    policy = resolved_policy_from_provenance(sidecar["sumw2_storage_provenance"])
     expected_sidecar_fields = set(common_fields)
+    has_production_contract = "production_sample_contract" in sidecar
+    if policy.schema_version == SUMW2_PROVENANCE_SCHEMA_VERSION:
+        if not has_production_contract:
+            raise histogram_sidecar_error(
+                "Current sumw2 provenance requires production_sample_contract "
+                "certification. Regenerate this artifact with run_analysis."
+            )
+        expected_sidecar_fields.add("production_sample_contract")
+        try:
+            validate_production_sample_contract(
+                sidecar["production_sample_contract"],
+                policy,
+            )
+        except ValueError as error:
+            raise histogram_sidecar_error(str(error)) from error
+    elif has_production_contract:
+        raise histogram_sidecar_error(
+            "Legacy sumw2 provenance cannot contain a current production sample contract."
+        )
     has_requested_products = "requested_data_driven_products" in sidecar
     has_resolved_contract = "resolved_data_driven_contract" in sidecar
     if has_requested_products != has_resolved_contract:
@@ -859,7 +906,6 @@ def _validate_sidecar_structure(
         label="histogram sidecar",
     )
 
-    policy = resolved_policy_from_provenance(sidecar["sumw2_storage_provenance"])
     if has_requested_products:
         try:
             validate_serialized_data_driven_contract(
@@ -1104,6 +1150,8 @@ def validate_processor_output(
                 "products"
             ]
             if (
+                policy.schema_version == SUMW2_PROVENANCE_SCHEMA_VERSION
+                and
                 sidecar["resolved_data_driven_contract"]["contract_version"]
                 == RESOLVED_DATA_DRIVEN_CONTRACT_VERSION
             ):
@@ -1342,6 +1390,24 @@ def merge_histogram_sidecars(
             raise histogram_merge_error(
                 "Maintained histogram merging requires identical source-allocation provenance."
             )
+    production_sample_contract = copy.deepcopy(
+        sidecars[0].get("production_sample_contract")
+    )
+    production_contract_identity = json.dumps(
+        production_sample_contract,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    for sidecar in sidecars[1:]:
+        if json.dumps(
+            sidecar.get("production_sample_contract"),
+            sort_keys=True,
+            separators=(",", ":"),
+        ) != production_contract_identity:
+            raise histogram_merge_error(
+                "Maintained histogram merging requires identical production "
+                "sample profile contracts."
+            )
     data_driven_presence = {
         "requested_data_driven_products" in sidecar for sidecar in sidecars
     }
@@ -1455,6 +1521,7 @@ def merge_histogram_sidecars(
         "artifact_kind": kind,
         "merged": True,
         "sumw2_storage_provenance": provenance,
+        "production_sample_contract": production_sample_contract,
         "required_sumw2_processes": required,
         "transformation_contract": merged_contract,
         "requested_data_driven_products": requested_data_driven_products,
@@ -1484,6 +1551,7 @@ def write_histogram_sidecar(
     transformation_contract: Mapping[str, Any] | None = None,
     requested_data_driven_products: Mapping[str, Any] | None = None,
     resolved_data_driven_contract: Mapping[str, Any] | None = None,
+    production_sample_contract: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Write one automatic sidecar for an already finalized PKL."""
 
@@ -1553,6 +1621,14 @@ def write_histogram_sidecar(
             )
         requested_data_driven_products = input_requested
         resolved_data_driven_contract = input_contract
+        input_production_contract = input_sidecar.get("production_sample_contract")
+        if production_sample_contract is not None and dict(
+            production_sample_contract
+        ) != input_production_contract:
+            raise histogram_sidecar_error(
+                "Transformed output must preserve production_sample_contract unchanged."
+            )
+        production_sample_contract = input_production_contract
     payload = _build_sidecar_payload(
         pkl_path,
         histograms,
@@ -1565,6 +1641,7 @@ def write_histogram_sidecar(
         transformation_contract=transformation_contract,
         requested_data_driven_products=requested_data_driven_products,
         resolved_data_driven_contract=resolved_data_driven_contract,
+        production_sample_contract=production_sample_contract,
     )
     _validate_sidecar_structure(payload, pkl_path=pkl_path)
     temporary_path = metadata_sidecar_path(pkl_path).with_name(
@@ -1598,6 +1675,7 @@ def write_histogram_artifact(
     transformation_contract: Mapping[str, Any] | None = None,
     requested_data_driven_products: Mapping[str, Any] | None = None,
     resolved_data_driven_contract: Mapping[str, Any] | None = None,
+    production_sample_contract: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Stage, validate, and publish a PKL/sidecar pair as one logical output."""
 
@@ -1698,6 +1776,16 @@ def write_histogram_artifact(
                 )
             requested_data_driven_products = input_requested
             resolved_data_driven_contract = input_contract
+            input_production_contract = input_sidecar.get(
+                "production_sample_contract"
+            )
+            if production_sample_contract is not None and dict(
+                production_sample_contract
+            ) != input_production_contract:
+                raise histogram_sidecar_error(
+                    "Transformed output must preserve production_sample_contract unchanged."
+                )
+            production_sample_contract = input_production_contract
         sidecar = _build_sidecar_payload(
             pkl_path,
             manifest_histograms,
@@ -1710,6 +1798,7 @@ def write_histogram_artifact(
             transformation_contract=transformation_contract,
             requested_data_driven_products=requested_data_driven_products,
             resolved_data_driven_contract=resolved_data_driven_contract,
+            production_sample_contract=production_sample_contract,
         )
         _validate_sidecar_structure(sidecar, pkl_path=pkl_path)
         _validate_content_manifest(pkl_path, manifest_histograms, sidecar)
