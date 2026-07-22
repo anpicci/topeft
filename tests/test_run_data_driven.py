@@ -154,43 +154,30 @@ def test_run_data_driven_from_pkl_paths(tmp_path, monkeypatch):
     assert list(result["njets"].axes["process"]) == ["flipsUL17"]
 
 
-def test_run_data_driven_only_flips_and_envelope(tmp_path, monkeypatch):
+def test_run_data_driven_rejects_deprecated_envelope_before_input_validation(tmp_path, monkeypatch):
     input_path = tmp_path / "input.pkl.gz"
     _write_histograms(input_path, {"seed": FakeHist(["dataUL18"])})
     output_path = tmp_path / "output.pkl.gz"
 
-    DummyProducer.output_hist = {
-        "njets": FakeHist(["flipsUL18", "nonpromptUL18", "ttbarUL18"])
-    }
-    monkeypatch.setattr(run_data_driven, "DataDrivenProducer", DummyProducer)
+    def fail_if_validated(_path):
+        raise AssertionError("input validation must not run")
 
-    envelope_calls = {}
+    monkeypatch.setattr(run_data_driven, "_validate_input_path", fail_if_validated)
 
-    def fake_envelope(histo, **_kwargs):
-        envelope_calls["value"] = histo
-        return histo
+    with pytest.raises(RuntimeError, match="combined renorm/fact envelope"):
+        run_data_driven.main(
+            [
+                "--input-pkl",
+                str(input_path),
+                "--output-pkl",
+                str(output_path),
+                "--only-flips",
+                "--apply-renormfact-envelope",
+            ]
+        )
 
-    monkeypatch.setattr(
-        run_data_driven, "apply_renormfact_envelope_to_histogram", fake_envelope
-    )
-
-    run_data_driven.main(
-        [
-            "--input-pkl",
-            str(input_path),
-            "--output-pkl",
-            str(output_path),
-            "--only-flips",
-            "--apply-renormfact-envelope",
-        ]
-    )
-
-    assert "value" in envelope_calls
-    assert DummyProducer.calls == [(str(input_path), str(output_path), True)]
-    assert DummyProducer.iter_calls == 1
-    assert DummyProducer.get_calls == 0
-    result = _load_pkl(output_path)
-    assert list(result["njets"].axes["process"]) == ["flipsUL18"]
+    assert not output_path.exists()
+    assert DummyProducer.calls == []
 
 
 def test_run_data_driven_rejects_manual_metadata_sidecar_option():
@@ -631,7 +618,7 @@ def test_run_data_driven_dd_report_is_emitted_before_only_flips(tmp_path, capsys
     assert list(result["met"].axes["process"]) == ["flipsUL18"]
 
 
-def test_run_data_driven_dd_report_is_emitted_before_renormfact_envelope(tmp_path, capsys):
+def test_run_data_driven_dd_report_with_deprecated_envelope_fails_before_output(tmp_path, capsys):
     histogram = _fill_data_driven_histogram(
         [
             {
@@ -649,18 +636,15 @@ def test_run_data_driven_dd_report_is_emitted_before_renormfact_envelope(tmp_pat
         ]
     )
 
-    _run_with_dd_report(
-        tmp_path,
-        {"met": histogram},
-        "--legacy-dict-mode",
-        "--apply-renormfact-envelope",
-        "--mem-report",
-    )
-
-    captured = capsys.readouterr().out
-    assert captured.index("[dd-report] hist=met channel=3l") < captured.index(
-        "before get_renormfact_envelope()"
-    )
+    with pytest.raises(RuntimeError, match="combined renorm/fact envelope"):
+        _run_with_dd_report(
+            tmp_path,
+            {"met": histogram},
+            "--legacy-dict-mode",
+            "--apply-renormfact-envelope",
+            "--mem-report",
+        )
+    assert "[dd-report]" not in capsys.readouterr().out
 
 
 def test_run_data_driven_dd_report_markdown_works_with_pkl_paths(tmp_path):

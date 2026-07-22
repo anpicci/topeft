@@ -46,6 +46,20 @@ def _build_hist_dict(axes):
         {"process": "dataUL16", "appl": "isAR_2lSS_OS", "weight": 4.0},
         {"process": "TTTo2L2Nu_centralUL16", "appl": "isSR_3l", "weight": 1.0},
     ]
+    for systematic, factor in (
+        ("renormUp", 1.1),
+        ("renormDown", 0.9),
+        ("factUp", 1.2),
+        ("factDown", 0.8),
+    ):
+        entries.append(
+            {
+                "process": "TTTo2L2Nu_centralUL16",
+                "appl": "isAR_3l",
+                "systematic": systematic,
+                "weight": 3.0 * factor,
+            }
+        )
     main_hist = _fill_histogram(entries, axes)
 
     sumw2_entries = [dict(entry, weight=entry["weight"] ** 2) for entry in entries]
@@ -104,11 +118,18 @@ def test_run_data_driven_matches_inline_output(tmp_path, sparse_hist_axes):
     assert set(streamed_histograms) == set(expected_histograms)
     for key, expected_hist in expected_histograms.items():
         streamed_hist = streamed_histograms[key]
-        np.testing.assert_allclose(
-            np.asarray(streamed_hist.values(flow=True)),
-            np.asarray(expected_hist.values(flow=True)),
-        )
+        expected_view = expected_hist.view(flow=True, as_dict=True)
+        streamed_view = streamed_hist.view(flow=True, as_dict=True)
+        assert set(streamed_view) == set(expected_view)
+        for sparse_key, expected_payload in expected_view.items():
+            np.testing.assert_allclose(
+                np.asarray(streamed_view[sparse_key]),
+                np.asarray(expected_payload),
+            )
         assert list(streamed_hist.axes["process"]) == list(expected_hist.axes["process"])
+        assert {"renormUp", "renormDown", "factUp", "factDown"}.issubset(
+            set(streamed_hist.axes["systematic"])
+        )
 
 
 def _split_axes(dense_name):

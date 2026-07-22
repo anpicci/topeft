@@ -661,7 +661,7 @@ def test_np_postprocess_defer_prints_pkl_only_followup(tmp_path, capsys):
     assert "metadata-json" not in output
 
 
-def test_np_postprocess_defer_records_envelope_in_followup_command(tmp_path, capsys):
+def test_np_postprocess_defer_rejects_deprecated_envelope_before_work(tmp_path, capsys):
     output_dir = tmp_path / "np-defer-envelope"
     output_dir.mkdir()
     outname = "np-defer-envelope"
@@ -687,14 +687,14 @@ def test_np_postprocess_defer_records_envelope_in_followup_command(tmp_path, cap
     sys.path.insert(0, str(_SCRIPT_PATH.parent))
     try:
         with mock.patch.object(sys, "argv", argv):
-            with pytest.raises(SystemExit):
+            with pytest.raises(RuntimeError, match="combined renorm/fact envelope"):
                 runpy.run_path(str(_SCRIPT_PATH), run_name="__main__")
     finally:
         sys.path = original_sys_path
 
-    output = capsys.readouterr().out
-    assert "--apply-renormfact-envelope" in output
+    assert "run_data_driven.py" not in capsys.readouterr().out
     assert not (output_dir / f"{outname}_np.pkl.gz.metadata.json").exists()
+    assert not (output_dir / f"{outname}.pkl.gz").exists()
 
 
 def test_missing_topcoffea_data_reports_guidance(monkeypatch):

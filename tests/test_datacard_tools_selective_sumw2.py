@@ -36,11 +36,11 @@ def _axes(dense_name):
     )
 
 
-def _fill_scalar(histogram, process, dense_name, weight):
+def _fill_scalar(histogram, process, dense_name, weight, systematic="nominal"):
     histogram.fill(
         process=process,
         channel=_CHANNEL,
-        systematic="nominal",
+        systematic=systematic,
         **{dense_name: np.asarray([0.5])},
         weight=np.asarray([weight]),
     )
@@ -214,6 +214,52 @@ def test_selective_companion_terminal_writes_root_and_txt_without_synthetic_vari
     )
     rates = _txt_rates(txt_path)
     assert rates == pytest.approx(expected_integrals)
+
+
+def test_datacard_emits_independent_renorm_and_fact_shapes(tmp_path):
+    histogram = HistEFT(*_axes("njets"), wc_names=[], label="Events")
+    for systematic, weight in (
+        ("nominal", 10.0),
+        ("renormUp", 11.0),
+        ("renormDown", 9.0),
+        ("factUp", 12.0),
+        ("factDown", 8.0),
+    ):
+        _fill_scalar(
+            histogram,
+            "ttH_centralUL18",
+            "njets",
+            weight,
+            systematic=systematic,
+        )
+
+    maker = DatacardMaker(
+        hists={"njets": histogram},
+        out_dir=str(tmp_path),
+        var_lst=["njets"],
+        do_nuisance=True,
+        skip_missing_parton_rate_syst=True,
+        verbose=False,
+    )
+    maker.analyze("njets", _CHANNEL, {"ttH": []}, True, {})
+
+    root_path = tmp_path / "ttx_multileptons-3l_onZ_1b_njets.root"
+    txt_path = tmp_path / "ttx_multileptons-3l_onZ_1b_njets.txt"
+    with uproot.open(root_path) as root_file:
+        object_names = {key.split(";", 1)[0] for key in root_file.keys()}
+    for template_name in (
+        "ttH_sm_renorm_ttHUp",
+        "ttH_sm_renorm_ttHDown",
+        "ttH_sm_fact_ttHUp",
+        "ttH_sm_fact_ttHDown",
+    ):
+        assert template_name in object_names
+    assert not any("renormfact" in name for name in object_names)
+
+    card_text = txt_path.read_text(encoding="utf-8")
+    assert "renorm" in card_text
+    assert "fact" in card_text
+    assert "renormfact" not in card_text
 
 
 @pytest.mark.parametrize(

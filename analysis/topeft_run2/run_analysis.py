@@ -46,7 +46,7 @@ from topeft.modules.production_sample_profile import (
     production_sample_profile_error,
     validate_active_sample_profile,
 )
-from topeft.modules.get_renormfact_envelope import get_renormfact_envelope
+from topeft.modules.get_renormfact_envelope import raise_unsupported_renormfact_envelope
 from topeft.modules.ttgamma_photon_history import (
     SPLIT_SAMPLE_ROLE_POLICY,
     SUPPORTED_SAMPLE_ROLE_POLICIES,
@@ -826,16 +826,15 @@ if __name__ == "__main__":
         default="inline",
         help=(
             "Control when the nonprompt post-processing step runs. "
-            "Use 'inline' (default) to run immediately, 'defer' to emit metadata "
-            "for a follow-up job, or 'skip' to omit the step entirely."
+            "Use 'inline' (default) to run immediately, 'defer' to print a direct "
+            "follow-up command, or 'skip' to omit the step entirely."
         ),
     )
     parser.add_argument(
         "--do-renormfact-envelope",
         action="store_true",
         help=(
-            "Perform renorm/fact envelope calculation on the output hist "
-            "(saves the modified with the same name as the original)."
+            "Deprecated unsupported option. It exits before any analysis work."
         ),
     )
     parser.add_argument(
@@ -953,6 +952,8 @@ if __name__ == "__main__":
     parser.set_defaults(use_remote_env=True)
 
     args = parser.parse_args()
+    if args.do_renormfact_envelope:
+        raise_unsupported_renormfact_envelope()
     if args.debug_year_scan:
         _debug_year_scan_selfcheck()
         raise SystemExit(0)
@@ -1077,6 +1078,9 @@ if __name__ == "__main__":
         use_remote_env = ops.pop("use_remote_env", use_remote_env)
         skip_topcoffea_data_check = ops.pop("skip_topcoffea_data_check", skip_topcoffea_data_check)
 
+    if do_renormfact_envelope:
+        raise_unsupported_renormfact_envelope()
+
     try:
         validated_mode_flags = analysis_processor.validate_analysis_mode_flags(
             offZ_split,
@@ -1107,19 +1111,6 @@ if __name__ == "__main__":
         raise Exception(
             f'The "{executor_name}" executor is not known. Please specify an executor from the known executors ({LST_OF_KNOWN_EXECUTORS}). Exiting.'
         )
-    if do_renormfact_envelope:
-        if not do_systs:
-            raise Exception(
-                "Error: Cannot specify do_renormfact_envelope if we are not including systematics."
-            )
-        if not do_np:
-            raise Exception(
-                "Error: Cannot specify do_renormfact_envelope if we have not already done the integration across the appl axis that occurs in the data driven estimator step."
-            )
-        if np_postprocess_mode == "skip":
-            raise Exception(
-                "Error: Renorm/fact envelope cannot be requested when --np-postprocess=skip."
-            )
     if dotest:
         if executor_name == "futures":
             nchunks = 2
@@ -1709,8 +1700,6 @@ if __name__ == "__main__":
             "--output-pkl",
             out_pkl_file_name_np,
         ]
-        if do_renormfact_envelope:
-            command.append("--apply-renormfact-envelope")
         if inline_artifact_kind == "flips_output":
             command.append("--only-flips")
         return shlex.join(command)
@@ -1989,11 +1978,6 @@ if __name__ == "__main__":
                     artifact_kind=inline_artifact_kind,
                 )
                 data_driven_histograms = ddp.getDataDrivenHistogram()
-                if do_renormfact_envelope:
-                    print("\nDoing the renorm. fact. envelope calculation...")
-                    data_driven_histograms = get_renormfact_envelope(
-                        data_driven_histograms
-                    )
                 print(f"Saving output in {out_pkl_file_name_np}...")
                 write_histogram_artifact(
                     out_pkl_file_name_np,

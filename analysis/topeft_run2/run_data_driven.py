@@ -3,7 +3,7 @@
 
 Quickstart examples:
   - Direct pickle paths: python run_data_driven.py --input-pkl histos/plotsTopEFT.pkl.gz \
-      --output-pkl histos/plotsTopEFT_np.pkl.gz --apply-renormfact-envelope
+      --output-pkl histos/plotsTopEFT_np.pkl.gz
   - Legacy/materialized fallback: add --legacy-dict-mode to restore the
       original fully materialized dict workflow.
 
@@ -37,10 +37,7 @@ from topeft.modules.histogram_artifact import (
     write_histogram_artifact,
 )
 from topeft.modules.nominal_schema import EFT_NOMINAL_SUFFIX
-from topeft.modules.get_renormfact_envelope import (
-    apply_renormfact_envelope_to_histogram,
-    get_renormfact_envelope,
-)
+from topeft.modules.get_renormfact_envelope import raise_unsupported_renormfact_envelope
 from topeft.modules.sumw2_policy import resolved_policy_from_provenance
 
 _STREAMING_PICKLE_PROTOCOL = 3
@@ -52,11 +49,11 @@ _DD_REPORT_FAMILY_ORDER = {"sr": 0, "nonprompt": 1, "flips": 2}
 def _build_argument_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "Finalize nonprompt/flips histograms from a processor PKL. Its metadata "
+            "Finalize nonprompt/flips histograms from a processor PKL. Its artifact "
             "sidecar is discovered automatically.\n\n"
             "Quickstart:\n"
             "  python run_data_driven.py --input-pkl histos/plotsTopEFT.pkl.gz\\\n"
-            "      --output-pkl histos/plotsTopEFT_np.pkl.gz --apply-renormfact-envelope\n"
+            "      --output-pkl histos/plotsTopEFT_np.pkl.gz\n"
             "Default mode is streaming iterator mode (lower peak RSS). "
             "Pass --legacy-dict-mode to restore the original materialized-dict behavior.\n"
             f"Streaming serialization defaults are hardcoded to protocol={_STREAMING_PICKLE_PROTOCOL} "
@@ -77,8 +74,7 @@ def _build_argument_parser() -> argparse.ArgumentParser:
         "--apply-renormfact-envelope",
         action="store_true",
         help=(
-            "Also run the renorm/fact envelope step on the output histogram. "
-            "Metadata-driven runs also honor the contract-recorded envelope setting automatically."
+            "Deprecated unsupported option. It exits before opening the input or creating output."
         ),
     )
     parser.add_argument(
@@ -351,9 +347,7 @@ def _maybe_emit_heartbeat(
 
 
 def _envelope_single_histogram(key: str, histo: Any) -> Any:
-    return apply_renormfact_envelope_to_histogram(
-        histo, verbose=False, hist_name=key
-    )
+    raise_unsupported_renormfact_envelope()
 
 
 def _dd_channel_label(channel_name: Optional[str]) -> str:
@@ -657,6 +651,8 @@ def _finalize_histograms(
     serialization_path: Optional[str] = None,
     input_sidecar: Optional[Dict[str, Any]] = None,
 ) -> Optional[Dict[str, Any]]:
+    if apply_envelope:
+        raise_unsupported_renormfact_envelope()
     serialization_path = serialization_path or output_pkl
     collect_dd_report = dd_report_stdout or bool(dd_report_md)
     memory_reporter = _MemoryReporter(
@@ -712,12 +708,6 @@ def _finalize_histograms(
         processed = 0
 
         if iterator_mode:
-            if apply_envelope:
-                memory_reporter.mark(
-                    "iterator mode: envelope is applied per histogram",
-                    include_top=mem_tracemalloc,
-                )
-
             def _iter_output_items():
                 nonlocal processed, last_heartbeat
                 for key, histo in ddp.iter_data_driven_histograms():
@@ -754,9 +744,6 @@ def _finalize_histograms(
                         ) if certified_flips_outputs is not None else _filter_to_flips(histo)
                     else:
                         working_histo = histo
-                    if apply_envelope:
-                        working_histo = _envelope_single_histogram(key, working_histo)
-
                     if emitted_heartbeat:
                         memory_reporter.mark(f"processed {processed} histograms")
 
@@ -826,11 +813,6 @@ def _finalize_histograms(
                 del filtered
                 memory_reporter.mark("after only-flips replacement")
 
-            if apply_envelope:
-                memory_reporter.mark("before get_renormfact_envelope()", include_top=mem_tracemalloc)
-                histograms = get_renormfact_envelope(histograms, verbose=False)
-                memory_reporter.mark("after get_renormfact_envelope()", include_top=mem_tracemalloc)
-
             memory_reporter.mark("before dump_to_pkl()", include_top=mem_tracemalloc)
             utils.dump_to_pkl(serialization_path, histograms)
             memory_reporter.mark("after dump_to_pkl()")
@@ -857,6 +839,8 @@ def _finalize_histograms(
 def main(argv: Optional[List[str]] = None) -> int:
     parser = _build_argument_parser()
     args = parser.parse_args(argv)
+    if args.apply_renormfact_envelope:
+        raise_unsupported_renormfact_envelope()
     dd_report_stdout = args.dd_report
     dd_report_md = args.dd_report_md
 
