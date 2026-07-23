@@ -1,11 +1,22 @@
 ##############################################################
-# Script for creating the fake tau scale factors
-# To use, run command python tauFitter.py -f /path/to/pkl/file
-# pkl file should have CRs listed below and have all other
-# corrections aside from fake tau SFs
-# output is in the form of linear fit y = mx+b
-# where m and b are in numerical form, y is the SF, and x is the tau pt
-# pt bins are from [20, 30], [30, 40], [40, 50], [50, 60], [60, 80], [80, 100], [100, 200]
+# Deprecated legacy fake-tau scale-factor implementation.
+# Use faketau_sf_fitter.py for maintained fake-tau scale-factor extraction.
+
+import sys
+
+
+tau_fitter_deprecation_message = (
+    "tauFitter.py is deprecated; use faketau_sf_fitter.py for maintained "
+    "fake-tau scale-factor extraction. No fit or output was produced."
+)
+
+
+def _abort_deprecated_direct_execution():
+    raise SystemExit(tau_fitter_deprecation_message)
+
+
+if __name__ == "__main__":
+    _abort_deprecated_direct_execution()
 
 import numpy as np
 import os
@@ -18,7 +29,6 @@ from cycler import cycler
 #from coffea import hist
 import hist
 
-import sys
 import re
 import numpy as np
 import matplotlib
@@ -501,6 +511,3 @@ def main():
         print(p, " SF= ", c1*(p)+c0)
         print(p, " SFup = ", (1 + lv0)*c0 + (1 + lv1)*c1*p)
         print(p, " SFdown = ", (1 - lv0)*c0 + (1 - lv1)*c1*p)
-
-if __name__ == "__main__":
-    main()

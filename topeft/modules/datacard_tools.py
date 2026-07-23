@@ -366,7 +366,9 @@ def load_and_merge_histogram_pkls(
                 report["process_collisions"].append(collision)
                 message = (
                     f"Process-label overlap detected while merging key '{key}' from "
-                    f"'{path}': {len(overlap)} overlapping labels."
+                    f"'{path}': {len(overlap)} overlapping labels. "
+                    "Use --on-process-collision allow to merge intentional overlaps, "
+                    "or --merge-only --on-process-collision warn to inspect them."
                 )
                 if on_process_collision == "error":
                     raise RuntimeError(message)
@@ -450,7 +452,9 @@ def load_and_merge_histogram_pkls(
                     report["process_collisions"].append(collision)
                     message = (
                         f"Process-label overlap detected while merging key '{key}' from "
-                        f"'{path}': {len(overlap)} overlapping labels."
+                        f"'{path}': {len(overlap)} overlapping labels. "
+                        "Use --on-process-collision allow to merge intentional overlaps, "
+                        "or --merge-only --on-process-collision warn to inspect them."
                     )
                     if on_process_collision == "error":
                         raise RuntimeError(message)
