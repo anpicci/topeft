@@ -68,6 +68,74 @@ For fake-tau SF extraction, including `tau0Fpt`/`tau0Tpt` input requirements and
 the split-first/aggregate-fallback channel contract, see
 [`README_faketau_sf_fitter.md`](README_faketau_sf_fitter.md).
 
+### Selective sumw2 storage workflow
+
+`sumw2_storage` selects statistical second-moment companions; it does not
+change nominal histogram content. See the
+[artifact tutorial](../../docs/histeft_pkl_tutorial.md) for the pkl layout and
+the [API contract](../../docs/histeft_api_contract.md) for exact semantics.
+
+| Mode | Intended use | Rule boundary |
+| --- | --- | --- |
+| `production` | Maintained private-signal production; the default when `sumw2_storage` is absent. | Explicit use needs nonempty rules; implicit default requirements come from active consumers. |
+| `production_central` | Maintained central-signal production. | Nonempty rules and the matching central-signal configuration. |
+| `taufitter` | Fake-tau input production. | Nonempty rules and `analysis_mode=taufitter` are required together. |
+| `full_diagnostics` | Diagnostics needing every runtime companion. | Rules are forbidden. |
+| `disabled` | A workflow with no supported companions. | Rules are forbidden. |
+| `full_custom` | An operator-owned nonstandard workflow. | Nonempty rules; select every companion required by intended consumers. |
+
+Rules use `dataset_names`, `dataset_prefixes`, `process_names`,
+`process_prefixes`, and optional `variables` to select concrete
+dataset/process/family targets. Duplicate, overlapping, and zero-match rules
+are errors. `production` and `production_central` certify different
+private/central signal profiles, so changing only the sample configuration or
+only the mode is invalid.
+
+```yaml
+# Explicit maintained production policy
+sumw2_storage:
+  mode: production
+  rules:
+    - process_prefixes: [data, TTTo]
+      variables: [njets]
+```
+
+```yaml
+# A custom study owns every required consumer companion
+sumw2_storage:
+  mode: full_custom
+  rules:
+    - dataset_prefixes: [my_study_]
+      variables: [njets, tau0Fpt, tau0Tpt]
+```
+
+The legacy CLI flag `--no-sumw2` and YAML `no_sumw2`/`do_errors` settings are
+migration-only interfaces. Explicit legacy true maps to `disabled`; explicit
+legacy false maps to `full_diagnostics`; mixing a legacy setting with
+`sumw2_storage` is rejected. New configurations should use
+`sumw2_storage` directly.
+
+Data-driven nonprompt and charge-flip products need their selected scalar
+companions. In particular, nonprompt construction rejects schema-v2 input that
+lacks a companion for a scalar 1D sibling or selected 2D family; it does not
+reconstruct statistics from nominal yields. The maintained renorm/fact contract
+keeps `renormUp`, `renormDown`, `factUp`, and `factDown` as two separate
+`renorm` and `fact` shape nuisances. The historical combined envelope is
+unsupported.
+
+| Symptom | Check and recovery |
+| --- | --- |
+| Missing companion | Inspect the artifact layout, then add the active consumer's required rule; do not infer a variance from nominal content. |
+| Invalid mode or rules | Check the matching signal profile, selector spelling, and nonempty/forbidden-rule boundary above. |
+| Legacy-flag error | Remove `--no-sumw2`, `no_sumw2`, or `do_errors` and use `sumw2_storage`. |
+| Collision diagnostic while combining pkls | Resolve the duplicate source/process input using the consumer report; see the [API contract](../../docs/histeft_api_contract.md#merge-and-collision-boundaries). |
+| Expected Poisson fallback | It is unsupported for the maintained fake-tau fitter; use the [fitter guide](README_faketau_sf_fitter.md). |
+
+Related guides: [tutorial](../../docs/histeft_pkl_tutorial.md),
+[API contract](../../docs/histeft_api_contract.md), [fake-tau fitter](README_faketau_sf_fitter.md),
+[diboson](../diboson_njets/README.md), and
+[missing parton](../../docs/missing_parton_uncertainties.md).
+
 * `run_topeft.py` for `topeft.py`:
     - This is the run script for the main `topeft.py` processor. Its usage is documented on the repository's main README. It uses either the `work_queue` or the `futures` executors (with `futures` it uses 8 cores by default). The `work_queue` executor makes use of remote resources, and you will need to submit workers using a `condor_submit_workers` command as explained on the main `topcoffea` README. You can configure the run with a number of command line arguments, but the most important one is the config file, where you list the samples you would like to process (by pointing to the JSON files for each sample, located inside of `topcoffea/json`.
     - Example usage: `python run_topeft.py ../../topcoffea/cfg/your_cfg.cfg`

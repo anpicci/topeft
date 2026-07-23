@@ -135,9 +135,8 @@ Source:
 - `analysis/topeft_run2/analysis_processor.py:212-236`: declares the
   categorical axes `process`, `channel`, `systematic`, and `appl`, then builds
   histogram-variable names from `topeft/modules/axes.py`.
-- `analysis/topeft_run2/analysis_processor.py:245-292`: creates one
-  `HistEFT` per selected one-dimensional variable and a matching
-  `<name>_sumw2` histogram when sumw2 is enabled.
+- `analysis/topeft_run2/analysis_processor.py:393-431`: creates scalar and/or
+  EFT 1D siblings and policy-selected scalar `<name>_sumw2` companions.
 - `topeft/modules/axes.py:1-32`: examples of one-dimensional variable
   definitions such as `invmass`, `ptz`, and `njets`.
 - `topeft/modules/axes.py:230-260`: two-dimensional variable definitions use a
@@ -240,11 +239,11 @@ coefficients, according to `histEFT.py:214-224`.
 ### Nominal vs variation content
 
 Nominal and systematic variations are not separate top-level pkl files by
-default. They are labels on the `systematic` axis. Sumw2 content, when enabled,
-is stored as a separate top-level histogram key with a `_sumw2` suffix. The
-processor creates the companion histograms in
-`analysis_processor.py:245-292` and fills them in
-`analysis_processor.py:1913-1924`.
+default. They are labels on the `systematic` axis. In schema-v2, 1D nominal
+content is split into scalar/EFT sibling keys and any selected scalar second
+moment is a separate `_sumw2` key. The processor declares this layout in
+`analysis_processor.py:393-479` and fills selected companions in
+`analysis_processor.py:2107-2124`.
 
 ### Values and variances
 
@@ -255,9 +254,9 @@ script uses this pattern for HistEFT:
   call `hist_slice.eval({})` for `HistEFT` and use `.values(...)` for ordinary
   histograms.
 
-For sumw2, current analysis outputs use separate `_sumw2` HistEFT-like objects
+For sumw2, current analysis outputs use selected scalar `_sumw2` companions
 rather than relying only on regular weighted-hist variance storage. Plotting and
-datacard utilities therefore often require matching base and `_sumw2` keys.
+datacard utilities validate the applicable nominal/companion relationship.
 
 ### Serialization and pickle behavior
 
@@ -351,22 +350,21 @@ also applied to the EFT coefficient array:
 - `analysis/topeft_run2/analysis_processor.py:1866-1873`: applies any combined
   axis finite-value mask to the weights and `eft_coeffs_cut`.
 
-### Filling HistEFT
+### Filling schema-v2 nominal sources
 
-One-dimensional analysis histograms are instantiated as `HistEFT` with the
-processor WC list:
-
-- `analysis/topeft_run2/analysis_processor.py:245-292`: creates base and
-  `_sumw2` `HistEFT` objects and marks them as requiring EFT coefficients.
+One-dimensional analysis histograms are split by source type. Scalar content is
+filled into a `SparseHist` sibling and EFT content into a `HistEFT` sibling;
+the processor chooses the sibling from sample metadata. A selected `_sumw2`
+companion is always scalar.
 
 The fill call passes categorical labels, dense values, nominal or shifted event
 weights, and `eft_coeff`:
 
 - `analysis/topeft_run2/analysis_processor.py:1900-1911`: base histogram fill
   uses `weight=weights_flat` and `eft_coeff=eft_coeffs_cut`.
-- `analysis/topeft_run2/analysis_processor.py:1913-1924`: `_sumw2` companion
-  fills only for nominal systematics, uses `weight=np.square(weights_flat)`, and
-  passes the same `eft_coeffs_cut`.
+- `analysis/topeft_run2/analysis_processor.py:2107-2124`: a selected `_sumw2`
+  companion fills only for the nominal producer path. Its scalar weight squares
+  the complete WC=0 event contribution and has no `eft_coeff` payload.
 
 Inside `HistEFT.fill`, dense values and event weights are repeated once per
 quadratic term, the coefficient array is flattened, and the event weight is
@@ -395,11 +393,10 @@ process, and systematic selections. Unknown WC names raise a `LookupError` in
 `HistEFT._wc_for_eval`; source:
 `topcoffea/topcoffea/modules/histEFT.py:251-284`.
 
-The `_sumw2` companion histograms are filled with squared event weights and the
-same EFT coefficient arrays. They are a codebase convention for uncertainty
-handling. The plotter and datacard utilities expect base and `_sumw2` keys to
-remain compatible, so a future implementation must either preserve this
-convention or migrate the consumers at the same time:
+Selected `_sumw2` companions are scalar SM/WC=0 second moments. The plotter and
+datacard utilities validate the relevant nominal/companion relationship; a
+future implementation must preserve this contract or migrate consumers in the
+same reviewed change:
 
 - `topeft/modules/datacard_tools.py:175-302`: validates base and `_sumw2`
   companions during pkl loading/merging.
@@ -417,10 +414,10 @@ axes, and creates histograms:
   histogram names.
 - `analysis/topeft_run2/analysis_processor.py:212-236`: creates sparse axes and
   finds available 1D and 2D variables.
-- `analysis/topeft_run2/analysis_processor.py:245-292`: creates one
-  `HistEFT` and one optional `_sumw2` HistEFT per 1D variable.
-- `analysis/topeft_run2/analysis_processor.py:293-343`: creates `SparseHist`
-  objects for 2D variables, without EFT coefficient storage.
+- `analysis/topeft_run2/analysis_processor.py:393-431`: creates scalar and/or
+  EFT 1D siblings plus policy-selected scalar companions.
+- `analysis/topeft_run2/analysis_processor.py:432-479`: creates scalar 2D
+  `SparseHist` objects under their base keys, with optional companions.
 
 ### Event selection
 
@@ -777,12 +774,14 @@ plotting:
   dictionary with string keys, checks base and `_sumw2` companions when
   requested, validates histogram compatibility, and merges matching keys.
 
-Expected pkl structure:
+Expected schema-v2 pkl structure:
 
 - top-level object: dictionary;
-- top-level keys: histogram variable names such as `njets`, `ptz`, `invmass`;
-- optional companion keys: `<hist>_sumw2`;
-- values: `HistEFT` for 1D variables, `SparseHist` for 2D variables.
+- 1D keys: `<family>__scalar_nominal` and/or `<family>__eft_nominal`, plus
+  policy-selected `<family>_sumw2`;
+- 2D keys: base `<family>` plus optional `<family>_sumw2`;
+- values: scalar `SparseHist`, EFT `HistEFT`, and scalar second-moment
+  companions as specified in [Selective sumw2 schema-v2 artifacts](#15-selective-sumw2-schema-v2-artifacts).
 
 Histogram selection and process grouping:
 
@@ -1327,7 +1326,8 @@ Processor API assumptions:
 
 Plotting API assumptions:
 
-- pkl top-level dictionary keys remain variable names plus optional `_sumw2`;
+- producer pkl keys follow the schema-v2 sibling layout; any uniform variable
+  names in a plotter are a consumer-local materialized view;
 - objects expose `.axes`, `.integrate(...)`, `.group(...)`, `.remove(...)`,
   `.prune(...)`, `.values(...)`, and HistEFT-like `.eval(...)`;
 - process grouping and channel integration work with existing labels;
@@ -1542,3 +1542,39 @@ Plot metadata:
 - `topeft/params/cr_sr_plots_metadata.yml:432-503`: SR process group patterns.
 - `topeft/params/cr_sr_plots_metadata.yml:530-554`: Run 2 and Run 3 lumi
   metadata.
+
+## 17. Selective sumw2 schema-v2 artifacts
+
+Current selective-sumw2 output has nominal container schema version 2 and the
+`split_sibling_v1` layout. For a 1D family, inspect these exact top-level keys:
+
+```text
+<family>__scalar_nominal   scalar SparseHist source, when scalar content exists
+<family>__eft_nominal      HistEFT source, when EFT content exists
+<family>_sumw2             selected scalar second-moment companion, when selected
+```
+
+The scalar and EFT nominal siblings have non-overlapping process content. A
+family need not have all three keys: an empty content class has no nominal
+sibling, and a companion appears only when the resolved storage policy selects
+it. The old unsplit 1D `<family>` producer key is absent in schema-v2 output.
+
+Two-dimensional families do not split: they remain scalar `SparseHist` objects
+under `<family>` and may have an optional `<family>_sumw2` companion. Do not
+look for `__scalar_nominal` or `__eft_nominal` keys for a 2D family.
+
+```text
+run_analysis.py
+    -> schema-v2 pkl (split 1D sources; selected scalar companions)
+    -> data-driven processing (uses required scalar companions; AR content is transient)
+    -> plotter / DatacardMaker consumer-local materialization
+    -> final plotting or exact-SR datacard selection
+```
+
+The materialized mapping at the last boundary is a consumer-local view, not a
+new producer layout. Start inspection by listing top-level keys, reading the
+artifact provenance/schema metadata, and validating family and companion names
+before filtering or merging. Keep inspection read-only; a filename or output
+tag does not establish schema validity. Exact selection, WC=0 second-moment,
+merge, and collision semantics are maintained in the
+[HistEFT API contract](histeft_api_contract.md#15-selective-sumw2-schema-and-consumer-contract).
