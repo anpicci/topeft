@@ -781,7 +781,7 @@ Expected schema-v2 pkl structure:
   policy-selected `<family>_sumw2`;
 - 2D keys: base `<family>` plus optional `<family>_sumw2`;
 - values: scalar `SparseHist`, EFT `HistEFT`, and scalar second-moment
-  companions as specified in [Selective sumw2 schema-v2 artifacts](#15-selective-sumw2-schema-v2-artifacts).
+  companions as specified in [Selective sumw2 schema-v2 artifacts](#17-selective-sumw2-schema-v2-artifacts).
 
 Histogram selection and process grouping:
 

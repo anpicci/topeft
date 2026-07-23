@@ -128,7 +128,7 @@ unsupported.
 | Missing companion | Inspect the artifact layout, then add the active consumer's required rule; do not infer a variance from nominal content. |
 | Invalid mode or rules | Check the matching signal profile, selector spelling, and nonempty/forbidden-rule boundary above. |
 | Legacy-flag error | Remove `--no-sumw2`, `no_sumw2`, or `do_errors` and use `sumw2_storage`. |
-| Collision diagnostic while combining pkls | Resolve the duplicate source/process input using the consumer report; see the [API contract](../../docs/histeft_api_contract.md#merge-and-collision-boundaries). |
+| Collision diagnostic while combining pkls | Resolve the duplicate source/process input using the consumer report; see the [API contract](../../docs/histeft_api_contract.md#application-axis-and-merge-and-collision-boundaries). |
 | Expected Poisson fallback | It is unsupported for the maintained fake-tau fitter; use the [fitter guide](README_faketau_sf_fitter.md). |
 
 Related guides: [tutorial](../../docs/histeft_pkl_tutorial.md),
