@@ -337,6 +337,74 @@ def test_none_mode_does_not_calculate_rate_or_shape_systematics(monkeypatch, tmp
     )
 
 
+@pytest.mark.parametrize(
+    "render_results, expected_summary, expected_tasks",
+    [
+        (
+            [(1, 0, set(), []), (0, 0, set(), [])],
+            "1 plot without uncertainty bars or bands",
+            "after completing 2 rendering tasks",
+        ),
+        (
+            [(1, 0, set(), []), (1, 0, set(), []), (0, 0, set(), [])],
+            "2 plots without uncertainty bars or bands",
+            "after completing 3 rendering tasks",
+        ),
+    ],
+)
+def test_none_summary_reports_successful_plot_count_not_task_count(
+    monkeypatch,
+    capsys,
+    render_results,
+    expected_summary,
+    expected_tasks,
+):
+    variable_names = [f"var_{idx}" for idx in range(len(render_results))]
+    region_ctx = SimpleNamespace(
+        dict_of_hists={name: object() for name in variable_names},
+        name="CR",
+        apply_category_skips=False,
+        skip_variables=set(),
+        unblind_default=True,
+    )
+    payload = {
+        "channel_dict": {},
+        "channel_transformations": {},
+        "is_sparse2d": False,
+    }
+    results = iter(render_results)
+
+    monkeypatch.setattr(
+        make_cr_and_sr_plots,
+        "_resolve_requested_variables",
+        lambda *_args, **_kwargs: variable_names,
+    )
+    monkeypatch.setattr(
+        make_cr_and_sr_plots,
+        "_prepare_variable_payload",
+        lambda *_args, **_kwargs: payload,
+    )
+    monkeypatch.setattr(
+        make_cr_and_sr_plots,
+        "_render_variable",
+        lambda *_args, **_kwargs: next(results),
+    )
+
+    make_cr_and_sr_plots.produce_region_plots(
+        region_ctx,
+        None,
+        None,
+        "none",
+        False,
+        False,
+        workers=1,
+    )
+
+    output = capsys.readouterr().out
+    assert expected_summary in output
+    assert expected_tasks in output
+
+
 @pytest.mark.parametrize("unblind", [False, True])
 def test_authoritative_axis_label_replaces_histogram_label(monkeypatch, unblind):
     h_mc, h_data, group_map = _make_simple_stacked_inputs(

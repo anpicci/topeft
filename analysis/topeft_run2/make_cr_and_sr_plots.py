@@ -6478,7 +6478,10 @@ def produce_region_plots(
         summary_suffix = "; no rendering tasks were executed"
 
     if uncertainty_mode == "none":
-        uncertainty_summary = "plots without uncertainty bars or bands"
+        plot_word = "plot" if stat_only_plots == 1 else "plots"
+        uncertainty_summary = (
+            f"{stat_only_plots} {plot_word} without uncertainty bars or bands"
+        )
     elif uncertainty_mode == "stat":
         uncertainty_summary = f"{stat_only_plots} plots with stat-only bands"
     else:
