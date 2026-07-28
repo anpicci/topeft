@@ -1578,3 +1578,86 @@ before filtering or merging. Keep inspection read-only; a filename or output
 tag does not establish schema validity. Exact selection, WC=0 second-moment,
 merge, and collision semantics are maintained in the
 [HistEFT API contract](histeft_api_contract.md#15-selective-sumw2-schema-and-consumer-contract).
+
+## 18. Inspecting data-driven applicability
+
+The maintained sidecar records which data-driven products are enabled by the
+source-wide policy and which products are applicable to each family. Read the
+sidecar through the maintained artifact helpers; do not infer applicability
+from a filename or edit the JSON by hand. The normative definitions and
+versioning procedure are in the [API contract](histeft_api_contract.md#16-data-driven-applicability-and-transformed-artifacts).
+
+For a transformed artifact, this read-only example inspects one family and
+then streams only its statistical companion. It uses snake_case names and does
+not retain the full pickle in memory:
+
+```python
+from topcoffea.modules.hist_utils import iterate_hist_from_pkl
+from topeft.modules.histogram_artifact import (
+    read_histogram_sidecar,
+    validate_histogram_artifact,
+)
+
+input_pkl = "/path/to/processor_np.pkl.gz"
+family_name = "l0eta"
+
+sidecar = read_histogram_sidecar(input_pkl)
+validated_artifact = validate_histogram_artifact(input_pkl)
+assert validated_artifact["metadata"] == sidecar
+family_contract = sidecar["transformation_contract"]["families"][family_name]
+family_manifest = sidecar["sumw2_content_manifest"]["families"][family_name]
+
+print(family_contract["source_application_regions"])
+print(family_contract["applicable_products"])
+print(family_contract["generated_nonprompt_processes"])
+print(family_contract["generated_flips_processes"])
+print(family_manifest["required_sumw2_processes"])
+
+actual_sumw2_processes = None
+for key, histogram in iterate_hist_from_pkl(
+    input_pkl, allow_empty=False, materialize=False
+):
+    if key == f"{family_name}_sumw2":
+        actual_sumw2_processes = sorted(
+            str(process) for process in histogram.axes["process"]
+        )
+        break
+
+required_sumw2_processes = sorted(
+    family_manifest["required_sumw2_processes"]
+)
+assert actual_sumw2_processes == required_sumw2_processes
+```
+
+`read_histogram_sidecar(input_pkl)` is useful when only the validated metadata
+is needed; `validate_histogram_artifact(input_pkl)` additionally checks the
+serialized artifact content and identity. The exact relationship is:
+
+```text
+actual sumw2 process set == required_sumw2_processes
+```
+
+For the recovered category-limited Run-2 shape, the expected interpretation is:
+
+```text
+source_application_regions:
+  isAR_1l
+  isSR_1l
+  isSR_2lOS
+
+applicable_products:
+  nonprompt: true
+  flips: false
+
+generated_nonprompt_processes:
+  nonpromptUL16
+  nonpromptUL16APV
+  nonpromptUL17
+  nonpromptUL18
+
+generated_flips_processes: []
+```
+
+The example describes the recovered artifact shape, not a universal result for
+every family. Applicability remains family-specific and follows the
+authoritative application-axis evidence.

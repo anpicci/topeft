@@ -189,6 +189,64 @@ Related guides: [tutorial](../../docs/histeft_pkl_tutorial.md),
 
 - **Troubleshooting moved pickles:** if an input or output pickle has moved, re-run the helper with explicit `--input-pkl`/`--output-pkl` paths. The deferred workflow has no metadata JSON transport.
 
+#### Applicability-aware data-driven outputs and recovery
+
+`--do-np` enables the maintained data-driven product family for the resolved
+run configuration. It does not mean that every histogram family generates
+every product. Output generation is family-specific and follows the source
+histogram's authoritative application-axis content. The exact definitions and
+version-3 sidecar fields are maintained in the
+[HistEFT API contract](../../docs/histeft_api_contract.md#16-data-driven-applicability-and-transformed-artifacts),
+and a practical inspection example is in the
+[pkl tutorial](../../docs/histeft_pkl_tutorial.md#18-inspecting-data-driven-applicability).
+
+The maintained application mapping is explicit:
+
+- nonprompt consumes `isAR_1l`, `isAR_2lSS`, `isAR_2lOS`, and `isAR_3l`;
+- flips consumes `isAR_2lSS_OS`.
+
+Therefore, a category without `isAR_2lSS_OS` does not generate flips. When
+`isAR_2lSS_OS` is present and flips are enabled, the flips output is mandatory.
+An unknown `isAR_*` name is not automatically accepted as a nonprompt region.
+Do not add an unknown AR to a registry or edit a sidecar as a substitute for a
+reviewed applicability-contract change; see the API contract's
+[contract-change procedure](../../docs/histeft_api_contract.md#changing-the-data-driven-applicability-contract).
+
+##### Postprocess-only recovery from a completed processor pickle
+
+When the main processor pickle was written successfully but inline nonprompt
+sidecar publication failed, recover from that completed processor artifact.
+Choose a fresh destination and run only the maintained postprocessor from the
+repository root:
+
+```bash
+python_env=/users/apiccine/work/miniconda3/envs/clib-env/bin/python
+input_pkl=/path/to/completed_processor.pkl.gz
+output_pkl=/path/to/fresh_nonprompt_output.pkl.gz
+
+"$python_env" analysis/topeft_run2/run_data_driven.py \
+  --input-pkl "$input_pkl" \
+  --output-pkl "$output_pkl"
+```
+
+The helper reads the processor's automatic sidecar, streams the transformation,
+and publishes the transformed PKL plus its automatic metadata sidecar through
+the maintained atomic writer. Before downstream use:
+
+- preserve the completed processor PKL and its sidecar as read-only inputs;
+- use a fresh output path and do not overwrite a partial or historically failed
+  destination;
+- do not rerun event processing or Work Queue merely to repeat this
+  transformation;
+- validate output kind, sidecar schema, source lineage, generated processes,
+  and required `_sumw2` companions;
+- treat unknown ARs, manual sidecar edits, and unrecorded runtime policy
+  overrides as unsupported.
+
+This recovery path transforms an existing processor artifact only. It does not
+rerun event processing, change the source processor contract, or make plotting
+or datacard validation implicit.
+
 > **Sourcing helpers:** `run_plotter.sh`, `submit_plotter_condor.sh`, `fullR3_run.sh`, `fullR3_run_diboson.sh`, and `condor_plotter_entry.sh` now funnel their work through a `main()` function. They return non-zero statuses instead of exiting outright when validation fails, so sourcing them in an interactive shell will surface the error without tearing down your session. Executing the scripts directly still exits with the same return codes as before.
 
 
