@@ -374,6 +374,345 @@ def _resolve_region_channel_namespace(
     return namespace, dict_name
 
 
+def _normalize_producer_channel_presets(raw_presets):
+    """Return immutable producer preset metadata needed by the plotter."""
+
+    if not isinstance(raw_presets, Mapping):
+        raise TypeError(
+            "Producer channel metadata must be a top-level mapping, got '{}'.".format(
+                type(raw_presets).__name__
+            )
+        )
+
+    normalized_presets = []
+    for raw_preset_name, raw_subgroups in raw_presets.items():
+        preset_name = str(raw_preset_name)
+        if not isinstance(raw_subgroups, Mapping):
+            raise TypeError(
+                "Producer preset '{}' must be a mapping of subgroups, got '{}'.".format(
+                    preset_name, type(raw_subgroups).__name__
+                )
+            )
+
+        normalized_subgroups = []
+        for raw_subgroup_name, raw_subgroup in raw_subgroups.items():
+            subgroup_name = str(raw_subgroup_name)
+            if not isinstance(raw_subgroup, Mapping):
+                raise TypeError(
+                    "Producer subgroup '{}.{}' must be a mapping, got '{}'.".format(
+                        preset_name, subgroup_name, type(raw_subgroup).__name__
+                    )
+                )
+
+            raw_lepton_channels = raw_subgroup.get("lep_chan_lst", ())
+            if not isinstance(raw_lepton_channels, (list, tuple)):
+                raise TypeError(
+                    "Producer subgroup '{}.{}.lep_chan_lst' must be a list or tuple.".format(
+                        preset_name, subgroup_name
+                    )
+                )
+
+            producer_base_names = []
+            seen_base_names = set()
+            for item_index, raw_channel_item in enumerate(raw_lepton_channels):
+                if not isinstance(raw_channel_item, (list, tuple)) or not raw_channel_item:
+                    raise TypeError(
+                        "Producer subgroup '{}.{}.lep_chan_lst[{}]' must be a non-empty list or tuple.".format(
+                            preset_name, subgroup_name, item_index
+                        )
+                    )
+                producer_base_name = str(raw_channel_item[0]).strip()
+                if not producer_base_name:
+                    raise ValueError(
+                        "Producer subgroup '{}.{}.lep_chan_lst[{}]' has an empty base name.".format(
+                            preset_name, subgroup_name, item_index
+                        )
+                    )
+                if producer_base_name in seen_base_names:
+                    continue
+                seen_base_names.add(producer_base_name)
+                producer_base_names.append(producer_base_name)
+
+            normalized_subgroups.append(
+                (subgroup_name, tuple(producer_base_names))
+            )
+
+        normalized_presets.append((preset_name, tuple(normalized_subgroups)))
+
+    return tuple(normalized_presets)
+
+
+@lru_cache(maxsize=1)
+def _load_producer_channel_presets():
+    """Load and normalize ``ch_lst.json`` once in the current process."""
+
+    with open(te_topeft_path("channels/ch_lst.json")) as source:
+        raw_presets = json.load(source)
+    return _normalize_producer_channel_presets(raw_presets)
+
+
+def _region_compatible_producer_preset_names(region, producer_presets):
+    """Return producer preset names compatible with *region* in source order."""
+
+    region_upper = str(region or "").upper()
+    preset_names = [preset_name for preset_name, _ in producer_presets]
+    if region_upper == "SR":
+        return tuple(
+            preset_name
+            for preset_name in preset_names
+            if preset_name.endswith("_CH_LST_SR")
+        )
+    if region_upper == "CR":
+        return tuple(
+            preset_name
+            for preset_name in preset_names
+            if preset_name == "CH_LST_CR" or preset_name.endswith("_CH_LST_CR")
+        )
+    return ()
+
+
+def _ordered_unique_strings(values):
+    ordered = []
+    seen = set()
+    for value in values or ():
+        normalized = str(value)
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        ordered.append(normalized)
+    return tuple(ordered)
+
+
+def _find_unknown_observed_channels(
+    observed_channel_labels,
+    primary_known_channels,
+    transformations,
+):
+    """Return observed labels not covered by the primary YAML namespace."""
+
+    known_channels = {str(channel) for channel in primary_known_channels or ()}
+    transformed_known_channels = {
+        _apply_channel_transforms(channel, transformations)
+        for channel in known_channels
+    }
+    unknown_labels = []
+    for channel in _ordered_unique_strings(observed_channel_labels):
+        transformed = _apply_channel_transforms(channel, transformations)
+        if channel in known_channels or transformed in transformed_known_channels:
+            continue
+        unknown_labels.append(channel)
+    return tuple(unknown_labels)
+
+
+def _producer_matching_base(channel_label, transformations):
+    """Return the producer base used to match a full observed channel label."""
+
+    transformed = _apply_channel_transforms(str(channel_label), transformations)
+    return _strip_njet_suffix(transformed)
+
+
+def _producer_subgroup_category_compatibility(subgroup_name, category_names):
+    """Score how specifically a producer subgroup aligns with YAML categories."""
+
+    compatible = any(
+        category_name == subgroup_name
+        or category_name.startswith(f"{subgroup_name}_")
+        for category_name in category_names
+    )
+    if not compatible:
+        return 0
+    return len([token for token in subgroup_name.split("_") if token])
+
+
+def _format_preset_coverage_summary(candidate_scores):
+    summaries = []
+    for score in candidate_scores:
+        summaries.append(
+            "{}(eligible={}, unknown_covered={}/{}, observed_base_coverage={}, "
+            "category_compatibility={}, unrelated_bases={}, unresolved={})".format(
+                score["preset_name"],
+                score["eligible"],
+                score["unknown_covered"],
+                score["unknown_total"],
+                score["observed_base_coverage"],
+                score["category_compatibility"],
+                score["unrelated_producer_bases"],
+                list(score["unresolved_labels"]),
+            )
+        )
+    return "; ".join(summaries) if summaries else "<none>"
+
+
+def _resolve_producer_channel_fallback(
+    *,
+    region,
+    variable,
+    primary_namespace,
+    primary_known_channels,
+    active_yaml_category_map,
+    observed_channel_labels,
+    transformations,
+    producer_presets=None,
+):
+    """Resolve unknown observed channels through one coherent producer preset."""
+
+    observed_labels = _ordered_unique_strings(observed_channel_labels)
+    unknown_labels = _find_unknown_observed_channels(
+        observed_labels,
+        primary_known_channels,
+        transformations,
+    )
+    if not unknown_labels:
+        return None
+
+    if producer_presets is None:
+        producer_presets = _load_producer_channel_presets()
+    else:
+        producer_presets = tuple(producer_presets)
+
+    compatible_names = _region_compatible_producer_preset_names(
+        region, producer_presets
+    )
+    compatible_name_set = set(compatible_names)
+    category_names = tuple(str(name) for name in active_yaml_category_map.keys())
+    observed_bases = {
+        _producer_matching_base(label, transformations) for label in observed_labels
+    }
+
+    candidate_scores = []
+    eligible_candidates = []
+    for preset_name, subgroups in producer_presets:
+        if preset_name not in compatible_name_set:
+            continue
+
+        base_owners = OrderedDict()
+        for subgroup_name, producer_base_names in subgroups:
+            for producer_base_name in producer_base_names:
+                base_owners.setdefault(producer_base_name, []).append(subgroup_name)
+
+        ambiguous_bases = {
+            producer_base_name
+            for producer_base_name, owners in base_owners.items()
+            if len(owners) != 1
+        }
+        unresolved_labels = []
+        resolved_unknown_labels = []
+        for channel_label in unknown_labels:
+            producer_base_name = _producer_matching_base(
+                channel_label, transformations
+            )
+            if (
+                producer_base_name not in base_owners
+                or producer_base_name in ambiguous_bases
+            ):
+                unresolved_labels.append(channel_label)
+            else:
+                resolved_unknown_labels.append(channel_label)
+
+        observed_base_coverage = len(observed_bases.intersection(base_owners))
+        unrelated_producer_bases = len(set(base_owners).difference(observed_bases))
+        selected_owner_subgroups = {
+            base_owners[_producer_matching_base(label, transformations)][0]
+            for label in resolved_unknown_labels
+        }
+        category_compatibility = sum(
+            _producer_subgroup_category_compatibility(
+                subgroup_name, category_names
+            )
+            for subgroup_name in selected_owner_subgroups
+        )
+        score = {
+            "preset_name": preset_name,
+            "eligible": not unresolved_labels,
+            "unknown_covered": len(resolved_unknown_labels),
+            "unknown_total": len(unknown_labels),
+            "observed_base_coverage": observed_base_coverage,
+            "category_compatibility": category_compatibility,
+            "unrelated_producer_bases": unrelated_producer_bases,
+            "unresolved_labels": tuple(unresolved_labels),
+            "ambiguous_producer_bases": tuple(sorted(ambiguous_bases)),
+        }
+        candidate_scores.append(score)
+        if not unresolved_labels:
+            eligible_candidates.append((score, base_owners))
+
+    if not eligible_candidates:
+        unresolved_labels = sorted(
+            {
+                label
+                for score in candidate_scores
+                for label in score["unresolved_labels"]
+            }
+            or set(unknown_labels)
+        )
+        raise ValueError(
+            "Channel metadata fallback failed for region '{}', variable '{}'. "
+            "primary_namespace={}; unknown_labels={}; compatible_presets_checked={}; "
+            "per_preset_coverage_summary={}; unresolved_labels={}. No single coherent "
+            "producer preset covers all unknown labels; unions across presets are not allowed.".format(
+                region,
+                variable,
+                primary_namespace,
+                list(unknown_labels),
+                list(compatible_names),
+                _format_preset_coverage_summary(candidate_scores),
+                unresolved_labels,
+            )
+        )
+
+    eligible_candidates.sort(
+        key=lambda item: (
+            -item[0]["category_compatibility"],
+            -item[0]["observed_base_coverage"],
+            item[0]["unrelated_producer_bases"],
+            item[0]["preset_name"],
+        )
+    )
+    selected_score, selected_base_owners = eligible_candidates[0]
+
+    augmented_category_map = OrderedDict()
+    for category_name, channel_labels in active_yaml_category_map.items():
+        augmented_category_map[category_name] = (
+            None if channel_labels is None else list(channel_labels)
+        )
+
+    augmented_categories = []
+    for channel_label in unknown_labels:
+        producer_base_name = _producer_matching_base(
+            channel_label, transformations
+        )
+        subgroup_name = selected_base_owners[producer_base_name][0]
+        channel_bucket = augmented_category_map.setdefault(subgroup_name, [])
+        if channel_bucket is None:
+            channel_bucket = []
+            augmented_category_map[subgroup_name] = channel_bucket
+        if channel_label not in channel_bucket:
+            channel_bucket.append(channel_label)
+        if subgroup_name not in augmented_categories:
+            augmented_categories.append(subgroup_name)
+
+    rationale = (
+        "selected by category_compatibility={}, observed_base_coverage={}, "
+        "unrelated_producer_bases={}, preset_name='{}'".format(
+            selected_score["category_compatibility"],
+            selected_score["observed_base_coverage"],
+            selected_score["unrelated_producer_bases"],
+            selected_score["preset_name"],
+        )
+    )
+    return {
+        "selected_preset": selected_score["preset_name"],
+        "checked_presets": compatible_names,
+        "fallback_observed_labels": unknown_labels,
+        "augmented_category_map": augmented_category_map,
+        "augmented_categories": tuple(augmented_categories),
+        "candidate_scores": tuple(candidate_scores),
+        "selection_rationale": rationale,
+        "primary_namespace": primary_namespace,
+        "unresolved_labels": (),
+    }
+
+
 def _compile_data_driven_prefixes(raw_specs):
     """Return compiled regex objects for each configured data-driven prefix."""
 
@@ -2505,6 +2844,9 @@ def _prepare_variable_payload(
                 "available_channels": cached_payload.get(
                     "available_channels", ()
                 ),
+                "channel_fallback_resolution": cached_payload.get(
+                    "channel_fallback_resolution"
+                ),
             }
         return cached_payload
 
@@ -2542,6 +2884,33 @@ def _prepare_variable_payload(
     )
     channel_dict = _deduplicate_channel_bins(channel_dict)
     channel_dict = _prune_unsplit_flavour_entries(channel_dict, region_ctx)
+
+    validation_transformations = _resolve_validation_channel_transformations(
+        region_ctx,
+        var_name,
+        channel_transformations,
+    )
+    namespace_kind = _expected_channel_namespace_kind(region_ctx, var_name)
+    primary_known_channels, primary_namespace = _resolve_region_known_channels(
+        region_ctx.name,
+        variable=var_name,
+        channel_transformations=validation_transformations,
+        channel_map=region_ctx.channel_map,
+        channel_aliases=region_ctx.channel_base_to_alias,
+        region_dict_name=region_ctx.channel_dict_name,
+        namespace_kind=namespace_kind,
+    )
+    fallback_resolution = _resolve_producer_channel_fallback(
+        region=region_ctx.name,
+        variable=var_name,
+        primary_namespace=primary_namespace,
+        primary_known_channels=primary_known_channels,
+        active_yaml_category_map=channel_dict,
+        observed_channel_labels=available_channels,
+        transformations=validation_transformations,
+    )
+    if fallback_resolution is not None:
+        channel_dict = fallback_resolution["augmented_category_map"]
 
     channel_dict = _augment_split_channel_entries(
         channel_dict,
@@ -2581,6 +2950,7 @@ def _prepare_variable_payload(
             "is_sparse2d": is_sparse2d,
             "channel_display_labels": channel_display_labels,
             "available_channels": available_channels,
+            "channel_fallback_resolution": fallback_resolution,
         }
 
     mc_to_remove = tuple(region_ctx.samples_to_remove.get("mc") or ())
@@ -2636,6 +3006,7 @@ def _prepare_variable_payload(
         "is_sparse2d": is_sparse2d,
         "channel_display_labels": channel_display_labels,
         "available_channels": available_channels,
+        "channel_fallback_resolution": fallback_resolution,
     }
 
 
@@ -3579,6 +3950,9 @@ def _ensure_variable_channel_coverage_validated(var_name, region_ctx, variable_p
         return
 
     histos = [variable_payload.get("hist_mc"), variable_payload.get("hist_data")]
+    if not _collect_available_channels(histos):
+        variable_payload["_global_channel_coverage_validated"] = True
+        return
     channel_transformations = variable_payload.get("channel_transformations", [])
     validation_transformations = _resolve_validation_channel_transformations(
         region_ctx,
@@ -3595,6 +3969,11 @@ def _ensure_variable_channel_coverage_validated(var_name, region_ctx, variable_p
         region_dict_name=region_ctx.channel_dict_name,
         namespace_kind=namespace_kind,
     )
+    fallback_resolution = variable_payload.get("channel_fallback_resolution")
+    if fallback_resolution:
+        region_known_channels.update(
+            fallback_resolution.get("fallback_observed_labels", ())
+        )
     validate_variable_channel_coverage(
         histos,
         region_known_channels,
@@ -3604,6 +3983,45 @@ def _ensure_variable_channel_coverage_validated(var_name, region_ctx, variable_p
         region_dict_name=region_dict_name,
     )
     variable_payload["_global_channel_coverage_validated"] = True
+
+
+def _emit_channel_fallback_diagnostic(region_ctx, var_name, variable_payload):
+    """Emit one concise parent-process record for a successful fallback."""
+
+    resolution = variable_payload.get("channel_fallback_resolution")
+    if not resolution:
+        return
+    _logger.warning(
+        "%s channel metadata fallback for variable '%s': "
+        "primary_namespace=%s selected_preset=%s checked_presets=%s "
+        "accepted_labels=%d augmented_categories=%s unresolved_labels=%d",
+        region_ctx.name,
+        var_name,
+        resolution["primary_namespace"],
+        resolution["selected_preset"],
+        ",".join(resolution["checked_presets"]),
+        len(resolution["fallback_observed_labels"]),
+        ",".join(resolution["augmented_categories"]),
+        len(resolution["unresolved_labels"]),
+    )
+
+
+def _format_parent_channel_schema_error(region_name, variable_errors):
+    """Return one aggregate error for all parent-side variable failures."""
+
+    details = [
+        "  - variable '{}': {}".format(variable, error)
+        for variable, error in variable_errors
+    ]
+    return (
+        "Parent channel-schema validation failed for region '{}' before worker "
+        "creation ({} variable{}):\n{}".format(
+            region_name,
+            len(variable_errors),
+            "" if len(variable_errors) == 1 else "s",
+            "\n".join(details),
+        )
+    )
 
 
 def validate_channel_group(
@@ -6194,25 +6612,14 @@ def produce_region_plots(
     variable_categories = {}
     eligible_variables = []
     category_dirs = set()
+    channel_schema_errors = []
     for var_name in variables_to_plot:
         if "sumw2" in var_name:
             continue
         if region_ctx.apply_category_skips and var_name in region_ctx.skip_variables:
             continue
 
-        variable_metadata = _prepare_variable_payload(
-            var_name,
-            region_ctx,
-            verbose=verbose,
-            unblind_flag=unblind_flag,
-            metadata_only=True,
-            prepared_cache=variable_payload_cache,
-        )
-        if not variable_metadata:
-            variable_payload_cache.setdefault(var_name, None)
-            continue
-
-        if var_name not in variable_payload_cache:
+        try:
             variable_payload_cache[var_name] = _prepare_variable_payload(
                 var_name,
                 region_ctx,
@@ -6220,10 +6627,21 @@ def produce_region_plots(
                 unblind_flag=unblind_flag,
                 prepared_cache=variable_payload_cache,
             )
+            variable_payload = variable_payload_cache.get(var_name)
+            if variable_payload:
+                _ensure_variable_channel_coverage_validated(
+                    var_name, region_ctx, variable_payload
+                )
+        except (TypeError, ValueError) as error:
+            variable_payload_cache.pop(var_name, None)
+            channel_schema_errors.append((var_name, error))
+            continue
 
         variable_payload = variable_payload_cache.get(var_name)
         if not variable_payload:
             continue
+
+        _emit_channel_fallback_diagnostic(region_ctx, var_name, variable_payload)
 
         variable_metadata = {
             "channel_dict": variable_payload["channel_dict"],
@@ -6250,6 +6668,13 @@ def produce_region_plots(
                 _resolve_output_category_name(region_ctx, category)
                 for category in categories
             )
+
+    if channel_schema_errors:
+        raise ValueError(
+            _format_parent_channel_schema_error(
+                region_ctx.name, channel_schema_errors
+            )
+        )
 
     stat_only_plots = 0
     stat_and_syst_plots = 0
@@ -6339,6 +6764,16 @@ def produce_region_plots(
                     "channel_dict": payload["channel_dict"],
                     "channel_transformations": payload["channel_transformations"],
                     "is_sparse2d": payload["is_sparse2d"],
+                    "channel_display_labels": payload.get(
+                        "channel_display_labels", {}
+                    ),
+                    "available_channels": payload.get("available_channels", ()),
+                    "channel_fallback_resolution": payload.get(
+                        "channel_fallback_resolution"
+                    ),
+                    "_global_channel_coverage_validated": payload.get(
+                        "_global_channel_coverage_validated", False
+                    ),
                 }
                 for var_name, payload in variable_payload_cache.items()
                 if payload
