@@ -3386,8 +3386,10 @@ def _render_variable_category(
                 hist_data_nominal,
                 var_name,
                 channel_name=hist_cat,
-                lumitag=region_ctx.lumi_pair[0],
-                comtag=region_ctx.lumi_pair[1],
+                lumitag=region_ctx.lumi_pair[0] if region_ctx.lumi_pair else None,
+                comtag=region_ctx.lumi_pair[1] if region_ctx.lumi_pair else None,
+                lumi_components=region_ctx.lumi_components,
+                scope_label=region_ctx.scope_label,
                 per_panel=True,
             )
         else:
@@ -3475,6 +3477,8 @@ def _render_variable_category(
                 group=group,
                 lumitag=region_ctx.lumi_pair[0] if region_ctx.lumi_pair else None,
                 comtag=region_ctx.lumi_pair[1] if region_ctx.lumi_pair else None,
+                lumi_components=region_ctx.lumi_components,
+                scope_label=region_ctx.scope_label,
                 **stacked_kwargs,
             )
             if fig is None:
@@ -3701,6 +3705,8 @@ def _render_variable_category(
             "group": {k: v for k, v in region_ctx.group_map.items() if v},
             "lumitag": region_ctx.lumi_pair[0] if region_ctx.lumi_pair else None,
             "comtag": region_ctx.lumi_pair[1] if region_ctx.lumi_pair else None,
+            "lumi_components": region_ctx.lumi_components,
+            "scope_label": region_ctx.scope_label,
             "h_mc_sumw2": hist_mc_sumw2,
             "syst_err": syst_err,
             "err_p_syst": err_p_syst,
@@ -4781,6 +4787,8 @@ def _draw_stacked_panel(
     style=None,
     include_ratio_panel=True,
     show_data_errors=True,
+    lumi_components=None,
+    scope_label=None,
 ):
     """Render stacked MC content, optionally with data and ratio subpanels."""
 
@@ -4810,7 +4818,12 @@ def _draw_stacked_panel(
     plt.sca(ax)
     cms_style = _style_get(style, ("cms",), {})
     cms_fontsize = cms_style.get("fontsize", 18.0)
-    cms_label = hep.cms.label(lumi=lumitag, com=comtag, fontsize=cms_fontsize)
+    cms_label = _draw_cms_label(
+        ax, lumitag, comtag, lumi_components, fontsize=cms_fontsize
+    )
+    _draw_mixed_energy_label(
+        ax, lumi_components, scope_label, fontsize=cms_fontsize
+    )
     ax.set_ylabel("Events", fontsize=axis_label_fontsize)
 
     summed_mc = h_mc[{"process": sum}]
@@ -5152,6 +5165,8 @@ def _draw_stacked_panel_only(
     *,
     log_scale=False,
     style=None,
+    lumi_components=None,
+    scope_label=None,
 ):
     return _draw_stacked_panel(
         h_mc,
@@ -5170,6 +5185,8 @@ def _draw_stacked_panel_only(
         log_scale=log_scale,
         style=style,
         include_ratio_panel=False,
+        lumi_components=lumi_components,
+        scope_label=scope_label,
     )
 
 
@@ -6075,6 +6092,8 @@ class RegionContext(object):
         channel_aliases=None,
         channel_dict_name=None,
         is_lepton_flavor_in_pkl=False,
+        lumi_components=None,
+        scope_label=None,
     ):
         self.name = name
         self.dict_of_hists = dict_of_hists
@@ -6111,6 +6130,8 @@ class RegionContext(object):
         self.signal_samples = signal_samples
         self.unblind_default = unblind_default
         self.lumi_pair = lumi_pair
+        self.lumi_components = tuple(lumi_components or ())
+        self.scope_label = scope_label
         self.channels_split_by_lepflav = bool(
             self.is_lepton_flavor_in_pkl
             and yt.is_split_by_lepflav(
@@ -6164,12 +6185,12 @@ def _format_decimal_string(value):
     return formatted
 
 
-def _resolve_lumi_pair(year_tokens):
+def _resolve_lumi_components(year_tokens):
+    """Return ordered luminosity components grouped by center-of-mass energy."""
     if not year_tokens:
-        return None
+        return ()
 
-    lumi_components = []
-    com_tags = set()
+    lumi_by_com = OrderedDict()
     missing_metadata = []
 
     for token in year_tokens:
@@ -6177,11 +6198,12 @@ def _resolve_lumi_pair(year_tokens):
         if pair is None:
             missing_metadata.append(token)
             continue
-        lumi_components.append(Decimal(pair[0]))
-        com_tags.add(pair[1])
+        lumi_by_com[pair[1]] = lumi_by_com.get(pair[1], Decimal("0")) + Decimal(
+            pair[0]
+        )
 
-    if missing_metadata and not lumi_components:
-        return None
+    if missing_metadata and not lumi_by_com:
+        return ()
 
     if missing_metadata:
         raise KeyError(
@@ -6189,16 +6211,66 @@ def _resolve_lumi_pair(year_tokens):
             + ", ".join(sorted(set(missing_metadata)))
         )
 
-    if len(com_tags) != 1:
-        raise ValueError(
-            "Inconsistent center-of-mass energies encountered while combining "
-            "years {}.".format(
-                ", ".join(year_tokens)
-            )
-        )
+    return tuple(
+        (_format_decimal_string(lumi), comtag)
+        for comtag, lumi in lumi_by_com.items()
+    )
 
-    combined_lumi = sum(lumi_components, Decimal("0"))
-    return (_format_decimal_string(combined_lumi), com_tags.pop())
+
+def _resolve_lumi_pair(year_tokens):
+    """Return a legacy single-energy luminosity pair when one is available."""
+    lumi_components = _resolve_lumi_components(year_tokens)
+    if len(lumi_components) == 1:
+        return lumi_components[0]
+    return None
+
+
+def _resolve_year_scope_label(year_tokens):
+    """Return a human-facing scope label for complete aggregate run selections."""
+    selected_years = frozenset(year_tokens or ())
+    run2_years = frozenset(_normalize_year_tokens(["run2"]))
+    run3_years = frozenset(_normalize_year_tokens(["run3"]))
+    if selected_years == run2_years:
+        return "Run 2"
+    if selected_years == run3_years:
+        return "Run 3"
+    if selected_years == run2_years | run3_years:
+        return "Run 2 + Run 3"
+    return None
+
+
+def _format_lumi_components_label(lumi_components):
+    """Format a mixed-energy luminosity label without conflating energies."""
+    return " + ".join(
+        "{} fb$^{{-1}}$ ({} TeV)".format(lumi, comtag)
+        for lumi, comtag in lumi_components
+    )
+
+
+def _draw_mixed_energy_label(ax, lumi_components, scope_label, *, fontsize):
+    """Add the right-side label for a multi-energy aggregate plot."""
+    if len(lumi_components or ()) <= 1:
+        return None
+
+    label = _format_lumi_components_label(lumi_components)
+    if scope_label:
+        label = "{}\n{}".format(label, scope_label)
+    return ax.text(
+        1.0,
+        1.0,
+        label,
+        transform=ax.transAxes,
+        ha="right",
+        va="bottom",
+        fontsize=fontsize,
+    )
+
+
+def _draw_cms_label(ax, lumitag, comtag, lumi_components, *, fontsize):
+    """Draw the standard CMS label without a misleading default energy tag."""
+    if len(lumi_components or ()) > 1:
+        return hep.cms.label(ax=ax, rlabel="", fontsize=fontsize)
+    return hep.cms.label(ax=ax, lumi=lumitag, com=comtag, fontsize=fontsize)
 
 
 def build_region_context(
@@ -6438,9 +6510,11 @@ def build_region_context(
         )
 
     try:
+        lumi_components = _resolve_lumi_components(normalized_year_tokens)
         lumi_pair = _resolve_lumi_pair(normalized_year_tokens)
     except KeyError as exc:
         raise ValueError(str(exc)) from exc
+    scope_label = _resolve_year_scope_label(normalized_year_tokens)
 
     if unblind is None:
         resolved_unblind = region_upper == "CR"
@@ -6572,6 +6646,8 @@ def build_region_context(
         channel_aliases=channel_aliases,
         channel_dict_name=channel_dict_name,
         is_lepton_flavor_in_pkl=is_lepton_flavor_in_pkl,
+        lumi_components=lumi_components,
+        scope_label=scope_label,
     )
 
 
@@ -7703,6 +7779,8 @@ def make_sparse2d_fig(
     channel_name,
     lumitag="138",
     comtag="13",
+    lumi_components=None,
+    scope_label=None,
     per_panel=False,
 ):
     axes_meta = te_axes_info_2d.get(var, {})
@@ -7821,7 +7899,10 @@ def make_sparse2d_fig(
         fig = plt.figure(figsize=(10, 9))
         hep.style.use("CMS")
         ax = fig.add_subplot(111)
-        hep.cms.label(ax=ax, lumi=lumitag, com=comtag, fontsize=20.0)
+        _draw_cms_label(ax, lumitag, comtag, lumi_components, fontsize=20.0)
+        _draw_mixed_energy_label(
+            ax, lumi_components, scope_label, fontsize=20.0
+        )
         artists = hep.hist2dplot(
             values,
             ax=ax,
@@ -7867,7 +7948,10 @@ def make_sparse2d_fig(
 
     axes_top = [ax_mc, ax_data]
 
-    hep.cms.label(ax=ax_mc, lumi=lumitag, com=comtag, fontsize=20.0)
+    _draw_cms_label(ax_mc, lumitag, comtag, lumi_components, fontsize=20.0)
+    _draw_mixed_energy_label(
+        ax_mc, lumi_components, scope_label, fontsize=20.0
+    )
     for ax, plot_hist, title, norm in zip(
         axes_top,
         (mc_vals, data_vals),
@@ -7959,6 +8043,8 @@ def make_region_stacked_ratio_fig(
     unblind=False,
     style=None,
     uncertainty_mode="total",
+    lumi_components=None,
+    scope_label=None,
 ):
     if uncertainty_mode not in {"total", "stat", "none"}:
         raise ValueError(
@@ -8226,6 +8312,8 @@ def make_region_stacked_ratio_fig(
             log_scale=log_scale,
             style=style,
             show_data_errors=uncertainty_mode != "none",
+            lumi_components=lumi_components,
+            scope_label=scope_label,
         )
     else:
         panel_info = _draw_stacked_panel_only(
@@ -8244,6 +8332,8 @@ def make_region_stacked_ratio_fig(
             mc_norm_factor,
             log_scale=log_scale,
             style=style,
+            lumi_components=lumi_components,
+            scope_label=scope_label,
         )
 
     fig = panel_info["fig"]
