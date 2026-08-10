@@ -1679,6 +1679,21 @@ def _require_disjoint_allocations(
     return union
 
 
+def _ordered_family_union(
+    family_sequences: Iterable[Iterable[str]],
+) -> list[str]:
+    """Compose materialized family coverage without changing producer order."""
+
+    families: list[str] = []
+    seen: set[str] = set()
+    for sequence in family_sequences:
+        for family in sequence:
+            if family not in seen:
+                seen.add(family)
+                families.append(family)
+    return families
+
+
 def _compose_sumw2_storage_provenance(
     provenances: Iterable[Mapping[str, Any]],
 ) -> dict[str, Any]:
@@ -1697,7 +1712,6 @@ def _compose_sumw2_storage_provenance(
         "resolved_mode",
         "signal_sample_profile",
         "normalized_rules",
-        "runtime_histogram_families",
         "warnings",
     )
     first = normalized[0]
@@ -1727,8 +1741,11 @@ def _compose_sumw2_storage_provenance(
         label="resolved_targets",
     )
     targets = [json.loads(target) for target in target_keys]
+    runtime_histogram_families = _ordered_family_union(
+        record["runtime_histogram_families"] for record in normalized
+    )
     family_order = {
-        family: index for index, family in enumerate(first["runtime_histogram_families"])
+        family: index for index, family in enumerate(runtime_histogram_families)
     }
     targets.sort(
         key=lambda target: (
@@ -1739,6 +1756,7 @@ def _compose_sumw2_storage_provenance(
     )
     composed = {
         **{field_name: copy.deepcopy(first[field_name]) for field_name in control_fields},
+        "runtime_histogram_families": runtime_histogram_families,
         "resolved_datasets": datasets,
         "resolved_processes": processes,
         "resolved_targets": targets,
@@ -2062,17 +2080,27 @@ def merge_histogram_sidecars(
         requested_data_driven_products,
         resolved_data_driven_contract,
     ) = _compose_merged_contract_set(sidecars)
-    family_orders = [
-        tuple(sidecar["sumw2_content_manifest"]["families"])
-        for sidecar in sidecars
-    ]
-    if any(order != family_orders[0] for order in family_orders[1:]):
-        raise histogram_merge_error("Cannot merge incompatible family manifests.")
+    family_order = tuple(provenance["runtime_histogram_families"])
+    for sidecar in sidecars:
+        manifest_order = tuple(sidecar["sumw2_content_manifest"]["families"])
+        provenance_order = tuple(
+            sidecar["sumw2_storage_provenance"]["runtime_histogram_families"]
+        )
+        if manifest_order != provenance_order:
+            raise histogram_merge_error(
+                "Cannot merge a sidecar whose content-manifest family order does not "
+                "match its runtime histogram-family provenance."
+            )
     required = {}
-    for family in family_orders[0]:
+    for family in family_order:
+        family_sidecars = [
+            sidecar
+            for sidecar in sidecars
+            if family in sidecar["sumw2_content_manifest"]["families"]
+        ]
         dimensions = {
             sidecar["sumw2_content_manifest"]["families"][family]["dimensionality"]
-            for sidecar in sidecars
+            for sidecar in family_sidecars
         }
         if len(dimensions) != 1:
             raise histogram_merge_error(
@@ -2081,7 +2109,7 @@ def merge_histogram_sidecars(
         required[family] = sorted(
             {
                 process
-                for sidecar in sidecars
+                for sidecar in family_sidecars
                 for process in sidecar["sumw2_content_manifest"]["families"][family][
                     "required_sumw2_processes"
                 ]
@@ -2141,13 +2169,18 @@ def merge_histogram_sidecars(
             "generated_nonprompt_eft_dependence": False,
         }
         merged_contract_families = {}
-        for family in family_orders[0]:
+        for family in family_order:
+            family_contracts = [
+                contract
+                for contract in normalized_contracts
+                if family in contract["families"]
+            ]
             merged_roles = {}
             for field_name in _TRANSFORMATION_ROLE_FIELDS:
                 merged_roles[field_name] = sorted(
                     {
                         process
-                        for contract in normalized_contracts
+                        for contract in family_contracts
                         for process in contract["families"][family][field_name]
                     }
                 )
@@ -2155,7 +2188,7 @@ def merge_histogram_sidecars(
                 source_application_regions = sorted(
                     {
                         region
-                        for contract in normalized_contracts
+                        for contract in family_contracts
                         for region in contract["families"][family][
                             "source_application_regions"
                         ]

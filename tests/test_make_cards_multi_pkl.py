@@ -6,9 +6,12 @@ import pytest
 from analysis.topeft_run2 import make_cards
 from topcoffea.modules.sparseHist import SparseHist
 from topeft.modules import datacard_tools
+from topeft.modules import histogram_artifact
+from topeft.modules import nominal_schema
+from topeft.modules.sumw2_policy import SUMW2_PROVENANCE_SCHEMA_VERSION
 
 
-def _make_hist(processes, dense_name, nbins=1, dense_hi=None):
+def _make_hist(processes, dense_name, nbins=1, dense_hi=None, channel="ch1"):
     if dense_hi is None:
         dense_hi = float(nbins)
     fill_value = float(dense_hi) / (2.0 * float(nbins))
@@ -19,7 +22,7 @@ def _make_hist(processes, dense_name, nbins=1, dense_hi=None):
         storage="Double",
     )
     for proc in processes:
-        h.fill(process=proc, channel="ch1", **{dense_name: fill_value}, weight=1.0)
+        h.fill(process=proc, channel=channel, **{dense_name: fill_value}, weight=1.0)
     return h
 
 
@@ -29,6 +32,36 @@ def _make_payload(key, processes, *, with_sumw2=True, nbins=1, dense_hi=None):
         sumw2_key = f"{key}_sumw2"
         payload[sumw2_key] = _make_hist(processes, sumw2_key, nbins=nbins, dense_hi=dense_hi)
     return payload
+
+
+def _make_schema_payload(family, process, channel):
+    return {
+        nominal_schema.scalar_nominal_key(family): _make_hist(
+            [process], family, channel=channel
+        ),
+        nominal_schema.sumw2_key(family): _make_hist(
+            [process], nominal_schema.sumw2_key(family), channel=channel
+        ),
+    }
+
+
+def _make_provenance(families, *, dataset, process, warning=""):
+    return {
+        "schema_version": SUMW2_PROVENANCE_SCHEMA_VERSION,
+        "source": "explicit",
+        "requested_mode": "full_diagnostics",
+        "resolved_mode": "full_diagnostics",
+        "signal_sample_profile": "unrestricted",
+        "normalized_rules": [],
+        "runtime_histogram_families": list(families),
+        "resolved_datasets": [dataset],
+        "resolved_processes": [process],
+        "resolved_targets": [
+            {"dataset": dataset, "process": process, "family": family}
+            for family in families
+        ],
+        "warnings": [warning] if warning else [],
+    }
 
 
 def test_merge_histogram_pkls_succeeds_for_disjoint_processes(monkeypatch):
@@ -102,6 +135,165 @@ def test_merge_histogram_pkls_process_overlap_policy(monkeypatch):
     )
     assert "met" in merged
     assert report["num_process_collisions"] >= 1
+
+
+def test_process_collision_allow_preserves_disjoint_channel_content(monkeypatch):
+    payloads = {
+        "a.pkl.gz": {
+            "met": _make_hist(["shared_proc"], "met", channel="channel_a"),
+            "met_sumw2": _make_hist(
+                ["shared_proc"], "met_sumw2", channel="channel_a"
+            ),
+        },
+        "b.pkl.gz": {
+            "met": _make_hist(["shared_proc"], "met", channel="channel_b"),
+            "met_sumw2": _make_hist(
+                ["shared_proc"], "met_sumw2", channel="channel_b"
+            ),
+        },
+    }
+    monkeypatch.setattr(
+        datacard_tools,
+        "get_hist_from_pkl",
+        lambda path, allow_empty=False: payloads[path],
+    )
+
+    merged, _report = datacard_tools.load_and_merge_histogram_pkls(
+        ["a.pkl.gz", "b.pkl.gz"], on_process_collision="allow"
+    )
+
+    assert set(merged["met"].axes["channel"]) == {"channel_a", "channel_b"}
+
+
+def test_split_family_provenance_composes_first_occurrence_ordered_union():
+    mixed = ("njets", "lj0pt", "ptz", "ptz_wtau", "lt")
+    sibling = ("njets", "lj0pt", "ptz", "lt")
+    composed = histogram_artifact._compose_sumw2_storage_provenance(
+        (
+            _make_provenance(mixed, dataset="mixed_dataset", process="mixed_proc"),
+            _make_provenance(
+                sibling, dataset="sibling_dataset", process="sibling_proc"
+            ),
+        )
+    )
+
+    assert composed["runtime_histogram_families"] == list(mixed)
+    assert [target["family"] for target in composed["resolved_targets"]] == [
+        "njets",
+        "lj0pt",
+        "ptz",
+        "ptz_wtau",
+        "lt",
+        "njets",
+        "lj0pt",
+        "ptz",
+        "lt",
+    ]
+    assert histogram_artifact._ordered_family_union((mixed, sibling, mixed)) == list(mixed)
+
+
+def test_split_family_provenance_preserves_policy_and_allocation_guards():
+    first = _make_provenance(("njets",), dataset="dataset_a", process="process_a")
+    incompatible = _make_provenance(
+        ("njets",), dataset="dataset_b", process="process_b", warning="changed"
+    )
+    with pytest.raises(RuntimeError, match="policy-control field 'warnings'"):
+        histogram_artifact._compose_sumw2_storage_provenance((first, incompatible))
+
+    collided = _make_provenance(
+        ("njets",), dataset="dataset_a", process="process_b"
+    )
+    with pytest.raises(RuntimeError, match="resolved_datasets collision"):
+        histogram_artifact._compose_sumw2_storage_provenance((first, collided))
+
+
+def test_sidecar_merge_composes_partial_content_manifests(monkeypatch):
+    mixed = ("njets", "ptz_wtau")
+    sibling = ("njets",)
+    first_provenance = _make_provenance(
+        mixed, dataset="mixed_dataset", process="mixed_proc"
+    )
+    second_provenance = _make_provenance(
+        sibling, dataset="sibling_dataset", process="sibling_proc"
+    )
+    composed = histogram_artifact._compose_sumw2_storage_provenance(
+        (first_provenance, second_provenance)
+    )
+
+    def sidecar(provenance):
+        return {
+            "artifact": {
+                "artifact_kind": "processor_output",
+                "nominal_container_schema_version": 2,
+                "nominal_container_layout": "split_sibling_v1",
+                "pkl_basename": f"{provenance['resolved_datasets'][0]}.pkl.gz",
+                "pkl_sha256": provenance["resolved_datasets"][0],
+            },
+            "sumw2_storage_provenance": provenance,
+            "sumw2_content_manifest": {
+                "families": {
+                    family: {
+                        "dimensionality": 1,
+                        "required_sumw2_processes": [provenance["resolved_processes"][0]],
+                    }
+                    for family in provenance["runtime_histogram_families"]
+                }
+            },
+        }
+
+    monkeypatch.setattr(
+        histogram_artifact,
+        "_compose_merged_contract_set",
+        lambda sidecars: (composed, None, None, None),
+    )
+    report = histogram_artifact.merge_histogram_sidecars(
+        (sidecar(first_provenance), sidecar(second_provenance))
+    )
+
+    assert report["sumw2_storage_provenance"]["runtime_histogram_families"] == list(
+        mixed
+    )
+    assert sorted(report["required_sumw2_processes"]) == list(mixed)
+
+
+def test_merge_nominal_mappings_validates_partial_inputs_and_complete_output():
+    families = ("njets", "ptz_wtau")
+    first = _make_schema_payload("njets", "shared_proc", "channel_a")
+    second = _make_schema_payload("ptz_wtau", "shared_proc", "channel_b")
+
+    merged = nominal_schema.merge_nominal_mappings(
+        (first, second), runtime_families=families
+    )
+
+    assert tuple(merged) == (
+        nominal_schema.scalar_nominal_key("njets"),
+        nominal_schema.sumw2_key("njets"),
+        nominal_schema.scalar_nominal_key("ptz_wtau"),
+        nominal_schema.sumw2_key("ptz_wtau"),
+    )
+    nominal_schema.validate_nominal_mapping(
+        merged, runtime_families=families
+    )
+
+
+def test_partial_input_validation_rejects_claimed_missing_or_malformed_family():
+    missing_nominal = {
+        nominal_schema.sumw2_key("njets"): _make_hist(
+            ["proc"], nominal_schema.sumw2_key("njets")
+        )
+    }
+    with pytest.raises(ValueError, match="orphan statistical companion"):
+        nominal_schema.merge_nominal_mappings(
+            (missing_nominal,), runtime_families=("njets", "ptz_wtau")
+        )
+
+    malformed = {
+        nominal_schema.scalar_nominal_key("njets"): object(),
+    }
+    with pytest.raises(TypeError, match="must be an exact SparseHist"):
+        nominal_schema.merge_nominal_mappings(
+            (malformed,), runtime_families=("njets", "ptz_wtau")
+        )
 
 
 def test_make_cards_parser_accepts_multiple_pkls():

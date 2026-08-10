@@ -426,6 +426,29 @@ def canonicalize_nominal_keys(
     return output
 
 
+def _materialized_runtime_families(
+    histograms: Mapping[str, Any],
+    *,
+    runtime_families: Iterable[str],
+    schema_version: int | None,
+) -> tuple[str, ...]:
+    """Return runtime families represented by at least one schema component."""
+
+    materialized = []
+    for family in runtime_families:
+        if schema_version == NOMINAL_CONTAINER_SCHEMA_VERSION and _dimensionality(family) == 1:
+            family_keys = (
+                scalar_nominal_key(family),
+                eft_nominal_key(family),
+                sumw2_key(family),
+            )
+        else:
+            family_keys = (family, sumw2_key(family))
+        if any(key in histograms for key in family_keys):
+            materialized.append(family)
+    return tuple(materialized)
+
+
 def merge_nominal_mappings(
     histogram_mappings: Iterable[Mapping[str, Any]],
     *,
@@ -439,9 +462,14 @@ def merge_nominal_mappings(
     runtime_families = tuple(runtime_families)
     merged = OrderedDict()
     for mapping in histogram_mappings:
-        validate_nominal_mapping(
+        input_families = _materialized_runtime_families(
             mapping,
             runtime_families=runtime_families,
+            schema_version=schema_version,
+        )
+        validate_nominal_mapping(
+            mapping,
+            runtime_families=input_families,
             schema_version=schema_version,
             policy=policy,
         )
