@@ -29,10 +29,7 @@ from topeft.modules.nominal_schema import (
     merge_nominal_mappings,
     validate_nominal_mapping,
 )
-from topeft.modules.sumw2_policy import (
-    resolved_policy_from_provenance,
-    validate_policy_identity,
-)
+from topeft.modules.sumw2_policy import resolved_policy_from_provenance
 from topeft.modules.missing_parton_contract import (
     DEFAULT_SR_REGISTRY,
     SR_CHANNEL_CONFIG_KEY,
@@ -295,13 +292,9 @@ def load_and_merge_histogram_pkls(
     if schema_version == NOMINAL_CONTAINER_SCHEMA_VERSION:
         merged_sidecar = merge_histogram_sidecars(input_metadata)
         artifact_kind = merged_sidecar["artifact_kind"]
-        policies = [
-            resolved_policy_from_provenance(metadata["sumw2_storage_provenance"])
-            for metadata in input_metadata
-        ]
-        for policy in policies[1:]:
-            validate_policy_identity(policies[0], policy)
-        policy = policies[0]
+        policy = resolved_policy_from_provenance(
+            merged_sidecar["sumw2_storage_provenance"]
+        )
         runtime_families = policy.runtime_histogram_families
         required_families = frozenset(consumer_required_families)
         if artifact_kind == "processor_output":

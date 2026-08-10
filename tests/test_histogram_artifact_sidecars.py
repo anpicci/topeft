@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import gzip
+import hashlib
 import json
 from pathlib import Path
 import pickle
@@ -43,6 +44,7 @@ from topeft.modules.nominal_schema import (
     materialize_legacy_histogram_dict,
     scalar_nominal_key,
     is_split_nominal_mapping,
+    sumw2_key,
 )
 from topeft.modules.sumw2_policy import resolve_sumw2_storage_policy
 from topeft.modules.paths import topeft_path
@@ -274,6 +276,95 @@ def _write_processor(path, policy, products_block=None, source_payload=None):
         requested_data_driven_products=requested,
         resolved_data_driven_contract=contract,
     )
+
+
+def _write_disjoint_source_processor(
+    path,
+    *,
+    process_prefix,
+    year,
+    runtime_families,
+    contribution,
+    signal_process=None,
+):
+    data_process = f"{process_prefix}data{year}"
+    prompt_process = f"{process_prefix}prompt{year}"
+    samples = {
+        f"{process_prefix}_data_dataset": {
+            "histAxisName": data_process,
+            "isData": True,
+            "WCnames": [],
+        },
+        f"{process_prefix}_prompt_dataset": {
+            "histAxisName": prompt_process,
+            "isData": False,
+            "WCnames": [],
+        },
+    }
+    if signal_process is not None:
+        samples[f"{process_prefix}_signal_dataset"] = {
+            "histAxisName": signal_process,
+            "isData": False,
+            "WCnames": [],
+        }
+    policy = resolve_sumw2_storage_policy(
+        {"mode": "full_diagnostics"},
+        samples=samples,
+        runtime_families=runtime_families,
+        axes_info=axes_info,
+        axes_info_2d=axes_info_2d,
+        sumw2_storage_present=True,
+    )
+    products = resolve_data_driven_products(
+        {
+            "nonprompt": {
+                "enabled": True,
+                "source_contributors": {
+                    "data": {"process_names": [data_process]},
+                    "prompt_mc": {"process_names": [prompt_process]},
+                },
+            },
+            "flips": {
+                "enabled": True,
+                "source_contributors": {
+                    "data": {"process_names": [data_process]},
+                },
+            },
+        },
+        data_driven_products_present=True,
+        legacy_do_np=False,
+        samples=samples,
+        runtime_families=runtime_families,
+        metadata_path=f"{process_prefix}_{year}.yml",
+    )
+    requested, contract = certify_data_driven_preflight(products, policy)
+    requested["warnings"] = [f"{process_prefix}-warning"]
+    payload = {}
+    for family in runtime_families:
+        payload[scalar_nominal_key(family)] = _fill_sparse(
+            family,
+            (
+                (data_process, "isAR_3l", contribution),
+                (prompt_process, "isAR_3l", contribution),
+            ),
+        )
+        payload[sumw2_key(family)] = _fill_sparse(
+            sumw2_key(family),
+            (
+                (data_process, "isAR_3l", contribution**2),
+                (prompt_process, "isAR_3l", contribution**2),
+            ),
+        )
+    sidecar = write_histogram_artifact(
+        path,
+        histograms=payload,
+        artifact_kind="processor_output",
+        sumw2_storage_provenance=policy.to_provenance(),
+        production_sample_contract=_certify_profile(policy, samples, products),
+        requested_data_driven_products=requested,
+        resolved_data_driven_contract=contract,
+    )
+    return sidecar
 
 
 def _independent_expected_applicability(source_application_regions):
@@ -1649,6 +1740,209 @@ def test_compatible_stage_merges_regenerate_deterministic_sidecar(
     reopened, reopened_report = load_and_merge_histogram_pkls([cached_path])
     assert tuple(reopened) == tuple(merged)
     assert reopened_report["artifact_kind"] == artifact_kind
+
+
+@pytest.mark.parametrize(
+    "layout_name,runtime_families",
+    (
+        (
+            "2l_2lss_1tau_2los_1tau_4l",
+            ("njets", "lj0pt", "ptz", "ptz_wtau", "lt"),
+        ),
+        ("3l_fwd", ("njets", "lj0pt", "ptz", "lt")),
+        ("3l_m_offz_3l_p_offz", ("njets", "lj0pt", "ptz", "lt")),
+        ("3l_onz_tau", ("njets", "lj0pt", "ptz", "lt")),
+    ),
+)
+def test_disjoint_source_universes_compose_through_loader_without_scaling(
+    tmp_path,
+    layout_name,
+    runtime_families,
+):
+    run2_path = tmp_path / f"{layout_name}_run2.pkl.gz"
+    run3_path = tmp_path / f"{layout_name}_run3.pkl.gz"
+    run2_sidecar = _write_disjoint_source_processor(
+        run2_path,
+        process_prefix="run2",
+        year="UL18",
+        runtime_families=runtime_families,
+        contribution=1.0,
+    )
+    run3_sidecar = _write_disjoint_source_processor(
+        run3_path,
+        process_prefix="run3",
+        year="2022",
+        runtime_families=runtime_families,
+        contribution=2.0,
+    )
+
+    merged, report = load_and_merge_histogram_pkls(
+        [str(run2_path), str(run3_path)]
+    )
+    scalar = evaluate_nominal_at_wc(merged, "njets", {})
+    total = sum(
+        float(np.asarray(values).sum())
+        for values in scalar.view(flow=True, as_dict=True).values()
+    )
+    assert total == pytest.approx(6.0)
+    assert report["sumw2_storage_provenance"]["resolved_datasets"] == sorted(
+        run2_sidecar["sumw2_storage_provenance"]["resolved_datasets"]
+        + run3_sidecar["sumw2_storage_provenance"]["resolved_datasets"]
+    )
+    assert report["requested_data_driven_products"]["warnings"] == [
+        "run2-warning",
+        "run3-warning",
+    ]
+    assert report["resolved_data_driven_contract"]["products"]["nonprompt"][
+        "output_processes"
+    ] == ["nonpromptUL18", "nonprompt2022"]
+    assert len(report["production_sample_contract"]["cfg_identities"]) == 2
+    assert len(report["lineage_inputs"]) == 2
+
+    with pytest.raises(RuntimeError, match="Process-label overlap"):
+        load_and_merge_histogram_pkls([str(run2_path), str(run2_path)])
+
+
+@pytest.mark.parametrize(
+    "allocation_field",
+    ("resolved_datasets", "resolved_processes", "resolved_targets"),
+)
+def test_disjoint_source_composition_rejects_allocation_collisions(
+    tmp_path,
+    allocation_field,
+):
+    first_path = tmp_path / "first.pkl.gz"
+    second_path = tmp_path / "second.pkl.gz"
+    first = _write_disjoint_source_processor(
+        first_path,
+        process_prefix="first",
+        year="UL18",
+        runtime_families=("njets",),
+        contribution=1.0,
+    )
+    second = _write_disjoint_source_processor(
+        second_path,
+        process_prefix="second",
+        year="2022",
+        runtime_families=("njets",),
+        contribution=2.0,
+    )
+    collided = copy.deepcopy(second)
+    provenance = collided["sumw2_storage_provenance"]
+    if allocation_field == "resolved_targets":
+        provenance[allocation_field][0] = copy.deepcopy(
+            first["sumw2_storage_provenance"][allocation_field][0]
+        )
+        provenance[allocation_field].sort(
+            key=lambda target: (
+                target["dataset"],
+                target["process"],
+                target["family"],
+            )
+        )
+    else:
+        provenance[allocation_field][0] = first["sumw2_storage_provenance"][
+            allocation_field
+        ][0]
+        provenance[allocation_field].sort()
+
+    with pytest.raises(RuntimeError, match=f"{allocation_field} collision"):
+        merge_histogram_sidecars([first, collided])
+
+
+def test_disjoint_source_composition_rejects_generated_output_year_collisions(tmp_path):
+    first = _write_disjoint_source_processor(
+        tmp_path / "first.pkl.gz",
+        process_prefix="first",
+        year="UL18",
+        runtime_families=("njets",),
+        contribution=1.0,
+    )
+    second = _write_disjoint_source_processor(
+        tmp_path / "second.pkl.gz",
+        process_prefix="second",
+        year="UL18",
+        runtime_families=("njets",),
+        contribution=2.0,
+    )
+    with pytest.raises(RuntimeError, match="generated output collision|year collision"):
+        merge_histogram_sidecars([first, second])
+
+
+def test_disjoint_source_composition_rejects_cfg_identity_collisions(tmp_path):
+    first = _write_disjoint_source_processor(
+        tmp_path / "first.pkl.gz",
+        process_prefix="first",
+        year="UL18",
+        runtime_families=("njets",),
+        contribution=1.0,
+    )
+    second = _write_disjoint_source_processor(
+        tmp_path / "second.pkl.gz",
+        process_prefix="second",
+        year="2022",
+        runtime_families=("njets",),
+        contribution=2.0,
+    )
+    collided = copy.deepcopy(second)
+    contract = collided["production_sample_contract"]
+    contract["cfg_identities"] = copy.deepcopy(
+        first["production_sample_contract"]["cfg_identities"]
+    )
+    unsigned = dict(contract)
+    unsigned.pop("contract_identity_sha256")
+    contract["contract_identity_sha256"] = hashlib.sha256(
+        json.dumps(unsigned, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+
+    with pytest.raises(RuntimeError, match="cfg_identities collision"):
+        merge_histogram_sidecars([first, collided])
+
+
+def test_disjoint_source_composition_rejects_active_variant_key_collisions(tmp_path):
+    first = _write_disjoint_source_processor(
+        tmp_path / "first.pkl.gz",
+        process_prefix="first",
+        year="UL18",
+        runtime_families=("njets",),
+        contribution=1.0,
+        signal_process="tllq_privateUL18",
+    )
+    second = _write_disjoint_source_processor(
+        tmp_path / "second.pkl.gz",
+        process_prefix="second",
+        year="UL18",
+        runtime_families=("njets",),
+        contribution=2.0,
+        signal_process="tZq_centralUL18",
+    )
+
+    with pytest.raises(RuntimeError, match="active signal-variant key collision"):
+        merge_histogram_sidecars([first, second])
+
+
+def test_disjoint_source_composition_rejects_requested_source_mismatch(tmp_path):
+    first = _write_disjoint_source_processor(
+        tmp_path / "first.pkl.gz",
+        process_prefix="first",
+        year="UL18",
+        runtime_families=("njets",),
+        contribution=1.0,
+    )
+    second = _write_disjoint_source_processor(
+        tmp_path / "second.pkl.gz",
+        process_prefix="second",
+        year="2022",
+        runtime_families=("njets",),
+        contribution=2.0,
+    )
+    mismatched = copy.deepcopy(second)
+    mismatched["requested_data_driven_products"]["source"] = (
+        "implicit_legacy_data_driven_default"
+    )
+
+    with pytest.raises(RuntimeError, match="incompatible field 'source'"):
+        merge_histogram_sidecars([first, mismatched])
 
 
 def test_plotting_merged_cache_writer_preserves_artifact_stage(tmp_path, policy):
