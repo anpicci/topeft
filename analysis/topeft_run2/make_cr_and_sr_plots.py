@@ -1547,6 +1547,21 @@ def _normalize_year_tokens(raw_values):
     return normalized
 
 
+def _validate_supported_plot_years(year_tokens):
+    """Reject selections spanning both maintained run eras."""
+
+    selected_years = frozenset(year_tokens or ())
+    run2_years = frozenset(YEAR_AGGREGATE_ALIASES["run2"])
+    run3_years = frozenset(YEAR_AGGREGATE_ALIASES["run3"])
+    if selected_years & run2_years and selected_years & run3_years:
+        raise ValueError(
+            "Combined Run 2 + Run 3 plotting is unsupported. Produce Run 2 and "
+            "Run 3 plots separately; cross-run combination belongs at the "
+            "card/workspace/statistical-model level."
+        )
+    return tuple(year_tokens or ())
+
+
 def _extract_dd_year_tokens_from_cli_years(year_tokens):
     """Return canonical DD year tokens derived from *year_tokens*."""
 
@@ -6227,6 +6242,7 @@ def _resolve_lumi_pair(year_tokens):
 
 def _resolve_year_scope_label(year_tokens):
     """Return a human-facing scope label for complete aggregate run selections."""
+    _validate_supported_plot_years(year_tokens)
     selected_years = frozenset(year_tokens or ())
     run2_years = frozenset(_normalize_year_tokens(["run2"]))
     run3_years = frozenset(_normalize_year_tokens(["run3"]))
@@ -6234,8 +6250,6 @@ def _resolve_year_scope_label(year_tokens):
         return "Run 2"
     if selected_years == run3_years:
         return "Run 3"
-    if selected_years == run2_years | run3_years:
-        return "Run 2 + Run 3"
     return None
 
 
@@ -6324,6 +6338,7 @@ def build_region_context(
         )
 
     normalized_year_tokens = _normalize_year_tokens(raw_year_tokens)
+    _validate_supported_plot_years(normalized_year_tokens)
     seen_years = set()
     for cleaned in normalized_year_tokens:
         if cleaned in seen_years:
@@ -8910,7 +8925,10 @@ def build_arg_parser():
         "-y",
         "--year",
         nargs="+",
-        help="One or more year tokens or aggregates to include (e.g. 2017 2018, run2, run3)",
+        help=(
+            "One or more year tokens or one aggregate run to include (e.g. "
+            "2017 2018, run2, or run3); Run 2 and Run 3 must be plotted separately"
+        ),
     )
     parser.add_argument(
         "--channel-output",
@@ -9151,6 +9169,10 @@ def run_with_args(args, parser):
                 ", ".join(sorted(YEAR_TOKEN_RULES))
             )
         )
+    try:
+        _validate_supported_plot_years(normalized_years)
+    except ValueError as exc:
+        parser.error(str(exc))
     selected_years = normalized_years
 
     detected_region, ambiguous_region = _detect_region_from_path(pkl_paths[0])

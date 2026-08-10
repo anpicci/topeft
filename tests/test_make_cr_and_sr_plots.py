@@ -1962,15 +1962,16 @@ def test_data_driven_reinsertion_respects_year_tokens():
     assert "flips2022" not in ctx_run2.mc_samples
 
 
-def test_combined_run2_run3_year_context_uses_split_energy_display_metadata():
+def test_combined_run2_run3_year_context_is_rejected():
     parser = make_cr_and_sr_plots.build_arg_parser()
     parsed = parser.parse_args(["-f", "input.pkl.gz", "--year", "run2", "run3"])
     assert parsed.year == ["run2", "run3"]
 
     hist_inputs = {"met": _make_met_histogram_for_channels(["2lss_ee_CR_1j"])}
-    combined_ctx = make_cr_and_sr_plots.build_region_context(
-        "CR", hist_inputs, years=["run2", "run3"], unblind=True
-    )
+    with pytest.raises(ValueError, match=r"Combined Run 2 \+ Run 3 plotting"):
+        make_cr_and_sr_plots.build_region_context(
+            "CR", hist_inputs, years=["run2", "run3"], unblind=True
+        )
     run2_ctx = make_cr_and_sr_plots.build_region_context(
         "CR", hist_inputs, years=["run2"], unblind=True
     )
@@ -1981,20 +1982,6 @@ def test_combined_run2_run3_year_context_uses_split_energy_display_metadata():
         "CR", hist_inputs, years=["2022"], unblind=True
     )
 
-    assert combined_ctx.years == (
-        "2016",
-        "2016APV",
-        "2017",
-        "2018",
-        "2022",
-        "2022EE",
-        "2023",
-        "2023BPix",
-    )
-    assert combined_ctx.lumi_pair is None
-    assert combined_ctx.lumi_components == (("137.6", "13"), ("61.891", "13.6"))
-    assert combined_ctx.scope_label == "Run 2 + Run 3"
-
     assert run2_ctx.lumi_pair == ("137.6", "13")
     assert run2_ctx.lumi_components == (("137.6", "13"),)
     assert run2_ctx.scope_label == "Run 2"
@@ -2003,34 +1990,6 @@ def test_combined_run2_run3_year_context_uses_split_energy_display_metadata():
     assert run3_ctx.scope_label == "Run 3"
     assert physical_year_ctx.lumi_pair == ("7.98", "13.6")
     assert physical_year_ctx.scope_label is None
-
-
-def test_mixed_energy_plot_label_preserves_components_and_scope():
-    h_mc, h_data, group_map = _make_simple_stacked_inputs()
-    fig = make_cr_and_sr_plots.make_region_stacked_ratio_fig(
-        h_mc=h_mc,
-        h_data=h_data,
-        unit_norm_bool=False,
-        var="lj0pt",
-        group=group_map,
-        lumitag=None,
-        comtag=None,
-        lumi_components=(("137.6", "13"), ("61.891", "13.6")),
-        scope_label="Run 2 + Run 3",
-        unblind=True,
-    )
-
-    try:
-        labels = [text.get_text() for text in fig.axes[0].texts]
-        assert (
-            "137.6 fb$^{-1}$ (13 TeV) + 61.891 fb$^{-1}$ (13.6 TeV)\nRun 2 + Run 3"
-            in labels
-        )
-        assert " (13 TeV)" not in labels
-    finally:
-        make_cr_and_sr_plots.plt.close(fig)
-
-
 def test_parse_rebin_plot_vars_accepts_colon_and_equals():
     parsed = make_cr_and_sr_plots.parse_rebin_plot_vars("j0pt:2,l1conept=3")
 

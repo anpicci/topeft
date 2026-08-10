@@ -26,11 +26,29 @@ def _make_hist(processes, dense_name, nbins=1, dense_hi=None, channel="ch1"):
     return h
 
 
-def _make_payload(key, processes, *, with_sumw2=True, nbins=1, dense_hi=None):
-    payload = {key: _make_hist(processes, key, nbins=nbins, dense_hi=dense_hi)}
+def _make_payload(
+    key,
+    processes,
+    *,
+    with_sumw2=True,
+    nbins=1,
+    dense_hi=None,
+    channel="ch1",
+):
+    payload = {
+        key: _make_hist(
+            processes, key, nbins=nbins, dense_hi=dense_hi, channel=channel
+        )
+    }
     if with_sumw2:
         sumw2_key = f"{key}_sumw2"
-        payload[sumw2_key] = _make_hist(processes, sumw2_key, nbins=nbins, dense_hi=dense_hi)
+        payload[sumw2_key] = _make_hist(
+            processes,
+            sumw2_key,
+            nbins=nbins,
+            dense_hi=dense_hi,
+            channel=channel,
+        )
     return payload
 
 
@@ -66,8 +84,8 @@ def _make_provenance(families, *, dataset, process, warning=""):
 
 def test_merge_histogram_pkls_succeeds_for_disjoint_processes(monkeypatch):
     payloads = {
-        "a.pkl.gz": _make_payload("met", ["proc_a"]),
-        "b.pkl.gz": _make_payload("met", ["proc_b"]),
+        "a.pkl.gz": _make_payload("met", ["proc_a"], channel="channel_a"),
+        "b.pkl.gz": _make_payload("met", ["proc_b"], channel="channel_b"),
     }
 
     def fake_loader(path, allow_empty=False):
@@ -98,8 +116,12 @@ def test_merge_histogram_pkls_fails_when_sumw2_missing(monkeypatch):
 
 def test_merge_histogram_pkls_fails_on_dense_axis_edges_mismatch(monkeypatch):
     payloads = {
-        "a.pkl.gz": _make_payload("met", ["proc_a"], dense_hi=1.0),
-        "b.pkl.gz": _make_payload("met", ["proc_b"], dense_hi=2.0),
+        "a.pkl.gz": _make_payload(
+            "met", ["proc_a"], dense_hi=1.0, channel="channel_a"
+        ),
+        "b.pkl.gz": _make_payload(
+            "met", ["proc_b"], dense_hi=2.0, channel="channel_b"
+        ),
     }
 
     monkeypatch.setattr(datacard_tools, "get_hist_from_pkl", lambda path, allow_empty=False: payloads[path])
@@ -113,8 +135,12 @@ def test_merge_histogram_pkls_fails_on_dense_axis_edges_mismatch(monkeypatch):
 
 def test_merge_histogram_pkls_process_overlap_policy(monkeypatch):
     payloads = {
-        "a.pkl.gz": _make_payload("met", ["shared_proc"]),
-        "b.pkl.gz": _make_payload("met", ["shared_proc"]),
+        "a.pkl.gz": _make_payload(
+            "met", ["shared_proc"], channel="channel_a"
+        ),
+        "b.pkl.gz": _make_payload(
+            "met", ["shared_proc"], channel="channel_b"
+        ),
     }
 
     monkeypatch.setattr(datacard_tools, "get_hist_from_pkl", lambda path, allow_empty=False: payloads[path])
@@ -165,14 +191,54 @@ def test_process_collision_allow_preserves_disjoint_channel_content(monkeypatch)
     assert set(merged["met"].axes["channel"]) == {"channel_a", "channel_b"}
 
 
+def test_duplicate_final_category_is_rejected_before_histogram_addition(monkeypatch):
+    payloads = {
+        "a.pkl.gz": _make_payload("met", ["proc_a"], channel="3l_onZ_2b_4j"),
+        "b.pkl.gz": _make_payload("met", ["proc_b"], channel="3l_onZ_2b_4j"),
+    }
+    monkeypatch.setattr(
+        datacard_tools,
+        "get_hist_from_pkl",
+        lambda path, allow_empty=False: payloads[path],
+    )
+
+    with pytest.raises(RuntimeError, match="Duplicate final jet-resolved category"):
+        datacard_tools.load_and_merge_histogram_pkls(
+            ["a.pkl.gz", "b.pkl.gz"], on_process_collision="allow"
+        )
+
+
+def test_legacy_cross_run_histogram_composition_is_rejected(monkeypatch):
+    payloads = {
+        "run2.pkl.gz": _make_payload(
+            "met", ["backgroundUL18"], channel="2lss_m_4j"
+        ),
+        "run3.pkl.gz": _make_payload(
+            "met", ["background2022"], channel="3l_onZ_2b_4j"
+        ),
+    }
+    monkeypatch.setattr(
+        datacard_tools,
+        "get_hist_from_pkl",
+        lambda path, allow_empty=False: payloads[path],
+    )
+
+    with pytest.raises(
+        RuntimeError, match=r"Run 2 \+ Run 3 composition is unsupported"
+    ):
+        datacard_tools.load_and_merge_histogram_pkls(
+            ["run2.pkl.gz", "run3.pkl.gz"], on_process_collision="allow"
+        )
+
+
 def test_split_family_provenance_composes_first_occurrence_ordered_union():
     mixed = ("njets", "lj0pt", "ptz", "ptz_wtau", "lt")
     sibling = ("njets", "lj0pt", "ptz", "lt")
     composed = histogram_artifact._compose_sumw2_storage_provenance(
         (
-            _make_provenance(mixed, dataset="mixed_dataset", process="mixed_proc"),
+            _make_provenance(mixed, dataset="shared_dataset", process="shared_proc"),
             _make_provenance(
-                sibling, dataset="sibling_dataset", process="sibling_proc"
+                sibling, dataset="shared_dataset", process="shared_proc"
             ),
         )
     )
@@ -183,10 +249,6 @@ def test_split_family_provenance_composes_first_occurrence_ordered_union():
         "lj0pt",
         "ptz",
         "ptz_wtau",
-        "lt",
-        "njets",
-        "lj0pt",
-        "ptz",
         "lt",
     ]
     assert histogram_artifact._ordered_family_union((mixed, sibling, mixed)) == list(mixed)
@@ -200,21 +262,31 @@ def test_split_family_provenance_preserves_policy_and_allocation_guards():
     with pytest.raises(RuntimeError, match="policy-control field 'warnings'"):
         histogram_artifact._compose_sumw2_storage_provenance((first, incompatible))
 
-    collided = _make_provenance(
+    different_dataset = _make_provenance(
+        ("njets",), dataset="dataset_b", process="process_a"
+    )
+    with pytest.raises(RuntimeError, match="identical source-level resolved_datasets"):
+        histogram_artifact._compose_sumw2_storage_provenance(
+            (first, different_dataset)
+        )
+
+    different_process = _make_provenance(
         ("njets",), dataset="dataset_a", process="process_b"
     )
-    with pytest.raises(RuntimeError, match="resolved_datasets collision"):
-        histogram_artifact._compose_sumw2_storage_provenance((first, collided))
+    with pytest.raises(RuntimeError, match="identical source-level resolved_processes"):
+        histogram_artifact._compose_sumw2_storage_provenance(
+            (first, different_process)
+        )
 
 
 def test_sidecar_merge_composes_partial_content_manifests(monkeypatch):
     mixed = ("njets", "ptz_wtau")
     sibling = ("njets",)
     first_provenance = _make_provenance(
-        mixed, dataset="mixed_dataset", process="mixed_proc"
+        mixed, dataset="shared_dataset", process="shared_proc"
     )
     second_provenance = _make_provenance(
-        sibling, dataset="sibling_dataset", process="sibling_proc"
+        sibling, dataset="shared_dataset", process="shared_proc"
     )
     composed = histogram_artifact._compose_sumw2_storage_provenance(
         (first_provenance, second_provenance)

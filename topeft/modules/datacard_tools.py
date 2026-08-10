@@ -18,6 +18,7 @@ from topeft.modules.paths import topeft_path
 from topeft.modules.axes import info as axes_info
 from topeft.modules.axes import info_2d as axes_info_2d
 from topeft.modules.compatibility import add_sumw2_stub
+from topeft.modules.data_driven_products import CANONICAL_DATA_DRIVEN_YEARS
 from topeft.modules.histogram_artifact import (
     merge_histogram_sidecars,
     validate_histogram_artifact,
@@ -213,6 +214,99 @@ def _process_labels(hist_obj):
         return None
 
 
+_RUN2_CANONICAL_YEARS = frozenset(
+    year for year in CANONICAL_DATA_DRIVEN_YEARS if year.startswith("UL")
+)
+_RUN3_CANONICAL_YEARS = frozenset(CANONICAL_DATA_DRIVEN_YEARS) - _RUN2_CANONICAL_YEARS
+_CANONICAL_YEARS_BY_SUFFIX_LENGTH = tuple(
+    sorted(CANONICAL_DATA_DRIVEN_YEARS, key=len, reverse=True)
+)
+
+
+def _canonical_run_eras(processes):
+    eras = set()
+    for process in processes:
+        process_name = str(process)
+        year = next(
+            (
+                candidate
+                for candidate in _CANONICAL_YEARS_BY_SUFFIX_LENGTH
+                if process_name.endswith(candidate)
+            ),
+            None,
+        )
+        if year in _RUN2_CANONICAL_YEARS:
+            eras.add("run2")
+        elif year in _RUN3_CANONICAL_YEARS:
+            eras.add("run3")
+    return frozenset(eras)
+
+
+def _mapping_process_labels(histograms):
+    return {
+        process
+        for histogram in histograms.values()
+        for process in (_process_labels(histogram) or ())
+    }
+
+
+def _reject_cross_run_histogram_composition(
+    pkl_paths,
+    loaded_inputs,
+    input_metadata,
+):
+    input_eras = []
+    for path, histograms, metadata in zip(
+        pkl_paths, loaded_inputs, input_metadata
+    ):
+        if metadata is None:
+            processes = _mapping_process_labels(histograms)
+        else:
+            processes = metadata["sumw2_storage_provenance"][
+                "resolved_processes"
+            ]
+        input_eras.append((path, _canonical_run_eras(processes)))
+
+    composed_eras = set().union(*(eras for _path, eras in input_eras))
+    if {"run2", "run3"} <= composed_eras:
+        era_summary = ", ".join(
+            f"{path}={sorted(eras)}" for path, eras in input_eras
+        )
+        raise RuntimeError(
+            "Histogram-level Run 2 + Run 3 composition is unsupported. "
+            "Produce Run 2 and Run 3 cards separately and combine them only at "
+            "the card/workspace/statistical-model level. "
+            f"Resolved input eras: {era_summary}."
+        )
+
+
+def _final_category_support(histograms):
+    categories = set()
+    for histogram in histograms.values():
+        try:
+            categories.update(str(label) for label in histogram.axes["channel"])
+        except Exception:
+            continue
+    return categories
+
+
+def _validate_disjoint_final_category_support(pkl_paths, loaded_inputs):
+    owner_by_category = {}
+    for path, histograms in zip(pkl_paths, loaded_inputs):
+        categories = _final_category_support(histograms)
+        collisions = sorted(set(owner_by_category) & categories)
+        if collisions:
+            examples = _short_examples(collisions, max_items=12)
+            first_owner = owner_by_category[collisions[0]]
+            raise RuntimeError(
+                "Duplicate final jet-resolved category support detected before "
+                f"histogram addition: incoming_path={path!r}, "
+                f"existing_path={first_owner!r}, categories={examples!r}. "
+                "Physical PKL fragments must own disjoint channel-axis categories."
+            )
+        owner_by_category.update({category: path for category in categories})
+
+
 def load_and_merge_histogram_pkls(
     pkl_paths,
     *,
@@ -288,9 +382,18 @@ def load_and_merge_histogram_pkls(
     schema_version = next(iter(schema_versions))
     report["schema"] = "legacy_uniform" if schema_version is None else "split_sibling_v1"
 
+    if len(pkl_paths) > 1:
+        _reject_cross_run_histogram_composition(
+            pkl_paths,
+            loaded_inputs,
+            input_metadata,
+        )
+
     merged_hists = {}
     if schema_version == NOMINAL_CONTAINER_SCHEMA_VERSION:
         merged_sidecar = merge_histogram_sidecars(input_metadata)
+        if len(pkl_paths) > 1:
+            _validate_disjoint_final_category_support(pkl_paths, loaded_inputs)
         artifact_kind = merged_sidecar["artifact_kind"]
         policy = resolved_policy_from_provenance(
             merged_sidecar["sumw2_storage_provenance"]
@@ -304,34 +407,37 @@ def load_and_merge_histogram_pkls(
                 if not policy.selects_family(family)
             )
         else:
-            manifest_families = input_metadata[0]["sumw2_content_manifest"][
-                "families"
-            ]
             missing_policy_requirements = sorted(
                 family
                 for family in required_families
-                if not manifest_families.get(family, {}).get(
-                    "required_sumw2_processes"
-                )
+                if not merged_sidecar["required_sumw2_processes"].get(family)
             )
         if missing_policy_requirements:
             raise RuntimeError(
                 "Active consumer requirements are absent from the artifact contract: "
                 + ", ".join(missing_policy_requirements)
             )
-        for path, hist_dict in zip(pkl_paths, loaded_inputs):
+        for path, hist_dict, metadata in zip(
+            pkl_paths, loaded_inputs, input_metadata
+        ):
+            input_policy = resolved_policy_from_provenance(
+                metadata["sumw2_storage_provenance"]
+            )
+            input_runtime_families = input_policy.runtime_histogram_families
             validate_nominal_mapping(
                 hist_dict,
-                runtime_families=runtime_families,
+                runtime_families=input_runtime_families,
                 schema_version=schema_version,
-                policy=policy if artifact_kind == "processor_output" else None,
+                policy=(
+                    input_policy if artifact_kind == "processor_output" else None
+                ),
             )
             keys = set(hist_dict)
             report["files"].append(
                 {
                     "path": path,
                     "num_keys": len(keys),
-                    "num_base_keys": len(runtime_families),
+                    "num_base_keys": len(input_runtime_families),
                     "num_sumw2_keys": sum(_is_sumw2_key(key) for key in keys),
                 }
             )
@@ -397,6 +503,8 @@ def load_and_merge_histogram_pkls(
     elif schema_version is None:
         report["artifact_kind"] = "legacy_uniform"
         report["artifact_merged"] = len(pkl_paths) > 1
+        if len(pkl_paths) > 1:
+            _validate_disjoint_final_category_support(pkl_paths, loaded_inputs)
         for path, hist_dict in zip(pkl_paths, loaded_inputs):
             keys = set(hist_dict.keys())
             base_keys = sorted(k for k in keys if not _is_sumw2_key(k))

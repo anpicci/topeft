@@ -15,8 +15,6 @@ from typing import Any
 import cloudpickle
 
 from topeft.modules.data_driven_products import (
-    CANONICAL_DATA_DRIVEN_YEARS,
-    DATA_DRIVEN_PRODUCT_NAMES,
     RESOLVED_DATA_DRIVEN_CONTRACT_VERSION,
     data_driven_product_error,
     generated_output_processes_from_contract,
@@ -1656,29 +1654,6 @@ def _canonical_identity(value: Any) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"))
 
 
-def _require_disjoint_allocations(
-    values: Iterable[Iterable[Any]],
-    *,
-    label: str,
-) -> list[Any]:
-    """Return a union only when every input allocation is disjoint."""
-
-    observed: set[Any] = set()
-    union: list[Any] = []
-    for value in values:
-        current = list(value)
-        collision = observed & set(current)
-        if collision:
-            examples = ", ".join(sorted(map(str, collision))[:5])
-            raise histogram_merge_error(
-                f"Cannot compose source-allocation provenance: {label} collision "
-                f"({examples})."
-            )
-        observed.update(current)
-        union.extend(current)
-    return union
-
-
 def _ordered_family_union(
     family_sequences: Iterable[Iterable[str]],
 ) -> list[str]:
@@ -1697,7 +1672,7 @@ def _ordered_family_union(
 def _compose_sumw2_storage_provenance(
     provenances: Iterable[Mapping[str, Any]],
 ) -> dict[str, Any]:
-    """Compose compatible disjoint source allocations into one policy record."""
+    """Compose compatible fragments of one source universe."""
 
     normalized = [
         resolved_policy_from_provenance(provenance).to_provenance()
@@ -1721,32 +1696,27 @@ def _compose_sumw2_storage_provenance(
                 "Cannot compose source-allocation provenance with incompatible "
                 f"policy-control field '{field_name}'."
             )
-    datasets = sorted(
-        _require_disjoint_allocations(
-            (record["resolved_datasets"] for record in normalized),
-            label="resolved_datasets",
-        )
-    )
-    processes = sorted(
-        _require_disjoint_allocations(
-            (record["resolved_processes"] for record in normalized),
-            label="resolved_processes",
-        )
-    )
-    target_keys = _require_disjoint_allocations(
-        (
-            [_canonical_identity(target) for target in record["resolved_targets"]]
-            for record in normalized
-        ),
-        label="resolved_targets",
-    )
-    targets = [json.loads(target) for target in target_keys]
+    for field_name in ("resolved_datasets", "resolved_processes"):
+        if any(record[field_name] != first[field_name] for record in normalized[1:]):
+            raise histogram_merge_error(
+                "Same-run histogram fragments require identical source-level "
+                f"{field_name}; histogram-level cross-source composition is unsupported."
+            )
+    datasets = copy.deepcopy(first["resolved_datasets"])
+    processes = copy.deepcopy(first["resolved_processes"])
     runtime_histogram_families = _ordered_family_union(
         record["runtime_histogram_families"] for record in normalized
     )
     family_order = {
         family: index for index, family in enumerate(runtime_histogram_families)
     }
+    targets_by_identity: dict[str, dict[str, Any]] = {}
+    for record in normalized:
+        for target in record["resolved_targets"]:
+            targets_by_identity.setdefault(
+                _canonical_identity(target), copy.deepcopy(target)
+            )
+    targets = list(targets_by_identity.values())
     targets.sort(
         key=lambda target: (
             target["dataset"],
@@ -1769,213 +1739,6 @@ def _compose_sumw2_storage_provenance(
         ) from error
 
 
-def _compose_production_sample_contract(
-    contracts: Iterable[Mapping[str, Any] | None],
-    *,
-    input_provenances: Iterable[Mapping[str, Any]],
-    composed_provenance: Mapping[str, Any],
-) -> dict[str, Any]:
-    """Compose and recertify the production contract tied to a policy union."""
-
-    records = list(contracts)
-    provenances = list(input_provenances)
-    if any(not isinstance(record, Mapping) for record in records):
-        raise histogram_merge_error(
-            "Cannot compose source-allocation provenance without certified "
-            "production sample contracts."
-        )
-    try:
-        for record, provenance in zip(records, provenances):
-            validate_production_sample_contract(record, provenance)
-    except Exception as error:
-        raise histogram_merge_error(
-            f"Cannot compose an invalid production sample contract: {error}"
-        ) from error
-    first = records[0]
-    control_fields = (
-        "contract_version",
-        "wrapper_identity",
-        "resolved_mode",
-        "signal_sample_profile",
-        "compatibility_validated",
-    )
-    for field_name in control_fields:
-        if any(record[field_name] != first[field_name] for record in records[1:]):
-            raise histogram_merge_error(
-                "Cannot compose production sample contracts with incompatible "
-                f"control field '{field_name}'."
-            )
-    cfg_values = _require_disjoint_allocations(
-        (
-            [_canonical_identity(identity) for identity in record["cfg_identities"]]
-            for record in records
-        ),
-        label="cfg_identities",
-    )
-    cfg_identities = [json.loads(identity) for identity in cfg_values]
-    cfg_identities.sort(key=lambda identity: tuple(sorted(identity.items())))
-    active_variants: dict[str, Any] = {}
-    for record in records:
-        collisions = set(active_variants) & set(record["active_signal_variants"])
-        if collisions:
-            raise histogram_merge_error(
-                "Cannot compose production sample contracts: active signal-variant "
-                "key collision (" + ", ".join(sorted(collisions)[:5]) + ")."
-            )
-        active_variants.update(copy.deepcopy(record["active_signal_variants"]))
-    composed = {
-        **{field_name: copy.deepcopy(first[field_name]) for field_name in control_fields},
-        "cfg_identities": cfg_identities,
-        "active_signal_variants": active_variants,
-    }
-    unsigned_identity = _canonical_identity(composed)
-    composed["contract_identity_sha256"] = hashlib.sha256(
-        unsigned_identity.encode("utf-8")
-    ).hexdigest()
-    try:
-        validate_production_sample_contract(composed, composed_provenance)
-    except Exception as error:
-        raise histogram_merge_error(
-            f"Composed production sample contract is invalid: {error}"
-        ) from error
-    return composed
-
-
-def _compose_data_driven_contracts(
-    requested_contracts: Iterable[Mapping[str, Any]],
-    resolved_contracts: Iterable[Mapping[str, Any]],
-    *,
-    input_provenances: Iterable[Mapping[str, Any]],
-    composed_provenance: Mapping[str, Any],
-) -> tuple[dict[str, Any], dict[str, Any]]:
-    """Compose and recertify requested and resolved generated-output contracts."""
-
-    requested_records = list(requested_contracts)
-    resolved_records = list(resolved_contracts)
-    provenances = list(input_provenances)
-    if len(requested_records) != len(resolved_records):
-        raise histogram_merge_error(
-            "Requested and resolved data-driven contract counts do not agree."
-        )
-    try:
-        for requested, resolved, provenance in zip(
-            requested_records, resolved_records, provenances
-        ):
-            validate_serialized_data_driven_contract(
-                requested,
-                resolved,
-                policy=resolved_policy_from_provenance(provenance),
-            )
-    except data_driven_product_error as error:
-        raise histogram_merge_error(
-            f"Cannot compose an invalid data-driven contract: {error}"
-        ) from error
-    first_requested = requested_records[0]
-    for field_name in ("schema_version", "source", "products"):
-        if any(
-            record[field_name] != first_requested[field_name]
-            for record in requested_records[1:]
-        ):
-            raise histogram_merge_error(
-                "Cannot compose requested data-driven contracts with incompatible "
-                f"field '{field_name}'."
-            )
-    warnings = sorted(
-        {
-            warning
-            for record in requested_records
-            for warning in record["warnings"]
-        }
-    )
-    requested = {
-        "schema_version": first_requested["schema_version"],
-        "source": first_requested["source"],
-        "products": copy.deepcopy(first_requested["products"]),
-        "warnings": warnings,
-    }
-    if any(
-        record["contract_version"] != RESOLVED_DATA_DRIVEN_CONTRACT_VERSION
-        for record in resolved_records
-    ):
-        raise histogram_merge_error(
-            "Disjoint source-allocation composition requires the current resolved "
-            "data-driven contract version."
-        )
-    required_prompt_signals = sorted(
-        _require_disjoint_allocations(
-            (record["required_prompt_signal_processes"] for record in resolved_records),
-            label="required_prompt_signal_processes",
-        )
-    )
-    products: dict[str, Any] = {}
-    for product_name in DATA_DRIVEN_PRODUCT_NAMES:
-        product_records = [record["products"][product_name] for record in resolved_records]
-        enabled_values = {record["enabled"] for record in product_records}
-        if len(enabled_values) != 1:
-            raise histogram_merge_error(
-                "Cannot compose resolved data-driven contracts with incompatible "
-                f"enablement for '{product_name}'."
-            )
-        outputs_by_year: dict[str, tuple[str, dict[str, Any]]] = {}
-        contributor_sets: set[str] = set()
-        for product in product_records:
-            for output_process, output_record in product["generated_outputs"].items():
-                year = output_record["year"]
-                if output_process in {
-                    existing_process
-                    for existing_process, _record in outputs_by_year.values()
-                }:
-                    raise histogram_merge_error(
-                        "Cannot compose resolved data-driven contracts: generated "
-                        f"output collision for '{output_process}'."
-                    )
-                if year in outputs_by_year:
-                    raise histogram_merge_error(
-                        "Cannot compose resolved data-driven contracts: year collision "
-                        f"for '{product_name}/{year}'."
-                    )
-                contributors = {
-                    process
-                    for processes in output_record["source_contributors"].values()
-                    for process in processes
-                }
-                required_sources = set(output_record["required_source_sumw2_processes"])
-                collisions = contributor_sets & (contributors | required_sources)
-                if collisions:
-                    raise histogram_merge_error(
-                        "Cannot compose resolved data-driven contracts: contributor "
-                        "collision (" + ", ".join(sorted(collisions)[:5]) + ")."
-                    )
-                contributor_sets.update(contributors | required_sources)
-                outputs_by_year[year] = (output_process, copy.deepcopy(output_record))
-        generated_outputs = {
-            output_process: output_record
-            for year in CANONICAL_DATA_DRIVEN_YEARS
-            if year in outputs_by_year
-            for output_process, output_record in (outputs_by_year[year],)
-        }
-        products[product_name] = {
-            "enabled": next(iter(enabled_values)),
-            "generated_outputs": generated_outputs,
-            "output_processes": list(generated_outputs),
-        }
-    resolved = {
-        "contract_version": RESOLVED_DATA_DRIVEN_CONTRACT_VERSION,
-        "required_prompt_signal_processes": required_prompt_signals,
-        "products": products,
-    }
-    try:
-        return validate_serialized_data_driven_contract(
-            requested,
-            resolved,
-            policy=resolved_policy_from_provenance(composed_provenance),
-        )
-    except data_driven_product_error as error:
-        raise histogram_merge_error(
-            f"Composed data-driven contract is invalid: {error}"
-        ) from error
-
-
 def _compose_merged_contract_set(
     sidecars: Iterable[Mapping[str, Any]],
 ) -> tuple[
@@ -1987,10 +1750,15 @@ def _compose_merged_contract_set(
     """Build one truthful coupled contract set for a maintained sidecar merge."""
 
     sidecars = tuple(sidecars)
-    provenance_identities = [
-        _canonical_identity(sidecar["sumw2_storage_provenance"])
-        for sidecar in sidecars
-    ]
+    if len(sidecars) == 1:
+        sidecar = sidecars[0]
+        return (
+            copy.deepcopy(sidecar["sumw2_storage_provenance"]),
+            copy.deepcopy(sidecar.get("production_sample_contract")),
+            copy.deepcopy(sidecar.get("requested_data_driven_products")),
+            copy.deepcopy(sidecar.get("resolved_data_driven_contract")),
+        )
+
     requested_presence = {
         "requested_data_driven_products" in sidecar for sidecar in sidecars
     }
@@ -1998,55 +1766,54 @@ def _compose_merged_contract_set(
         raise histogram_merge_error(
             "Cannot merge artifacts with mixed requested data-driven contract presence."
         )
-    same_universe = len(set(provenance_identities)) == 1
-    if same_universe:
-        provenance = copy.deepcopy(sidecars[0]["sumw2_storage_provenance"])
-        production_contract = copy.deepcopy(sidecars[0].get("production_sample_contract"))
-        for sidecar in sidecars[1:]:
-            if _canonical_identity(sidecar.get("production_sample_contract")) != _canonical_identity(production_contract):
-                raise histogram_merge_error(
-                    "Maintained histogram merging requires identical production "
-                    "sample profile contracts for one source universe."
-                )
-        requested = None
-        resolved = None
-        if requested_presence == {True}:
-            requested = copy.deepcopy(sidecars[0]["requested_data_driven_products"])
-            resolved = copy.deepcopy(sidecars[0]["resolved_data_driven_contract"])
-            for sidecar in sidecars[1:]:
-                if (
-                    _canonical_identity(sidecar["requested_data_driven_products"])
-                    != _canonical_identity(requested)
-                    or _canonical_identity(sidecar["resolved_data_driven_contract"])
-                    != _canonical_identity(resolved)
-                ):
-                    raise histogram_merge_error(
-                        "Maintained histogram merging requires identical requested "
-                        "data-driven product contracts for one source universe."
-                    )
-        return provenance, production_contract, requested, resolved
-
     provenance = _compose_sumw2_storage_provenance(
         sidecar["sumw2_storage_provenance"] for sidecar in sidecars
     )
-    production_contract = _compose_production_sample_contract(
-        (sidecar.get("production_sample_contract") for sidecar in sidecars),
-        input_provenances=(
-            sidecar["sumw2_storage_provenance"] for sidecar in sidecars
-        ),
-        composed_provenance=provenance,
+    production_contract = copy.deepcopy(
+        sidecars[0].get("production_sample_contract")
     )
+    if any(
+        _canonical_identity(sidecar.get("production_sample_contract"))
+        != _canonical_identity(production_contract)
+        for sidecar in sidecars[1:]
+    ):
+        raise histogram_merge_error(
+            "Same-run histogram fragments require identical production sample "
+            "profile contracts."
+        )
+    if production_contract is not None:
+        try:
+            validate_production_sample_contract(production_contract, provenance)
+        except Exception as error:
+            raise histogram_merge_error(
+                f"Composed production sample contract is invalid: {error}"
+            ) from error
     requested = None
     resolved = None
     if requested_presence == {True}:
-        requested, resolved = _compose_data_driven_contracts(
-            (sidecar["requested_data_driven_products"] for sidecar in sidecars),
-            (sidecar["resolved_data_driven_contract"] for sidecar in sidecars),
-            input_provenances=(
-                sidecar["sumw2_storage_provenance"] for sidecar in sidecars
-            ),
-            composed_provenance=provenance,
-        )
+        requested = copy.deepcopy(sidecars[0]["requested_data_driven_products"])
+        resolved = copy.deepcopy(sidecars[0]["resolved_data_driven_contract"])
+        if any(
+            _canonical_identity(sidecar["requested_data_driven_products"])
+            != _canonical_identity(requested)
+            or _canonical_identity(sidecar["resolved_data_driven_contract"])
+            != _canonical_identity(resolved)
+            for sidecar in sidecars[1:]
+        ):
+            raise histogram_merge_error(
+                "Same-run histogram fragments require identical requested and "
+                "resolved data-driven product contracts."
+            )
+        try:
+            requested, resolved = validate_serialized_data_driven_contract(
+                requested,
+                resolved,
+                policy=resolved_policy_from_provenance(provenance),
+            )
+        except data_driven_product_error as error:
+            raise histogram_merge_error(
+                f"Composed data-driven contract is invalid: {error}"
+            ) from error
     return provenance, production_contract, requested, resolved
 
 

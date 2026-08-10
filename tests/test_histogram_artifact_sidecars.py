@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import copy
 import gzip
-import hashlib
 import json
 from pathlib import Path
 import pickle
@@ -111,12 +110,12 @@ def _axes(dense_name):
     )
 
 
-def _fill_sparse(dense_name, entries):
+def _fill_sparse(dense_name, entries, *, channel="3l"):
     output = SparseHist(*_axes(dense_name), storage="Double")
     for process, appl, weight in entries:
         output.fill(
             process=process,
-            channel="3l",
+            channel=channel,
             systematic="nominal",
             appl=appl,
             **{dense_name: np.asarray([0.5])},
@@ -125,12 +124,12 @@ def _fill_sparse(dense_name, entries):
     return output
 
 
-def _fill_eft(entries):
+def _fill_eft(entries, *, channel="3l"):
     output = HistEFT(*_axes("njets"), wc_names=["ctG"], label="Events")
     for process, appl, weight in entries:
         output.fill(
             process=process,
-            channel="3l",
+            channel=channel,
             systematic="nominal",
             appl=appl,
             njets=np.asarray([0.5]),
@@ -172,7 +171,7 @@ def _certify_profile(policy, samples, products=None):
     )
 
 
-def _processor_payload():
+def _processor_payload(*, channel="3l"):
     scalar_entries = (
         ("dataUL18", "isAR_3l", 10.0),
         ("TTTo2L2Nu_centralUL18", "isAR_3l", 3.0),
@@ -188,14 +187,19 @@ def _processor_payload():
         ("signal_centralUL18", "isSR_3l", 25.0),
     )
     return {
-        scalar_nominal_key("njets"): _fill_sparse("njets", scalar_entries),
+        scalar_nominal_key("njets"): _fill_sparse(
+            "njets", scalar_entries, channel=channel
+        ),
         eft_nominal_key("njets"): _fill_eft(
             (
                 ("signal_centralUL18", "isAR_3l", 9.0),
                 ("signal_centralUL18", "isSR_3l", 5.0),
-            )
+            ),
+            channel=channel,
         ),
-        "njets_sumw2": _fill_sparse("njets_sumw2", companion_entries),
+        "njets_sumw2": _fill_sparse(
+            "njets_sumw2", companion_entries, channel=channel
+        ),
     }
 
 
@@ -1344,7 +1348,7 @@ def test_merge_rejects_incompatible_generated_output_maps(tmp_path, policy):
     output["required_source_sumw2_processes"] = ["dataUL18"]
     with pytest.raises(
         histogram_artifact_error,
-        match="identical requested data-driven product contracts",
+        match="identical requested and resolved data-driven product contracts",
     ):
         merge_histogram_sidecars([first, second])
 
@@ -1639,7 +1643,7 @@ def test_flips_persisted_flow_has_separate_stage_contract(tmp_path, policy):
     assert tuple(datacard_view) == ("njets", "njets_sumw2")
 
 
-def _transformed_payload(artifact_kind):
+def _transformed_payload(artifact_kind, *, channel="3l"):
     processes = (
         ("flipsUL18",)
         if artifact_kind == "flips_output"
@@ -1649,10 +1653,12 @@ def _transformed_payload(artifact_kind):
         scalar_nominal_key("njets"): _fill_sparse(
             "njets",
             tuple((process, "isSR_3l", 2.0) for process in processes),
+            channel=channel,
         ),
         "njets_sumw2": _fill_sparse(
             "njets_sumw2",
             tuple((process, "isSR_3l", 4.0) for process in processes),
+            channel=channel,
         ),
     }
 
@@ -1709,12 +1715,19 @@ def test_compatible_stage_merges_regenerate_deterministic_sidecar(
     paths = []
     for index in range(2):
         path = tmp_path / f"{artifact_kind}_{index}.pkl.gz"
+        channel = ("3l_onZ_2b_4j", "2lss_m_4j")[index]
         if artifact_kind == "processor_output":
-            _write_processor(path, policy)
+            _write_processor(
+                path,
+                policy,
+                source_payload=_processor_payload(channel=channel),
+            )
         else:
             write_histogram_artifact(
                 path,
-                histograms=_transformed_payload(artifact_kind),
+                histograms=_transformed_payload(
+                    artifact_kind, channel=channel
+                ),
                 artifact_kind=artifact_kind,
                 sumw2_storage_provenance=policy.to_provenance(),
                 lineage_inputs=[lineage_input_from_sidecar(source_sidecar)],
@@ -1754,21 +1767,21 @@ def test_compatible_stage_merges_regenerate_deterministic_sidecar(
         ("3l_onz_tau", ("njets", "lj0pt", "ptz", "lt")),
     ),
 )
-def test_disjoint_source_universes_compose_through_loader_without_scaling(
+def test_cross_run_source_universes_are_rejected_by_loader(
     tmp_path,
     layout_name,
     runtime_families,
 ):
     run2_path = tmp_path / f"{layout_name}_run2.pkl.gz"
     run3_path = tmp_path / f"{layout_name}_run3.pkl.gz"
-    run2_sidecar = _write_disjoint_source_processor(
+    _write_disjoint_source_processor(
         run2_path,
         process_prefix="run2",
         year="UL18",
         runtime_families=runtime_families,
         contribution=1.0,
     )
-    run3_sidecar = _write_disjoint_source_processor(
+    _write_disjoint_source_processor(
         run3_path,
         process_prefix="run3",
         year="2022",
@@ -1776,180 +1789,23 @@ def test_disjoint_source_universes_compose_through_loader_without_scaling(
         contribution=2.0,
     )
 
-    merged, report = load_and_merge_histogram_pkls(
-        [str(run2_path), str(run3_path)]
-    )
-    scalar = evaluate_nominal_at_wc(merged, "njets", {})
-    total = sum(
-        float(np.asarray(values).sum())
-        for values in scalar.view(flow=True, as_dict=True).values()
-    )
-    assert total == pytest.approx(6.0)
-    assert report["sumw2_storage_provenance"]["resolved_datasets"] == sorted(
-        run2_sidecar["sumw2_storage_provenance"]["resolved_datasets"]
-        + run3_sidecar["sumw2_storage_provenance"]["resolved_datasets"]
-    )
-    assert report["requested_data_driven_products"]["warnings"] == [
-        "run2-warning",
-        "run3-warning",
-    ]
-    assert report["resolved_data_driven_contract"]["products"]["nonprompt"][
-        "output_processes"
-    ] == ["nonpromptUL18", "nonprompt2022"]
-    assert len(report["production_sample_contract"]["cfg_identities"]) == 2
-    assert len(report["lineage_inputs"]) == 2
-
-    with pytest.raises(RuntimeError, match="Process-label overlap"):
-        load_and_merge_histogram_pkls([str(run2_path), str(run2_path)])
-
-
-@pytest.mark.parametrize(
-    "allocation_field",
-    ("resolved_datasets", "resolved_processes", "resolved_targets"),
-)
-def test_disjoint_source_composition_rejects_allocation_collisions(
-    tmp_path,
-    allocation_field,
-):
-    first_path = tmp_path / "first.pkl.gz"
-    second_path = tmp_path / "second.pkl.gz"
-    first = _write_disjoint_source_processor(
-        first_path,
-        process_prefix="first",
-        year="UL18",
-        runtime_families=("njets",),
-        contribution=1.0,
-    )
-    second = _write_disjoint_source_processor(
-        second_path,
-        process_prefix="second",
-        year="2022",
-        runtime_families=("njets",),
-        contribution=2.0,
-    )
-    collided = copy.deepcopy(second)
-    provenance = collided["sumw2_storage_provenance"]
-    if allocation_field == "resolved_targets":
-        provenance[allocation_field][0] = copy.deepcopy(
-            first["sumw2_storage_provenance"][allocation_field][0]
-        )
-        provenance[allocation_field].sort(
-            key=lambda target: (
-                target["dataset"],
-                target["process"],
-                target["family"],
-            )
-        )
-    else:
-        provenance[allocation_field][0] = first["sumw2_storage_provenance"][
-            allocation_field
-        ][0]
-        provenance[allocation_field].sort()
-
-    with pytest.raises(RuntimeError, match=f"{allocation_field} collision"):
-        merge_histogram_sidecars([first, collided])
-
-
-def test_disjoint_source_composition_rejects_generated_output_year_collisions(tmp_path):
-    first = _write_disjoint_source_processor(
-        tmp_path / "first.pkl.gz",
-        process_prefix="first",
-        year="UL18",
-        runtime_families=("njets",),
-        contribution=1.0,
-    )
-    second = _write_disjoint_source_processor(
-        tmp_path / "second.pkl.gz",
-        process_prefix="second",
-        year="UL18",
-        runtime_families=("njets",),
-        contribution=2.0,
-    )
-    with pytest.raises(RuntimeError, match="generated output collision|year collision"):
-        merge_histogram_sidecars([first, second])
-
-
-def test_disjoint_source_composition_rejects_cfg_identity_collisions(tmp_path):
-    first = _write_disjoint_source_processor(
-        tmp_path / "first.pkl.gz",
-        process_prefix="first",
-        year="UL18",
-        runtime_families=("njets",),
-        contribution=1.0,
-    )
-    second = _write_disjoint_source_processor(
-        tmp_path / "second.pkl.gz",
-        process_prefix="second",
-        year="2022",
-        runtime_families=("njets",),
-        contribution=2.0,
-    )
-    collided = copy.deepcopy(second)
-    contract = collided["production_sample_contract"]
-    contract["cfg_identities"] = copy.deepcopy(
-        first["production_sample_contract"]["cfg_identities"]
-    )
-    unsigned = dict(contract)
-    unsigned.pop("contract_identity_sha256")
-    contract["contract_identity_sha256"] = hashlib.sha256(
-        json.dumps(unsigned, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    ).hexdigest()
-
-    with pytest.raises(RuntimeError, match="cfg_identities collision"):
-        merge_histogram_sidecars([first, collided])
-
-
-def test_disjoint_source_composition_rejects_active_variant_key_collisions(tmp_path):
-    first = _write_disjoint_source_processor(
-        tmp_path / "first.pkl.gz",
-        process_prefix="first",
-        year="UL18",
-        runtime_families=("njets",),
-        contribution=1.0,
-        signal_process="tllq_privateUL18",
-    )
-    second = _write_disjoint_source_processor(
-        tmp_path / "second.pkl.gz",
-        process_prefix="second",
-        year="UL18",
-        runtime_families=("njets",),
-        contribution=2.0,
-        signal_process="tZq_centralUL18",
-    )
-
-    with pytest.raises(RuntimeError, match="active signal-variant key collision"):
-        merge_histogram_sidecars([first, second])
-
-
-def test_disjoint_source_composition_rejects_requested_source_mismatch(tmp_path):
-    first = _write_disjoint_source_processor(
-        tmp_path / "first.pkl.gz",
-        process_prefix="first",
-        year="UL18",
-        runtime_families=("njets",),
-        contribution=1.0,
-    )
-    second = _write_disjoint_source_processor(
-        tmp_path / "second.pkl.gz",
-        process_prefix="second",
-        year="2022",
-        runtime_families=("njets",),
-        contribution=2.0,
-    )
-    mismatched = copy.deepcopy(second)
-    mismatched["requested_data_driven_products"]["source"] = (
-        "implicit_legacy_data_driven_default"
-    )
-
-    with pytest.raises(RuntimeError, match="incompatible field 'source'"):
-        merge_histogram_sidecars([first, mismatched])
+    with pytest.raises(
+        RuntimeError,
+        match=r"Histogram-level Run 2 \+ Run 3 composition is unsupported",
+    ):
+        load_and_merge_histogram_pkls([str(run2_path), str(run3_path)])
 
 
 def test_plotting_merged_cache_writer_preserves_artifact_stage(tmp_path, policy):
     paths = []
     for index in range(2):
         path = tmp_path / f"plot_input_{index}.pkl.gz"
-        _write_processor(path, policy)
+        channel = ("3l_onZ_2b_4j", "2lss_m_4j")[index]
+        _write_processor(
+            path,
+            policy,
+            source_payload=_processor_payload(channel=channel),
+        )
         paths.append(str(path))
     merged, report = load_and_merge_histogram_pkls(
         paths, on_process_collision="allow"

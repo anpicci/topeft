@@ -15,6 +15,45 @@ def test_parser_accepts_repeated_f_and_defaults_collision_policy_error():
     assert args.on_process_collision == "error"
 
 
+@pytest.mark.parametrize("year_scope", ("run2", "run3"))
+def test_single_run_plot_year_scopes_remain_supported(year_scope):
+    normalized = make_cr_and_sr_plots._normalize_year_tokens([year_scope])
+
+    assert make_cr_and_sr_plots._validate_supported_plot_years(normalized) == tuple(
+        normalized
+    )
+
+
+def test_combined_run2_run3_cli_rejects_before_loading(monkeypatch, tmp_path, capsys):
+    parser = make_cr_and_sr_plots.build_arg_parser()
+    args = parser.parse_args(
+        [
+            "-f",
+            "input.pkl.gz",
+            "-o",
+            str(tmp_path),
+            "-n",
+            "combined",
+            "--year",
+            "run2",
+            "run3",
+        ]
+    )
+
+    def _fail_if_called(*_args, **_kwargs):
+        raise AssertionError("histogram loading must not start for a cross-run request")
+
+    monkeypatch.setattr(
+        make_cr_and_sr_plots, "load_and_merge_histogram_pkls", _fail_if_called
+    )
+
+    with pytest.raises(SystemExit):
+        make_cr_and_sr_plots.run_with_args(args, parser)
+
+    assert "Combined Run 2 + Run 3 plotting is unsupported" in capsys.readouterr().err
+    assert not (tmp_path / "combined").exists()
+
+
 def test_resolve_pkl_paths_from_repeated_f_only():
     parser = make_cr_and_sr_plots.build_arg_parser()
     args = parser.parse_args(["-f", "a.pkl.gz", "-f", "b.pkl.gz"])
