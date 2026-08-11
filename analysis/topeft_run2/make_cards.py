@@ -107,13 +107,12 @@ def build_arg_parser():
     parser.add_argument("--wc-vals", default="",action="store", nargs="+", help="Specify the corresponding wc values to set for the wc list")
     parser.add_argument("--wc-scalings", default=[],action="extend",nargs="+",help="Specify a list of wc ordering for scalings.json")
     parser.add_argument(
-        "--on-process-collision",
-        choices=["error","warn","allow"],
-        default="allow",
+        "--year-coverage-policy",
+        choices=["warn", "error", "off"],
+        default="warn",
         help=(
-            "Policy for process-label overlaps when merging multiple input pkl files. "
-            "Default is `allow` for category-disjoint datacard fragments. Use "
-            "`error` or `warn` for stricter diagnostics."
+            "Structural process/year coverage policy for each histogram-family and "
+            "final-channel slice (default: warn)."
         ),
     )
     parser.add_argument("--merge-report",default="-",help="Path for merge diagnostic report JSON, or '-' for stdout")
@@ -199,7 +198,7 @@ def run_local(dc,km_dists,channels,selected_wcs, crop_negative_bins, wcs_dict):
         for ch in matched_chs:
             r = dc.analyze(km_dist,ch,selected_wcs, crop_negative_bins, wcs_dict)
 
-def _build_condor_base_other_opts(dc,on_process_collision):
+def _build_condor_base_other_opts(dc, year_coverage_policy):
     base_other_opts = []
     if dc.do_mc_stat:
         base_other_opts.append("--do-mc-stat")
@@ -219,7 +218,7 @@ def _build_condor_base_other_opts(dc,on_process_collision):
     base_other_opts.extend(["--sr-registry", dc.sr_registry])
     if getattr(dc, "skip_missing_parton_rate_syst", False):
         base_other_opts.append("--skip-missing-parton-rate-syst")
-    base_other_opts.extend(["--on-process-collision",on_process_collision])
+    base_other_opts.extend(["--year-coverage-policy", year_coverage_policy])
     return base_other_opts
 
 # VERY IMPORTANT:
@@ -230,7 +229,7 @@ def _build_condor_base_other_opts(dc,on_process_collision):
 #   repo is located).
 # TODO: Currently there's no way to transparently passthrough parent arguments to the condor ones.
 #   There's also no clear way to pass customized options to different sub-sets of condor jobs
-def run_condor(dc,pkl_paths,out_dir,var_lst,ch_lst,chunk_size,on_process_collision="allow",merge_report="-"):
+def run_condor(dc,pkl_paths,out_dir,var_lst,ch_lst,chunk_size,year_coverage_policy="warn",merge_report="-"):
     import subprocess
     import stat
 
@@ -265,7 +264,7 @@ def run_condor(dc,pkl_paths,out_dir,var_lst,ch_lst,chunk_size,on_process_collisi
 
     os.chmod(condor_exe_fname,usr_perms | grp_perms | all_perms)    # equiv. to 777
 
-    base_other_opts = _build_condor_base_other_opts(dc,on_process_collision)
+    base_other_opts = _build_condor_base_other_opts(dc, year_coverage_policy)
 
     idx = 0
     for km_dist in var_lst:
@@ -372,9 +371,8 @@ def main():
 
     merged_hists, merge_report = load_and_merge_histogram_pkls(
         pkl_files,
-        on_process_collision=args.on_process_collision,
         require_sumw2=True,
-        require_disjoint_final_categories=True,
+        year_coverage_policy=args.year_coverage_policy,
     )
     _emit_merge_report(merge_report, args.merge_report, out_dir)
     if args.cache_merged_pkl:
@@ -453,7 +451,7 @@ def main():
             dists,
             ch_lst,
             chunks,
-            on_process_collision=args.on_process_collision,
+            year_coverage_policy=args.year_coverage_policy,
             merge_report=args.merge_report,
         )
     else:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import gzip
 import pickle
+import warnings
 
 import hist
 import numpy as np
@@ -12,11 +13,14 @@ from topcoffea.modules.sparseHist import SparseHist
 from topeft.modules.axes import info as axes_info
 from topeft.modules.axes import info_2d as axes_info_2d
 from topeft.modules.datacard_tools import load_and_merge_histogram_pkls
+from topeft.modules.datacard_tools import DatacardMaker
 from topeft.modules.histogram_artifact import write_histogram_artifact
 from topeft.modules.nominal_schema import (
     eft_nominal_key,
     evaluate_nominal_at_wc,
+    histogram_contribution_support,
     scalar_nominal_key,
+    validate_year_coverage,
 )
 from topeft.modules.sumw2_policy import resolve_sumw2_storage_policy
 from analysis.topeft_run2 import make_cards
@@ -122,6 +126,15 @@ def _total_sparse(histogram):
 
 def _channel_total(histogram, channel):
     return _total_sparse(histogram.integrate("channel", [channel]))
+
+
+def _add_sparse(*histograms):
+    output = histograms[0].copy()
+    for histogram in histograms:
+        if histogram is histograms[0]:
+            continue
+        output += histogram
+    return output
 
 
 def test_split_roundtrip_same_policy_optional_components_and_post_reopen_merge(tmp_path, policy):
@@ -235,7 +248,6 @@ def test_same_run_mixed_and_reduced_family_fragments_are_transparent(tmp_path):
     reduced_alone, _ = load_and_merge_histogram_pkls([str(reduced_path)])
     merged, report = load_and_merge_histogram_pkls(
         [str(mixed_path), str(reduced_path)],
-        on_process_collision="allow",
         consumer_required_families=mixed_families,
     )
 
@@ -322,8 +334,7 @@ def test_plotter_variable_chunks_allow_overlapping_channel_support(tmp_path):
         [str(njets_path), str(ptz_path)]
     )
 
-    assert report["on_process_collision"] == "error"
-    assert report["require_disjoint_final_categories"] is False
+    assert report["contribution_identity"].startswith("payload_component_key")
     assert report["runtime_histogram_families"] == ["njets", "ptz"]
     assert set(merged) == {
         scalar_nominal_key("njets"),
@@ -339,7 +350,7 @@ def test_plotter_variable_chunks_allow_overlapping_channel_support(tmp_path):
     }
 
 
-def test_versioned_duplicate_final_category_is_rejected(tmp_path, policy):
+def test_versioned_duplicate_contribution_is_rejected(tmp_path, policy):
     first_path = tmp_path / "first.pkl.gz"
     second_path = tmp_path / "second.pkl.gz"
     category = "3l_onZ_2b_4j"
@@ -358,20 +369,274 @@ def test_versioned_duplicate_final_category_is_rejected(tmp_path, policy):
     _write_versioned(
         second_path,
         {
-            eft_nominal_key("njets"): _eft("signal", 3.0, channel=category),
+            scalar_nominal_key("njets"): _scalar(
+                "background", 3.0, channel=category
+            ),
             "njets_sumw2": _scalar(
-                "signal", 14.0625, companion=True, channel=category
+                "background", 9.0, companion=True, channel=category
             ),
         },
         policy,
     )
 
-    with pytest.raises(RuntimeError, match="Duplicate final jet-resolved category"):
+    with pytest.raises(RuntimeError, match="Duplicate histogram contribution support"):
         load_and_merge_histogram_pkls(
             [str(first_path), str(second_path)],
-            on_process_collision="allow",
-            require_disjoint_final_categories=True,
         )
+
+
+def test_year_and_mixed_fragments_match_equivalent_single_payload(tmp_path):
+    samples_ul16 = {
+        "dataset_ul16": {
+            "histAxisName": "backgroundUL16",
+            "isData": False,
+            "WCnames": [],
+        }
+    }
+    samples_ul17 = {
+        "dataset_ul17": {
+            "histAxisName": "backgroundUL17",
+            "isData": False,
+            "WCnames": [],
+        }
+    }
+    all_samples = {**samples_ul16, **samples_ul17}
+    policy_ul16 = _policy_for_families(("njets",), samples_ul16)
+    policy_ul17 = _policy_for_families(("njets",), samples_ul17)
+    policy_ptz = _policy_for_families(("ptz",), samples_ul16)
+    full_policy = _policy_for_families(("njets", "ptz"), all_samples)
+    channel_a = "3l_onZ_2b_4j"
+    channel_b = "2lss_m_4j"
+
+    fragment_specs = (
+        (
+            tmp_path / "ul16_njets.pkl.gz",
+            policy_ul16,
+            samples_ul16,
+            "njets",
+            "backgroundUL16",
+            channel_a,
+            2.0,
+        ),
+        (
+            tmp_path / "ul17_njets.pkl.gz",
+            policy_ul17,
+            samples_ul17,
+            "njets",
+            "backgroundUL17",
+            channel_a,
+            3.0,
+        ),
+        (
+            tmp_path / "ul16_ptz.pkl.gz",
+            policy_ptz,
+            samples_ul16,
+            "ptz",
+            "backgroundUL16",
+            channel_b,
+            5.0,
+        ),
+    )
+    for path, fragment_policy, samples, family, process, channel, weight in fragment_specs:
+        _write_versioned(
+            path,
+            {
+                scalar_nominal_key(family): _scalar(
+                    process, weight, family=family, channel=channel
+                ),
+                f"{family}_sumw2": _scalar(
+                    process,
+                    weight * weight,
+                    family=family,
+                    companion=True,
+                    channel=channel,
+                ),
+            },
+            fragment_policy,
+            samples,
+        )
+
+    full_path = tmp_path / "full.pkl.gz"
+    _write_versioned(
+        full_path,
+        {
+            scalar_nominal_key("njets"): _add_sparse(
+                _scalar("backgroundUL16", 2.0, channel=channel_a),
+                _scalar("backgroundUL17", 3.0, channel=channel_a),
+            ),
+            "njets_sumw2": _add_sparse(
+                _scalar("backgroundUL16", 4.0, companion=True, channel=channel_a),
+                _scalar("backgroundUL17", 9.0, companion=True, channel=channel_a),
+            ),
+            scalar_nominal_key("ptz"): _scalar(
+                "backgroundUL16", 5.0, family="ptz", channel=channel_b
+            ),
+            "ptz_sumw2": _scalar(
+                "backgroundUL16",
+                25.0,
+                family="ptz",
+                companion=True,
+                channel=channel_b,
+            ),
+        },
+        full_policy,
+        all_samples,
+    )
+
+    merged, report = load_and_merge_histogram_pkls(
+        [str(spec[0]) for spec in fragment_specs],
+        year_coverage_policy="warn",
+    )
+    full, _full_report = load_and_merge_histogram_pkls(
+        [str(full_path)], year_coverage_policy="warn"
+    )
+
+    assert histogram_contribution_support(merged) == histogram_contribution_support(full)
+    assert report["runtime_histogram_families"] == ["njets", "ptz"]
+    assert report["sumw2_storage_provenance"]["resolved_datasets"] == [
+        "dataset_ul16",
+        "dataset_ul17",
+    ]
+    assert report["sumw2_storage_provenance"]["resolved_processes"] == [
+        "backgroundUL16",
+        "backgroundUL17",
+    ]
+    for family in ("njets", "ptz"):
+        assert _total_sparse(evaluate_nominal_at_wc(merged, family, {})) == pytest.approx(
+            _total_sparse(evaluate_nominal_at_wc(full, family, {}))
+        )
+
+
+def test_partially_overlapping_source_metadata_composes_when_support_is_disjoint(tmp_path):
+    shared = {
+        "dataset_shared": {
+            "histAxisName": "sharedUL17",
+            "isData": False,
+            "WCnames": [],
+        }
+    }
+    samples_a = {
+        "dataset_a": {
+            "histAxisName": "processAUL16",
+            "isData": False,
+            "WCnames": [],
+        },
+        **shared,
+    }
+    samples_b = {
+        **shared,
+        "dataset_b": {
+            "histAxisName": "processBUL18",
+            "isData": False,
+            "WCnames": [],
+        },
+    }
+    policy_a = _policy_for_families(("njets",), samples_a)
+    policy_b = _policy_for_families(("njets",), samples_b)
+    paths = (tmp_path / "a.pkl.gz", tmp_path / "b.pkl.gz")
+    payloads = (
+        {
+            scalar_nominal_key("njets"): _add_sparse(
+                _scalar("processAUL16", 1.0, channel="channel_a"),
+                _scalar("sharedUL17", 2.0, channel="channel_a"),
+            ),
+            "njets_sumw2": _add_sparse(
+                _scalar("processAUL16", 1.0, companion=True, channel="channel_a"),
+                _scalar("sharedUL17", 4.0, companion=True, channel="channel_a"),
+            ),
+        },
+        {
+            scalar_nominal_key("njets"): _add_sparse(
+                _scalar("sharedUL17", 3.0, channel="channel_b"),
+                _scalar("processBUL18", 4.0, channel="channel_b"),
+            ),
+            "njets_sumw2": _add_sparse(
+                _scalar("sharedUL17", 9.0, companion=True, channel="channel_b"),
+                _scalar("processBUL18", 16.0, companion=True, channel="channel_b"),
+            ),
+        },
+    )
+    _write_versioned(paths[0], payloads[0], policy_a, samples_a)
+    _write_versioned(paths[1], payloads[1], policy_b, samples_b)
+
+    merged, report = load_and_merge_histogram_pkls([str(path) for path in paths])
+
+    assert set(merged[scalar_nominal_key("njets")].axes["channel"]) == {
+        "channel_a",
+        "channel_b",
+    }
+    assert report["sumw2_storage_provenance"]["resolved_datasets"] == [
+        "dataset_a",
+        "dataset_b",
+        "dataset_shared",
+    ]
+    assert report["sumw2_storage_provenance"]["resolved_processes"] == [
+        "processAUL16",
+        "processBUL18",
+        "sharedUL17",
+    ]
+
+
+def _year_coverage_payload():
+    return {
+        scalar_nominal_key("ptz"): _add_sparse(
+            _scalar("processAUL16", 1.0, family="ptz", channel="3l_onZ_2b_4j"),
+            _scalar("processAUL17", 2.0, family="ptz", channel="3l_onZ_2b_4j"),
+            _scalar("rareUL16", 0.0, family="ptz", channel="3l_onZ_2b_4j"),
+        )
+    }
+
+
+def test_year_coverage_warn_error_and_off_are_structural_and_non_mutating():
+    payload = _year_coverage_payload()
+    support_before = histogram_contribution_support(payload)
+    with pytest.warns(UserWarning, match="Year-coverage mismatch for ptz / 3l_onZ_2b_4j") as records:
+        mismatches = validate_year_coverage(payload, policy="warn")
+    assert len(records) == 1
+    assert mismatches == [
+        {
+            "family": "ptz",
+            "channel": "3l_onZ_2b_4j",
+            "process": "rare",
+            "slice_years": ["UL16", "UL17"],
+            "process_years": ["UL16"],
+            "missing_years": ["UL17"],
+        }
+    ]
+    assert histogram_contribution_support(payload) == support_before
+
+    with pytest.raises(ValueError, match="rare years: UL16") as exc_info:
+        validate_year_coverage(payload, policy="error")
+    assert "missing: UL17" in str(exc_info.value)
+
+    with warnings.catch_warnings(record=True) as records:
+        warnings.simplefilter("always")
+        assert validate_year_coverage(payload, policy="off") == []
+    assert records == []
+    assert histogram_contribution_support(payload) == support_before
+
+
+def test_intentional_subset_years_is_silent_and_datacard_grouping_is_unchanged():
+    payload = {
+        scalar_nominal_key("njets"): _add_sparse(
+            _scalar("processAUL17", 1.0),
+            _scalar("processAUL18", 2.0),
+            _scalar("processBUL17", 3.0),
+            _scalar("processBUL18", 4.0),
+        )
+    }
+    with warnings.catch_warnings(record=True) as records:
+        warnings.simplefilter("always")
+        assert validate_year_coverage(payload, policy="warn") == []
+    assert records == []
+
+    datacard_maker = object.__new__(DatacardMaker)
+    datacard_maker.do_nuisance = False
+    grouped = datacard_maker.correlate_years(
+        payload[scalar_nominal_key("njets")].copy()
+    )
+    assert set(grouped.axes["process"]) == {"processA", "processB"}
+    assert _total_sparse(grouped) == pytest.approx(10.0)
 
 
 def test_required_missing_partial_orphan_and_present_unselected_are_rejected(tmp_path, policy):
@@ -470,7 +735,7 @@ def test_split_without_sidecar_and_policy_identity_mismatch_are_rejected(tmp_pat
     )
     with pytest.raises(RuntimeError, match="source-allocation provenance|policy identities"):
         load_and_merge_histogram_pkls(
-            [str(first), str(second)], on_process_collision="allow"
+            [str(first), str(second)]
         )
 
 

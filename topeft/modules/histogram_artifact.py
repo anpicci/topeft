@@ -15,6 +15,7 @@ from typing import Any
 import cloudpickle
 
 from topeft.modules.data_driven_products import (
+    CANONICAL_DATA_DRIVEN_YEARS,
     RESOLVED_DATA_DRIVEN_CONTRACT_VERSION,
     data_driven_product_error,
     generated_output_processes_from_contract,
@@ -1696,14 +1697,20 @@ def _compose_sumw2_storage_provenance(
                 "Cannot compose source-allocation provenance with incompatible "
                 f"policy-control field '{field_name}'."
             )
-    for field_name in ("resolved_datasets", "resolved_processes"):
-        if any(record[field_name] != first[field_name] for record in normalized[1:]):
-            raise histogram_merge_error(
-                "Same-run histogram fragments require identical source-level "
-                f"{field_name}; histogram-level cross-source composition is unsupported."
-            )
-    datasets = copy.deepcopy(first["resolved_datasets"])
-    processes = copy.deepcopy(first["resolved_processes"])
+    datasets = sorted(
+        {
+            dataset
+            for record in normalized
+            for dataset in record["resolved_datasets"]
+        }
+    )
+    processes = sorted(
+        {
+            process
+            for record in normalized
+            for process in record["resolved_processes"]
+        }
+    )
     runtime_histogram_families = _ordered_family_union(
         record["runtime_histogram_families"] for record in normalized
     )
@@ -1739,6 +1746,171 @@ def _compose_sumw2_storage_provenance(
         ) from error
 
 
+def _compose_production_sample_contract(
+    contracts: Iterable[Mapping[str, Any]],
+    provenance: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Compose fragment coverage and recompute the certified contract identity."""
+
+    contracts = tuple(contracts)
+    first = contracts[0]
+    compatibility_fields = (
+        "contract_version",
+        "wrapper_identity",
+        "resolved_mode",
+        "signal_sample_profile",
+        "compatibility_validated",
+    )
+    for field_name in compatibility_fields:
+        if any(contract[field_name] != first[field_name] for contract in contracts[1:]):
+            raise histogram_merge_error(
+                "Same-run histogram fragments have incompatible production sample "
+                f"contract field {field_name!r}."
+            )
+    cfg_identities_by_identity: dict[str, dict[str, Any]] = {}
+    active_variants: dict[str, dict[str, Any]] = {}
+    for contract in contracts:
+        for identity in contract["cfg_identities"]:
+            cfg_identities_by_identity.setdefault(
+                _canonical_identity(identity), copy.deepcopy(identity)
+            )
+        for variant_key, variant in contract["active_signal_variants"].items():
+            prior = active_variants.get(variant_key)
+            if prior is None:
+                active_variants[variant_key] = copy.deepcopy(variant)
+                continue
+            for field_name in ("signal_group", "year", "selected_variant"):
+                if prior[field_name] != variant[field_name]:
+                    raise histogram_merge_error(
+                        "Same-run histogram fragments disagree on active signal variant "
+                        f"{variant_key!r} field {field_name!r}."
+                    )
+            prior["processes"] = sorted(
+                set(prior["processes"]) | set(variant["processes"])
+            )
+    composed = {
+        **{
+            field_name: copy.deepcopy(first[field_name])
+            for field_name in compatibility_fields
+        },
+        "cfg_identities": sorted(
+            cfg_identities_by_identity.values(),
+            key=lambda identity: tuple(sorted(identity.items())),
+        ),
+        "active_signal_variants": {
+            key: active_variants[key] for key in sorted(active_variants)
+        },
+    }
+    composed["contract_identity_sha256"] = hashlib.sha256(
+        _canonical_identity(composed).encode("utf-8")
+    ).hexdigest()
+    try:
+        validate_production_sample_contract(composed, provenance)
+    except Exception as error:
+        raise histogram_merge_error(
+            f"Composed production sample contract is invalid: {error}"
+        ) from error
+    return composed
+
+
+def _compose_resolved_data_driven_contract(
+    contracts: Iterable[Mapping[str, Any]],
+) -> dict[str, Any]:
+    """Union current generated-output coverage without changing request policy."""
+
+    contracts = tuple(contracts)
+    first = contracts[0]
+    if any(
+        contract["contract_version"] != first["contract_version"]
+        for contract in contracts[1:]
+    ):
+        raise histogram_merge_error(
+            "Same-run histogram fragments require one resolved data-driven contract version."
+        )
+    if first["contract_version"] != RESOLVED_DATA_DRIVEN_CONTRACT_VERSION:
+        if any(
+            _canonical_identity(contract) != _canonical_identity(first)
+            for contract in contracts[1:]
+        ):
+            raise histogram_merge_error(
+                "Legacy resolved data-driven contracts must remain identical across fragments."
+            )
+        return copy.deepcopy(dict(first))
+
+    products = {}
+    for product_name, first_product in first["products"].items():
+        if any(
+            contract["products"][product_name]["enabled"]
+            is not first_product["enabled"]
+            for contract in contracts[1:]
+        ):
+            raise histogram_merge_error(
+                "Same-run histogram fragments disagree on requested data-driven "
+                f"product {product_name!r}."
+            )
+        generated_outputs = {}
+        for contract in contracts:
+            for output_name, output in contract["products"][product_name][
+                "generated_outputs"
+            ].items():
+                prior = generated_outputs.get(output_name)
+                if prior is None:
+                    generated_outputs[output_name] = copy.deepcopy(output)
+                    continue
+                if prior["year"] != output["year"]:
+                    raise histogram_merge_error(
+                        "Same-run histogram fragments disagree on resolved data-driven "
+                        f"output year for {product_name}/{output_name}."
+                    )
+                if list(prior["source_contributors"]) != list(
+                    output["source_contributors"]
+                ):
+                    raise histogram_merge_error(
+                        "Same-run histogram fragments disagree on resolved data-driven "
+                        f"roles for {product_name}/{output_name}."
+                    )
+                for role, processes in prior["source_contributors"].items():
+                    processes[:] = sorted(
+                        set(processes)
+                        | set(output["source_contributors"][role])
+                    )
+                prior["required_source_sumw2_processes"] = sorted(
+                    {
+                        process
+                        for processes in prior["source_contributors"].values()
+                        for process in processes
+                    }
+                )
+        ordered_outputs = {
+            output_name: generated_outputs[output_name]
+            for output_name in sorted(
+                generated_outputs,
+                key=lambda name: (
+                    CANONICAL_DATA_DRIVEN_YEARS.index(
+                        generated_outputs[name]["year"]
+                    ),
+                    name,
+                ),
+            )
+        }
+        products[product_name] = {
+            "enabled": first_product["enabled"],
+            "generated_outputs": ordered_outputs,
+            "output_processes": list(ordered_outputs),
+        }
+    return {
+        "contract_version": first["contract_version"],
+        "required_prompt_signal_processes": sorted(
+            {
+                process
+                for contract in contracts
+                for process in contract["required_prompt_signal_processes"]
+            }
+        ),
+        "products": products,
+    }
+
+
 def _compose_merged_contract_set(
     sidecars: Iterable[Mapping[str, Any]],
 ) -> tuple[
@@ -1769,17 +1941,19 @@ def _compose_merged_contract_set(
     provenance = _compose_sumw2_storage_provenance(
         sidecar["sumw2_storage_provenance"] for sidecar in sidecars
     )
-    production_contract = copy.deepcopy(
-        sidecars[0].get("production_sample_contract")
+    production_contracts = tuple(
+        sidecar.get("production_sample_contract") for sidecar in sidecars
     )
-    if any(
-        _canonical_identity(sidecar.get("production_sample_contract"))
-        != _canonical_identity(production_contract)
-        for sidecar in sidecars[1:]
-    ):
+    production_presence = {contract is not None for contract in production_contracts}
+    if len(production_presence) != 1:
         raise histogram_merge_error(
-            "Same-run histogram fragments require identical production sample "
-            "profile contracts."
+            "Cannot merge artifacts with mixed production sample contract presence."
+        )
+    production_contract = None
+    if production_presence == {True}:
+        production_contract = _compose_production_sample_contract(
+            production_contracts,
+            provenance,
         )
     if production_contract is not None:
         try:
@@ -1792,18 +1966,18 @@ def _compose_merged_contract_set(
     resolved = None
     if requested_presence == {True}:
         requested = copy.deepcopy(sidecars[0]["requested_data_driven_products"])
-        resolved = copy.deepcopy(sidecars[0]["resolved_data_driven_contract"])
         if any(
             _canonical_identity(sidecar["requested_data_driven_products"])
             != _canonical_identity(requested)
-            or _canonical_identity(sidecar["resolved_data_driven_contract"])
-            != _canonical_identity(resolved)
             for sidecar in sidecars[1:]
         ):
             raise histogram_merge_error(
-                "Same-run histogram fragments require identical requested and "
-                "resolved data-driven product contracts."
+                "Same-run histogram fragments require identical requested "
+                "data-driven product policy."
             )
+        resolved = _compose_resolved_data_driven_contract(
+            sidecar["resolved_data_driven_contract"] for sidecar in sidecars
+        )
         try:
             requested, resolved = validate_serialized_data_driven_contract(
                 requested,

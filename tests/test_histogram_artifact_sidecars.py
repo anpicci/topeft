@@ -1344,11 +1344,10 @@ def test_merge_rejects_incompatible_generated_output_maps(tmp_path, policy):
     output = second["resolved_data_driven_contract"]["products"]["nonprompt"][
         "generated_outputs"
     ]["nonpromptUL18"]
-    output["source_contributors"]["prompt_mc"] = []
-    output["required_source_sumw2_processes"] = ["dataUL18"]
+    output["year"] = "UL17"
     with pytest.raises(
         histogram_artifact_error,
-        match="identical requested and resolved data-driven product contracts",
+        match="disagree on resolved data-driven output year for nonprompt/nonpromptUL18",
     ):
         merge_histogram_sidecars([first, second])
 
@@ -1737,9 +1736,7 @@ def test_compatible_stage_merges_regenerate_deterministic_sidecar(
                 ),
             )
         paths.append(str(path))
-    merged, report = load_and_merge_histogram_pkls(
-        paths, on_process_collision="allow"
-    )
+    merged, report = load_and_merge_histogram_pkls(paths)
     cached_path = make_cards._cache_merged_histograms(
         merged,
         f"merged_{artifact_kind}",
@@ -1807,9 +1804,7 @@ def test_plotting_merged_cache_writer_preserves_artifact_stage(tmp_path, policy)
             source_payload=_processor_payload(channel=channel),
         )
         paths.append(str(path))
-    merged, report = load_and_merge_histogram_pkls(
-        paths, on_process_collision="allow"
-    )
+    merged, report = load_and_merge_histogram_pkls(paths)
     cached_path = make_cr_and_sr_plots._cache_merged_histograms(
         merged,
         "plot_cache",
@@ -1977,12 +1972,10 @@ def test_incompatible_artifact_stage_merges_are_rejected(tmp_path, policy):
     with pytest.raises(RuntimeError, match="incompatible histogram artifact kinds"):
         load_and_merge_histogram_pkls(
             [str(processor_path), str(nonprompt_path)],
-            on_process_collision="allow",
         )
     with pytest.raises(RuntimeError, match="incompatible histogram artifact kinds"):
         load_and_merge_histogram_pkls(
             [str(nonprompt_path), str(flips_path)],
-            on_process_collision="allow",
         )
 
 

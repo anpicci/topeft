@@ -9043,13 +9043,12 @@ def build_arg_parser():
         help="Draw the uncertainty-band legend in ratio panels (default: hidden).",
     )
     parser.add_argument(
-        "--on-process-collision",
-        choices=["error", "warn", "allow"],
-        default="error",
+        "--year-coverage-policy",
+        choices=["warn", "error", "off"],
+        default="warn",
         help=(
-            "Policy for process-label overlaps when merging multiple input pkl files. "
-            "Default is strict `error`. Expert-only escape hatches: `warn`/`allow`, "
-            "to be used only when overlaps are intentional (e.g. chunked outputs)."
+            "Structural process/year coverage policy for each histogram-family and "
+            "final-channel slice (default: warn)."
         ),
     )
     parser.add_argument(
@@ -9268,8 +9267,8 @@ def run_with_args(args, parser):
         )
     hin_dict, merge_report = load_and_merge_histogram_pkls(
         pkl_paths,
-        on_process_collision=args.on_process_collision,
         require_sumw2=True,
+        year_coverage_policy=args.year_coverage_policy,
     )
     _emit_merge_report(merge_report, args.merge_report, save_dir_path)
     if args.cache_merged_pkl:

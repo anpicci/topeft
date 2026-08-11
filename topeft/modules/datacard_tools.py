@@ -25,10 +25,14 @@ from topeft.modules.histogram_artifact import (
 )
 from topeft.modules.nominal_schema import (
     NOMINAL_CONTAINER_SCHEMA_VERSION,
+    canonical_process_year,
+    histogram_contribution_support,
     is_split_nominal_mapping,
     materialize_legacy_histogram_dict,
     merge_nominal_mappings,
+    validate_year_coverage,
     validate_nominal_mapping,
+    year_independent_process,
 )
 from topeft.modules.sumw2_policy import resolved_policy_from_provenance
 from topeft.modules.missing_parton_contract import (
@@ -218,23 +222,12 @@ _RUN2_CANONICAL_YEARS = frozenset(
     year for year in CANONICAL_DATA_DRIVEN_YEARS if year.startswith("UL")
 )
 _RUN3_CANONICAL_YEARS = frozenset(CANONICAL_DATA_DRIVEN_YEARS) - _RUN2_CANONICAL_YEARS
-_CANONICAL_YEARS_BY_SUFFIX_LENGTH = tuple(
-    sorted(CANONICAL_DATA_DRIVEN_YEARS, key=len, reverse=True)
-)
 
 
 def _canonical_run_eras(processes):
     eras = set()
     for process in processes:
-        process_name = str(process)
-        year = next(
-            (
-                candidate
-                for candidate in _CANONICAL_YEARS_BY_SUFFIX_LENGTH
-                if process_name.endswith(candidate)
-            ),
-            None,
-        )
+        year = canonical_process_year(str(process))
         if year in _RUN2_CANONICAL_YEARS:
             eras.add("run2")
         elif year in _RUN3_CANONICAL_YEARS:
@@ -280,69 +273,56 @@ def _reject_cross_run_histogram_composition(
         )
 
 
-def _final_category_support(histograms):
-    categories = set()
-    for histogram in histograms.values():
-        try:
-            categories.update(str(label) for label in histogram.axes["channel"])
-        except Exception:
-            continue
-    return categories
-
-
-def _validate_disjoint_final_category_support(pkl_paths, loaded_inputs):
-    owner_by_category = {}
+def _validate_disjoint_histogram_contributions(pkl_paths, loaded_inputs):
+    owner_by_contribution = {}
     for path, histograms in zip(pkl_paths, loaded_inputs):
-        categories = _final_category_support(histograms)
-        collisions = sorted(set(owner_by_category) & categories)
+        contributions = histogram_contribution_support(histograms)
+        collisions = sorted(
+            set(owner_by_contribution) & contributions,
+            key=repr,
+        )
         if collisions:
             examples = _short_examples(collisions, max_items=12)
-            first_owner = owner_by_category[collisions[0]]
+            first_owner = owner_by_contribution[collisions[0]]
             raise RuntimeError(
-                "Duplicate final jet-resolved category support detected before "
+                "Duplicate histogram contribution support detected before "
                 f"histogram addition: incoming_path={path!r}, "
-                f"existing_path={first_owner!r}, categories={examples!r}. "
-                "Physical PKL fragments must own disjoint channel-axis categories."
+                f"existing_path={first_owner!r}, contributions={examples!r}. "
+                "A contribution is identified by its payload component key and "
+                "complete categorical coordinate."
             )
-        owner_by_category.update({category: path for category in categories})
+        owner_by_contribution.update(
+            {contribution: path for contribution in contributions}
+        )
 
 
 def load_and_merge_histogram_pkls(
     pkl_paths,
     *,
-    on_process_collision="error",
     require_sumw2=True,
     consumer_required_families=(),
-    require_disjoint_final_categories=False,
+    year_coverage_policy="off",
 ):
     """
     Load and validate one or more histogram PKLs before merging them in memory.
 
-    Consumers that interpret ``channel`` labels as exclusive output ownership,
-    such as datacard production, must set
-    ``require_disjoint_final_categories=True``. Generic and plotting consumers
-    may combine orthogonal chunks that repeat channel labels.
+    Every input owns exact structural contributions identified by payload
+    component key plus the complete categorical coordinate.  Channel and
+    process labels may repeat when another coordinate differs.
 
     Returns: (merged_hist_dict, merge_report_dict)
     """
-    if on_process_collision not in {"error", "warn", "allow"}:
-        raise ValueError(
-            f"Unknown process collision policy '{on_process_collision}'. "
-            "Valid options are: error, warn, allow."
-        )
     if not pkl_paths:
         raise ValueError("No input pickle files were provided for merging.")
+    validate_year_coverage({}, policy=year_coverage_policy)
 
     report = {
         "num_inputs": len(pkl_paths),
         "inputs": list(pkl_paths),
-        "on_process_collision": on_process_collision,
         "require_sumw2": bool(require_sumw2),
-        "require_disjoint_final_categories": bool(
-            require_disjoint_final_categories
-        ),
+        "year_coverage_policy": year_coverage_policy,
         "files": [],
-        "process_collisions": [],
+        "contribution_identity": "payload_component_key + complete_categorical_coordinate",
         "schema": None,
     }
 
@@ -392,18 +372,17 @@ def load_and_merge_histogram_pkls(
     schema_version = next(iter(schema_versions))
     report["schema"] = "legacy_uniform" if schema_version is None else "split_sibling_v1"
 
-    if len(pkl_paths) > 1:
-        _reject_cross_run_histogram_composition(
-            pkl_paths,
-            loaded_inputs,
-            input_metadata,
-        )
+    _reject_cross_run_histogram_composition(
+        pkl_paths,
+        loaded_inputs,
+        input_metadata,
+    )
 
     merged_hists = {}
     if schema_version == NOMINAL_CONTAINER_SCHEMA_VERSION:
         merged_sidecar = merge_histogram_sidecars(input_metadata)
-        if len(pkl_paths) > 1 and require_disjoint_final_categories:
-            _validate_disjoint_final_category_support(pkl_paths, loaded_inputs)
+        if len(pkl_paths) > 1:
+            _validate_disjoint_histogram_contributions(pkl_paths, loaded_inputs)
         artifact_kind = merged_sidecar["artifact_kind"]
         policy = resolved_policy_from_provenance(
             merged_sidecar["sumw2_storage_provenance"]
@@ -451,39 +430,6 @@ def load_and_merge_histogram_pkls(
                     "num_sumw2_keys": sum(_is_sumw2_key(key) for key in keys),
                 }
             )
-        seen_processes_by_key = {}
-        for input_index, (path, hist_dict) in enumerate(zip(pkl_paths, loaded_inputs)):
-            for key, histogram in hist_dict.items():
-                incoming_procs = _process_labels(histogram) or set()
-                existing_procs = seen_processes_by_key.setdefault(key, set())
-                if input_index == 0:
-                    existing_procs.update(incoming_procs)
-                    continue
-                incoming_procs = _process_labels(hist_dict[key])
-                overlap = sorted((existing_procs or set()) & (incoming_procs or set()))
-                if not overlap:
-                    existing_procs.update(incoming_procs or set())
-                    continue
-                collision = {
-                    "key": key,
-                    "path": path,
-                    "overlap_count": len(overlap),
-                    "overlap_examples": _short_examples(overlap, max_items=15),
-                    "existing_process_count": len(existing_procs),
-                    "incoming_process_count": len(incoming_procs),
-                }
-                report["process_collisions"].append(collision)
-                message = (
-                    f"Process-label overlap detected while merging key '{key}' from "
-                    f"'{path}': {len(overlap)} overlapping labels. "
-                    "Use --on-process-collision allow to merge intentional overlaps, "
-                    "or --merge-only --on-process-collision warn to inspect them."
-                )
-                if on_process_collision == "error":
-                    raise RuntimeError(message)
-                if on_process_collision == "warn":
-                    print(f"WARNING: {message}")
-                existing_procs.update(incoming_procs or set())
         merged_hists = merge_nominal_mappings(
             loaded_inputs,
             runtime_families=runtime_families,
@@ -513,8 +459,8 @@ def load_and_merge_histogram_pkls(
     elif schema_version is None:
         report["artifact_kind"] = "legacy_uniform"
         report["artifact_merged"] = len(pkl_paths) > 1
-        if len(pkl_paths) > 1 and require_disjoint_final_categories:
-            _validate_disjoint_final_category_support(pkl_paths, loaded_inputs)
+        if len(pkl_paths) > 1:
+            _validate_disjoint_histogram_contributions(pkl_paths, loaded_inputs)
         for path, hist_dict in zip(pkl_paths, loaded_inputs):
             keys = set(hist_dict.keys())
             base_keys = sorted(k for k in keys if not _is_sumw2_key(k))
@@ -548,35 +494,18 @@ def load_and_merge_histogram_pkls(
                     continue
                 existing_hist = merged_hists[key]
                 _validate_hist_compatibility(key, existing_hist, incoming_hist, path)
-                existing_procs = _process_labels(existing_hist)
-                incoming_procs = _process_labels(incoming_hist)
-                overlap = sorted((existing_procs or set()) & (incoming_procs or set()))
-                if overlap:
-                    collision = {
-                        "key": key,
-                        "path": path,
-                        "overlap_count": len(overlap),
-                        "overlap_examples": _short_examples(overlap, max_items=15),
-                        "existing_process_count": len(existing_procs),
-                        "incoming_process_count": len(incoming_procs),
-                    }
-                    report["process_collisions"].append(collision)
-                    message = (
-                        f"Process-label overlap detected while merging key '{key}' from "
-                        f"'{path}': {len(overlap)} overlapping labels. "
-                        "Use --on-process-collision allow to merge intentional overlaps, "
-                        "or --merge-only --on-process-collision warn to inspect them."
-                    )
-                    if on_process_collision == "error":
-                        raise RuntimeError(message)
-                    if on_process_collision == "warn":
-                        print(f"WARNING: {message}")
                 merged_hists[key] += incoming_hist
     else:
         raise RuntimeError(f"Unsupported nominal schema version {schema_version!r}.")
 
     report["num_merged_keys"] = len(merged_hists)
-    report["num_process_collisions"] = len(report["process_collisions"])
+    report["year_coverage_mismatches"] = validate_year_coverage(
+        merged_hists,
+        policy=year_coverage_policy,
+    )
+    report["num_year_coverage_mismatches"] = len(
+        report["year_coverage_mismatches"]
+    )
 
     return merged_hists, report
 
@@ -928,16 +857,7 @@ class DatacardMaker():
     @classmethod
     def get_process(cls,s):
         """ Strips off the year designation from a process name, can also be used for decomposed terms."""
-        for yr in cls.YEARS:
-            if s.endswith(yr):
-                s = s.replace(yr,"")
-        if cls.is_eft_term(s):
-            # For now we can simply split on first underscore, if signal process names get underscores
-            #   will need to update this to be smarter
-            s = s.split("_",1)[0]
-        if "_" in s:
-            s = s.rsplit("_",1)[0]
-        return s
+        return year_independent_process(s)
 
     # TODO: I don't like the naming
     @classmethod
@@ -1294,7 +1214,6 @@ class DatacardMaker():
             tic = time.time()
             self.hists, merge_report = load_and_merge_histogram_pkls(
                 [fpath],
-                on_process_collision="allow",
                 require_sumw2=False,
             )
             dt = time.time() - tic

@@ -29,6 +29,24 @@ def _make_hist(processes, dense_name, nbins=1, dense_hi=None, channel="ch1"):
     return h
 
 
+def _make_hist_with_systematic(process, dense_name, channel, systematic):
+    h = SparseHist(
+        hist.axis.StrCategory([], name="process", growth=True),
+        hist.axis.StrCategory([], name="channel", growth=True),
+        hist.axis.StrCategory([], name="systematic", growth=True),
+        hist.axis.Regular(1, 0.0, 1.0, name=dense_name),
+        storage="Double",
+    )
+    h.fill(
+        process=process,
+        channel=channel,
+        systematic=systematic,
+        **{dense_name: 0.5},
+        weight=1.0,
+    )
+    return h
+
+
 def _make_payload(
     key,
     processes,
@@ -99,11 +117,10 @@ def test_merge_histogram_pkls_succeeds_for_disjoint_processes(monkeypatch):
 
     merged, report = datacard_tools.load_and_merge_histogram_pkls(
         ["a.pkl.gz", "b.pkl.gz"],
-        on_process_collision="error",
     )
 
     assert set(merged["met"].axes["process"]) == {"proc_a", "proc_b"}
-    assert report["num_process_collisions"] == 0
+    assert report["contribution_identity"].startswith("payload_component_key")
 
 
 def test_merge_histogram_pkls_fails_when_sumw2_missing(monkeypatch):
@@ -132,11 +149,10 @@ def test_merge_histogram_pkls_fails_on_dense_axis_edges_mismatch(monkeypatch):
     with pytest.raises(ValueError, match="Dense-axis edges mismatch"):
         datacard_tools.load_and_merge_histogram_pkls(
             ["a.pkl.gz", "b.pkl.gz"],
-            on_process_collision="allow",
         )
 
 
-def test_merge_histogram_pkls_default_process_overlap_policy_is_error(monkeypatch):
+def test_process_overlap_with_disjoint_channels_is_transparent(monkeypatch):
     payloads = {
         "a.pkl.gz": _make_payload(
             "met", ["shared_proc"], channel="channel_a"
@@ -148,24 +164,15 @@ def test_merge_histogram_pkls_default_process_overlap_policy_is_error(monkeypatc
 
     monkeypatch.setattr(datacard_tools, "get_hist_from_pkl", lambda path, allow_empty=False: payloads[path])
 
-    with pytest.raises(RuntimeError) as exc_info:
-        datacard_tools.load_and_merge_histogram_pkls(
-            ["a.pkl.gz", "b.pkl.gz"],
-        )
-    msg = str(exc_info.value)
-    assert "Process-label overlap detected" in msg
-    assert "--on-process-collision allow" in msg
-    assert "--merge-only --on-process-collision warn" in msg
-
     merged, report = datacard_tools.load_and_merge_histogram_pkls(
         ["a.pkl.gz", "b.pkl.gz"],
-        on_process_collision="allow",
     )
     assert "met" in merged
-    assert report["num_process_collisions"] >= 1
+    assert set(merged["met"].axes["channel"]) == {"channel_a", "channel_b"}
+    assert report["num_year_coverage_mismatches"] == 0
 
 
-def test_process_collision_allow_preserves_disjoint_channel_content(monkeypatch):
+def test_genuine_duplicate_contribution_is_rejected(monkeypatch):
     payloads = {
         "a.pkl.gz": {
             "met": _make_hist(["shared_proc"], "met", channel="channel_a"),
@@ -174,9 +181,9 @@ def test_process_collision_allow_preserves_disjoint_channel_content(monkeypatch)
             ),
         },
         "b.pkl.gz": {
-            "met": _make_hist(["shared_proc"], "met", channel="channel_b"),
+            "met": _make_hist(["shared_proc"], "met", channel="channel_a"),
             "met_sumw2": _make_hist(
-                ["shared_proc"], "met_sumw2", channel="channel_b"
+                ["shared_proc"], "met_sumw2", channel="channel_a"
             ),
         },
     }
@@ -186,16 +193,13 @@ def test_process_collision_allow_preserves_disjoint_channel_content(monkeypatch)
         lambda path, allow_empty=False: payloads[path],
     )
 
-    merged, _report = datacard_tools.load_and_merge_histogram_pkls(
-        ["a.pkl.gz", "b.pkl.gz"],
-        on_process_collision="allow",
-        require_disjoint_final_categories=True,
-    )
-
-    assert set(merged["met"].axes["channel"]) == {"channel_a", "channel_b"}
+    with pytest.raises(RuntimeError, match="Duplicate histogram contribution support"):
+        datacard_tools.load_and_merge_histogram_pkls(
+            ["a.pkl.gz", "b.pkl.gz"],
+        )
 
 
-def test_duplicate_final_category_is_rejected_before_histogram_addition(monkeypatch):
+def test_repeated_channel_with_distinct_process_is_supported(monkeypatch):
     payloads = {
         "a.pkl.gz": _make_payload("met", ["proc_a"], channel="3l_onZ_2b_4j"),
         "b.pkl.gz": _make_payload("met", ["proc_b"], channel="3l_onZ_2b_4j"),
@@ -206,12 +210,42 @@ def test_duplicate_final_category_is_rejected_before_histogram_addition(monkeypa
         lambda path, allow_empty=False: payloads[path],
     )
 
-    with pytest.raises(RuntimeError, match="Duplicate final jet-resolved category"):
-        datacard_tools.load_and_merge_histogram_pkls(
-            ["a.pkl.gz", "b.pkl.gz"],
-            on_process_collision="allow",
-            require_disjoint_final_categories=True,
-        )
+    merged, _report = datacard_tools.load_and_merge_histogram_pkls(
+        ["a.pkl.gz", "b.pkl.gz"],
+    )
+    assert set(merged["met"].axes["process"]) == {"proc_a", "proc_b"}
+
+
+def test_complete_categorical_identity_distinguishes_systematic_fragments(monkeypatch):
+    payloads = {
+        "nominal.pkl.gz": {
+            "met": _make_hist_with_systematic(
+                "sharedUL18", "met", "shared_channel", "nominal"
+            ),
+            "met_sumw2": _make_hist_with_systematic(
+                "sharedUL18", "met_sumw2", "shared_channel", "nominal"
+            ),
+        },
+        "variation.pkl.gz": {
+            "met": _make_hist_with_systematic(
+                "sharedUL18", "met", "shared_channel", "scaleUp"
+            ),
+            "met_sumw2": _make_hist_with_systematic(
+                "sharedUL18", "met_sumw2", "shared_channel", "scaleUp"
+            ),
+        },
+    }
+    monkeypatch.setattr(
+        datacard_tools,
+        "get_hist_from_pkl",
+        lambda path, allow_empty=False: payloads[path],
+    )
+
+    merged, _report = datacard_tools.load_and_merge_histogram_pkls(
+        ["nominal.pkl.gz", "variation.pkl.gz"]
+    )
+
+    assert set(merged["met"].axes["systematic"]) == {"nominal", "scaleUp"}
 
 
 def test_legacy_cross_run_histogram_composition_is_rejected(monkeypatch):
@@ -233,8 +267,26 @@ def test_legacy_cross_run_histogram_composition_is_rejected(monkeypatch):
         RuntimeError, match=r"Run 2 \+ Run 3 composition is unsupported"
     ):
         datacard_tools.load_and_merge_histogram_pkls(
-            ["run2.pkl.gz", "run3.pkl.gz"], on_process_collision="allow"
+            ["run2.pkl.gz", "run3.pkl.gz"]
         )
+
+
+def test_single_input_with_cross_run_contributions_is_rejected(monkeypatch):
+    payload = _make_payload(
+        "met",
+        ["backgroundUL18", "background2022"],
+        channel="3l_onZ_2b_4j",
+    )
+    monkeypatch.setattr(
+        datacard_tools,
+        "get_hist_from_pkl",
+        lambda path, allow_empty=False: payload,
+    )
+
+    with pytest.raises(
+        RuntimeError, match=r"Run 2 \+ Run 3 composition is unsupported"
+    ):
+        datacard_tools.load_and_merge_histogram_pkls(["mixed.pkl.gz"])
 
 
 def test_split_family_provenance_composes_first_occurrence_ordered_union():
@@ -271,18 +323,14 @@ def test_split_family_provenance_preserves_policy_and_allocation_guards():
     different_dataset = _make_provenance(
         ("njets",), dataset="dataset_b", process="process_a"
     )
-    with pytest.raises(RuntimeError, match="identical source-level resolved_datasets"):
-        histogram_artifact._compose_sumw2_storage_provenance(
-            (first, different_dataset)
-        )
-
     different_process = _make_provenance(
         ("njets",), dataset="dataset_a", process="process_b"
     )
-    with pytest.raises(RuntimeError, match="identical source-level resolved_processes"):
-        histogram_artifact._compose_sumw2_storage_provenance(
-            (first, different_process)
-        )
+    composed = histogram_artifact._compose_sumw2_storage_provenance(
+        (first, different_dataset, different_process)
+    )
+    assert composed["resolved_datasets"] == ["dataset_a", "dataset_b"]
+    assert composed["resolved_processes"] == ["process_a", "process_b"]
 
 
 def test_sidecar_merge_composes_partial_content_manifests(monkeypatch):
@@ -380,41 +428,41 @@ def test_make_cards_parser_accepts_multiple_pkls():
         [
             "a.pkl.gz",
             "b.pkl.gz",
-            "--on-process-collision",
-            "warn",
+            "--year-coverage-policy",
+            "error",
             "--merge-only",
         ]
     )
 
     assert args.pkl_file == ["a.pkl.gz", "b.pkl.gz"]
-    assert args.on_process_collision == "warn"
+    assert args.year_coverage_policy == "error"
     assert args.merge_only is True
 
 
-def test_make_cards_parser_default_process_collision_policy_is_allow():
+def test_make_cards_parser_default_year_coverage_policy_is_warn():
     parser = make_cards.build_arg_parser()
     args = parser.parse_args(["a.pkl.gz"])
 
-    assert args.on_process_collision == "allow"
+    assert args.year_coverage_policy == "warn"
 
 
-@pytest.mark.parametrize("collision_policy", ("error", "allow"))
-def test_make_cards_parser_accepts_explicit_process_collision_policy(
-    collision_policy,
+@pytest.mark.parametrize("year_coverage_policy", ("warn", "error", "off"))
+def test_make_cards_parser_accepts_explicit_year_coverage_policy(
+    year_coverage_policy,
 ):
     parser = make_cards.build_arg_parser()
     args = parser.parse_args(
-        ["a.pkl.gz", "--on-process-collision", collision_policy]
+        ["a.pkl.gz", "--year-coverage-policy", year_coverage_policy]
     )
 
-    assert args.on_process_collision == collision_policy
+    assert args.year_coverage_policy == year_coverage_policy
 
 
 @pytest.mark.parametrize(
     "cli_args, expected_policy",
-    [([], "allow"), (["--on-process-collision", "error"], "error")],
+    [([], "warn"), (["--year-coverage-policy", "off"], "off")],
 )
-def test_make_cards_main_propagates_resolved_collision_policy(
+def test_make_cards_main_propagates_resolved_year_coverage_policy(
     monkeypatch,
     cli_args,
     expected_policy,
@@ -437,14 +485,13 @@ def test_make_cards_main_propagates_resolved_collision_policy(
 
     assert captured == {
         "pkl_paths": ["input.pkl.gz"],
-        "on_process_collision": expected_policy,
         "require_sumw2": True,
-        "require_disjoint_final_categories": True,
+        "year_coverage_policy": expected_policy,
     }
 
 
-@pytest.mark.parametrize("collision_policy", ("allow", "error"))
-def test_condor_options_propagate_resolved_collision_policy(collision_policy):
+@pytest.mark.parametrize("year_coverage_policy", ("warn", "error", "off"))
+def test_condor_options_propagate_resolved_year_coverage_policy(year_coverage_policy):
     dc = SimpleNamespace(
         do_mc_stat=False,
         verbose=False,
@@ -456,9 +503,9 @@ def test_condor_options_propagate_resolved_collision_policy(collision_policy):
         skip_missing_parton_rate_syst=False,
     )
 
-    options = make_cards._build_condor_base_other_opts(dc, collision_policy)
+    options = make_cards._build_condor_base_other_opts(dc, year_coverage_policy)
 
-    assert options[-2:] == ["--on-process-collision", collision_policy]
+    assert options[-2:] == ["--year-coverage-policy", year_coverage_policy]
 
 
 def test_resolve_pkl_paths_from_file(tmp_path):
