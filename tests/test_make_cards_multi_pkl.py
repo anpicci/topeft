@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import sys
+from types import SimpleNamespace
+
 import hist
 import pytest
 
@@ -133,7 +136,7 @@ def test_merge_histogram_pkls_fails_on_dense_axis_edges_mismatch(monkeypatch):
         )
 
 
-def test_merge_histogram_pkls_process_overlap_policy(monkeypatch):
+def test_merge_histogram_pkls_default_process_overlap_policy_is_error(monkeypatch):
     payloads = {
         "a.pkl.gz": _make_payload(
             "met", ["shared_proc"], channel="channel_a"
@@ -148,7 +151,6 @@ def test_merge_histogram_pkls_process_overlap_policy(monkeypatch):
     with pytest.raises(RuntimeError) as exc_info:
         datacard_tools.load_and_merge_histogram_pkls(
             ["a.pkl.gz", "b.pkl.gz"],
-            on_process_collision="error",
         )
     msg = str(exc_info.value)
     assert "Process-label overlap detected" in msg
@@ -185,7 +187,9 @@ def test_process_collision_allow_preserves_disjoint_channel_content(monkeypatch)
     )
 
     merged, _report = datacard_tools.load_and_merge_histogram_pkls(
-        ["a.pkl.gz", "b.pkl.gz"], on_process_collision="allow"
+        ["a.pkl.gz", "b.pkl.gz"],
+        on_process_collision="allow",
+        require_disjoint_final_categories=True,
     )
 
     assert set(merged["met"].axes["channel"]) == {"channel_a", "channel_b"}
@@ -204,7 +208,9 @@ def test_duplicate_final_category_is_rejected_before_histogram_addition(monkeypa
 
     with pytest.raises(RuntimeError, match="Duplicate final jet-resolved category"):
         datacard_tools.load_and_merge_histogram_pkls(
-            ["a.pkl.gz", "b.pkl.gz"], on_process_collision="allow"
+            ["a.pkl.gz", "b.pkl.gz"],
+            on_process_collision="allow",
+            require_disjoint_final_categories=True,
         )
 
 
@@ -385,11 +391,74 @@ def test_make_cards_parser_accepts_multiple_pkls():
     assert args.merge_only is True
 
 
-def test_make_cards_parser_default_process_collision_policy_is_error():
+def test_make_cards_parser_default_process_collision_policy_is_allow():
     parser = make_cards.build_arg_parser()
     args = parser.parse_args(["a.pkl.gz"])
 
-    assert args.on_process_collision == "error"
+    assert args.on_process_collision == "allow"
+
+
+@pytest.mark.parametrize("collision_policy", ("error", "allow"))
+def test_make_cards_parser_accepts_explicit_process_collision_policy(
+    collision_policy,
+):
+    parser = make_cards.build_arg_parser()
+    args = parser.parse_args(
+        ["a.pkl.gz", "--on-process-collision", collision_policy]
+    )
+
+    assert args.on_process_collision == collision_policy
+
+
+@pytest.mark.parametrize(
+    "cli_args, expected_policy",
+    [([], "allow"), (["--on-process-collision", "error"], "error")],
+)
+def test_make_cards_main_propagates_resolved_collision_policy(
+    monkeypatch,
+    cli_args,
+    expected_policy,
+):
+    captured = {}
+
+    def _fake_load(pkl_paths, **kwargs):
+        captured["pkl_paths"] = pkl_paths
+        captured.update(kwargs)
+        return {}, {"num_inputs": len(pkl_paths)}
+
+    monkeypatch.setattr(make_cards, "load_and_merge_histogram_pkls", _fake_load)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["make_cards.py", "input.pkl.gz", "--merge-only", *cli_args],
+    )
+
+    make_cards.main()
+
+    assert captured == {
+        "pkl_paths": ["input.pkl.gz"],
+        "on_process_collision": expected_policy,
+        "require_sumw2": True,
+        "require_disjoint_final_categories": True,
+    }
+
+
+@pytest.mark.parametrize("collision_policy", ("allow", "error"))
+def test_condor_options_propagate_resolved_collision_policy(collision_policy):
+    dc = SimpleNamespace(
+        do_mc_stat=False,
+        verbose=False,
+        use_real_data=False,
+        do_nuisance=False,
+        year_lst=[],
+        drop_syst=[],
+        sr_registry="an_v9",
+        skip_missing_parton_rate_syst=False,
+    )
+
+    options = make_cards._build_condor_base_other_opts(dc, collision_policy)
+
+    assert options[-2:] == ["--on-process-collision", collision_policy]
 
 
 def test_resolve_pkl_paths_from_file(tmp_path):

@@ -109,11 +109,11 @@ def build_arg_parser():
     parser.add_argument(
         "--on-process-collision",
         choices=["error","warn","allow"],
-        default="error",
+        default="allow",
         help=(
             "Policy for process-label overlaps when merging multiple input pkl files. "
-            "Default is strict `error`. Expert-only escape hatches: `warn`/`allow`, "
-            "to be used only when overlaps are intentional (e.g. chunked outputs)."
+            "Default is `allow` for category-disjoint datacard fragments. Use "
+            "`error` or `warn` for stricter diagnostics."
         ),
     )
     parser.add_argument("--merge-report",default="-",help="Path for merge diagnostic report JSON, or '-' for stdout")
@@ -230,7 +230,7 @@ def _build_condor_base_other_opts(dc,on_process_collision):
 #   repo is located).
 # TODO: Currently there's no way to transparently passthrough parent arguments to the condor ones.
 #   There's also no clear way to pass customized options to different sub-sets of condor jobs
-def run_condor(dc,pkl_paths,out_dir,var_lst,ch_lst,chunk_size,on_process_collision="error",merge_report="-"):
+def run_condor(dc,pkl_paths,out_dir,var_lst,ch_lst,chunk_size,on_process_collision="allow",merge_report="-"):
     import subprocess
     import stat
 
@@ -374,6 +374,7 @@ def main():
         pkl_files,
         on_process_collision=args.on_process_collision,
         require_sumw2=True,
+        require_disjoint_final_categories=True,
     )
     _emit_merge_report(merge_report, args.merge_report, out_dir)
     if args.cache_merged_pkl:

@@ -155,6 +155,10 @@ def test_no_uncertainties_keeps_sumw2_requirement_and_propagates_mode(
 
     def _fake_load(*_args, **kwargs):
         captured["require_sumw2"] = kwargs["require_sumw2"]
+        captured["on_process_collision"] = kwargs["on_process_collision"]
+        captured["require_disjoint_final_categories"] = kwargs.get(
+            "require_disjoint_final_categories", False
+        )
         return {"met": object()}, fake_report
 
     def _capture_run(*_args, **kwargs):
@@ -167,6 +171,8 @@ def test_no_uncertainties_keeps_sumw2_requirement_and_propagates_mode(
     assert make_cr_and_sr_plots.run_with_args(args, parser) == 0
     assert captured == {
         "require_sumw2": True,
+        "on_process_collision": "error",
+        "require_disjoint_final_categories": False,
         "uncertainty_mode": "none",
         "negative_weight_report": True,
     }

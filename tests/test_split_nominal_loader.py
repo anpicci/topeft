@@ -269,6 +269,76 @@ def test_same_run_mixed_and_reduced_family_fragments_are_transparent(tmp_path):
     )
 
 
+def test_plotter_variable_chunks_allow_overlapping_channel_support(tmp_path):
+    samples = {
+        "background_dataset": {
+            "histAxisName": "backgroundUL18",
+            "isData": False,
+            "WCnames": [],
+        }
+    }
+    category = "3l_onZ_2b_4j"
+    njets_path = tmp_path / "njets.pkl.gz"
+    ptz_path = tmp_path / "ptz.pkl.gz"
+    njets_policy = _policy_for_families(("njets",), samples)
+    ptz_policy = _policy_for_families(("ptz",), samples)
+
+    _write_versioned(
+        njets_path,
+        {
+            scalar_nominal_key("njets"): _scalar(
+                "backgroundUL18", 2.0, family="njets", channel=category
+            ),
+            "njets_sumw2": _scalar(
+                "backgroundUL18",
+                4.0,
+                family="njets",
+                companion=True,
+                channel=category,
+            ),
+        },
+        njets_policy,
+        samples,
+    )
+    _write_versioned(
+        ptz_path,
+        {
+            scalar_nominal_key("ptz"): _scalar(
+                "backgroundUL18", 3.0, family="ptz", channel=category
+            ),
+            "ptz_sumw2": _scalar(
+                "backgroundUL18",
+                9.0,
+                family="ptz",
+                companion=True,
+                channel=category,
+            ),
+        },
+        ptz_policy,
+        samples,
+    )
+
+    merged, report = load_and_merge_histogram_pkls(
+        [str(njets_path), str(ptz_path)]
+    )
+
+    assert report["on_process_collision"] == "error"
+    assert report["require_disjoint_final_categories"] is False
+    assert report["runtime_histogram_families"] == ["njets", "ptz"]
+    assert set(merged) == {
+        scalar_nominal_key("njets"),
+        "njets_sumw2",
+        scalar_nominal_key("ptz"),
+        "ptz_sumw2",
+    }
+    assert set(merged[scalar_nominal_key("njets")].axes["channel"]) == {
+        category
+    }
+    assert set(merged[scalar_nominal_key("ptz")].axes["channel"]) == {
+        category
+    }
+
+
 def test_versioned_duplicate_final_category_is_rejected(tmp_path, policy):
     first_path = tmp_path / "first.pkl.gz"
     second_path = tmp_path / "second.pkl.gz"
@@ -298,7 +368,9 @@ def test_versioned_duplicate_final_category_is_rejected(tmp_path, policy):
 
     with pytest.raises(RuntimeError, match="Duplicate final jet-resolved category"):
         load_and_merge_histogram_pkls(
-            [str(first_path), str(second_path)], on_process_collision="allow"
+            [str(first_path), str(second_path)],
+            on_process_collision="allow",
+            require_disjoint_final_categories=True,
         )
 
 

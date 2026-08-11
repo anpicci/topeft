@@ -313,10 +313,17 @@ def load_and_merge_histogram_pkls(
     on_process_collision="error",
     require_sumw2=True,
     consumer_required_families=(),
+    require_disjoint_final_categories=False,
 ):
     """
-        Load one or more histogram pkls and merge them in memory with strict validation.
-        Returns: (merged_hist_dict, merge_report_dict)
+    Load and validate one or more histogram PKLs before merging them in memory.
+
+    Consumers that interpret ``channel`` labels as exclusive output ownership,
+    such as datacard production, must set
+    ``require_disjoint_final_categories=True``. Generic and plotting consumers
+    may combine orthogonal chunks that repeat channel labels.
+
+    Returns: (merged_hist_dict, merge_report_dict)
     """
     if on_process_collision not in {"error", "warn", "allow"}:
         raise ValueError(
@@ -331,6 +338,9 @@ def load_and_merge_histogram_pkls(
         "inputs": list(pkl_paths),
         "on_process_collision": on_process_collision,
         "require_sumw2": bool(require_sumw2),
+        "require_disjoint_final_categories": bool(
+            require_disjoint_final_categories
+        ),
         "files": [],
         "process_collisions": [],
         "schema": None,
@@ -392,7 +402,7 @@ def load_and_merge_histogram_pkls(
     merged_hists = {}
     if schema_version == NOMINAL_CONTAINER_SCHEMA_VERSION:
         merged_sidecar = merge_histogram_sidecars(input_metadata)
-        if len(pkl_paths) > 1:
+        if len(pkl_paths) > 1 and require_disjoint_final_categories:
             _validate_disjoint_final_category_support(pkl_paths, loaded_inputs)
         artifact_kind = merged_sidecar["artifact_kind"]
         policy = resolved_policy_from_provenance(
@@ -503,7 +513,7 @@ def load_and_merge_histogram_pkls(
     elif schema_version is None:
         report["artifact_kind"] = "legacy_uniform"
         report["artifact_merged"] = len(pkl_paths) > 1
-        if len(pkl_paths) > 1:
+        if len(pkl_paths) > 1 and require_disjoint_final_categories:
             _validate_disjoint_final_category_support(pkl_paths, loaded_inputs)
         for path, hist_dict in zip(pkl_paths, loaded_inputs):
             keys = set(hist_dict.keys())
