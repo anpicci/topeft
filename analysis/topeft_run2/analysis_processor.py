@@ -77,6 +77,48 @@ ANALYSIS_MODE_EXCLUSIVE_ERROR = (
     "--offZ-3l-split, --tau-h-analysis, --fwd-analysis, --all-analysis."
 )
 
+JVM_ETA_PHI_DIAGNOSTIC_HISTOGRAMS = frozenset(
+    {
+        "jet_eta_phi_before_veto",
+        "jet_eta_phi_after_veto",
+    }
+)
+
+
+def flatten_jagged_jet_eta_phi_weights(jets, event_mask, event_weights):
+    """Return aligned flattened eta, phi, and per-jet event weights."""
+
+    selected_jets = jets[event_mask]
+    selected_event_weights = event_weights[event_mask]
+    _, per_jet_weights = ak.broadcast_arrays(selected_jets.eta, selected_event_weights)
+    return (
+        ak.flatten(selected_jets.eta),
+        ak.flatten(selected_jets.phi),
+        ak.flatten(per_jet_weights),
+    )
+
+
+def get_jvm_eta_phi_event_mask(base_event_mask, jet_veto_mask, histogram_name):
+    """Apply the diagnostic's family-local event-veto policy."""
+
+    if histogram_name == "jet_eta_phi_before_veto":
+        return base_event_mask
+    if histogram_name == "jet_eta_phi_after_veto":
+        return base_event_mask & jet_veto_mask
+    raise ValueError(f"Unknown JVM eta-phi diagnostic '{histogram_name}'")
+
+
+def should_include_jet_veto_in_histogram_selection(histogram_name):
+    """Preserve the standard post-veto selection outside the diagnostic pair."""
+
+    return histogram_name not in JVM_ETA_PHI_DIAGNOSTIC_HISTOGRAMS
+
+
+def should_fill_jvm_eta_phi_diagnostic(is_run3, syst_var, wgt_fluct):
+    """Keep reviewer diagnostics to the Run 3 nominal object/weight state."""
+
+    return is_run3 and syst_var == "nominal" and wgt_fluct == "nominal"
+
 
 def validate_analysis_mode_flags(offz_3l_split, tau_h_analysis, fwd_analysis, all_analysis):
     mode_flags = {
@@ -443,6 +485,7 @@ class AnalysisProcessor(processor.ProcessorABC):
             selected_sumw2_families = (
                 set(base_hist_names_ordered) if fill_sumw2_hist else set()
             )
+        selected_sumw2_families.difference_update(JVM_ETA_PHI_DIAGNOSTIC_HISTOGRAMS)
         self._selected_sumw2_families = frozenset(selected_sumw2_families)
         self._fill_sumw2_hist = bool(self._selected_sumw2_families)
         (
@@ -1812,6 +1855,9 @@ class AnalysisProcessor(processor.ProcessorABC):
             varnames["lt"]      = lt
             varnames["npvs"]    = pv.npvs
             varnames["npvsGood"]= pv.npvsGood
+            if is_run3:
+                varnames["jet_eta_phi_before_veto"] = veto_map_input_jets
+                varnames["jet_eta_phi_after_veto"] = veto_map_input_jets
             lepton0_pt_raw = l0.pt_raw 
             lepton0_abseta = abs(l0.eta) 
 
@@ -2002,7 +2048,10 @@ class AnalysisProcessor(processor.ProcessorABC):
                     dense_axis_name
                 )
                 if self._sumw2_policy is None:
-                    target_selected_for_sumw2 = self._fill_sumw2_hist
+                    target_selected_for_sumw2 = (
+                        self._fill_sumw2_hist
+                        and dense_axis_name not in JVM_ETA_PHI_DIAGNOSTIC_HISTOGRAMS
+                    )
                 else:
                     target_selected_for_sumw2 = self._sumw2_policy.selects(
                         dataset_key,
@@ -2102,7 +2151,13 @@ class AnalysisProcessor(processor.ProcessorABC):
                                         #Selections applied everywhere
                                         if isData:
                                             cuts_lst.append("is_good_lumi")
-                                        cuts_lst.append("jet_veto")
+                                        is_jvm_eta_phi_diagnostic = (
+                                            dense_axis_name in JVM_ETA_PHI_DIAGNOSTIC_HISTOGRAMS
+                                        )
+                                        if should_include_jet_veto_in_histogram_selection(
+                                            dense_axis_name
+                                        ):
+                                            cuts_lst.append("jet_veto")
 
                                         if self._split_by_lepton_flavor:
                                             flav_ch = lep_flav
@@ -2127,6 +2182,40 @@ class AnalysisProcessor(processor.ProcessorABC):
                                         # Apply the optional cut on energy of the event
                                         if self._ecut_threshold is not None:
                                             all_cuts_mask = (all_cuts_mask & ecut_mask)
+
+                                        if is_jvm_eta_phi_diagnostic:
+                                            if not should_fill_jvm_eta_phi_diagnostic(
+                                                is_run3,
+                                                syst_var,
+                                                wgt_fluct,
+                                            ):
+                                                continue
+                                            diagnostic_event_mask = get_jvm_eta_phi_event_mask(
+                                                all_cuts_mask,
+                                                veto_map_mask,
+                                                dense_axis_name,
+                                            )
+                                            eta_flat, phi_flat, weights_flat = (
+                                                flatten_jagged_jet_eta_phi_weights(
+                                                    veto_map_input_jets,
+                                                    diagnostic_event_mask,
+                                                    weight,
+                                                )
+                                            )
+                                            if fill_base_hist:
+                                                axis_names = self._hist_axis_map[dense_axis_name]
+                                                hout[nominal_histogram_key].fill(
+                                                    **{
+                                                        axis_names[0]: eta_flat,
+                                                        axis_names[1]: phi_flat,
+                                                        "channel": ch_name,
+                                                        "appl": appl,
+                                                        "process": histAxisName,
+                                                        "systematic": wgt_fluct,
+                                                        "weight": weights_flat,
+                                                    }
+                                                )
+                                            continue
 
                                         # Weights and eft coeffs
                                         weights_flat = weight[all_cuts_mask]

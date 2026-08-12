@@ -24,11 +24,21 @@ def test_accumulator_keys_without_hist_filter():
     one_dimensional = set(axes_info)
     two_dimensional = set(axes_info_2d)
     base_names = one_dimensional | two_dimensional
+    jvm_diagnostic_families = {
+        "jet_eta_phi_before_veto",
+        "jet_eta_phi_after_veto",
+    }
     expected_keys = {f"{name}__scalar_nominal" for name in one_dimensional}
     expected_keys.update(two_dimensional)
-    expected_keys.update(f"{name}_sumw2" for name in base_names)
+    expected_keys.update(
+        f"{name}_sumw2" for name in base_names - jvm_diagnostic_families
+    )
 
     assert set(processor.accumulator.keys()) == expected_keys
+    assert not any(
+        key.endswith("_sumw2") and key.removesuffix("_sumw2") in jvm_diagnostic_families
+        for key in processor.accumulator
+    )
     assert set(processor._hist_lst) == expected_keys
     assert set(processor._hist_axis_map.keys()) == expected_keys | one_dimensional
     assert set(processor._hist_requires_eft.keys()) == expected_keys

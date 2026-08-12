@@ -1,3 +1,6 @@
+import math
+
+
 info = {
     "npvs": {
         "regular": (50, 0, 100),
@@ -296,6 +299,34 @@ info_2d = {
                 "name": "l1_eta_vs_phi_phi",
                 "regular": (160, -4, 4),
                 "label": r"Subleading lep $\phi$ ",
+            },
+        ],
+    },
+    "jet_eta_phi_before_veto": {
+        "axes": [
+            {
+                "name": "jet_eta_phi_before_veto_eta",
+                "regular": (104, -5.2, 5.2),
+                "label": r"Jet $\eta$ before veto ",
+            },
+            {
+                "name": "jet_eta_phi_before_veto_phi",
+                "regular": (72, -math.pi, math.pi),
+                "label": r"Jet $\phi$ before veto ",
+            },
+        ],
+    },
+    "jet_eta_phi_after_veto": {
+        "axes": [
+            {
+                "name": "jet_eta_phi_after_veto_eta",
+                "regular": (104, -5.2, 5.2),
+                "label": r"Jet $\eta$ after veto ",
+            },
+            {
+                "name": "jet_eta_phi_after_veto_phi",
+                "regular": (72, -math.pi, math.pi),
+                "label": r"Jet $\phi$ after veto ",
             },
         ],
     },
