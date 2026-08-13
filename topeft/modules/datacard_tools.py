@@ -534,6 +534,60 @@ def to_hist(arr,name,zero_wgts=False):
     return h
 
 
+def _sanitize_negative_template_bins(templates):
+    """Crop negative bins without letting variations revive raw-negative nominal bins."""
+    raw_nominal = next(
+        (
+            arr
+            for sp_key, arr in templates.items()
+            if sp_key.systematic == "nominal"
+        ),
+        None,
+    )
+    nominal_negative_mask = (
+        None if raw_nominal is None else np.asarray(raw_nominal[0]) < 0
+    )
+
+    sanitized_templates = {}
+    for sp_key, arr in templates.items():
+        sanitized_arr = [
+            None if component is None else np.array(component, copy=True)
+            for component in arr
+        ]
+        if nominal_negative_mask is not None:
+            for component in sanitized_arr:
+                if component is not None:
+                    component[nominal_negative_mask] = 0
+
+        negative_bin_mask = sanitized_arr[0] < 0
+        sanitized_arr[0][negative_bin_mask] = 0
+        if sanitized_arr[1] is not None:
+            sanitized_arr[1][negative_bin_mask] = 0
+        sanitized_templates[sp_key] = sanitized_arr
+
+    return sanitized_templates
+
+
+def _validate_ff_template_support(
+    syst,
+    arr,
+    nominal_content_is_zero,
+    nominal_sumw2_is_zero,
+):
+    if "FF" not in syst:
+        return
+    if nominal_content_is_zero and sum(arr[0]) != 0:
+        raise Warning(
+            "Systematics Error arr[0]:Zero values in 'nominal' "
+            f"but non-zero in '{syst}'"
+        )
+    if nominal_sumw2_is_zero and sum(arr[1]) != 0:
+        raise Warning(
+            "Systematics Error arr[1]:Zero values in 'nominal' "
+            f"but non-zero in '{syst}'"
+        )
+
+
 class RateSystematic():
     def __init__(self,name,**kwargs):
         self.all = kwargs.pop("all",False)      # If true, this syst applies to all processes
@@ -1715,6 +1769,8 @@ class DatacardMaker():
                         "rate": -1
                     }
                     self.validate_sparse_axes_for_card(v, ch, proc_name)
+                    if crop_negative_bins:
+                        v = _sanitize_negative_template_bins(v)
                     # There should be only 1 sparse axis at this point, the systematics axis
                     check_zero_arr0 = False
                     check_zero_arr1 = False
@@ -1722,24 +1778,18 @@ class DatacardMaker():
                     written_hist_names = set()
                     for sp_key,arr in v.items():
                         syst = sp_key[0]
-                        if crop_negative_bins:
-                            negative_bin_mask = np.where( arr[0] < 0) # see where bins are negative
-                            arr[0][negative_bin_mask] = np.zeros_like( arr[0][negative_bin_mask] )  # set those to zero
-                            if arr[1] is not None:
-                                arr[1][negative_bin_mask] = np.zeros_like( arr[1][negative_bin_mask] )  # if there's a sumw2 defined, that one's set to zero as well. Otherwise we will get 0 +/- something, which is compatible with negative
-
-
                         syst = sp_key.systematic
                         if syst =="nominal":  # check systematics error for fake factors
                             if sum(arr[0]) == 0:
                                 check_zero_arr0 = True
                             if sum(arr[1]) == 0:
                                 check_zero_arr1 = True
-                        if "FF" in syst:
-                            if check_zero_arr0 and sum(arr[0]) != 0:
-                                raise Warning("Systematics Error arr[0]:Zero values in 'nominal' but non-zero in '%s'" % (syst))
-                            if check_zero_arr1 and sum(arr[1]) != 0:
-                                raise Warning("Systematics Error arr[1]:Zero values in 'nominal' but non-zero in '%s'" % (syst))
+                        _validate_ff_template_support(
+                            syst,
+                            arr,
+                            check_zero_arr0,
+                            check_zero_arr1,
+                        )
 
                         syst_base = syst.replace("Up","").replace("Down","")
 
