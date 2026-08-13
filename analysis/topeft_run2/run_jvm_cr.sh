@@ -9,7 +9,7 @@ cd /users/apiccine/work/correction-lib/topeft/analysis/topeft_run2
 output_dir="/groups/klannon/apiccine/preappr_v9_260729"
 campaign_tag="ANv9_JVMCRttEtaPhi"
 chunk_size="100000"
-dry_run=true
+dry_run=false
 ttgamma_sample_role_policy="split"
 
 years=(2022 2022EE 2023 2023BPix)
@@ -85,9 +85,16 @@ printf 'Category groups: %s\n' "${category_groups[*]}"
 printf 'Histogram variables: %s\n' "${hist_vars[*]}"
 
 start_time=$(date +%s)
-"${fullr3_command[@]}"
-exit_status=$?
+
+if "${fullr3_command[@]}"; then
+    exit_status=0
+else
+    exit_status=$?
+fi
+
 end_time=$(date +%s)
 
 printf 'fullR3_run.sh exit status: %s\n' "$exit_status"
 printf 'Elapsed seconds: %s\n' "$((end_time - start_time))"
+
+exit "$exit_status"
