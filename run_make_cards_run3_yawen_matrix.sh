@@ -174,18 +174,27 @@ print_command() {
     printf '\n'
 }
 
+strip_selector_anchors() {
+    local selector="$1"
+    selector="${selector#^}"
+    selector="${selector%\$}"
+    printf '%s\n' "$selector"
+}
+
 build_expected_manifests() {
     local job_id="$1"
     local discriminant="$2"
     shift 2
+    local selector=""
     local category=""
     local expected_dir="${expected_root}/${job_id}"
     mkdir -p "$expected_dir" || return 1
     : > "${expected_dir}/txt.txt"
     : > "${expected_dir}/root.txt"
-    for category in "$@"; do
-        printf '%s\n' "ttx_multileptons-Run3_${category}_${discriminant}.txt" >> "${expected_dir}/txt.txt"
-        printf '%s\n' "ttx_multileptons-Run3_${category}_${discriminant}.root" >> "${expected_dir}/root.txt"
+    for selector in "$@"; do
+        category="$(strip_selector_anchors "$selector")"
+        printf '%s\n' "ttx_multileptons-${category}_${discriminant}.txt" >> "${expected_dir}/txt.txt"
+        printf '%s\n' "ttx_multileptons-${category}_${discriminant}.root" >> "${expected_dir}/root.txt"
     done
 }
 
@@ -201,8 +210,8 @@ validate_job_output() {
         echo "missing output directory: ${output_dir}" > "${observed_dir}/validation.txt"
         return 1
     fi
-    find "$output_dir" -maxdepth 1 -type f -name 'ttx_multileptons-Run3_*.txt' -printf '%f\n' | sort > "${observed_dir}/txt.txt"
-    find "$output_dir" -maxdepth 1 -type f -name 'ttx_multileptons-Run3_*.root' -printf '%f\n' | sort > "${observed_dir}/root.txt"
+    find "$output_dir" -maxdepth 1 -type f -name 'ttx_multileptons-*.txt' -printf '%f\n' | sort > "${observed_dir}/txt.txt"
+    find "$output_dir" -maxdepth 1 -type f -name 'ttx_multileptons-*.root' -printf '%f\n' | sort > "${observed_dir}/root.txt"
     diff -u "${expected_dir}/txt.txt" "${observed_dir}/txt.txt" > "${observed_dir}/txt.diff"
     [[ "$?" -eq 0 ]] || validation_rc=1
     diff -u "${expected_dir}/root.txt" "${observed_dir}/root.txt" > "${observed_dir}/root.diff"
