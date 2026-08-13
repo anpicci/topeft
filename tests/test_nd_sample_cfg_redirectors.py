@@ -6,11 +6,11 @@ import subprocess
 
 
 CFG_ROOT = Path(__file__).parents[1] / "input_samples" / "cfgs"
-EXPECTED_REDIRECTOR = "root://cmsxcache.crc.nd.edu/"
+EXPECTED_REDIRECTOR = "root://cmsxrootd.crc.nd.edu/"
 XROOTD_REDIRECTOR_PATTERN = re.compile(r"root://[A-Za-z0-9.-]+/")
 
 
-def test_nd_sample_cfg_redirectors_use_the_crc_cache():
+def test_nd_sample_cfg_redirectors_use_the_crc_redirector():
     repository_root = CFG_ROOT.parents[1]
     tracked = subprocess.run(
         ["git", "ls-files", "--", "input_samples/cfgs"],
