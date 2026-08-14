@@ -9,7 +9,8 @@ cd /users/apiccine/work/correction-lib/topeft/analysis/topeft_run2
 output_dir="/groups/klannon/apiccine/preappr_v9_260729"
 campaign_tag="ANv9_JVMCRttEtaPhi"
 chunk_size="100000"
-dry_run=false
+# A production launch requires explicit opt-in: ``dry_run=false ./run_jvm_cr.sh``.
+dry_run="${dry_run:-true}"
 ttgamma_sample_role_policy="split"
 
 years=(2022 2022EE 2023 2023BPix)
