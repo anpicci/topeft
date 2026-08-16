@@ -27,6 +27,12 @@ declare -A role_cfg=(
     [run3_central_tzq]="${topeft_root}/input_samples/cfgs/missing_parton_run3_central_tzq_NDSkim.cfg"
     [run3_private_tllq]="${topeft_root}/input_samples/cfgs/missing_parton_run3_private_tllq_NDSkim.cfg"
 )
+declare -A role_sumw2_storage_modes=(
+    [run2_central_tzq]=production_central
+    [run2_private_tllq]=production
+    [run3_central_tzq]=production_central
+    [run3_private_tllq]=production
+)
 roles=(run2_central_tzq run2_private_tllq run3_central_tzq run3_private_tllq)
 
 output_root=""
@@ -42,6 +48,7 @@ commands_file=""
 manifest_file=""
 state_history_file=""
 environment_archive_cleanup_file=""
+sumw2_options_dir=""
 category_digest=""
 declare -a all_analysis_groups=()
 declare -a chunk_specs=()
@@ -204,11 +211,35 @@ campaign_paths() {
     status_file="${output_root}/status.txt"
     state_history_file="${output_root}/state_history.tsv"
     environment_archive_cleanup_file="${output_root}/environment_archive_cleanup.tsv"
+    sumw2_options_dir="${output_root}/sumw2_options"
 }
 
 role_run() { printf '%s\n' "${1%%_*}"; }
 role_name() { printf '%s\n' "${1#*_}"; }
 role_systematics() { [[ "$1" == *_private_tllq ]] && printf 'yes\n' || printf 'no\n'; }
+role_sumw2_storage_mode() {
+    local role="$1"
+    [[ -n "${role_sumw2_storage_modes[${role}]:-}" ]] || die "missing sumw2 storage mode for role: ${role}"
+    printf '%s\n' "${role_sumw2_storage_modes[${role}]}"
+}
+
+sumw2_options_path_for() {
+    printf '%s/%s.yml\n' "${sumw2_options_dir}" "$1"
+}
+
+sumw2_options_sha256() {
+    printf 'sumw2_storage:\n  mode: %s\n' "$(role_sumw2_storage_mode "$1")" | sha256sum | awk '{print $1}'
+}
+
+write_sumw2_options() {
+    local role destination
+    mkdir -p -- "${sumw2_options_dir}"
+    for role in "${roles[@]}"; do
+        destination="$(sumw2_options_path_for "${role}")"
+        [[ ! -e "${destination}" && ! -L "${destination}" ]] || die "refusing to overwrite sumw2 options: ${destination}"
+        printf 'sumw2_storage:\n  mode: %s\n' "$(role_sumw2_storage_mode "${role}")" > "${destination}"
+    done
+}
 
 raw_path_for() {
     local role="$1" chunk_label="$2" run role_name_value
@@ -275,6 +306,9 @@ write_metadata() {
             printf 'cfg_%s=%s\n' "${role}" "${role_cfg[${role}]}"
             printf 'cfg_%s_sha256=%s\n' "${role}" "$(file_sha256 "${role_cfg[${role}]}")"
             printf 'do_systs_%s=%s\n' "${role}" "$(role_systematics "${role}")"
+            printf 'sumw2_storage_mode_%s=%s\n' "${role}" "$(role_sumw2_storage_mode "${role}")"
+            printf 'sumw2_options_%s=%s\n' "${role}" "$(sumw2_options_path_for "${role}")"
+            printf 'sumw2_options_%s_sha256=%s\n' "${role}" "$(sumw2_options_sha256 "${role}")"
         done
     } > "${metadata_file}"
 }
@@ -326,6 +360,11 @@ verify_resume_metadata() {
         [[ "$(metadata_value cfg_${role})" == "${role_cfg[${role}]}" ]] || die "resume cfg path mismatch: ${role}"
         [[ "$(metadata_value cfg_${role}_sha256)" == "$(file_sha256 "${role_cfg[${role}]}")" ]] || die "resume cfg hash mismatch: ${role}"
         [[ "$(metadata_value do_systs_${role})" == "$(role_systematics "${role}")" ]] || die "resume systematic contract mismatch: ${role}"
+        [[ "$(metadata_value sumw2_storage_mode_${role})" == "$(role_sumw2_storage_mode "${role}")" ]] || die "resume sumw2 mode mismatch: ${role}"
+        [[ "$(metadata_value sumw2_options_${role})" == "$(sumw2_options_path_for "${role}")" ]] || die "resume sumw2 options path mismatch: ${role}"
+        [[ -f "$(sumw2_options_path_for "${role}")" && ! -L "$(sumw2_options_path_for "${role}")" ]] || die "resume sumw2 options are missing or unsafe: ${role}"
+        [[ "$(metadata_value sumw2_options_${role}_sha256)" == "$(sumw2_options_sha256 "${role}")" ]] || die "resume sumw2 options contract mismatch: ${role}"
+        [[ "$(file_sha256 "$(sumw2_options_path_for "${role}")")" == "$(sumw2_options_sha256 "${role}")" ]] || die "resume sumw2 options content mismatch: ${role}"
     done
     [[ -f "${output_contract_file}" && -f "${partition_file}" && -f "${status_file}" ]] || die "resume campaign contract is incomplete"
 }
@@ -359,6 +398,7 @@ initialize_fresh_campaign() {
     printf 'timestamp\trun\trole\tchunk\tcommand\n' > "${commands_file}"
     printf 'timestamp\tcontext\tresolved_directory\tpattern\tcandidate_path\taction\tresult\tdetail\n' \
         > "${environment_archive_cleanup_file}"
+    write_sumw2_options
     write_metadata
     write_partition "${partition_file}"
     write_output_contract "${output_contract_file}"
@@ -391,6 +431,7 @@ build_run_analysis_command() {
     if [[ "${run}" == run2 ]]; then resolved_command+=("${run2_years[@]}"); else resolved_command+=("${run3_years[@]}"); fi
     read -r -a category_groups <<< "${chunk_specs[chunk_index]}"
     resolved_command+=(--all-analysis --category-groups "${category_groups[@]}" --skip-cr --hist-list njets --executor "${executor}")
+    resolved_command+=(--options "$(sumw2_options_path_for "${role}")")
     resolved_command+=(--outpath "$(dirname -- "$(raw_path_for "${role}" "${chunk_label}")")")
     resolved_command+=(--outname "$(basename -- "$(raw_path_for "${role}" "${chunk_label}")" .pkl.gz)")
     if [[ "${role}" == *_private_tllq ]]; then
@@ -486,6 +527,9 @@ print_plan() {
     printf 'plan_mode=non_submitting\n'
     printf 'category_source=ALL_CH_LST_SR\ncategory_count=%s\ncategory_digest=%s\n' "${#all_analysis_groups[@]}" "${category_digest}"
     printf 'all_analysis_chunks=%s\nexecutor=%s\nrun2_years=%s\nrun3_years=%s\nhist_list=njets\ndo_np=no\n' "${all_analysis_chunks}" "${executor}" "${run2_years[*]}" "${run3_years[*]}"
+    for role in "${roles[@]}"; do
+        printf 'sumw2_storage_mode_%s=%s\n' "${role}" "$(role_sumw2_storage_mode "${role}")"
+    done
     printf '%s\n' '--- category_partition.tsv ---'; cat "${temporary_partition}"
     printf '%s\n' '--- output_contract.tsv ---'; cat "${temporary_contract}"
     printf '%s\n' '--- run_analysis_commands ---'
