@@ -33,6 +33,12 @@ declare -A role_sumw2_storage_modes=(
     [run3_central_tzq]=production_central
     [run3_private_tllq]=production
 )
+declare -A role_sumw2_process_prefixes=(
+    [run2_central_tzq]=tZq_central
+    [run2_private_tllq]=tllq_private
+    [run3_central_tzq]=tZq_central
+    [run3_private_tllq]=tllq_private
+)
 roles=(run2_central_tzq run2_private_tllq run3_central_tzq run3_private_tllq)
 
 output_root=""
@@ -223,12 +229,25 @@ role_sumw2_storage_mode() {
     printf '%s\n' "${role_sumw2_storage_modes[${role}]}"
 }
 
+role_sumw2_process_prefix() {
+    local role="$1"
+    [[ -n "${role_sumw2_process_prefixes[${role}]:-}" ]] || die "missing sumw2 process prefix for role: ${role}"
+    printf '%s\n' "${role_sumw2_process_prefixes[${role}]}"
+}
+
 sumw2_options_path_for() {
     printf '%s/%s.yml\n' "${sumw2_options_dir}" "$1"
 }
 
 sumw2_options_sha256() {
-    printf 'sumw2_storage:\n  mode: %s\n' "$(role_sumw2_storage_mode "$1")" | sha256sum | awk '{print $1}'
+    sumw2_options_content "$1" | sha256sum | awk '{print $1}'
+}
+
+sumw2_options_content() {
+    local role="$1"
+    printf 'sumw2_storage:\n  mode: %s\n  rules:\n    - process_prefixes:\n        - %s\n' \
+        "$(role_sumw2_storage_mode "${role}")" "$(role_sumw2_process_prefix "${role}")"
+    printf 'data_driven_products:\n  nonprompt:\n    enabled: false\n  flips:\n    enabled: false\n'
 }
 
 write_sumw2_options() {
@@ -237,7 +256,7 @@ write_sumw2_options() {
     for role in "${roles[@]}"; do
         destination="$(sumw2_options_path_for "${role}")"
         [[ ! -e "${destination}" && ! -L "${destination}" ]] || die "refusing to overwrite sumw2 options: ${destination}"
-        printf 'sumw2_storage:\n  mode: %s\n' "$(role_sumw2_storage_mode "${role}")" > "${destination}"
+        sumw2_options_content "${role}" > "${destination}"
     done
 }
 
@@ -529,6 +548,8 @@ print_plan() {
     printf 'all_analysis_chunks=%s\nexecutor=%s\nrun2_years=%s\nrun3_years=%s\nhist_list=njets\ndo_np=no\n' "${all_analysis_chunks}" "${executor}" "${run2_years[*]}" "${run3_years[*]}"
     for role in "${roles[@]}"; do
         printf 'sumw2_storage_mode_%s=%s\n' "${role}" "$(role_sumw2_storage_mode "${role}")"
+        printf 'sumw2_rule_process_prefix_%s=%s\n' "${role}" "$(role_sumw2_process_prefix "${role}")"
+        printf 'data_driven_products_%s=nonprompt=false,flips=false\n' "${role}"
     done
     printf '%s\n' '--- category_partition.tsv ---'; cat "${temporary_partition}"
     printf '%s\n' '--- output_contract.tsv ---'; cat "${temporary_contract}"
