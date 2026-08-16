@@ -12,6 +12,8 @@ environment_wrapper="${workspace_root}/codex-run.sh"
 python_env="${PYTHON_ENV:-/users/apiccine/work/miniconda3/envs/clib-env/bin/python}"
 executor="${MISSING_PARTON_EXECUTOR:-work_queue}"
 all_analysis_chunks="${ALL_ANALYSIS_CHUNKS:-2}"
+environment_archive_dir_default="${script_dir}/topeft-envs"
+environment_archive_pattern='env_*.tar.gz'
 
 run2_years=(UL16 UL16APV UL17 UL18)
 run3_years=(2022 2022EE 2023 2023BPix)
@@ -39,6 +41,7 @@ validation_file=""
 commands_file=""
 manifest_file=""
 state_history_file=""
+environment_archive_cleanup_file=""
 category_digest=""
 declare -a all_analysis_groups=()
 declare -a chunk_specs=()
@@ -200,6 +203,7 @@ campaign_paths() {
     manifest_file="${output_root}/pkl_manifest.sha256"
     status_file="${output_root}/status.txt"
     state_history_file="${output_root}/state_history.tsv"
+    environment_archive_cleanup_file="${output_root}/environment_archive_cleanup.tsv"
 }
 
 role_run() { printf '%s\n' "${1%%_*}"; }
@@ -263,6 +267,9 @@ write_metadata() {
         printf 'hist_list=njets\n'
         printf 'do_np=no\n'
         printf 'executor=%s\n' "${executor}"
+        printf 'environment_archive_directory=%s\n' "${environment_archive_dir_default}"
+        printf 'environment_archive_pattern=%s\n' "${environment_archive_pattern}"
+        printf 'environment_archive_cleanup_policy=before_each_real_run_analysis_command;regular_files_only\n'
         printf 'private_sm_point_sumw2_semantics=sm_only_complete_event_contribution_squared\n'
         for role in "${roles[@]}"; do
             printf 'cfg_%s=%s\n' "${role}" "${role_cfg[${role}]}"
@@ -350,6 +357,8 @@ initialize_fresh_campaign() {
     printf 'timestamp\tstate\tdetail\n' > "${state_history_file}"
     printf 'timestamp\trun\trole\tchunk\tpath\tresult\tsize\tsha256\tdetail\n' > "${validation_file}"
     printf 'timestamp\trun\trole\tchunk\tcommand\n' > "${commands_file}"
+    printf 'timestamp\tcontext\tresolved_directory\tpattern\tcandidate_path\taction\tresult\tdetail\n' \
+        > "${environment_archive_cleanup_file}"
     write_metadata
     write_partition "${partition_file}"
     write_output_contract "${output_contract_file}"
@@ -387,6 +396,85 @@ build_run_analysis_command() {
     if [[ "${role}" == *_private_tllq ]]; then
         resolved_command+=(--do-systs)
     fi
+}
+
+record_environment_archive_cleanup() {
+    local context="$1" resolved_directory="$2" candidate_path="$3"
+    local action="$4" result="$5" detail="$6"
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+        "$(timestamp_iso)" "${context}" "${resolved_directory}" \
+        "${environment_archive_pattern}" "${candidate_path}" "${action}" \
+        "${result}" "${detail}" >> "${environment_archive_cleanup_file}"
+}
+
+clear_stale_environment_archives() {
+    local context="$1" requested_directory="${TOPEFT_ENVS_DIR:-${environment_archive_dir_default}}"
+    local resolved_directory="" enumeration_file="" candidate_path
+    local -a archive_candidates=() symlink_candidates=()
+
+    if [[ "${requested_directory}" != "${environment_archive_dir_default}" ]]; then
+        record_environment_archive_cleanup "${context}" "${requested_directory}" "-" rejected fail override_must_match_driver_cache
+        return 1
+    fi
+    if [[ -L "${environment_archive_dir_default}" ]]; then
+        record_environment_archive_cleanup "${context}" "${environment_archive_dir_default}" "-" rejected fail cache_directory_is_symlink
+        return 1
+    fi
+    if [[ ! -e "${environment_archive_dir_default}" ]]; then
+        record_environment_archive_cleanup "${context}" "${environment_archive_dir_default}" "-" no_match pass cache_directory_absent
+        return 0
+    fi
+    if [[ ! -d "${environment_archive_dir_default}" || ! -r "${environment_archive_dir_default}" || ! -x "${environment_archive_dir_default}" ]]; then
+        record_environment_archive_cleanup "${context}" "${environment_archive_dir_default}" "-" rejected fail cache_directory_not_accessible
+        return 1
+    fi
+    resolved_directory="$(cd -P -- "${environment_archive_dir_default}" && pwd -P)" || {
+        record_environment_archive_cleanup "${context}" "${environment_archive_dir_default}" "-" failed fail canonicalization_failed
+        return 1
+    }
+    if [[ "${resolved_directory}" != "${environment_archive_dir_default}" ]]; then
+        record_environment_archive_cleanup "${context}" "${resolved_directory}" "-" rejected fail canonical_path_mismatch
+        return 1
+    fi
+    enumeration_file="$(mktemp "${TMPDIR:-/tmp}/missing_parton_environment_archives.XXXXXX")" || {
+        record_environment_archive_cleanup "${context}" "${resolved_directory}" "-" failed fail enumeration_tempfile_failed
+        return 1
+    }
+    if ! find "${resolved_directory}" -mindepth 1 -maxdepth 1 \( -type f -o -type l \) -name "${environment_archive_pattern}" -print0 | sort -z > "${enumeration_file}"; then
+        rm -f -- "${enumeration_file}"
+        record_environment_archive_cleanup "${context}" "${resolved_directory}" "-" failed fail candidate_enumeration_failed
+        return 1
+    fi
+    while IFS= read -r -d '' candidate_path; do
+        if [[ -L "${candidate_path}" ]]; then
+            symlink_candidates+=("${candidate_path}")
+        elif [[ -f "${candidate_path}" ]]; then
+            archive_candidates+=("${candidate_path}")
+        else
+            rm -f -- "${enumeration_file}"
+            record_environment_archive_cleanup "${context}" "${resolved_directory}" "${candidate_path}" failed fail candidate_changed_during_enumeration
+            return 1
+        fi
+    done < "${enumeration_file}"
+    rm -f -- "${enumeration_file}"
+    if (( ${#symlink_candidates[@]} > 0 )); then
+        for candidate_path in "${symlink_candidates[@]}"; do
+            record_environment_archive_cleanup "${context}" "${resolved_directory}" "${candidate_path}" rejected fail matching_archive_symlink
+        done
+        return 1
+    fi
+    if (( ${#archive_candidates[@]} == 0 )); then
+        record_environment_archive_cleanup "${context}" "${resolved_directory}" "-" no_match pass no_generated_archives
+        return 0
+    fi
+    for candidate_path in "${archive_candidates[@]}"; do
+        if rm -- "${candidate_path}"; then
+            record_environment_archive_cleanup "${context}" "${resolved_directory}" "${candidate_path}" removed pass stale_environment_archive
+        else
+            record_environment_archive_cleanup "${context}" "${resolved_directory}" "${candidate_path}" failed fail removal_failed
+            return 1
+        fi
+    done
 }
 
 print_plan() {
@@ -448,6 +536,7 @@ execute_chunk() {
     build_run_analysis_command "${role}" "${chunk_index}"
     command_text="$(quote_command "${resolved_command[@]}")"
     printf '%s\t%s\t%s\t%s\t%s\n' "$(timestamp_iso)" "$(role_run "${role}")" "$(role_name "${role}")" "${chunk_label}" "${command_text}" >> "${commands_file}"
+    clear_stale_environment_archives "${role}_${chunk_label}"
     "${resolved_command[@]}"
     check_output_file "${role}" "${chunk_label}" "${path}" || die "run_analysis.py did not create a valid output: ${path}"
 }
