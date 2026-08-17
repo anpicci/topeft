@@ -407,8 +407,8 @@ The installed payloads have the following validated properties:
 
 The installed semantic digests are:
 
-- Run 2: `4a869bc8ecc56adb491100e50b29d0e600a6916824b2849ff9f9d31c5a09736a`
-- Run 3: `6f948c7859a43249dae70e4e679c4439425dc4384991ab2829e0d85c09eed26f`
+- Run 2: `936a7316894257a5dcac31c345c60ea273d27cb672c71fbce6382fe5df534a24`
+- Run 3: `8ddf59420ed47828551803ef7b168ae1dec02e1402418801ab5ec2efc90de332`
 
 ## 13. Quantitative historical terminal impact
 
