@@ -34,6 +34,10 @@ import topcoffea.modules.histEFT as tc_histEFT
 import topcoffea.modules.sparseHist as tc_sparseHist
 from topeft.modules.axes import info as te_axes_info
 from topeft.modules.axes import info_2d as te_axes_info_2d
+from topeft.modules.axis_binning import (
+    rebin_histogram,
+    resolve_common_axis_edges,
+)
 
 from topcoffea.scripts.make_html import make_html as tc_make_html
 import topcoffea.modules.utils as tc_utils
@@ -2145,6 +2149,19 @@ def _validate_bin_edges(edges):
     return array
 
 
+def _apply_plot_binning_view(histogram, variable, exact_channels, binning_mode):
+    """Apply the shared fitting view after exact channel selection."""
+
+    if histogram is None or binning_mode == "processing":
+        return histogram
+    target_edges = resolve_common_axis_edges(
+        variable,
+        mode=binning_mode,
+        channels=exact_channels,
+    )
+    return rebin_histogram(histogram, target_edges)
+
+
 def parse_rebin_plot_vars(raw_value):
     """Parse a comma-separated variable-to-integer-factor rebin specification."""
 
@@ -3256,6 +3273,26 @@ def _render_variable_category(
                 hist_label="mc sumw2 histogram",
             )
 
+        if not is_sparse2d:
+            hist_mc_integrated = _apply_plot_binning_view(
+                hist_mc_integrated,
+                var_name,
+                channel_bins,
+                region_ctx.binning_mode,
+            )
+            hist_data_integrated = _apply_plot_binning_view(
+                hist_data_integrated,
+                var_name,
+                channel_bins,
+                region_ctx.binning_mode,
+            )
+            hist_mc_sumw2_integrated = _apply_plot_binning_view(
+                hist_mc_sumw2_integrated,
+                var_name,
+                channel_bins,
+                region_ctx.binning_mode,
+            )
+
         samples_to_rm = _collect_samples_to_remove(
             region_ctx.sample_removal_rules, hist_cat, region_ctx
         )
@@ -3468,7 +3505,6 @@ def _render_variable_category(
                 "style": region_ctx.stacked_ratio_style,
                 "uncertainty_mode": uncertainty_mode,
             }
-            bins_override = region_ctx.analysis_bins.get(var_name)
             rebin_report = _prepare_plot_rebin_and_negative_rows(
                 variable=var_name,
                 hist_mc=hist_mc_integrated,
@@ -3478,7 +3514,7 @@ def _render_variable_category(
                 channel_or_region=region_ctx.name,
                 category_if_available=hist_cat,
                 rebin_plot_vars=rebin_plot_vars,
-                base_edges=bins_override,
+                base_edges=None,
                 negative_weight_report=negative_weight_report,
             )
             if rebin_report["bins"] is not None:
@@ -3583,6 +3619,25 @@ def _render_variable_category(
             if chan in hist_data.axes["channel"]
         ]
         hist_data_channel = hist_data.integrate("channel", channels_data)[{'channel': sum}]
+
+        hist_mc_channel = _apply_plot_binning_view(
+            hist_mc_channel,
+            var_name,
+            channel_bins,
+            region_ctx.binning_mode,
+        )
+        hist_mc_sumw2 = _apply_plot_binning_view(
+            hist_mc_sumw2,
+            var_name,
+            channel_bins,
+            region_ctx.binning_mode,
+        )
+        hist_data_channel = _apply_plot_binning_view(
+            hist_data_channel,
+            var_name,
+            channel_bins,
+            region_ctx.binning_mode,
+        )
         hist_data_integrated = hist_data_channel.integrate(
             "systematic", "nominal"
         )
@@ -3713,9 +3768,6 @@ def _render_variable_category(
         title = f"{category_label}_{var_name}"
         if unit_norm_bool:
             title = f"{title}_unitnorm"
-        bins_override = region_ctx.analysis_bins.get(var_name)
-        axis_meta = te_axes_info.get(var_name, {})
-        default_bins = axis_meta.get("variable")
         stacked_kwargs = {
             "group": {k: v for k, v in region_ctx.group_map.items() if v},
             "lumitag": region_ctx.lumi_pair[0] if region_ctx.lumi_pair else None,
@@ -3733,7 +3785,6 @@ def _render_variable_category(
             "style": region_ctx.stacked_ratio_style,
             "uncertainty_mode": uncertainty_mode,
         }
-        bins_to_use = bins_override if bins_override is not None else default_bins
         rebin_report = _prepare_plot_rebin_and_negative_rows(
             variable=var_name,
             hist_mc=hist_mc_integrated,
@@ -3743,7 +3794,7 @@ def _render_variable_category(
             channel_or_region=region_ctx.name,
             category_if_available=hist_cat,
             rebin_plot_vars=rebin_plot_vars,
-            base_edges=bins_to_use,
+            base_edges=None,
             negative_weight_report=negative_weight_report,
         )
         if rebin_report["bins"] is not None:
@@ -6089,7 +6140,6 @@ class RegionContext(object):
         unblind_default,
         lumi_pair,
         skip_variables=None,
-        analysis_bins=None,
         stacked_ratio_style=None,
         channel_rules=None,
         sample_removal_rules=None,
@@ -6109,6 +6159,7 @@ class RegionContext(object):
         is_lepton_flavor_in_pkl=False,
         lumi_components=None,
         scope_label=None,
+        binning_mode="processing",
     ):
         self.name = name
         self.dict_of_hists = dict_of_hists
@@ -6154,9 +6205,11 @@ class RegionContext(object):
             )
         )
         self.skip_variables = set() if skip_variables is None else set(skip_variables)
-        self.analysis_bins = (
-            {} if analysis_bins is None else copy.deepcopy(analysis_bins)
-        )
+        if binning_mode not in {"processing", "fitting"}:
+            raise ValueError(
+                f"Unsupported binning mode {binning_mode!r}; expected processing or fitting."
+            )
+        self.binning_mode = binning_mode
         self.stacked_ratio_style = (
             copy.deepcopy(stacked_ratio_style)
             if isinstance(stacked_ratio_style, Mapping)
@@ -6297,6 +6350,7 @@ def build_region_context(
     preserve_njets_bins=False,
     channel_output_mode="merged",
     enable_category_skips=False,
+    binning_mode="processing",
 ):
     region_upper = region.upper()
     if region_upper not in ["CR","SR"]:
@@ -6542,17 +6596,6 @@ def build_region_context(
     )
 
     skip_variables = set(region_plot_cfg.get("skip_variables", []))
-    analysis_bins = {}
-    for var_name, spec in region_plot_cfg.get("analysis_bins", {}).items():
-        if isinstance(spec, str):
-            if spec not in te_axes_info:
-                raise KeyError(
-                    f"Analysis bin specification '{spec}' is not defined in axes_info."
-                )
-            analysis_bins[var_name] = te_axes_info[spec]["variable"]
-        else:
-            analysis_bins[var_name] = spec
-
     channel_rules = _normalize_channel_rules(
         region_plot_cfg.get("channel_transformations")
     )
@@ -6643,7 +6686,6 @@ def build_region_context(
         unblind_default,
         lumi_pair,
         skip_variables,
-        analysis_bins,
         stacked_ratio_style=stacked_ratio_style,
         channel_rules=channel_rules,
         sample_removal_rules=sample_removal_rules,
@@ -6663,6 +6705,7 @@ def build_region_context(
         is_lepton_flavor_in_pkl=is_lepton_flavor_in_pkl,
         lumi_components=lumi_components,
         scope_label=scope_label,
+        binning_mode=binning_mode,
     )
 
 
@@ -8714,6 +8757,7 @@ def run_plots_for_region(
     rebin_plot_vars=None,
     negative_weight_report=True,
     show_ratio_legend=False,
+    binning_mode="processing",
 ):
     """Run one CR/SR plotting pass and write optional zero/negative reports."""
 
@@ -8784,6 +8828,7 @@ def run_plots_for_region(
             preserve_njets_bins=preserve_njets_bins,
             channel_output_mode=channel_output,
             enable_category_skips=enable_category_skips,
+            binning_mode=binning_mode,
         )
         if summary_region_ctx is None:
             summary_region_ctx = region_ctx
@@ -9010,6 +9055,16 @@ def build_arg_parser():
         help="Optional list of histogram variables to plot",
     )
     parser.add_argument(
+        "--binning",
+        choices=("processing", "fitting"),
+        default="processing",
+        help=(
+            "Select the stored processing view or exact channel-resolved fitting "
+            "view before optional --rebin-plot-vars presentation rebinning "
+            "(default: processing)."
+        ),
+    )
+    parser.add_argument(
         "--workers",
         type=int,
         default=1,
@@ -9199,6 +9254,7 @@ def run_with_args(args, parser):
         )
     )
     print(f"Channel output selection: {args.channel_output}")
+    print(f"Binning view: {args.binning}")
     print(f"Resolved uncertainty mode: {uncertainty_mode}")
 
     try:
@@ -9322,6 +9378,7 @@ def run_with_args(args, parser):
         rebin_plot_vars=rebin_plot_vars,
         negative_weight_report=args.negative_weight_report,
         show_ratio_legend=args.show_ratio_legend,
+        binning_mode=args.binning,
     )
     return 0
 

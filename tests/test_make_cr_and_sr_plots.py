@@ -147,6 +147,51 @@ def test_show_ratio_legend_cli_is_disabled_by_default_and_explicitly_enabled():
     )
 
 
+def test_binning_cli_defaults_to_processing_and_accepts_fitting():
+    parser = make_cr_and_sr_plots.build_arg_parser()
+    assert parser.parse_args(["-f", "input.pkl.gz"]).binning == "processing"
+    assert (
+        parser.parse_args(["-f", "input.pkl.gz", "--binning", "fitting"]).binning
+        == "fitting"
+    )
+
+
+def test_plot_binning_view_uses_stored_processing_and_shared_fitting_resolution():
+    channel = "3l_1tau_1b_2j"
+    histogram = make_cr_and_sr_plots.SparseHist(
+        hist.axis.StrCategory(["background"], name="process", growth=True),
+        hist.axis.Regular(12, 0, 600, name="lj0pt"),
+    )
+    histogram.fill(process="background", lj0pt=np.array([25.0, 175.0, 375.0]))
+
+    processing_view = make_cr_and_sr_plots._apply_plot_binning_view(
+        histogram, "lj0pt", [channel], "processing"
+    )
+    fitting_view = make_cr_and_sr_plots._apply_plot_binning_view(
+        histogram, "lj0pt", [channel], "fitting"
+    )
+
+    assert processing_view is histogram
+    assert np.array_equal(processing_view.axes["lj0pt"].edges, np.arange(0, 601, 50))
+    assert np.array_equal(fitting_view.axes["lj0pt"].edges, [0, 150, 250, 350])
+    assert sum(next(iter(fitting_view.view(flow=True).values()))) == pytest.approx(3.0)
+
+
+def test_aggregate_fitting_plot_rejects_incompatible_exact_channel_axes():
+    histogram = make_cr_and_sr_plots.SparseHist(
+        hist.axis.StrCategory(["background"], name="process", growth=True),
+        hist.axis.Regular(12, 0, 600, name="lt"),
+    )
+    histogram.fill(process="background", lt=25.0)
+    with pytest.raises(ValueError, match="incompatible fitting axes"):
+        make_cr_and_sr_plots._apply_plot_binning_view(
+            histogram,
+            "lt",
+            ["3l_m_offZ_2b_fwd_1j", "3l_m_offZ_2b_fwd_2j"],
+            "fitting",
+        )
+
+
 def test_uncertainty_mode_parser_and_resolution_contract():
     parser = make_cr_and_sr_plots.build_arg_parser()
 

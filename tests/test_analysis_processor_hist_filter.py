@@ -2,7 +2,7 @@ import pytest
 
 cloudpickle = pytest.importorskip("cloudpickle")
 
-from analysis.topeft_run2 import analysis_processor
+from analysis.topeft_run2 import analysis_processor, analysis_processor_diboson
 from topeft.modules.axes import info as axes_info
 from topeft.modules.axes import info_2d as axes_info_2d
 
@@ -119,17 +119,38 @@ def test_sample_metadata_preallocates_both_siblings_and_preserves_two_dimensiona
     ]
 
 
-def test_variable_multi_axis_reuse_is_unchanged():
+def test_njets_processing_axis_reuse_is_unchanged():
     processor = analysis_processor.AnalysisProcessor(
         samples={},
         wc_names_lst=[],
         hist_lst=["njets"],
         fill_sumw2_hist=True,
-        rebin=False,
     )
     nominal_edges = processor.accumulator["njets__scalar_nominal"].dense_axes[0].edges
     companion_edges = processor.accumulator["njets_sumw2"].dense_axes[0].edges
     assert list(nominal_edges) == list(companion_edges)
+
+
+def test_flexible_families_use_common_processing_grid_for_nominal_and_sumw2():
+    processor = _make_processor(
+        hist_lst=["lj0pt", "lt", "ptz", "ptz_wtau"],
+        fill_sumw2_hist=True,
+    )
+    expected = list(range(0, 601, 50))
+    for family in ("lj0pt", "lt", "ptz", "ptz_wtau"):
+        nominal = processor.accumulator[f"{family}__scalar_nominal"].dense_axes[0]
+        companion = processor.accumulator[f"{family}_sumw2"].dense_axes[0]
+        assert list(nominal.edges) == expected
+        assert list(companion.edges) == expected
+
+
+def test_diboson_nominal_and_sumw2_use_canonical_processing_grid():
+    processor = analysis_processor_diboson.AnalysisProcessor(
+        samples={}, wc_names_lst=[], hist_lst=["lj0pt"]
+    )
+    expected = list(range(0, 601, 50))
+    assert list(processor.accumulator["lj0pt"].dense_axes[0].edges) == expected
+    assert list(processor.accumulator["lj0pt_sumw2"].dense_axes[0].edges) == expected
 
 
 @pytest.mark.parametrize(

@@ -340,7 +340,7 @@ python make_cr_and_sr_plots.py \
 
 Rebinning happens only inside the plotting/reporting path. The source histograms and input pickle are not rewritten. Visible-bin contents are summed, variances and `sumw2` values are summed, and any leftover visible bins that do not fill a complete factor group are merged into the final rebinned bin rather than being dropped.
 
-The rebinned edges are used for the stacked plot, ratio inputs, statistical and systematic uncertainty-band inputs, and the `post_rebin` rows in the negative MC contribution report. Variables not listed in `--rebin-plot-vars` keep their normal binning and, when applicable, use the configured `analysis_bins` edges from `cr_sr_plots_metadata.yml`. Rebinning is most useful together with `--variables` so focused checks do not render the entire pickle.
+The rebinned edges are used for the stacked plot, ratio inputs, statistical and systematic uncertainty-band inputs, and the `post_rebin` rows in the negative MC contribution report. Variables not listed in `--rebin-plot-vars` keep the selected `--binning` view. Rebinning is most useful together with `--variables` so focused checks do not render the entire pickle.
 
 #### Negative MC Contribution Reports
 
@@ -521,9 +521,9 @@ Other keys provide cohesive styling—e.g. `DATA_ERR_OPS`, `MC_ERROR_OPS`, `LUMI
 
 If you want to tweak how the stacked-yield + ratio figures look, start with the `STACKED_RATIO_STYLE` block in `topeft/params/cr_sr_plots_metadata.yml`. The `defaults.figure` keys (such as `figsize`, `height_ratios`, and `hspace`) set the canvas geometry, so widening the plot is as simple as changing the first value in `figsize`. Axis cosmetics live under `defaults.axes`: adjust `label_fontsize`, `tick_labelsize`, or the `tick_length`/`tick_width` pair to make the layout friendlier for talks, and toggle `apply_secondary_ticks.x`/`.y` if you prefer primary ticks only. Legends are controlled by `defaults.legend` and its siblings—`ncol`, `fontsize`, and `bbox_to_anchor` reposition the main legend, while `uncertainty_legend` and `ratio_band_legend` handle the smaller annotation boxes. Once you have a layout you like, keep the edits inside the relevant nested dictionary so future readers can relate each number directly to the YAML keys mentioned here.
 
-#### Understanding `analysis_bins`
+#### Processing and fitting views
 
-The `analysis_bins` map inside `REGION_PLOTTING` (for example the `SR` block’s `analysis_bins` entry pointing to `ptz` and `lj0pt`) tells the plotter to replace the default histogram binning with the analysis-approved bin definitions in `axes_info`. Add a new key/value pair whenever you introduce a histogram that should adopt those curated bin edges—typically because it feeds a datacard or a physics note. If a variable can rely on the raw processor binning, leave it out; expanding the map is only necessary when the plotting output must match a named entry in the axes metadata. Remember to reuse the exact axis name from `cr_sr_plots_metadata.yml` so the lookup succeeds.
+The plotter defaults to `--binning processing`, which uses the dense axis stored in the input histogram without reconstructing it from metadata. Use `--binning fitting` for exact channel-dependent aggregation from the canonical `axes.py` fitting contract. Categories that combine channels with incompatible fitting axes fail explicitly. `--rebin-plot-vars` remains a presentation-only integer rebin applied after the selected processing or fitting view.
 
 
 ### Scripts for making and checking the datacards

@@ -17,6 +17,10 @@ from topcoffea.modules.utils import regex_match, get_hist_from_pkl
 from topeft.modules.paths import topeft_path
 from topeft.modules.axes import info as axes_info
 from topeft.modules.axes import info_2d as axes_info_2d
+from topeft.modules.axis_binning import (
+    resolve_and_rebin_histogram,
+    validate_matching_histogram_edges,
+)
 from topeft.modules.compatibility import add_sumw2_stub
 from topeft.modules.data_driven_products import CANONICAL_DATA_DRIVEN_YEARS
 from topeft.modules.histogram_artifact import (
@@ -738,12 +742,6 @@ class DatacardMaker():
         ],
     }
 
-    # Controls how we rebin the dense axis of the corresponding distribution
-    BINNING = {}
-    for name, value in axes_info.items():
-        if "variable" in value:
-            BINNING[name] = value["variable"]
-
     YEARS = ["UL16","UL16APV","UL17","UL18","2022","2022EE","2023","2023BPix"]
 
     SYST_YEARS = ["2016","2016APV","2017","2018","2022","2022EE","2023","2023BPix"]
@@ -1344,13 +1342,6 @@ class DatacardMaker():
                     print(f"Removing systematic: {x}")
                 h = h.remove("systematic", list(to_drop))
 
-            if h.should_rebin() and km_dist != "njets":
-                edge_arr = self.BINNING[km_dist] + [list(h.axes[km_dist].edges())[-1]]
-                h = h.rebin(km_dist, hist.axis.Variable(edge_arr, km_dist, h.axes[km_dist].label))
-            else:
-                # TODO: Still need to handle njets case properly
-                pass
-
             # Remove 'central', 'private', '_4F' text from process names
             grp_map = {}
             for x in h.axes["process"]:
@@ -1373,6 +1364,15 @@ class DatacardMaker():
 
     def processes(self, km_dist):
         return list(self.hists[km_dist].axes["process"])
+
+    @staticmethod
+    def fitting_view(histogram, km_dist, channel):
+        return resolve_and_rebin_histogram(
+            histogram,
+            km_dist,
+            mode="fitting",
+            channel=channel,
+        )
 
     # TODO: Can be a static member function
     def load_systematics(self,rs_fpath,mp_fpath):
@@ -1590,11 +1590,12 @@ class DatacardMaker():
         """
         tic = time.time()
         h = self.hists[km_dist].integrate("systematic",["nominal"])
+        channels = list(h.axes["channel"])
         if ch_lst:
-            # Only select from a subset of channels
             if self.verbose:
                 print(f"Selecting WCs from subset of channels: {ch_lst}")
-            h.prune("channel", ch_lst)
+            requested = set(ch_lst)
+            channels = [channel for channel in channels if channel in requested]
 
         procs = list(h.axes["process"])
         selected_wcs = {p: set() for p in procs}
@@ -1626,7 +1627,6 @@ class DatacardMaker():
         for p in procs:
             if not self.is_signal(p):
                 continue
-            p_hist = h.integrate("process",[p])
             for wc,idx_arr in wc_to_terms.items():
                 if len(self.coeffs) and not wc in self.coeffs:
                     continue
@@ -1634,17 +1634,28 @@ class DatacardMaker():
                     continue
                 if wc == "ctlTi" and p == "tttt":
                     continue
-                for sp_key, arr in p_hist.view(as_dict=True, flow=True).items():
-                    # Ignore underflow, and overflow bins
-                    sl_arr = arr[1:-1]
-                    # Here we replace any SM terms that are too small with a large dummy value
-                    sm_norm = np.where(sl_arr[:,start_index] < 1e-5,999,sl_arr[:,start_index])
-                    # Normalize each sub-array by corresponding SM term
-                    n_arr = (sl_arr.T / sm_norm).T
-                    # This will contain only the coefficients which involve the given WC
-                    wc_terms = np.abs(n_arr[:,idx_arr])
-                    if np.any(wc_terms > self.tolerance):
-                        selected_wcs[p].add(wc)
+                selected = False
+                for channel in channels:
+                    channel_hist = self.fitting_view(
+                        h.integrate("channel", [channel]), km_dist, channel
+                    )
+                    p_hist = channel_hist.integrate("process", [p])
+                    for sp_key, arr in p_hist.view(as_dict=True, flow=True).items():
+                        # Ignore underflow and overflow bins. The remaining bins
+                        # are the exact fitting bins used by the card templates.
+                        sl_arr = arr[1:-1]
+                        sm_norm = np.where(
+                            sl_arr[:,start_index] < 1e-5,
+                            999,
+                            sl_arr[:,start_index],
+                        )
+                        n_arr = (sl_arr.T / sm_norm).T
+                        wc_terms = np.abs(n_arr[:,idx_arr])
+                        if np.any(wc_terms > self.tolerance):
+                            selected_wcs[p].add(wc)
+                            selected = True
+                            break
+                    if selected:
                         break
         if self.verbose:
             dt = time.time() - tic
@@ -1703,8 +1714,18 @@ class DatacardMaker():
         if h_sumw2 is None:
             msg = "No sumw2 histogram found! Setting errors to 0"
             print(msg)
-        ch_hist = h.integrate("channel",[ch])
-        ch_sumw2 = h_sumw2 if h_sumw2 is None else h_sumw2.integrate("channel",[ch])
+        ch_hist = self.fitting_view(h.integrate("channel",[ch]), km_dist, ch)
+        ch_sumw2 = (
+            None
+            if h_sumw2 is None
+            else self.fitting_view(h_sumw2.integrate("channel",[ch]), km_dist, ch)
+        )
+        if ch_sumw2 is not None:
+            validate_matching_histogram_edges(
+                ch_hist,
+                ch_sumw2,
+                context=f"datacard nominal/sumw2 for {km_dist}:{ch}",
+            )
         data_obs = np.zeros((2, ch_hist.dense_axis.extent))
 
         print(f"Generating root file: {outf_root_name}")
@@ -1891,12 +1912,17 @@ class DatacardMaker():
                             pass
                 # obtain the scalings for scalings.json file
                 if p in self.SIGNALS:
-                    scaling_hist = self.select_final_sr_appl(h, ch, process=p)
+                    scaling_hist = proc_hist.integrate("systematic", ["nominal"])
+                    validate_matching_histogram_edges(
+                        proc_hist,
+                        scaling_hist,
+                        context=f"datacard template/scaling for {km_dist}:{ch}:{p}",
+                    )
                     if self.wc_scalings:
-                        scalings = scaling_hist[{'channel':ch,'process':p,'systematic':'nominal'}].make_scaling(self.wc_scalings)
+                        scalings = scaling_hist.make_scaling(wc_list=self.wc_scalings)
                         self.scalings_json = self.make_scalings_json(self.scalings,ch,km_dist,p,self.wc_scalings,scalings)
                     else:
-                        scalings = scaling_hist[{'channel':ch,'process':p,'systematic':'nominal'}].make_scaling()
+                        scalings = scaling_hist.make_scaling()
                         self.scalings_json = self.make_scalings_json(self.scalings,ch,km_dist,p,h.wc_names,scalings)
             f["data_obs"] = to_hist(data_obs,"data_obs")
 

@@ -2411,7 +2411,12 @@ def test_original_transformed_publication_preserves_source_provenance(tmp_path, 
 def test_sidecar_free_two_dimensional_only_payload_is_structurally_ambiguous(tmp_path):
     family = "lepton_pt_vs_eta"
     dense_axes = tuple(
-        hist.axis.Regular(*axis_spec["regular"], name=axis_spec["name"])
+        hist.axis.Regular(
+            axis_spec["processing"]["bins"],
+            axis_spec["processing"]["start"],
+            axis_spec["processing"]["stop"],
+            name=axis_spec["name"],
+        )
         for axis_spec in axes_info_2d[family]["axes"]
     )
     payload = {

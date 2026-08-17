@@ -21,6 +21,7 @@ import topcoffea.modules.corrections as tc_cor
 
 from topeft.modules.axes import info as axes_info
 from topeft.modules.axes import info_2d as axes_info_2d
+from topeft.modules.axis_binning import make_processing_axis
 from topeft.modules.missing_parton_contract import parse_analysis_njet_token
 from topeft.modules.nominal_schema import (
     EFT_NOMINAL_SUFFIX,
@@ -400,7 +401,7 @@ class AnalysisProcessor(processor.ProcessorABC):
 
         return bool(fill_sumw2_hist) and wgt_fluct == "nominal"
 
-    def __init__(self, samples, wc_names_lst=[], hist_lst=None, ecut_threshold=None, fill_sumw2_hist=True, do_systematics=False, split_by_lepton_flavor=False, skip_signal_regions=False, skip_control_regions=False, muonSyst='nominal', dtype=np.float32, rebin=False, offZ_split=False, tau_h_analysis=False, fwd_analysis=False, all_analysis=False, useRun3MVA=True, tau_run_mode="standard", sr_category_dict=None, cr_category_dict=None, suppress_forward_eta_stochastic_jer=False, fwd_eta_band_pt_apply="auto", ttgamma_sample_role_policy="split", sumw2_policy=None):
+    def __init__(self, samples, wc_names_lst=[], hist_lst=None, ecut_threshold=None, fill_sumw2_hist=True, do_systematics=False, split_by_lepton_flavor=False, skip_signal_regions=False, skip_control_regions=False, muonSyst='nominal', dtype=np.float32, offZ_split=False, tau_h_analysis=False, fwd_analysis=False, all_analysis=False, useRun3MVA=True, tau_run_mode="standard", sr_category_dict=None, cr_category_dict=None, suppress_forward_eta_stochastic_jer=False, fwd_eta_band_pt_apply="auto", ttgamma_sample_role_policy="split", sumw2_policy=None):
 
         self._samples = samples
         self._wc_names_lst = wc_names_lst
@@ -523,11 +524,13 @@ class AnalysisProcessor(processor.ProcessorABC):
 
         histograms = {}
         def _build_axis(axis_cfg, *, suffix="", label_suffix=""):
-            axis_name = axis_cfg["name"] + suffix
-            axis_label = axis_cfg["label"] + label_suffix
-            if (not rebin) and ("variable" in axis_cfg):
-                return hist.axis.Variable(axis_cfg["variable"], name=axis_name, label=axis_label)
-            return hist.axis.Regular(*axis_cfg["regular"], name=axis_name, label=axis_label)
+            return make_processing_axis(
+                axis_cfg,
+                name=axis_cfg["name"],
+                label=axis_cfg["label"],
+                suffix=suffix,
+                label_suffix=label_suffix,
+            )
         for name, info in axes_info.items():
             sumw2_name = f"{name}{sumw2_suffix}"
             build_base_hist = name in self._base_hist_name_set
@@ -535,20 +538,16 @@ class AnalysisProcessor(processor.ProcessorABC):
             if not (build_base_hist or build_sumw2_hist):
                 continue
 
-            if not rebin and "variable" in info:
-                dense_axis = hist.axis.Variable(
-                    info["variable"], name=name, label=info["label"]
-                )
-                sumw2_axis = hist.axis.Variable(
-                    info["variable"], name=name+"_sumw2", label=info["label"] + " sum of w^2"
-                )
-            else:
-                dense_axis = hist.axis.Regular(
-                    *info["regular"], name=name, label=info["label"]
-                )
-                sumw2_axis = hist.axis.Regular(
-                    *info["regular"], name=name+"_sumw2", label=info["label"] + " sum of w^2"
-                )
+            dense_axis = make_processing_axis(
+                info, name=name, label=info["label"]
+            )
+            sumw2_axis = make_processing_axis(
+                info,
+                name=name,
+                label=info["label"],
+                suffix="_sumw2",
+                label_suffix=" sum of w^2",
+            )
             if build_base_hist and component_availability["scalar"]:
                 scalar_key = scalar_nominal_key(name)
                 histograms[scalar_key] = SparseHist(
