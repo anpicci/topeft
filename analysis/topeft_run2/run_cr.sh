@@ -1,6 +1,73 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+print_usage() {
+  cat <<'EOF'
+Usage: ./run_cr.sh [--production-profile baseline|rebin_fine] [--dry-run] \
+  [--output-dir PATH] [--campaign-tag TAG]
+
+The default no-argument invocation preserves the existing baseline/resume
+configuration. The rebin_fine profile prepares only the source histogram
+families whose fitting bins changed. Its non-dry invocation requires an
+explicit fresh output directory and campaign tag.
+EOF
+}
+
+production_profile="baseline"
+profile_dry_run=false
+profile_output_dir=""
+profile_campaign_tag=""
+
+while (( $# > 0 )); do
+  case "$1" in
+    --production-profile)
+      if (( $# < 2 )); then
+        echo "ERROR: --production-profile requires a value." >&2
+        exit 1
+      fi
+      production_profile="$2"
+      shift 2
+      ;;
+    --dry-run)
+      profile_dry_run=true
+      shift
+      ;;
+    --output-dir)
+      if (( $# < 2 )) || [[ -z "$2" ]]; then
+        echo "ERROR: --output-dir requires a non-empty path." >&2
+        exit 1
+      fi
+      profile_output_dir="$2"
+      shift 2
+      ;;
+    --campaign-tag)
+      if (( $# < 2 )) || [[ -z "$2" ]]; then
+        echo "ERROR: --campaign-tag requires a non-empty value." >&2
+        exit 1
+      fi
+      profile_campaign_tag="$2"
+      shift 2
+      ;;
+    -h|--help)
+      print_usage
+      exit 0
+      ;;
+    *)
+      echo "ERROR: unsupported run_cr.sh option '$1'." >&2
+      print_usage >&2
+      exit 1
+      ;;
+  esac
+done
+
+case "${production_profile}" in
+  baseline|rebin_fine) ;;
+  *)
+    echo "ERROR: unsupported production profile '${production_profile}'." >&2
+    exit 1
+    ;;
+esac
+
 cd /users/apiccine/work/correction-lib/topeft/analysis/topeft_run2
 
 ###############################################################################
@@ -29,6 +96,39 @@ ttgamma_sample_role_policy="split"
 # outputs.
 campaign_tag="ANv9"
 
+if [[ "${production_profile}" == "rebin_fine" ]]; then
+  run_cr=false
+  run_sr=true
+  dry_run="${profile_dry_run}"
+
+  if [[ "${dry_run}" == "true" ]]; then
+    output_dir="${profile_output_dir:-/tmp/rebin_fine_dry_run}"
+    campaign_tag="${profile_campaign_tag:-rebin_fine_dry_run}"
+  else
+    if [[ -z "${profile_output_dir}" || -z "${profile_campaign_tag}" ]]; then
+      cat >&2 <<EOF
+ERROR: rebin_fine production requires explicit --output-dir and --campaign-tag.
+
+Use --dry-run to inspect the static plan without production side effects.
+EOF
+      exit 1
+    fi
+    output_dir="${profile_output_dir}"
+    campaign_tag="${profile_campaign_tag}"
+  fi
+
+  if [[ "${output_dir}" == "/groups/klannon/apiccine/preappr_v9_260729" ]] \
+    || [[ "${campaign_tag}" == "ANv9" ]]; then
+    echo "ERROR: rebin_fine must not reuse the baseline/resume output namespace." >&2
+    exit 1
+  fi
+
+  if [[ "${dry_run}" == "false" && -e "${output_dir}" ]]; then
+    echo "ERROR: rebin_fine output directory already exists: ${output_dir}" >&2
+    exit 1
+  fi
+fi
+
 cr_pkl_base_tag="${campaign_tag}"
 sr_pkl_base_tag="${campaign_tag}"
 
@@ -40,7 +140,7 @@ run_cr=false
 run_sr=true
 
 # Resolve and print commands without launching production.
-dry_run=false
+dry_run="${profile_dry_run}"
 
 # Shared CR/SR production switches.
 do_systs=true
@@ -140,6 +240,33 @@ sr_run3_category_var_set_names=(
   "sr_without_ptz_wtau_var_sets"
 )
 
+# Static memory-bounded source-production plan for the families whose fitting
+# bins changed. The plan is intentionally limited to current live keys and
+# excludes njets, whose missing-parton workflow is produced separately.
+rebin_fine_category_sets=(
+  "2lss_1tau 3l_m_offZ"
+  "3l_p_offZ 3l_onZ_tau"
+  "3l_fwd"
+)
+
+rebin_fine_2lss_1tau_3l_m_offz_var_sets=(
+  "lj0pt ptz ptz_wtau"
+)
+
+rebin_fine_3l_p_offz_3l_onZ_tau_var_sets=(
+  "lj0pt ptz"
+)
+
+rebin_fine_3l_fwd_var_sets=(
+  "lt"
+)
+
+rebin_fine_category_var_set_names=(
+  "rebin_fine_2lss_1tau_3l_m_offz_var_sets"
+  "rebin_fine_3l_p_offz_3l_onZ_tau_var_sets"
+  "rebin_fine_3l_fwd_var_sets"
+)
+
 # Each year expression selects its own category layout and variable mapping.
 sr_year_sets=(
   "2016APV 2016 2017 2018"
@@ -181,6 +308,23 @@ sr_completed_block_keys=(
 # also resetting sr_completed_block_keys.
 require_recovered_run3_offz_np=true
 recovered_run3_offz_np="${output_dir}/2022-2022EE-2023-2023BPixSRs_ANv9_3l_m_offZ-3l_p_offZ_njets-lj0pt-ptz-lt_np.pkl.gz"
+
+if [[ "${production_profile}" == "rebin_fine" ]]; then
+  sr_year_sets=(
+    "2016APV 2016 2017 2018"
+    "2022 2022EE 2023 2023BPix"
+  )
+  sr_year_category_set_names=(
+    "rebin_fine_category_sets"
+    "rebin_fine_category_sets"
+  )
+  sr_year_category_var_set_names=(
+    "rebin_fine_category_var_set_names"
+    "rebin_fine_category_var_set_names"
+  )
+  sr_completed_block_keys=()
+  require_recovered_run3_offz_np=false
+fi
 
 ###############################################################################
 # Execution accounting
@@ -502,7 +646,9 @@ run_cr_block() {
   echo "Dry run: ${dry_run}"
   echo "----------------------------------------"
 
-  clean_env_cache
+  if [[ "${dry_run}" == "false" ]]; then
+    clean_env_cache
+  fi
 
   local cmd=(
     ./fullR3_run.sh
@@ -586,7 +732,9 @@ run_sr_block() {
   echo "Dry run: ${dry_run}"
   echo "----------------------------------------"
 
-  clean_env_cache
+  if [[ "${dry_run}" == "false" ]]; then
+    clean_env_cache
+  fi
 
   local cmd=(
     ./fullR3_run.sh
@@ -736,6 +884,7 @@ fi
 
 echo "========================================"
 echo "run_cr.sh configuration"
+echo "production_profile: ${production_profile}"
 echo "campaign_tag: ${campaign_tag}"
 echo "ttgamma sample-role policy: ${ttgamma_sample_role_policy}"
 echo "output_dir: ${output_dir}"
@@ -752,10 +901,15 @@ print_var_sets "CR tau" "${cr_tau_var_sets[@]}"
 print_var_sets "SR with ptz_wtau" "${sr_with_ptz_wtau_var_sets[@]}"
 print_var_sets "SR without ptz_wtau" "${sr_without_ptz_wtau_var_sets[@]}"
 
-echo "Run 2 SR category blocks:"
-printf '  %s\n' "${sr_run2_category_sets[@]}"
-echo "Run 3 SR category blocks:"
-printf '  %s\n' "${sr_run3_category_sets[@]}"
+if [[ "${production_profile}" == "rebin_fine" ]]; then
+  echo "rebin_fine SR category blocks (used for both Run 2 and Run 3):"
+  printf '  %s\n' "${rebin_fine_category_sets[@]}"
+else
+  echo "Run 2 SR category blocks:"
+  printf '  %s\n' "${sr_run2_category_sets[@]}"
+  echo "Run 3 SR category blocks:"
+  printf '  %s\n' "${sr_run3_category_sets[@]}"
+fi
 
 echo "SR completed-block skip list:"
 if (( ${#sr_completed_block_keys[@]} == 0 )); then
