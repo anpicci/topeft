@@ -68,6 +68,16 @@ For fake-tau SF extraction, including `tau0Fpt`/`tau0Tpt` input requirements and
 the split-first/aggregate-fallback channel contract, see
 [`README_faketau_sf_fitter.md`](README_faketau_sf_fitter.md).
 
+The canonical dilepton transverse-momentum families have distinct public
+meanings. `ptz` is the transverse momentum of the in-window SFOS Z candidate
+used by on-Z and genuine Z-like categories. `ptll` is the transverse momentum
+of the SFOS pair closest in mass to the Z and is filled only for the 3l off-Z
+low/high categories. Off-Z-none categories remain card-facing `lj0pt`.
+Historical off-Z artifacts that store this observable as `ptz` are not aliased
+to `ptll`; explicit key-aware comparison is required for numerical closure.
+Production-scale numerical validation of the new schema remains pending and is
+not established by the focused unit tests.
+
 ### Selective sumw2 storage workflow
 
 `sumw2_storage` selects statistical second-moment companions; it does not
@@ -265,7 +275,7 @@ or datacard validation implicit.
           -n some_dir_name \
           -y 2017 2018 \
           -t -u \
-          --variables lj0pt ptz
+          --variables lj0pt ptz ptll
       ```
 
     - Omitting `--variables` processes every histogram in the input pickle. Use `--variables name1 name2 ...` to focus the render on a shortlist. (`--variable` is only supported by `run_plotter.sh`, which forwards it as `--variables`.)
@@ -321,7 +331,7 @@ Common invocation patterns (`-y/--year` accepts multiple tokens for combined cam
 
 * Control-region scan with automatic blinding: `python make_cr_and_sr_plots.py -f histos/plotsCR_Run2.pkl.gz -y run2`
 * Summing luminosities across multiple years: `python make_cr_and_sr_plots.py -f histos/plotsCR_Run2.pkl.gz -y 2016APV 2016 2017 2018`
-* Signal-region pass where the filename already encodes `SR`: `python make_cr_and_sr_plots.py -f histos/SR2018.pkl.gz -o ~/www/sr -y 2018 --variables lj0pt ptz`
+* Signal-region pass where the filename already encodes `SR`: `python make_cr_and_sr_plots.py -f histos/SR2018.pkl.gz -o ~/www/sr -y 2018 --variables lj0pt ptz ptll`
 * Overriding the heuristic and forcing a blinded SR workflow: `python make_cr_and_sr_plots.py -f histos/plotsTopEFT.pkl.gz -y run3 --sr --blind`
 * Producing unblinded CR plots with explicit tagging and timestamped directories: `python make_cr_and_sr_plots.py -f histos/CR2018.pkl.gz -y 2018 --cr -t -n cr_2018_scan`
 * Switching the stacked panel to a log scale: `python make_cr_and_sr_plots.py -f histos/plotsCR_Run2.pkl.gz -y run2 --log-y`
@@ -411,7 +421,7 @@ Example commands:
 
 * Auto-detected control-region plotting with timestamped outputs: `./run_plotter.sh -f histos/plotsCR_Run2.pkl.gz -o ~/www/cr_plots -y run2 --timestamp`
 * Combining Run-3 campaigns in one call: `./run_plotter.sh -f histos/CR2022_combo.pkl.gz -o ~/www/cr_run3 -y run3`
-* Enforcing a blinded SR pass with specific variables: `./run_plotter.sh -f histos/plotsTopEFT.pkl.gz -o ~/www/sr -n sr_scan -y run3 --sr --blind --variable lj0pt --variable ptz`
+* Enforcing a blinded SR pass with specific variables: `./run_plotter.sh -f histos/plotsTopEFT.pkl.gz -o ~/www/sr -n sr_scan -y run3 --sr --blind --variable lj0pt --variable ptz --variable ptll`
 * Passing additional CLI flags through the wrapper: `./run_plotter.sh -f histos/SR2018.pkl.gz -o ~/www/sr_2018 -y 2018 --unblind --skip-syst`
 * Switching the stacked panel to a log scale via the wrapper: `./run_plotter.sh -f histos/plotsCR_Run2.pkl.gz -o ~/www/cr_plots -y run2 --log-y`
 * Focused rebinning with the default negative report: `./run_plotter.sh -f histos/plotsCR_2017.pkl.gz -o ~/www/cr_plots -y 2017 --cr --variables j0pt l1conept --rebin-plot-vars j0pt:2,l1conept:2`
@@ -440,7 +450,7 @@ Example commands:
   --log-dir /cephfs/<group>/<netid>/topeft/logs \
   -f /cephfs/<group>/<netid>/topeft/pickles/plotsCR_Run2.pkl.gz \
   -o /cephfs/<group>/<netid>/topeft/plots/run2_combo \
-  -y run2 --variable lj0pt --variable ptz
+  -y run2 --variable lj0pt --variable ptz --variable ptll
 ```
 
 Prefix the command with `--dry-run` when you want to review the generated job wrapper and `.sub` file without actually queueing the job. Adjust the batch resources with `--request-cpus` and `--request-memory`, and add `--queue N` to launch an array of identical submissions. The optional `--sandbox /cephfs/.../templates` flag ships extra payload files alongside the job so the execute node can pick up custom style sheets or metadata. Use `--condor-ulimit` if you want the entry script to apply the same ulimit safeguards outside of Condor.
@@ -531,7 +541,7 @@ The plotter defaults to `--binning processing`, which uses the dense axis stored
 All of the utilities in this section expect the nonprompt-enhanced histogram pickle (filename ending in `_np.pkl.gz`). Produce it inline via `run_analysis.py --do-np --np-postprocess=inline` or, when using the deferred workflow, run the printed `run_data_driven.py --input-pkl ... --output-pkl ...` command before pointing the datacard maker at the pickle.
 
 * `make_cards.py`
-    - Example usage: `time python make_cards.py /path/to/your.pkl.gz -C --do-nuisance --var-lst lj0pt ptz -d /path/to/output/dir --unblind --do-mc-stat`
+    - Example usage: `time python make_cards.py /path/to/your.pkl.gz -C --do-nuisance --var-lst lj0pt ptz ptll -d /path/to/output/dir --unblind --do-mc-stat`
 
 * `parse_datacard_templtes.py`:
     - Takes as input the path to a dir that has all of the template root files produced by the datacard maker, can output info about the templates or plots of the templates

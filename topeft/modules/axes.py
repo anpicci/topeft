@@ -28,7 +28,7 @@ _lj0pt_override_channels = (
     ),
 )
 
-_ptz_override_channels = tuple(
+_ptll_channels = tuple(
     f"3l_{charge}_offZ_{pt_region}_{nbtags}b_{njets}j"
     for charge in ("m", "p")
     for pt_region in ("low", "high")
@@ -64,12 +64,19 @@ info = {
         "processing": _uniform_processing(12, 0, 600),
         "fitting": {
             "default": [0, 200, 300, 400, 500],
-            "channels": {
-                channel: [0, 50, 100, 200, 300]
-                for channel in _ptz_override_channels
-            },
         },
         "label": r"$p_{T}$ Z (GeV) ",
+    },
+    "ptll": {
+        "processing": _uniform_processing(12, 0, 600),
+        "fitting": {
+            "default": [0, 50, 100, 200, 300],
+            "channels": {
+                channel: [0, 50, 100, 200, 300]
+                for channel in _ptll_channels
+            },
+        },
+        "label": r"$p_{T}^{\ell\ell}$ (GeV) ",
     },
     "njets": {
         "processing": _uniform_processing(7, 0, 7),

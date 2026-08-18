@@ -123,6 +123,32 @@ def test_merge_histogram_pkls_succeeds_for_disjoint_processes(monkeypatch):
     assert report["contribution_identity"].startswith("payload_component_key")
 
 
+def test_ptz_and_ptll_remain_distinct_multi_pkl_family_identities(monkeypatch):
+    category = "3l_m_offZ_low_1b_2j"
+    payloads = {
+        "historical.pkl.gz": _make_payload(
+            "ptz", ["shared_proc"], channel=category
+        ),
+        "canonical.pkl.gz": _make_payload(
+            "ptll", ["shared_proc"], channel=category
+        ),
+    }
+    monkeypatch.setattr(
+        datacard_tools,
+        "get_hist_from_pkl",
+        lambda path, allow_empty=False: payloads[path],
+    )
+
+    merged, report = datacard_tools.load_and_merge_histogram_pkls(
+        ["historical.pkl.gz", "canonical.pkl.gz"]
+    )
+
+    assert set(merged) == {"ptz", "ptz_sumw2", "ptll", "ptll_sumw2"}
+    assert report["contribution_identity"].startswith("payload_component_key")
+    assert "ptll" not in payloads["historical.pkl.gz"]
+    assert "ptz" not in payloads["canonical.pkl.gz"]
+
+
 def test_merge_histogram_pkls_fails_when_sumw2_missing(monkeypatch):
     payloads = {
         "broken.pkl.gz": _make_payload("met", ["proc_a"], with_sumw2=False),
@@ -290,8 +316,8 @@ def test_single_input_with_cross_run_contributions_is_rejected(monkeypatch):
 
 
 def test_split_family_provenance_composes_first_occurrence_ordered_union():
-    mixed = ("njets", "lj0pt", "ptz", "ptz_wtau", "lt")
-    sibling = ("njets", "lj0pt", "ptz", "lt")
+    mixed = ("njets", "lj0pt", "ptz", "ptll", "ptz_wtau", "lt")
+    sibling = ("njets", "lj0pt", "ptz", "ptll", "lt")
     composed = histogram_artifact._compose_sumw2_storage_provenance(
         (
             _make_provenance(mixed, dataset="shared_dataset", process="shared_proc"),
@@ -306,6 +332,7 @@ def test_split_family_provenance_composes_first_occurrence_ordered_union():
         "njets",
         "lj0pt",
         "ptz",
+        "ptll",
         "ptz_wtau",
         "lt",
     ]

@@ -58,7 +58,7 @@ def test_typed_processing_definitions_parse_and_legacy_schema_fails():
 
 
 def test_full_registry_is_canonical_and_processing_migration_is_complete():
-    assert len(info) == 53
+    assert len(info) == 54
     assert sum(len(entry["axes"]) for entry in info_2d.values()) == 14
     for axis_config in info.values():
         assert not {"regular", "variable", "variable_multi"}.intersection(axis_config)
@@ -69,7 +69,7 @@ def test_full_registry_is_canonical_and_processing_migration_is_complete():
             validate_axis_config(axis_config)
 
     common_grid = np.arange(0, 601, 50)
-    for family in ("lj0pt", "lt", "ptz", "ptz_wtau"):
+    for family in ("lj0pt", "lt", "ptll", "ptz", "ptz_wtau"):
         assert np.array_equal(processing_edges(info[family]), common_grid)
     assert np.array_equal(processing_edges(info["njets"]), np.arange(8))
     assert np.array_equal(processing_edges(info["ptbl"]), [0, 100, 200, 400])
@@ -164,32 +164,41 @@ def test_fitting_resolution_is_exact_and_representable():
 
 def test_frozen_target_memberships_and_final_bin_count_recompute():
     lj0pt_channels = set(info["lj0pt"]["fitting"]["channels"])
-    ptz_channels = set(info["ptz"]["fitting"]["channels"])
+    ptll_channels = set(info["ptll"]["fitting"]["channels"])
+    ptz_channels = set(info["ptz"]["fitting"].get("channels", {}))
     lt_channels = set(info["lt"]["fitting"]["channels"])
     ptz_wtau_channels = {
         f"2lss_{charge}_1tau_onZ_{njets}j"
         for charge in ("m", "p")
         for njets in (3, 4, 5, 6)
     }
-    assert (len(lj0pt_channels), len(ptz_channels), len(ptz_wtau_channels), len(lt_channels)) == (
+    assert (len(lj0pt_channels), len(ptll_channels), len(ptz_channels), len(ptz_wtau_channels), len(lt_channels)) == (
         32,
         32,
+        0,
         8,
         6,
     )
     changed = (
         {("lj0pt", channel) for channel in lj0pt_channels}
-        | {("ptz", channel) for channel in ptz_channels}
+        | {("ptll", channel) for channel in ptll_channels}
         | {("ptz_wtau", channel) for channel in ptz_wtau_channels}
         | {("lt", channel) for channel in lt_channels}
     )
     assert len(changed) == 78
-    category_counts = {"lj0pt": 53, "lt": 29, "ptz": 39, "ptz_wtau": 8}
+    category_counts = {
+        "lj0pt": 53,
+        "lt": 29,
+        "ptll": 32,
+        "ptz": 7,
+        "ptz_wtau": 8,
+    }
     assert sum(category_counts.values()) == 129
     assert sum(category_counts.values()) - len(changed) == 51
     overrides = {
         "lj0pt": lj0pt_channels,
         "lt": lt_channels,
+        "ptll": ptll_channels,
         "ptz": ptz_channels,
         "ptz_wtau": set(),
     }
@@ -204,6 +213,19 @@ def test_frozen_target_memberships_and_final_bin_count_recompute():
             for channel in family_overrides
         )
     assert final_bins == 555
+
+    assert ptll_channels == {
+        f"3l_{charge}_offZ_{pt_region}_{nbtags}b_{njets}j"
+        for charge in ("m", "p")
+        for pt_region in ("low", "high")
+        for nbtags in (1, 2)
+        for njets in (2, 3, 4, 5)
+    }
+    for channel in ptll_channels:
+        assert np.array_equal(
+            resolve_axis_edges("ptll", mode="fitting", channel=channel),
+            [0, 50, 100, 200, 300],
+        )
 
     for channel in ("3l_onZ_2b_2j", "3l_onZ_2b_3j"):
         assert channel not in lj0pt_channels

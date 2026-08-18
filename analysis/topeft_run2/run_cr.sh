@@ -196,14 +196,22 @@ cr_category_var_set_names=(
 # SR configuration
 ###############################################################################
 
-# ptz_wtau is only requested for category families that actually activate
-# ptz_wtau_channel_fill. In the current implementation this is true for the
-# mixed 2l/tau/4l block, but not for the off-Z, on-Z-tau, or forward 3l blocks.
+# ptz is the Z-candidate family and ptll is the closest-SFOS dilepton-pT family
+# for 3l off-Z low/high. Request each public family only from category blocks
+# that can fill it.
 sr_with_ptz_wtau_var_sets=(
   "njets lj0pt ptz ptz_wtau lt"
 )
 
-sr_without_ptz_wtau_var_sets=(
+sr_offz_var_sets=(
+  "njets lj0pt ptll lt"
+)
+
+sr_onz_tau_var_sets=(
+  "njets lj0pt ptz lt"
+)
+
+sr_fwd_var_sets=(
   "njets lj0pt ptz lt"
 )
 
@@ -219,9 +227,9 @@ sr_run2_category_sets=(
 
 sr_run2_category_var_set_names=(
   "sr_with_ptz_wtau_var_sets"
-  "sr_without_ptz_wtau_var_sets"
-  "sr_without_ptz_wtau_var_sets"
-  "sr_without_ptz_wtau_var_sets"
+  "sr_offz_var_sets"
+  "sr_onz_tau_var_sets"
+  "sr_fwd_var_sets"
 )
 
 sr_run3_category_sets=(
@@ -234,14 +242,14 @@ sr_run3_category_sets=(
 
 sr_run3_category_var_set_names=(
   "sr_with_ptz_wtau_var_sets"
-  "sr_without_ptz_wtau_var_sets"
-  "sr_without_ptz_wtau_var_sets"
-  "sr_without_ptz_wtau_var_sets"
-  "sr_without_ptz_wtau_var_sets"
+  "sr_offz_var_sets"
+  "sr_offz_var_sets"
+  "sr_onz_tau_var_sets"
+  "sr_fwd_var_sets"
 )
 
 # Static memory-bounded source-production plan for the families whose fitting
-# bins changed. The plan is intentionally limited to current live keys and
+# bins changed. The plan is intentionally limited to canonical live keys and
 # excludes njets, whose missing-parton workflow is produced separately.
 rebin_fine_category_sets=(
   "2lss_1tau 3l_m_offZ"
@@ -250,11 +258,11 @@ rebin_fine_category_sets=(
 )
 
 rebin_fine_2lss_1tau_3l_m_offz_var_sets=(
-  "lj0pt ptz ptz_wtau"
+  "lj0pt ptll ptz_wtau"
 )
 
 rebin_fine_3l_p_offz_3l_onZ_tau_var_sets=(
-  "lj0pt ptz"
+  "lj0pt ptz ptll"
 )
 
 rebin_fine_3l_fwd_var_sets=(
@@ -899,7 +907,9 @@ echo "require_recovered_run3_offz_np: ${require_recovered_run3_offz_np}"
 print_var_sets "CR non-tau" "${cr_non_tau_var_sets[@]}"
 print_var_sets "CR tau" "${cr_tau_var_sets[@]}"
 print_var_sets "SR with ptz_wtau" "${sr_with_ptz_wtau_var_sets[@]}"
-print_var_sets "SR without ptz_wtau" "${sr_without_ptz_wtau_var_sets[@]}"
+print_var_sets "SR off-Z" "${sr_offz_var_sets[@]}"
+print_var_sets "SR on-Z/tau" "${sr_onz_tau_var_sets[@]}"
+print_var_sets "SR forward" "${sr_fwd_var_sets[@]}"
 
 if [[ "${production_profile}" == "rebin_fine" ]]; then
   echo "rebin_fine SR category blocks (used for both Run 2 and Run 3):"

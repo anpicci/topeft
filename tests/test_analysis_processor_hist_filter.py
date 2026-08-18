@@ -51,6 +51,7 @@ def test_accumulator_keys_without_hist_filter():
         ["fwd0eta"],
         ["fwd0pt"],
         ["njets", "ptz_sumw2"],
+        ["njets", "ptll_sumw2"],
         ["njets_sumw2"],
     ],
 )
@@ -133,11 +134,11 @@ def test_njets_processing_axis_reuse_is_unchanged():
 
 def test_flexible_families_use_common_processing_grid_for_nominal_and_sumw2():
     processor = _make_processor(
-        hist_lst=["lj0pt", "lt", "ptz", "ptz_wtau"],
+        hist_lst=["lj0pt", "lt", "ptll", "ptz", "ptz_wtau"],
         fill_sumw2_hist=True,
     )
     expected = list(range(0, 601, 50))
-    for family in ("lj0pt", "lt", "ptz", "ptz_wtau"):
+    for family in ("lj0pt", "lt", "ptll", "ptz", "ptz_wtau"):
         nominal = processor.accumulator[f"{family}__scalar_nominal"].dense_axes[0]
         companion = processor.accumulator[f"{family}_sumw2"].dense_axes[0]
         assert list(nominal.edges) == expected

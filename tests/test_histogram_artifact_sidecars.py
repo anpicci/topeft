@@ -289,8 +289,11 @@ def _write_disjoint_source_processor(
     year,
     runtime_families,
     contribution,
+    prompt_contribution=None,
     signal_process=None,
 ):
+    if prompt_contribution is None:
+        prompt_contribution = contribution
     data_process = f"{process_prefix}data{year}"
     prompt_process = f"{process_prefix}prompt{year}"
     samples = {
@@ -349,14 +352,14 @@ def _write_disjoint_source_processor(
             family,
             (
                 (data_process, "isAR_3l", contribution),
-                (prompt_process, "isAR_3l", contribution),
+                (prompt_process, "isAR_3l", prompt_contribution),
             ),
         )
         payload[sumw2_key(family)] = _fill_sparse(
             sumw2_key(family),
             (
                 (data_process, "isAR_3l", contribution**2),
-                (prompt_process, "isAR_3l", contribution**2),
+                (prompt_process, "isAR_3l", prompt_contribution**2),
             ),
         )
     sidecar = write_histogram_artifact(
@@ -1574,6 +1577,44 @@ def test_nonprompt_persisted_flow_reopens_and_preserves_lineage(tmp_path, policy
         require_companions=("njets",),
     )
     assert tuple(datacard_view) == ("njets", "njets_sumw2")
+
+
+def test_ptll_nonprompt_flow_preserves_family_companion_and_provenance(tmp_path):
+    input_path = tmp_path / "ptll_processor.pkl.gz"
+    output_path = tmp_path / "ptll_nonprompt.pkl.gz"
+    input_sidecar = _write_disjoint_source_processor(
+        input_path,
+        process_prefix="",
+        year="UL18",
+        runtime_families=("ptll",),
+        contribution=2.0,
+        prompt_contribution=1.0,
+    )
+
+    run_data_driven.main(
+        [
+            "--input-pkl",
+            str(input_path),
+            "--output-pkl",
+            str(output_path),
+            "--quiet",
+        ]
+    )
+
+    output_sidecar = read_histogram_sidecar(output_path)
+    merged, report = load_and_merge_histogram_pkls([str(output_path)])
+    assert input_sidecar["sumw2_storage_provenance"][
+        "runtime_histogram_families"
+    ] == ["ptll"]
+    assert output_sidecar["sumw2_storage_provenance"][
+        "runtime_histogram_families"
+    ] == ["ptll"]
+    assert set(output_sidecar["sumw2_content_manifest"]["families"]) == {"ptll"}
+    assert report["runtime_histogram_families"] == ["ptll"]
+    assert scalar_nominal_key("ptll") in merged
+    assert sumw2_key("ptll") in merged
+    assert "nonpromptUL18" in _processes(merged[scalar_nominal_key("ptll")])
+    assert "nonpromptUL18" in _processes(merged[sumw2_key("ptll")])
 
 
 def test_direct_data_driven_writer_discovers_and_writes_sidecars(tmp_path, policy):

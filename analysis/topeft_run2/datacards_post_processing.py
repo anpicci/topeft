@@ -155,8 +155,8 @@ def main():
                         ("offZ_2b_fwd" in lep_ch_name and int(jet) == 1)
                     ):
                         continue
-                    elif (args.set_up_offZdivision or args.all_analysis) and ( "high" in lep_ch_name  or "low" in lep_ch_name ): # extra channels from offZ division binned by ptz
-                        channelname = lep_ch_name + "_" + jet + "j_ptz"
+                    elif (args.set_up_offZdivision or args.all_analysis) and ( "high" in lep_ch_name  or "low" in lep_ch_name ): # off-Z closest-SFOS dilepton-pT categories
+                        channelname = lep_ch_name + "_" + jet + "j_ptll"
                     elif (args.tau_flag or args.all_analysis) and ("2los" in lep_ch_name):
                         channelname = lep_ch_name + "_" + jet + "j_ptz"
                     elif (args.tau_flag or args.all_analysis) and ("1tau_onZ" in lep_ch_name):
