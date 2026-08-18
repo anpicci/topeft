@@ -18,6 +18,7 @@ from topeft.modules.paths import topeft_path
 from topeft.modules.axes import info as axes_info
 from topeft.modules.axes import info_2d as axes_info_2d
 from topeft.modules.axis_binning import (
+    BINNING_MODES,
     resolve_and_rebin_histogram,
     validate_matching_histogram_edges,
 )
@@ -1063,6 +1064,11 @@ class DatacardMaker():
         return r
 
     def __init__(self,pkl_path=None,hists=None,**kwargs):
+        self.binning_mode    = kwargs.pop("binning_mode", "fitting")
+        if self.binning_mode not in BINNING_MODES:
+            raise ValueError(
+                f"Unknown binning mode {self.binning_mode!r}; expected one of {BINNING_MODES}."
+            )
         self.year_lst        = kwargs.pop("year_lst",[])
         self.do_sm           = kwargs.pop("do_sm",False)
         self.do_nuisance     = kwargs.pop("do_nuisance",False)
@@ -1365,8 +1371,10 @@ class DatacardMaker():
     def processes(self, km_dist):
         return list(self.hists[km_dist].axes["process"])
 
-    @staticmethod
-    def fitting_view(histogram, km_dist, channel):
+    def binning_view(self, histogram, km_dist, channel):
+        """Return the one card-facing histogram view for the selected binning mode."""
+        if self.binning_mode == "processing":
+            return histogram
         return resolve_and_rebin_histogram(
             histogram,
             km_dist,
@@ -1636,7 +1644,7 @@ class DatacardMaker():
                     continue
                 selected = False
                 for channel in channels:
-                    channel_hist = self.fitting_view(
+                    channel_hist = self.binning_view(
                         h.integrate("channel", [channel]), km_dist, channel
                     )
                     p_hist = channel_hist.integrate("process", [p])
@@ -1714,11 +1722,11 @@ class DatacardMaker():
         if h_sumw2 is None:
             msg = "No sumw2 histogram found! Setting errors to 0"
             print(msg)
-        ch_hist = self.fitting_view(h.integrate("channel",[ch]), km_dist, ch)
+        ch_hist = self.binning_view(h.integrate("channel",[ch]), km_dist, ch)
         ch_sumw2 = (
             None
             if h_sumw2 is None
-            else self.fitting_view(h_sumw2.integrate("channel",[ch]), km_dist, ch)
+            else self.binning_view(h_sumw2.integrate("channel",[ch]), km_dist, ch)
         )
         if ch_sumw2 is not None:
             validate_matching_histogram_edges(

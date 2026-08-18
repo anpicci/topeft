@@ -10,6 +10,7 @@ import numpy as np
 from topcoffea.modules.utils import regex_match,clean_dir,dict_comp
 from topeft.modules.datacard_tools import *
 from topeft.modules.histogram_artifact import write_histogram_artifact
+from topeft.modules.axis_binning import BINNING_MODES
 
 # Note:
 #   Not sure if constructing the condor related files this way is good or bad practice. It already
@@ -118,6 +119,16 @@ def build_arg_parser():
     parser.add_argument("--merge-report",default="-",help="Path for merge diagnostic report JSON, or '-' for stdout")
     parser.add_argument("--merge-only",action="store_true",help="Only load+merge+validate input histograms and exit")
     parser.add_argument("--cache-merged-pkl",default="",help="Optional output path for merged histogram dictionary (.pkl.gz)")
+    parser.add_argument(
+        "--binning",
+        choices=BINNING_MODES,
+        default="fitting",
+        help=(
+            "Histogram binning used for card templates: 'fitting' applies the "
+            "current exact channel fitting contract; 'processing' uses the "
+            "dense axis stored in the input PKL (default: fitting)."
+        ),
+    )
     return parser
 
 
@@ -218,6 +229,7 @@ def _build_condor_base_other_opts(dc, year_coverage_policy):
     base_other_opts.extend(["--sr-registry", dc.sr_registry])
     if getattr(dc, "skip_missing_parton_rate_syst", False):
         base_other_opts.append("--skip-missing-parton-rate-syst")
+    base_other_opts.extend(["--binning", dc.binning_mode])
     base_other_opts.extend(["--year-coverage-policy", year_coverage_policy])
     return base_other_opts
 
@@ -328,6 +340,7 @@ def main():
     verbose    = args.verbose
     use_AAC     = args.use_AAC
     wc_vals    = args.wc_vals
+    binning_mode = args.binning
 
     wc_scalings = args.wc_scalings
     select_only = args.select_only
@@ -357,6 +370,7 @@ def main():
         "use_AAC":  use_AAC,
         "wc_vals": wc_vals,
         "wc_scalings": wc_scalings,
+        "binning_mode": binning_mode,
     }
 
     if out_dir != "." and not os.path.exists(out_dir):

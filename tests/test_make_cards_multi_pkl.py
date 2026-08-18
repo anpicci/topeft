@@ -501,6 +501,7 @@ def test_condor_options_propagate_resolved_year_coverage_policy(year_coverage_po
         drop_syst=[],
         sr_registry="an_v9",
         skip_missing_parton_rate_syst=False,
+        binning_mode="fitting",
     )
 
     options = make_cards._build_condor_base_other_opts(dc, year_coverage_policy)
