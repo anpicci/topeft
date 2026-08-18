@@ -1,7 +1,10 @@
 import hashlib
 import importlib
+import io
 import json
 import subprocess
+import tarfile
+import sys
 from pathlib import Path
 
 
@@ -31,7 +34,33 @@ def _commit():
 
 def _write_env(tmp_path, content=b"synthetic poncho archive"):
     path = tmp_path / "verified_env.tar.gz"
-    path.write_bytes(content)
+    with tarfile.open(path, "w:gz") as archive:
+        entry = tarfile.TarInfo("environment.txt")
+        entry.size = len(content)
+        archive.addfile(entry, io.BytesIO(content))
+    archive_sha256 = hashlib.sha256(path.read_bytes()).hexdigest()
+    path.with_name(f"{path.name}.manifest.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "archive_basename": path.name,
+                "archive_sha256": archive_sha256,
+                "created_at_utc": "2026-08-18T00:00:00Z",
+                "environment_fingerprint": "synthetic-environment-fingerprint",
+                "python_version": "3.9.23",
+                "resolved_environment_spec": {"conda": {"packages": []}, "pip": []},
+                "resolved_environment_spec_fingerprint": "synthetic-spec-fingerprint",
+                "editable_packages": [
+                    {
+                        "package_name": "topcoffea",
+                        "git_commit": "synthetic-topcoffea-commit",
+                        "watched_source_fingerprint": "synthetic-topcoffea-source",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
     return path
 
 
@@ -77,13 +106,16 @@ def _write_state(output_dir, campaign_tag, env_file, *, status="planned"):
     for block in blocks:
         block["status"] = status
     state = {
-        "schema_version": 1,
+        "schema_version": 2,
         "production_profile": "rebin_fine",
         "campaign_tag": campaign_tag,
         "output_dir": str(output_dir),
         "topeft_git_commit": _commit(),
         "env_file": str(env_file.resolve()),
         "env_file_sha256": hashlib.sha256(env_file.read_bytes()).hexdigest(),
+        "environment_fingerprint": "synthetic-environment-fingerprint",
+        "topcoffea_git_commit": "synthetic-topcoffea-commit",
+        "topcoffea_relevant_source_fingerprint": "synthetic-topcoffea-source",
         "ttgamma_sample_role_policy": "split",
         "do_systs": True,
         "do_np": True,
@@ -179,7 +211,8 @@ def test_rebin_fine_dry_run_reuses_one_env_without_output_side_effects(tmp_path)
     assert result.stdout.count("rebin_fine dry-run resolved") == 6
     assert result.stdout.count(f"--env-file {env_file.resolve()}") >= 6
     assert "poncho_package_create" not in result.stdout
-    assert env_file.read_bytes() == b"synthetic poncho archive"
+    with tarfile.open(env_file, "r:gz") as archive:
+        assert archive.getnames() == ["environment.txt"]
     assert not output_dir.exists()
     assert not (output_dir / STATE_FILENAME).exists()
 
@@ -217,9 +250,57 @@ def test_env_override_bypasses_automatic_poncho_packaging(tmp_path, monkeypatch)
         raise AssertionError("automatic environment packaging was called")
 
     monkeypatch.setattr(run_analysis.remote_environment, "get_environment", unexpected_packaging)
+    monkeypatch.setattr(
+        run_analysis.remote_environment,
+        "resolve_environment_request",
+        lambda **_kwargs: {"environment_fingerprint": "current"},
+    )
+    monkeypatch.setattr(
+        run_analysis.remote_environment,
+        "validate_environment_archive",
+        lambda path, *_args, **_kwargs: {
+            "archive_path": str(Path(path).resolve()),
+            "archive_sha256": "synthetic",
+            "manifest_path": f"{path}.manifest.json",
+            "environment_fingerprint": "current",
+            "status": "valid",
+            "mismatches": [],
+            "editable_packages": [],
+            "usable": True,
+        },
+    )
     assert run_analysis._resolve_environment_file(str(env_file), True) == str(
         env_file.resolve()
     )
+
+
+def test_environment_cli_rejects_invalid_snapshot_combinations(tmp_path):
+    snapshot_without_archive = subprocess.run(
+        [sys.executable, str(ANALYSIS_DIR / "run_analysis.py"), "--snapshot"],
+        cwd=ANALYSIS_DIR,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert snapshot_without_archive.returncode != 0
+    assert "--snapshot requires --env-file" in snapshot_without_archive.stderr
+
+    archive = _write_env(tmp_path)
+    rebuild_with_archive = subprocess.run(
+        [
+            sys.executable,
+            str(ANALYSIS_DIR / "run_analysis.py"),
+            "--env-file",
+            str(archive),
+            "--rebuild-env",
+        ],
+        cwd=ANALYSIS_DIR,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert rebuild_with_archive.returncode != 0
+    assert "cannot be combined with --env-file" in rebuild_with_archive.stderr
 
 
 def test_rebin_fine_does_not_run_legacy_environment_cache_cleanup():
@@ -266,6 +347,7 @@ def test_fresh_rebin_fine_rejects_existing_namespace(tmp_path):
     result = _run(
         "--production-profile",
         "rebin_fine",
+        "--dry-run",
         "--output-dir",
         str(output_dir),
         "--campaign-tag",
@@ -289,6 +371,7 @@ def test_resume_skips_only_successful_blocks_with_present_outputs(tmp_path):
         "--production-profile",
         "rebin_fine",
         "--resume",
+        "--dry-run",
         "--output-dir",
         str(output_dir),
         "--campaign-tag",
@@ -313,6 +396,7 @@ def test_resume_rejects_state_drift_and_ambiguous_outputs(tmp_path):
         "--production-profile",
         "rebin_fine",
         "--resume",
+        "--dry-run",
         "--output-dir",
         str(output_dir),
         "--campaign-tag",
@@ -329,6 +413,7 @@ def test_resume_rejects_state_drift_and_ambiguous_outputs(tmp_path):
         "--production-profile",
         "rebin_fine",
         "--resume",
+        "--dry-run",
         "--output-dir",
         str(output_dir),
         "--campaign-tag",
@@ -347,6 +432,7 @@ def test_resume_rejects_state_drift_and_ambiguous_outputs(tmp_path):
         "--production-profile",
         "rebin_fine",
         "--resume",
+        "--dry-run",
         "--output-dir",
         str(output_dir),
         "--campaign-tag",
@@ -370,6 +456,7 @@ def test_resume_marks_missing_success_output_incomplete_and_dry_runs_failed_bloc
         "--production-profile",
         "rebin_fine",
         "--resume",
+        "--dry-run",
         "--output-dir",
         str(output_dir),
         "--campaign-tag",
@@ -407,12 +494,17 @@ def test_resume_rejects_environment_sha_drift(tmp_path):
     output_dir.mkdir()
     env_file = _write_env(tmp_path)
     _write_state(output_dir, "fine_resume", env_file)
-    env_file.write_bytes(b"different synthetic poncho archive")
+    replacement = _write_env(tmp_path, content=b"different synthetic poncho archive")
+    env_file.write_bytes(replacement.read_bytes())
+    env_file.with_name(f"{env_file.name}.manifest.json").write_bytes(
+        replacement.with_name(f"{replacement.name}.manifest.json").read_bytes()
+    )
 
     result = _run(
         "--production-profile",
         "rebin_fine",
         "--resume",
+        "--dry-run",
         "--output-dir",
         str(output_dir),
         "--campaign-tag",

@@ -267,23 +267,39 @@ production workflow: Run 2 and Run 3 each run the A (`2lss_1tau` plus
 The histogram unions are fixed by the maintained profile; `njets` is not part
 of this campaign.
 
-Freeze the production checkout first, then build or recover one Poncho archive
-from that frozen environment. The repository-supported cache builder is:
+Freeze the production checkout first. `run_analysis.py` normally resolves and
+reuses a current worker environment automatically; add `--rebuild-env` to a
+normal command to force its recreation. To prepare exactly one current archive
+without loading samples or starting an executor, run:
 
 ```bash
 cd /users/apiccine/work/correction-lib/topeft/analysis/topeft_run2
-env_file=$(/users/apiccine/work/miniconda3/envs/clib-env/bin/python -c \
-  'from topcoffea.modules.remote_environment import get_environment; print(get_environment(extra_pip_local={"topeft": ["topeft", "setup.py"]}, unstaged="fail", cache_size=1))')
-test -s "$env_file"
-sha256sum "$env_file"
-tar -tzf "$env_file" >/dev/null
+python run_analysis.py --prepare-env-only --rebuild-env
 ```
 
-The resulting canonical archive is the printed
-`analysis/topeft_run2/topeft-envs/env_spec_*_edit_*.tar.gz` path. Keep that
-exact path and SHA256 for the full campaign. Rebuild it when the frozen topeft
+This validates the new archive and prints `env_file`, `env_file_sha256`,
+`env_manifest`, and `environment_fingerprint`. The resulting canonical archive
+is the printed `analysis/topeft_run2/topeft-envs/env_spec_*.tar.gz` path. Keep
+that exact path, SHA256, manifest, and fingerprint for the full campaign.
+Rebuild it when the frozen topeft
 or topcoffea checkout, active environment, repository package specification,
 or archive validation changes; do not rebuild it per block.
+
+An explicit current archive is strict by default:
+
+```bash
+python run_analysis.py <normal args> --env-file /path/env.tar.gz
+```
+
+For intentional historical reproduction only, use an explicit snapshot:
+
+```bash
+python run_analysis.py <normal args> --env-file /path/historical_env.tar.gz --snapshot
+```
+
+`--snapshot` bypasses current-environment compatibility only. It still rejects
+missing, empty, corrupt archives and a manifest SHA mismatch. It does not
+recreate the matching historical source/configuration/input state.
 
 First resolve the six commands without production side effects:
 
@@ -314,7 +330,9 @@ tag, output directory, and byte-identical archive:
 python -m json.tool /absolute/new/campaign_directory/.rebin_fine_campaign_state.json
 ```
 
-The state file records the archive SHA256 and each block's planned, running,
+`rebin_fine` accepts only a strict explicit current archive; it does not support
+snapshot mode. The state file records the archive SHA256, effective environment
+fingerprint, relevant topcoffea identity, and each block's planned, running,
 success, or failed/incomplete state. Resume skips only a recorded-success block
 whose nominal and inline-nonprompt PKLs are both present and non-empty. It
 refuses a partial/unrecorded output instead of overwriting it. Production is

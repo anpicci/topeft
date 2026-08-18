@@ -112,6 +112,9 @@ ttgamma_sample_role_policy="split"
 campaign_tag="ANv9"
 rebin_fine_env_file=""
 rebin_fine_env_file_sha256=""
+rebin_fine_environment_fingerprint=""
+rebin_fine_topcoffea_git_commit=""
+rebin_fine_topcoffea_source_fingerprint=""
 rebin_fine_state_path=""
 rebin_fine_git_commit=""
 
@@ -157,6 +160,25 @@ EOF
     exit 1
   fi
   rebin_fine_env_file_sha256=$(sha256sum -- "${rebin_fine_env_file}" | awk '{print $1}')
+
+  # The shared Python policy validates tar integrity, manifest SHA, and current
+  # environment compatibility.  It never builds an archive for an explicit file.
+  rebin_fine_validation_args=(--validate-env-file --env-file "${rebin_fine_env_file}")
+  if [[ "${dry_run}" == "true" ]]; then
+    rebin_fine_validation_args+=(--env-integrity-only)
+  fi
+  if ! rebin_fine_environment_validation=$(python ./run_analysis.py "${rebin_fine_validation_args[@]}"); then
+    echo "ERROR: rebin_fine requires a strict current environment archive; no campaign state was changed." >&2
+    exit 1
+  fi
+  printf '%s\n' "${rebin_fine_environment_validation}"
+  rebin_fine_environment_fingerprint=$(awk -F': ' '/^environment_fingerprint: / {print $2; exit}' <<< "${rebin_fine_environment_validation}")
+  rebin_fine_topcoffea_git_commit=$(awk -F': ' '/^topcoffea_git_commit: / {print $2; exit}' <<< "${rebin_fine_environment_validation}")
+  rebin_fine_topcoffea_source_fingerprint=$(awk -F': ' '/^topcoffea_relevant_source_fingerprint: / {print $2; exit}' <<< "${rebin_fine_environment_validation}")
+  if [[ -z "${rebin_fine_environment_fingerprint}" || -z "${rebin_fine_topcoffea_git_commit}" || -z "${rebin_fine_topcoffea_source_fingerprint}" ]]; then
+    echo "ERROR: strict environment validation did not report required topcoffea/environment identity." >&2
+    exit 1
+  fi
 
   for rebin_fine_state_value in "${output_dir}" "${campaign_tag}" "${rebin_fine_env_file}"; do
     if [[ "${rebin_fine_state_value}" == *$'\t'* || "${rebin_fine_state_value}" == *$'\n'* ]]; then
@@ -644,15 +666,18 @@ def read_plan(path):
 
 def desired_state(arguments):
     plan_path = Path(arguments[0])
-    tag, output_dir, commit, env_file, env_sha256, ttgamma, do_systs, do_np = arguments[1:]
+    tag, output_dir, commit, env_file, env_sha256, env_fingerprint, topcoffea_commit, topcoffea_source, ttgamma, do_systs, do_np = arguments[1:]
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "production_profile": "rebin_fine",
         "campaign_tag": tag,
         "output_dir": output_dir,
         "topeft_git_commit": commit,
         "env_file": env_file,
         "env_file_sha256": env_sha256,
+        "environment_fingerprint": env_fingerprint,
+        "topcoffea_git_commit": topcoffea_commit,
+        "topcoffea_relevant_source_fingerprint": topcoffea_source,
         "ttgamma_sample_role_policy": ttgamma,
         "do_systs": do_systs == "true",
         "do_np": do_np == "true",
@@ -669,6 +694,9 @@ def validate_state(state, desired):
         "topeft_git_commit",
         "env_file",
         "env_file_sha256",
+        "environment_fingerprint",
+        "topcoffea_git_commit",
+        "topcoffea_relevant_source_fingerprint",
         "ttgamma_sample_role_policy",
         "do_systs",
         "do_np",
@@ -691,8 +719,8 @@ mode = sys.argv[1]
 state_path = Path(sys.argv[2])
 
 if mode in {"initialize", "validate"}:
-    desired = desired_state(sys.argv[3:12])
-    readonly = len(sys.argv) > 12 and sys.argv[12] == "true"
+    desired = desired_state(sys.argv[3:15])
+    readonly = len(sys.argv) > 15 and sys.argv[15] == "true"
     if mode == "initialize":
         if state_path.exists():
             fail(f"refusing to overwrite existing rebin_fine campaign state: {state_path}")
@@ -863,6 +891,9 @@ prepare_rebin_fine_campaign() {
       "${rebin_fine_git_commit}" \
       "${rebin_fine_env_file}" \
       "${rebin_fine_env_file_sha256}" \
+      "${rebin_fine_environment_fingerprint}" \
+      "${rebin_fine_topcoffea_git_commit}" \
+      "${rebin_fine_topcoffea_source_fingerprint}" \
       "${ttgamma_sample_role_policy}" \
       "${do_systs}" \
       "${do_np}" \
@@ -876,6 +907,9 @@ prepare_rebin_fine_campaign() {
       "${rebin_fine_git_commit}" \
       "${rebin_fine_env_file}" \
       "${rebin_fine_env_file_sha256}" \
+      "${rebin_fine_environment_fingerprint}" \
+      "${rebin_fine_topcoffea_git_commit}" \
+      "${rebin_fine_topcoffea_source_fingerprint}" \
       "${ttgamma_sample_role_policy}" \
       "${do_systs}" \
       "${do_np}"
