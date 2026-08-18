@@ -259,6 +259,67 @@ or datacard validation implicit.
 
 > **Sourcing helpers:** `run_plotter.sh`, `submit_plotter_condor.sh`, `fullR3_run.sh`, `fullR3_run_diboson.sh`, and `condor_plotter_entry.sh` now funnel their work through a `main()` function. They return non-zero statuses instead of exiting outright when validation fails, so sourcing them in an interactive shell will surface the error without tearing down your session. Executing the scripts directly still exits with the same return codes as before.
 
+### User-run `rebin_fine` campaign
+
+`run_cr.sh --production-profile rebin_fine` is a six-block, user-run SR
+production workflow: Run 2 and Run 3 each run the A (`2lss_1tau` plus
+`3l_m_offZ`), B (`3l_p_offZ` plus `3l_onZ_tau`), and C (`3l_fwd`) blocks.
+The histogram unions are fixed by the maintained profile; `njets` is not part
+of this campaign.
+
+Freeze the production checkout first, then build or recover one Poncho archive
+from that frozen environment. The repository-supported cache builder is:
+
+```bash
+cd /users/apiccine/work/correction-lib/topeft/analysis/topeft_run2
+env_file=$(/users/apiccine/work/miniconda3/envs/clib-env/bin/python -c \
+  'from topcoffea.modules.remote_environment import get_environment; print(get_environment(extra_pip_local={"topeft": ["topeft", "setup.py"]}, unstaged="fail", cache_size=1))')
+test -s "$env_file"
+sha256sum "$env_file"
+tar -tzf "$env_file" >/dev/null
+```
+
+The resulting canonical archive is the printed
+`analysis/topeft_run2/topeft-envs/env_spec_*_edit_*.tar.gz` path. Keep that
+exact path and SHA256 for the full campaign. Rebuild it when the frozen topeft
+or topcoffea checkout, active environment, repository package specification,
+or archive validation changes; do not rebuild it per block.
+
+First resolve the six commands without production side effects:
+
+```bash
+./run_cr.sh --production-profile rebin_fine --dry-run \
+  --output-dir /absolute/new/campaign_directory \
+  --campaign-tag rebin_fine_<frozen_head> \
+  --env-file "$env_file"
+```
+
+For a fresh user-run campaign, the output directory must not exist:
+
+```bash
+./run_cr.sh --production-profile rebin_fine \
+  --output-dir /absolute/new/campaign_directory \
+  --campaign-tag rebin_fine_<frozen_head> \
+  --env-file "$env_file"
+```
+
+After an interruption, resume only from the same frozen checkout, campaign
+tag, output directory, and byte-identical archive:
+
+```bash
+./run_cr.sh --production-profile rebin_fine --resume \
+  --output-dir /absolute/new/campaign_directory \
+  --campaign-tag rebin_fine_<frozen_head> \
+  --env-file "$env_file"
+python -m json.tool /absolute/new/campaign_directory/.rebin_fine_campaign_state.json
+```
+
+The state file records the archive SHA256 and each block's planned, running,
+success, or failed/incomplete state. Resume skips only a recorded-success block
+whose nominal and inline-nonprompt PKLs are both present and non-empty. It
+refuses a partial/unrecorded output instead of overwriting it. Production is
+user-run, and analysis-scale numerical validation remains pending.
+
 
 ### Scripts for finding, comparing and plotting yields from histograms (from the processor)
 

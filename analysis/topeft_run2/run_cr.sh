@@ -4,12 +4,13 @@ set -euo pipefail
 print_usage() {
   cat <<'EOF'
 Usage: ./run_cr.sh [--production-profile baseline|rebin_fine] [--dry-run] \
-  [--output-dir PATH] [--campaign-tag TAG]
+  [--output-dir PATH] [--campaign-tag TAG] [--env-file PATH] [--resume]
 
 The default no-argument invocation preserves the existing baseline/resume
 configuration. The rebin_fine profile prepares only the source histogram
 families whose fitting bins changed. Its non-dry invocation requires an
-explicit fresh output directory and campaign tag.
+explicit fresh output directory, campaign tag, and verified absolute Poncho
+environment archive. Use --resume only for a matching rebin_fine campaign.
 EOF
 }
 
@@ -17,6 +18,8 @@ production_profile="baseline"
 profile_dry_run=false
 profile_output_dir=""
 profile_campaign_tag=""
+profile_env_file=""
+profile_resume=false
 
 while (( $# > 0 )); do
   case "$1" in
@@ -47,6 +50,18 @@ while (( $# > 0 )); do
       fi
       profile_campaign_tag="$2"
       shift 2
+      ;;
+    --env-file)
+      if (( $# < 2 )) || [[ -z "$2" ]]; then
+        echo "ERROR: --env-file requires a non-empty path." >&2
+        exit 1
+      fi
+      profile_env_file="$2"
+      shift 2
+      ;;
+    --resume)
+      profile_resume=true
+      shift
       ;;
     -h|--help)
       print_usage
@@ -95,6 +110,10 @@ ttgamma_sample_role_policy="split"
 # Use a strategy-specific tag to avoid mixing baseline, feature, and diagnostic
 # outputs.
 campaign_tag="ANv9"
+rebin_fine_env_file=""
+rebin_fine_env_file_sha256=""
+rebin_fine_state_path=""
+rebin_fine_git_commit=""
 
 if [[ "${production_profile}" == "rebin_fine" ]]; then
   run_cr=false
@@ -117,16 +136,58 @@ EOF
     campaign_tag="${profile_campaign_tag}"
   fi
 
+  if [[ -z "${profile_env_file}" ]]; then
+    echo "ERROR: rebin_fine requires --env-file for both dry-run and production." >&2
+    exit 1
+  fi
+
+  if [[ "${profile_env_file}" != /* ]]; then
+    echo "ERROR: rebin_fine --env-file must be an absolute path: ${profile_env_file}" >&2
+    exit 1
+  fi
+
+  if [[ ! -f "${profile_env_file}" || ! -r "${profile_env_file}" || ! -s "${profile_env_file}" ]]; then
+    echo "ERROR: rebin_fine --env-file must be a readable, non-empty regular file: ${profile_env_file}" >&2
+    exit 1
+  fi
+
+  rebin_fine_env_file=$(readlink -f -- "${profile_env_file}")
+  if [[ -z "${rebin_fine_env_file}" || ! -f "${rebin_fine_env_file}" || ! -r "${rebin_fine_env_file}" || ! -s "${rebin_fine_env_file}" ]]; then
+    echo "ERROR: unable to resolve a readable, non-empty rebin_fine environment archive: ${profile_env_file}" >&2
+    exit 1
+  fi
+  rebin_fine_env_file_sha256=$(sha256sum -- "${rebin_fine_env_file}" | awk '{print $1}')
+
+  for rebin_fine_state_value in "${output_dir}" "${campaign_tag}" "${rebin_fine_env_file}"; do
+    if [[ "${rebin_fine_state_value}" == *$'\t'* || "${rebin_fine_state_value}" == *$'\n'* ]]; then
+      echo "ERROR: rebin_fine state fields must not contain tab or newline characters." >&2
+      exit 1
+    fi
+  done
+
   if [[ "${output_dir}" == "/groups/klannon/apiccine/preappr_v9_260729" ]] \
     || [[ "${campaign_tag}" == "ANv9" ]]; then
     echo "ERROR: rebin_fine must not reuse the baseline/resume output namespace." >&2
     exit 1
   fi
 
-  if [[ "${dry_run}" == "false" && -e "${output_dir}" ]]; then
+  if [[ "${dry_run}" == "false" && "${output_dir}" != /* ]]; then
+    echo "ERROR: rebin_fine --output-dir must be an absolute path: ${output_dir}" >&2
+    exit 1
+  fi
+
+  if [[ "${profile_resume}" == "false" && -e "${output_dir}" ]]; then
     echo "ERROR: rebin_fine output directory already exists: ${output_dir}" >&2
     exit 1
   fi
+
+  if [[ "${profile_resume}" == "true" && "${dry_run}" == "false" && ! -d "${output_dir}" ]]; then
+    echo "ERROR: rebin_fine --resume requires an existing campaign output directory: ${output_dir}" >&2
+    exit 1
+  fi
+elif [[ "${profile_resume}" == "true" || -n "${profile_env_file}" ]]; then
+  echo "ERROR: --resume and --env-file are only supported with --production-profile rebin_fine." >&2
+  exit 1
 fi
 
 cr_pkl_base_tag="${campaign_tag}"
@@ -334,6 +395,47 @@ if [[ "${production_profile}" == "rebin_fine" ]]; then
   require_recovered_run3_offz_np=false
 fi
 
+rebin_fine_state_filename=".rebin_fine_campaign_state.json"
+rebin_fine_block_ids=()
+rebin_fine_plan_year_exprs=()
+rebin_fine_plan_category_sets=()
+rebin_fine_plan_var_sets=()
+
+if [[ "${production_profile}" == "rebin_fine" ]]; then
+  rebin_fine_block_ids=(
+    "run2_a"
+    "run2_b"
+    "run2_c"
+    "run3_a"
+    "run3_b"
+    "run3_c"
+  )
+  rebin_fine_plan_year_exprs=(
+    "2016APV 2016 2017 2018"
+    "2016APV 2016 2017 2018"
+    "2016APV 2016 2017 2018"
+    "2022 2022EE 2023 2023BPix"
+    "2022 2022EE 2023 2023BPix"
+    "2022 2022EE 2023 2023BPix"
+  )
+  rebin_fine_plan_category_sets=(
+    "2lss_1tau 3l_m_offZ"
+    "3l_p_offZ 3l_onZ_tau"
+    "3l_fwd"
+    "2lss_1tau 3l_m_offZ"
+    "3l_p_offZ 3l_onZ_tau"
+    "3l_fwd"
+  )
+  rebin_fine_plan_var_sets=(
+    "lj0pt ptll ptz_wtau"
+    "lj0pt ptz ptll"
+    "lt"
+    "lj0pt ptll ptz_wtau"
+    "lj0pt ptz ptll"
+    "lt"
+  )
+fi
+
 ###############################################################################
 # Execution accounting
 ###############################################################################
@@ -415,6 +517,374 @@ clean_env_cache() {
       -maxdepth 1 \
       \( -type f -o -type l \) \
       -delete
+  fi
+}
+
+rebin_fine_output_name() {
+  local year_expr="$1"
+  local pkl_tag="$2"
+  local years=()
+  local year_label
+
+  read -r -a years <<< "${year_expr}"
+  year_label=$(join_by - "${years[@]}")
+  printf '%sSRs_%s' "${year_label}" "${pkl_tag}"
+}
+
+write_rebin_fine_plan() {
+  local plan_path="$1"
+  local index
+  local year_expr
+  local category_set
+  local var_set
+  local cats=()
+  local vars=()
+  local cat_tag
+  local var_tag
+  local pkl_tag
+  local output_name
+
+  : > "${plan_path}"
+  for index in "${!rebin_fine_block_ids[@]}"; do
+    year_expr="${rebin_fine_plan_year_exprs[index]}"
+    category_set="${rebin_fine_plan_category_sets[index]}"
+    var_set="${rebin_fine_plan_var_sets[index]}"
+    read -r -a cats <<< "${category_set}"
+    read -r -a vars <<< "${var_set}"
+    cat_tag=$(join_by - "${cats[@]}")
+    var_tag=$(join_by - "${vars[@]}")
+    pkl_tag="${sr_pkl_base_tag}_${cat_tag}_${var_tag}"
+    output_name=$(rebin_fine_output_name "${year_expr}" "${pkl_tag}")
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+      "${rebin_fine_block_ids[index]}" \
+      "${year_expr}" \
+      "${category_set}" \
+      "${var_set}" \
+      "${pkl_tag}" \
+      "${output_name}" \
+      "${output_dir}/${output_name}.pkl.gz" \
+      "${output_dir}/${output_name}_np.pkl.gz" \
+      >> "${plan_path}"
+  done
+}
+
+rebin_fine_state_tool() {
+  python - "$@" <<'PY'
+import datetime
+import json
+import os
+import sys
+from pathlib import Path
+
+
+VALID_STATUSES = {"planned", "running", "success", "failed_or_incomplete"}
+
+
+def now_utc():
+    return datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def fail(message):
+    raise SystemExit(f"ERROR: {message}")
+
+
+def atomic_write(path, payload):
+    temporary = path.with_name(f".{path.name}.tmp.{os.getpid()}")
+    try:
+        with temporary.open("w", encoding="utf-8") as handle:
+            json.dump(payload, handle, indent=2, sort_keys=True)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+        directory_fd = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+    finally:
+        if temporary.exists():
+            temporary.unlink()
+
+
+def load(path):
+    try:
+        with path.open(encoding="utf-8") as handle:
+            return json.load(handle)
+    except (OSError, json.JSONDecodeError) as exc:
+        fail(f"cannot read campaign state {path}: {exc}")
+
+
+def read_plan(path):
+    blocks = []
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError as exc:
+        fail(f"cannot read generated rebin_fine plan {path}: {exc}")
+    for line in lines:
+        fields = line.split("\t")
+        if len(fields) != 8:
+            fail(f"invalid generated rebin_fine plan row: {line!r}")
+        block_id, years, categories, histograms, output_tag, output_name, nominal, nonprompt = fields
+        blocks.append(
+            {
+                "id": block_id,
+                "years": years.split(),
+                "category_groups": categories.split(),
+                "histograms": histograms.split(),
+                "output_tag": output_tag,
+                "output_name": output_name,
+                "expected_outputs": [nominal, nonprompt],
+            }
+        )
+    if len(blocks) != 6 or len({block["id"] for block in blocks}) != len(blocks):
+        fail("generated rebin_fine plan does not contain six unique blocks")
+    return blocks
+
+
+def desired_state(arguments):
+    plan_path = Path(arguments[0])
+    tag, output_dir, commit, env_file, env_sha256, ttgamma, do_systs, do_np = arguments[1:]
+    return {
+        "schema_version": 1,
+        "production_profile": "rebin_fine",
+        "campaign_tag": tag,
+        "output_dir": output_dir,
+        "topeft_git_commit": commit,
+        "env_file": env_file,
+        "env_file_sha256": env_sha256,
+        "ttgamma_sample_role_policy": ttgamma,
+        "do_systs": do_systs == "true",
+        "do_np": do_np == "true",
+        "blocks": read_plan(plan_path),
+    }
+
+
+def validate_state(state, desired):
+    for key in (
+        "schema_version",
+        "production_profile",
+        "campaign_tag",
+        "output_dir",
+        "topeft_git_commit",
+        "env_file",
+        "env_file_sha256",
+        "ttgamma_sample_role_policy",
+        "do_systs",
+        "do_np",
+    ):
+        if state.get(key) != desired[key]:
+            fail(f"campaign state mismatch for {key}: recorded={state.get(key)!r} requested={desired[key]!r}")
+    recorded_blocks = state.get("blocks")
+    if not isinstance(recorded_blocks, list) or len(recorded_blocks) != len(desired["blocks"]):
+        fail("campaign state block count does not match the live six-block plan")
+    block_keys = ("id", "years", "category_groups", "histograms", "output_tag", "output_name", "expected_outputs")
+    for recorded, expected in zip(recorded_blocks, desired["blocks"]):
+        for key in block_keys:
+            if recorded.get(key) != expected[key]:
+                fail(f"campaign state mismatch for block {expected['id']} field {key}")
+        if recorded.get("status") not in VALID_STATUSES:
+            fail(f"campaign state has invalid status for block {expected['id']}: {recorded.get('status')!r}")
+
+
+mode = sys.argv[1]
+state_path = Path(sys.argv[2])
+
+if mode in {"initialize", "validate"}:
+    desired = desired_state(sys.argv[3:12])
+    readonly = len(sys.argv) > 12 and sys.argv[12] == "true"
+    if mode == "initialize":
+        if state_path.exists():
+            fail(f"refusing to overwrite existing rebin_fine campaign state: {state_path}")
+        state = desired
+        timestamp = now_utc()
+        state["created_at_utc"] = timestamp
+        state["updated_at_utc"] = timestamp
+        state["blocks"] = [
+            {**block, "status": "planned", "exit_code": None, "last_transition_utc": timestamp}
+            for block in desired["blocks"]
+        ]
+        atomic_write(state_path, state)
+    else:
+        state = load(state_path)
+        validate_state(state, desired)
+        changed = False
+        for block in state["blocks"]:
+            if block["status"] == "running":
+                if not readonly:
+                    block["status"] = "failed_or_incomplete"
+                    block["last_transition_utc"] = now_utc()
+                    block["last_transition_detail"] = "resume_observed_previous_running_state"
+                    changed = True
+        if changed:
+            state["updated_at_utc"] = now_utc()
+            atomic_write(state_path, state)
+    raise SystemExit(0)
+
+state = load(state_path)
+if mode == "status":
+    block_id = sys.argv[3]
+    for block in state.get("blocks", []):
+        if block.get("id") == block_id:
+            print(block.get("status", ""))
+            raise SystemExit(0)
+    fail(f"campaign state does not contain block {block_id}")
+
+if mode == "mark":
+    block_id, status, exit_code, detail = sys.argv[3:7]
+    if status not in VALID_STATUSES:
+        fail(f"invalid requested block status {status!r}")
+    for block in state.get("blocks", []):
+        if block.get("id") == block_id:
+            block["status"] = status
+            block["exit_code"] = None if exit_code == "none" else int(exit_code)
+            block["last_transition_utc"] = now_utc()
+            block["last_transition_detail"] = detail
+            state["updated_at_utc"] = now_utc()
+            atomic_write(state_path, state)
+            raise SystemExit(0)
+    fail(f"campaign state does not contain block {block_id}")
+
+fail(f"unsupported rebin_fine state operation {mode!r}")
+PY
+}
+
+rebin_fine_block_id() {
+  local year_expr="$1"
+  local category_set="$2"
+  local index
+
+  for index in "${!rebin_fine_block_ids[@]}"; do
+    if [[ "${year_expr}" == "${rebin_fine_plan_year_exprs[index]}" ]] \
+      && [[ "${category_set}" == "${rebin_fine_plan_category_sets[index]}" ]]; then
+      printf '%s' "${rebin_fine_block_ids[index]}"
+      return 0
+    fi
+  done
+
+  echo "ERROR: unable to resolve rebin_fine block identity for '${year_expr}' / '${category_set}'." >&2
+  return 1
+}
+
+rebin_fine_outputs_present() {
+  local block_id="$1"
+  local plan_path="$2"
+  local nominal_path
+  local nonprompt_path
+
+  IFS=$'\t' read -r _ _ _ _ _ _ nominal_path nonprompt_path < <(
+    awk -F '\t' -v block_id="${block_id}" '$1 == block_id {print; exit}' "${plan_path}"
+  )
+  [[ -n "${nominal_path}" && -n "${nonprompt_path}" && -s "${nominal_path}" && -s "${nonprompt_path}" ]]
+}
+
+rebin_fine_any_output_exists() {
+  local block_id="$1"
+  local plan_path="$2"
+  local nominal_path
+  local nonprompt_path
+
+  IFS=$'\t' read -r _ _ _ _ _ _ nominal_path nonprompt_path < <(
+    awk -F '\t' -v block_id="${block_id}" '$1 == block_id {print; exit}' "${plan_path}"
+  )
+  [[ -e "${nominal_path}" || -e "${nonprompt_path}" ]]
+}
+
+rebin_fine_assert_live_plan() {
+  local index
+  local var_set_name
+
+  if (( ${#rebin_fine_block_ids[@]} != 6 )); then
+    echo "ERROR: rebin_fine state plan must contain exactly six blocks." >&2
+    exit 1
+  fi
+
+  if (( ${#sr_year_sets[@]} != 2 )) \
+    || [[ "${sr_year_sets[0]}" != "2016APV 2016 2017 2018" ]] \
+    || [[ "${sr_year_sets[1]}" != "2022 2022EE 2023 2023BPix" ]]; then
+    echo "ERROR: live rebin_fine year packing no longer matches the frozen six-block contract." >&2
+    exit 1
+  fi
+
+  for index in 0 1 2; do
+    if [[ "${rebin_fine_category_sets[index]}" != "${rebin_fine_plan_category_sets[index]}" ]] \
+      || [[ "${rebin_fine_plan_category_sets[index]}" != "${rebin_fine_plan_category_sets[index + 3]}" ]]; then
+      echo "ERROR: live rebin_fine category packing no longer matches the frozen plan." >&2
+      exit 1
+    fi
+    var_set_name="${rebin_fine_category_var_set_names[index]}"
+    declare -n rebin_fine_var_set_ref="${var_set_name}"
+    if (( ${#rebin_fine_var_set_ref[@]} != 1 )) \
+      || [[ "${rebin_fine_var_set_ref[0]}" != "${rebin_fine_plan_var_sets[index]}" ]] \
+      || [[ "${rebin_fine_plan_var_sets[index]}" != "${rebin_fine_plan_var_sets[index + 3]}" ]]; then
+      echo "ERROR: live rebin_fine histogram packing no longer matches the frozen plan." >&2
+      unset -n rebin_fine_var_set_ref
+      exit 1
+    fi
+    unset -n rebin_fine_var_set_ref
+  done
+
+  for index in "${!rebin_fine_plan_var_sets[@]}"; do
+    if [[ " ${rebin_fine_plan_var_sets[index]} " == *" njets "* ]]; then
+      echo "ERROR: rebin_fine must not request njets." >&2
+      exit 1
+    fi
+  done
+}
+
+prepare_rebin_fine_campaign() {
+  local plan_directory
+
+  rebin_fine_assert_live_plan
+  rebin_fine_git_commit=$(git -C /users/apiccine/work/correction-lib/topeft rev-parse HEAD)
+  rebin_fine_state_path="${output_dir}/${rebin_fine_state_filename}"
+
+  if [[ "${dry_run}" == "true" ]]; then
+    rebin_fine_plan_file=$(mktemp /tmp/rebin_fine_plan.XXXXXX)
+  else
+    if [[ "${profile_resume}" == "false" ]]; then
+      mkdir -- "${output_dir}"
+    fi
+    plan_directory="${output_dir}"
+    rebin_fine_plan_file=$(mktemp "${plan_directory}/.rebin_fine_plan.XXXXXX")
+  fi
+  write_rebin_fine_plan "${rebin_fine_plan_file}"
+
+  if [[ "${profile_resume}" == "true" ]]; then
+    if [[ ! -f "${rebin_fine_state_path}" ]]; then
+      echo "ERROR: rebin_fine --resume requires campaign state: ${rebin_fine_state_path}" >&2
+      exit 1
+    fi
+    rebin_fine_state_tool validate \
+      "${rebin_fine_state_path}" \
+      "${rebin_fine_plan_file}" \
+      "${campaign_tag}" \
+      "${output_dir}" \
+      "${rebin_fine_git_commit}" \
+      "${rebin_fine_env_file}" \
+      "${rebin_fine_env_file_sha256}" \
+      "${ttgamma_sample_role_policy}" \
+      "${do_systs}" \
+      "${do_np}" \
+      "${dry_run}"
+  elif [[ "${dry_run}" == "false" ]]; then
+    rebin_fine_state_tool initialize \
+      "${rebin_fine_state_path}" \
+      "${rebin_fine_plan_file}" \
+      "${campaign_tag}" \
+      "${output_dir}" \
+      "${rebin_fine_git_commit}" \
+      "${rebin_fine_env_file}" \
+      "${rebin_fine_env_file_sha256}" \
+      "${ttgamma_sample_role_policy}" \
+      "${do_systs}" \
+      "${do_np}"
+  fi
+}
+
+cleanup_rebin_fine_plan() {
+  if [[ -n "${rebin_fine_plan_file:-}" && -f "${rebin_fine_plan_file}" ]]; then
+    rm -f -- "${rebin_fine_plan_file}"
   fi
 }
 
@@ -525,6 +995,8 @@ record_block_result() {
     SKIPPED)
       run_skipped_count=$((run_skipped_count + 1))
       ;;
+    DRY_RUN)
+      ;;
     *)
       echo "ERROR: unknown block status '${status}'." >&2
       exit 1
@@ -608,6 +1080,10 @@ build_common_command_options() {
     --all-analysis
   )
 
+  if [[ "${production_profile}" == "rebin_fine" ]]; then
+    cmd_ref+=(--env-file "${rebin_fine_env_file}")
+  fi
+
   if [[ "${split_lep_flavor}" == "true" ]]; then
     cmd_ref+=(--split-lep-flavor)
   fi
@@ -654,7 +1130,7 @@ run_cr_block() {
   echo "Dry run: ${dry_run}"
   echo "----------------------------------------"
 
-  if [[ "${dry_run}" == "false" ]]; then
+  if [[ "${dry_run}" == "false" && "${production_profile}" != "rebin_fine" ]]; then
     clean_env_cache
   fi
 
@@ -720,6 +1196,8 @@ run_sr_block() {
   local end_epoch
   local duration_seconds
   local exit_code
+  local rebin_fine_block=""
+  local rebin_fine_status=""
 
   read -r -a years <<< "${year_expr}"
   read -r -a vars <<< "${var_set}"
@@ -727,6 +1205,46 @@ run_sr_block() {
   cat_tag=$(join_by - "${cats[@]}")
   var_tag=$(join_by - "${vars[@]}")
   pkl_tag="${sr_pkl_base_tag}_${cat_tag}_${var_tag}"
+
+  if [[ "${production_profile}" == "rebin_fine" ]]; then
+    rebin_fine_block=$(rebin_fine_block_id "${year_expr}" "${cats[*]}")
+    if [[ "${dry_run}" == "true" && "${profile_resume}" == "false" ]]; then
+      rebin_fine_status="planned"
+    else
+      rebin_fine_status=$(rebin_fine_state_tool status "${rebin_fine_state_path}" "${rebin_fine_block}")
+    fi
+
+    if [[ "${rebin_fine_status}" == "success" ]]; then
+      if rebin_fine_outputs_present "${rebin_fine_block}" "${rebin_fine_plan_file}"; then
+        echo "----------------------------------------"
+        echo "Skipping validated rebin_fine block: ${rebin_fine_block}"
+        echo "Campaign state and both expected artifacts are present."
+        echo "----------------------------------------"
+        record_block_result \
+          "SKIPPED" "SR" "${year_expr}" "${cats[*]}" "${vars[*]}" \
+          "${pkl_tag}" "0" "0"
+        return 0
+      fi
+      if [[ "${dry_run}" == "false" ]]; then
+        rebin_fine_state_tool mark \
+          "${rebin_fine_state_path}" "${rebin_fine_block}" \
+          "failed_or_incomplete" "none" "success_state_missing_expected_output"
+      fi
+      echo "ERROR: rebin_fine state marks ${rebin_fine_block} successful, but an expected artifact is missing or empty." >&2
+      exit 1
+    fi
+
+    if rebin_fine_any_output_exists "${rebin_fine_block}" "${rebin_fine_plan_file}"; then
+      echo "ERROR: rebin_fine block ${rebin_fine_block} is ${rebin_fine_status}, but an expected output path already exists. Refusing ambiguous overwrite." >&2
+      exit 1
+    fi
+
+    if [[ "${dry_run}" == "false" ]]; then
+      rebin_fine_state_tool mark \
+        "${rebin_fine_state_path}" "${rebin_fine_block}" \
+        "running" "none" "child_command_started"
+    fi
+  fi
 
   echo "----------------------------------------"
   echo "Mode: SR"
@@ -740,7 +1258,7 @@ run_sr_block() {
   echo "Dry run: ${dry_run}"
   echo "----------------------------------------"
 
-  if [[ "${dry_run}" == "false" ]]; then
+  if [[ "${dry_run}" == "false" && "${production_profile}" != "rebin_fine" ]]; then
     clean_env_cache
   fi
 
@@ -771,12 +1289,37 @@ run_sr_block() {
   end_epoch=$(date +%s)
   duration_seconds=$((end_epoch - start_epoch))
 
-  if (( exit_code == 0 )); then
+  if [[ "${production_profile}" == "rebin_fine" && "${dry_run}" == "true" ]]; then
+    record_block_result \
+      "DRY_RUN" "SR" "${year_expr}" "${cats[*]}" "${vars[*]}" \
+      "${pkl_tag}" "${exit_code}" "${duration_seconds}"
+    echo "${year_expr} rebin_fine dry-run resolved for ${cat_tag} / ${var_tag}"
+  elif (( exit_code == 0 )) \
+    && [[ "${production_profile}" == "rebin_fine" ]] \
+    && ! rebin_fine_outputs_present "${rebin_fine_block}" "${rebin_fine_plan_file}"; then
+    rebin_fine_state_tool mark \
+      "${rebin_fine_state_path}" "${rebin_fine_block}" \
+      "failed_or_incomplete" "${exit_code}" "child_exit_zero_missing_expected_output"
+    record_block_result \
+      "FAILED" "SR" "${year_expr}" "${cats[*]}" "${vars[*]}" \
+      "${pkl_tag}" "${exit_code}" "${duration_seconds}"
+    echo "ERROR: ${year_expr} SR returned zero for ${cat_tag} / ${var_tag}, but expected rebin_fine artifacts are missing or empty." >&2
+  elif (( exit_code == 0 )); then
+    if [[ "${production_profile}" == "rebin_fine" ]]; then
+      rebin_fine_state_tool mark \
+        "${rebin_fine_state_path}" "${rebin_fine_block}" \
+        "success" "${exit_code}" "child_exit_zero_expected_outputs_present"
+    fi
     record_block_result \
       "SUCCESS" "SR" "${year_expr}" "${cats[*]}" "${vars[*]}" \
       "${pkl_tag}" "${exit_code}" "${duration_seconds}"
     echo "${year_expr} SR done for ${cat_tag} / ${var_tag}"
   else
+    if [[ "${production_profile}" == "rebin_fine" ]]; then
+      rebin_fine_state_tool mark \
+        "${rebin_fine_state_path}" "${rebin_fine_block}" \
+        "failed_or_incomplete" "${exit_code}" "child_exit_nonzero"
+    fi
     record_block_result \
       "FAILED" "SR" "${year_expr}" "${cats[*]}" "${vars[*]}" \
       "${pkl_tag}" "${exit_code}" "${duration_seconds}"
@@ -831,6 +1374,7 @@ assert_boolean "${do_systs}" "do_systs"
 assert_boolean "${do_np}" "do_np"
 assert_boolean "${split_lep_flavor}" "split_lep_flavor"
 assert_boolean "${require_recovered_run3_offz_np}" "require_recovered_run3_offz_np"
+assert_boolean "${profile_resume}" "profile_resume"
 
 assert_parallel_array_lengths \
   "CR category-to-variable mapping" \
@@ -904,6 +1448,13 @@ echo "do_systs: ${do_systs}"
 echo "do_np: ${do_np}"
 echo "split_lep_flavor: ${split_lep_flavor}"
 echo "require_recovered_run3_offz_np: ${require_recovered_run3_offz_np}"
+if [[ "${production_profile}" == "rebin_fine" ]]; then
+  echo "resume: ${profile_resume}"
+  echo "env_file: ${rebin_fine_env_file}"
+  echo "env_file_sha256: ${rebin_fine_env_file_sha256}"
+  echo "environment_policy: explicit_single_archive"
+  echo "campaign_state: ${output_dir}/${rebin_fine_state_filename}"
+fi
 print_var_sets "CR non-tau" "${cr_non_tau_var_sets[@]}"
 print_var_sets "CR tau" "${cr_tau_var_sets[@]}"
 print_var_sets "SR with ptz_wtau" "${sr_with_ptz_wtau_var_sets[@]}"
@@ -948,6 +1499,11 @@ EOF
     exit 1
     ;;
 esac
+
+if [[ "${production_profile}" == "rebin_fine" ]]; then
+  trap cleanup_rebin_fine_plan EXIT
+  prepare_rebin_fine_campaign
+fi
 
 ###############################################################################
 # Main CR production
