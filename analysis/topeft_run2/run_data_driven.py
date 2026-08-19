@@ -873,17 +873,18 @@ def main(argv: Optional[List[str]] = None) -> int:
                 "run_data_driven requires a processor_output input artifact; got "
                 f"{input_sidecar['artifact']['artifact_kind']!r} for '{input_pkl}'."
             )
-        validate_requested_product_input(
+        resolution = validate_requested_product_input(
             input_sidecar,
             artifact_kind="flips_output" if args.only_flips else "nonprompt_output",
         )
+        effective_input_sidecar = resolution["effective_sidecar"]
 
         def _write_payload(staged_path: str) -> Dict[str, Any]:
             transformation_context = _finalize_histograms(
                 input_pkl,
                 output_pkl,
                 serialization_path=staged_path,
-                input_sidecar=input_sidecar,
+                input_sidecar=effective_input_sidecar,
                 **finalize_kwargs,
             )
             assert transformation_context is not None
@@ -893,9 +894,9 @@ def main(argv: Optional[List[str]] = None) -> int:
             output_pkl,
             payload_writer=_write_payload,
             artifact_kind="flips_output" if args.only_flips else "nonprompt_output",
-            sumw2_storage_provenance=input_sidecar["sumw2_storage_provenance"],
+            sumw2_storage_provenance=effective_input_sidecar["sumw2_storage_provenance"],
             lineage_inputs=[lineage_input_from_sidecar(input_sidecar)],
-            input_sidecar=input_sidecar,
+            input_sidecar=effective_input_sidecar,
         )
 
     return 0

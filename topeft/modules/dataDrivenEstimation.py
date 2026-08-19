@@ -7,13 +7,16 @@ import cloudpickle
 import numpy as np
 from topcoffea.modules.hist_utils import iterate_hist_from_pkl
 
-from topcoffea.modules.get_param_from_jsons import GetParam
 from topeft.modules.axes import info_2d as axes_info_2d
 from topeft.modules.data_driven_products import (
     data_driven_product_error,
     generated_process_name,
     parse_process_name,
     validate_requested_product_input,
+)
+from topeft.modules.nonprompt_policy import (
+    certify_active_nonprompt_policy,
+    nonprompt_policy_error,
 )
 from topeft.modules.histogram_artifact import (
     FLIPS_APPLICATION_REGION,
@@ -29,8 +32,6 @@ from topeft.modules.nominal_schema import (
     SCALAR_NOMINAL_SUFFIX,
     evaluate_eft_histogram_at_wc,
 )
-from topeft.modules.paths import topeft_path
-get_te_param = GetParam(topeft_path("params/params.json"))
 
 
 def data_driven_product_for_application_region(application_region):
@@ -69,7 +70,9 @@ class DataDrivenProducer:
         if artifact_kind not in {"nonprompt_output", "flips_output"}:
             raise RuntimeError(f"Unknown data-driven artifact kind {artifact_kind!r}.")
         self._artifact_kind = artifact_kind
-        self.promptSubtractionSamples=get_te_param('prompt_subtraction_samples')
+        self._resolved_input_sidecar = None
+        self._nonprompt_policy_migration = None
+        self._legacy_policy_cache = {}
         self._dd_report_by_key = {} if dd_report else None
         self._input_artifact_validation = None
         if self._is_histogram_path(self._input_source):
@@ -85,10 +88,12 @@ class DataDrivenProducer:
                     stacklevel=2,
                 )
             elif self._input_artifact_validation["metadata"]:
-                validate_requested_product_input(
+                resolution = validate_requested_product_input(
                     self._input_artifact_validation["metadata"],
                     artifact_kind=artifact_kind,
                 )
+                self._resolved_input_sidecar = resolution["effective_sidecar"]
+                self._nonprompt_policy_migration = resolution["migration"]
         self._transformation_role_context = self._initialize_transformation_role_context()
         (
             self._eft_prompt_processes_by_family,
@@ -132,7 +137,7 @@ class DataDrivenProducer:
     def _initialize_transformation_role_context(self):
         if self._input_artifact_validation is None:
             return None
-        input_sidecar = self._input_artifact_validation["metadata"]
+        input_sidecar = self._resolved_input_sidecar
         if not input_sidecar or "sumw2_content_manifest" not in input_sidecar:
             return None
         families = {}
@@ -155,9 +160,7 @@ class DataDrivenProducer:
 
     def _initialize_eft_prompt_projection_context(self):
         input_sidecar = (
-            self._input_artifact_validation["metadata"]
-            if self._input_artifact_validation is not None
-            else None
+            self._resolved_input_sidecar
         )
         empty_context = {
             "mode": "sm_point",
@@ -365,6 +368,21 @@ class DataDrivenProducer:
             process_metadata[process_name] = self._parse_process(process_name)
         return process_metadata
 
+    def _legacy_resolved_prompt_processes(self, process_metadata):
+        process_labels = tuple(sorted(str(process) for process in process_metadata))
+        if process_labels not in self._legacy_policy_cache:
+            try:
+                certificate = certify_active_nonprompt_policy(
+                    process_labels,
+                    configuration_source="legacy_histogram_process_axis",
+                )
+            except nonprompt_policy_error as error:
+                raise RuntimeError(str(error)) from error
+            self._legacy_policy_cache[process_labels] = set(
+                certificate.resolved_prompt_process_set
+            )
+        return self._legacy_policy_cache[process_labels]
+
     @staticmethod
     def _axis_labels(histo, axis_name):
         try:
@@ -505,9 +523,7 @@ class DataDrivenProducer:
         if family is None and key.endswith("_sumw2"):
             family = key[: -len("_sumw2")]
         input_sidecar = (
-            self._input_artifact_validation["metadata"]
-            if self._input_artifact_validation is not None
-            else None
+            self._resolved_input_sidecar
         )
         if input_sidecar is None or "resolved_data_driven_contract" not in input_sidecar:
             return {
@@ -833,13 +849,16 @@ class DataDrivenProducer:
                 else:
                     newNameDictData = defaultdict(list)
                     newNameDictNoData = defaultdict(list)
+                    resolved_prompt_processes = self._legacy_resolved_prompt_processes(
+                        process_metadata
+                    )
                     for process_name in hAR.axes["process"]:
                         sampleName, year = process_metadata[process_name]
 
                         nonprompt_name = self._nonprompt_process_name(year)
                         if self.dataName == sampleName:
                             newNameDictData[nonprompt_name].append(process_name)
-                        elif sampleName in self.promptSubtractionSamples:
+                        elif str(process_name) in resolved_prompt_processes:
                             newNameDictNoData[nonprompt_name].append(process_name)
                         else:
                             pass
@@ -962,9 +981,7 @@ class DataDrivenProducer:
         if self.outHist is None:
             self.DDFakes()
         input_sidecar = (
-            self._input_artifact_validation["metadata"]
-            if self._input_artifact_validation is not None
-            else None
+            self._resolved_input_sidecar
         )
         if input_sidecar is not None:
             write_histogram_artifact(

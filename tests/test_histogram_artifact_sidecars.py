@@ -65,7 +65,7 @@ _POLICY_SAMPLES = {
         "WCnames": [],
     },
     "signal_dataset": {
-        "histAxisName": "signal_centralUL18",
+        "histAxisName": "WWTo2L2Nu_centralUL18",
         "isData": False,
         "WCnames": ["ctG"],
     },
@@ -183,8 +183,8 @@ def _processor_payload(*, channel="3l"):
         ("TTTo2L2Nu_centralUL18", "isAR_3l", 9.0),
         ("dataUL18", "isAR_2lSS_OS", 16.0),
         ("TTTo2L2Nu_centralUL18", "isSR_3l", 4.0),
-        ("signal_centralUL18", "isAR_3l", 81.0),
-        ("signal_centralUL18", "isSR_3l", 25.0),
+        ("WWTo2L2Nu_centralUL18", "isAR_3l", 81.0),
+        ("WWTo2L2Nu_centralUL18", "isSR_3l", 25.0),
     )
     return {
         scalar_nominal_key("njets"): _fill_sparse(
@@ -192,8 +192,8 @@ def _processor_payload(*, channel="3l"):
         ),
         eft_nominal_key("njets"): _fill_eft(
             (
-                ("signal_centralUL18", "isAR_3l", 9.0),
-                ("signal_centralUL18", "isSR_3l", 5.0),
+                ("WWTo2L2Nu_centralUL18", "isAR_3l", 9.0),
+                ("WWTo2L2Nu_centralUL18", "isSR_3l", 5.0),
             ),
             channel=channel,
         ),
@@ -240,7 +240,7 @@ def _write_processor(path, policy, products_block=None, source_payload=None):
             "WCnames": [],
         },
         "signal_dataset": {
-            "histAxisName": "signal_centralUL18",
+            "histAxisName": "WWTo2L2Nu_centralUL18",
             "isData": False,
             "WCnames": ["ctG"],
         },
@@ -294,8 +294,12 @@ def _write_disjoint_source_processor(
 ):
     if prompt_contribution is None:
         prompt_contribution = contribution
-    data_process = f"{process_prefix}data{year}"
-    prompt_process = f"{process_prefix}prompt{year}"
+    data_process = f"data{year}"
+    prompt_process = (
+        f"TTTo2L2Nu_central{year}"
+        if year.startswith("UL")
+        else f"TTto2L2Nu_central{year}"
+    )
     samples = {
         f"{process_prefix}_data_dataset": {
             "histAxisName": data_process,
@@ -998,9 +1002,12 @@ def test_processor_sidecar_uses_family_free_generated_output_contract(
     path = tmp_path / "processor.pkl.gz"
     sidecar = _write_processor(path, policy)
     contract = sidecar["resolved_data_driven_contract"]
-    assert contract["contract_version"] == 3
+    assert contract["contract_version"] == 4
     assert set(contract) == {
         "contract_version",
+        "nonprompt_policy",
+        "resolved_prompt_process_set",
+        "policy_migration",
         "required_prompt_signal_processes",
         "products",
     }
@@ -1091,7 +1098,7 @@ def test_processor_sidecar_rejects_generated_output_contract_tampering(
         validate_histogram_artifact(path)
 
 
-def test_contract_version_one_processor_reopens_but_cannot_transform(
+def test_contract_version_one_processor_reresolves_before_transform(
     tmp_path, policy
 ):
     input_path = tmp_path / "processor_v1.pkl.gz"
@@ -1146,21 +1153,20 @@ def test_contract_version_one_processor_reopens_but_cannot_transform(
     assert reopened["metadata"]["resolved_data_driven_contract"][
         "contract_version"
     ] == 1
-    with pytest.raises(
-        ValueError,
-        match=r"contract_version=1.*read-only reopening.*Regenerate.*run_analysis",
-    ):
-        run_data_driven.main(
-            [
-                "--input-pkl",
-                str(input_path),
-                "--output-pkl",
-                str(output_path),
-                "--quiet",
-            ]
-        )
-    assert not output_path.exists()
-    assert not metadata_sidecar_path(output_path).exists()
+    run_data_driven.main(
+        [
+            "--input-pkl",
+            str(input_path),
+            "--output-pkl",
+            str(output_path),
+            "--quiet",
+        ]
+    )
+    migrated = read_histogram_sidecar(output_path)[
+        "resolved_data_driven_contract"
+    ]
+    assert migrated["contract_version"] == 4
+    assert migrated["policy_migration"]["previous_contract_version"] == 1
 
 
 def test_nonprompt_transformation_uses_certified_multi_year_output_map(
@@ -1175,7 +1181,7 @@ def test_nonprompt_transformation_uses_certified_multi_year_output_map(
             "WCnames": [],
         },
         "ignored_17": {
-            "histAxisName": "other_centralUL17",
+            "histAxisName": "WWTo2L2Nu_centralUL17",
             "isData": False,
             "WCnames": [],
         },
@@ -1211,13 +1217,13 @@ def test_nonprompt_transformation_uses_certified_multi_year_output_map(
     scalar_entries = (
         ("dataUL17", "isAR_3l", 10.0),
         ("TTTo2L2Nu_centralUL17", "isAR_3l", 3.0),
-        ("other_centralUL17", "isAR_3l", 50.0),
+        ("WWTo2L2Nu_centralUL17", "isAR_3l", 50.0),
         ("dataUL18", "isAR_3l", 4.0),
     )
     companion_entries = (
         ("dataUL17", "isAR_3l", 100.0),
         ("TTTo2L2Nu_centralUL17", "isAR_3l", 9.0),
-        ("other_centralUL17", "isAR_3l", 2500.0),
+        ("WWTo2L2Nu_centralUL17", "isAR_3l", 2500.0),
         ("dataUL18", "isAR_3l", 16.0),
     )
     input_path = tmp_path / "multi_year_processor.pkl.gz"
@@ -1264,7 +1270,17 @@ def test_nonprompt_transformation_uses_certified_multi_year_output_map(
     assert sidecar["transformation_contract"]["families"]["njets"][
         "generated_nonprompt_processes"
     ] == ["nonpromptUL17", "nonpromptUL18"]
-    assert sidecar["resolved_data_driven_contract"] == contract
+    migrated_contract = sidecar["resolved_data_driven_contract"]
+    assert migrated_contract["resolved_prompt_process_set"] == contract[
+        "resolved_prompt_process_set"
+    ]
+    assert migrated_contract["policy_migration"] == {
+        "status": "current_contract_revalidated",
+        "previous_contract_version": 4,
+        "serialized_prompt_process_set": ["TTTo2L2Nu_centralUL17"],
+        "added_prompt_processes": [],
+        "removed_prompt_processes": [],
+    }
 
 
 @pytest.mark.parametrize("mutation", ["missing_generated_nominal", "extra_generated_year"])
@@ -1482,11 +1498,11 @@ def test_processor_artifact_is_automatic_self_describing_and_identity_bound(
         "TTTo2L2Nu_centralUL18",
         "dataUL18",
     ]
-    assert family["eft_nominal_processes"] == ["signal_centralUL18"]
+    assert family["eft_nominal_processes"] == ["WWTo2L2Nu_centralUL18"]
     assert family["sumw2_processes"] == [
         "TTTo2L2Nu_centralUL18",
+        "WWTo2L2Nu_centralUL18",
         "dataUL18",
-        "signal_centralUL18",
     ]
     assert family["required_sumw2_processes"] == family["sumw2_processes"]
     assert validate_histogram_artifact(path)["metadata"] == sidecar
@@ -1561,13 +1577,13 @@ def test_nonprompt_persisted_flow_reopens_and_preserves_lineage(tmp_path, policy
         "nonpromptUL18",
     ]
     assert _processes(merged[eft_nominal_key("njets")]) == [
-        "signal_centralUL18"
+        "WWTo2L2Nu_centralUL18"
     ]
     assert _processes(merged["njets_sumw2"]) == [
         "TTTo2L2Nu_centralUL18",
+        "WWTo2L2Nu_centralUL18",
         "flipsUL18",
         "nonpromptUL18",
-        "signal_centralUL18",
     ]
     scalar_view = evaluate_nominal_at_wc(merged, "njets", {})
     assert "nonpromptUL18" in scalar_view.axes["process"]
@@ -1654,26 +1670,26 @@ def test_flips_persisted_flow_has_separate_stage_contract(tmp_path, policy):
     assert report["artifact_kind"] == "flips_output"
     assert _processes(merged[scalar_nominal_key("njets")]) == ["flipsUL18"]
     assert _processes(merged["njets_sumw2"]) == [
+        "WWTo2L2Nu_centralUL18",
         "flipsUL18",
-        "signal_centralUL18",
     ]
     assert _processes(merged[eft_nominal_key("njets")]) == [
-        "signal_centralUL18"
+        "WWTo2L2Nu_centralUL18"
     ]
     assert sum(
         float(np.asarray(values).sum())
         for values in merged[eft_nominal_key("njets")].eval({}).values()
     ) == pytest.approx(6.25)
     family = sidecar["sumw2_content_manifest"]["families"]["njets"]
-    assert family["sumw2_processes"] == ["flipsUL18", "signal_centralUL18"]
+    assert family["sumw2_processes"] == ["WWTo2L2Nu_centralUL18", "flipsUL18"]
     assert family["required_sumw2_processes"] == [
+        "WWTo2L2Nu_centralUL18",
         "flipsUL18",
-        "signal_centralUL18",
     ]
     scalar_view = evaluate_nominal_at_wc(merged, "njets", {})
     assert sorted(str(process) for process in scalar_view.axes["process"]) == [
+        "WWTo2L2Nu_centralUL18",
         "flipsUL18",
-        "signal_centralUL18",
     ]
     datacard_view = materialize_legacy_histogram_dict(
         merged,
@@ -1927,6 +1943,7 @@ def test_private_and_central_profile_transformed_artifacts_do_not_merge(tmp_path
             samples=samples,
             runtime_families=("njets",),
             metadata_path=f"{profile}.yml",
+            required_prompt_signal_processes=(signal_process,),
         )
         requested, contract = certify_data_driven_preflight(products, policy)
         processor_path = tmp_path / f"{profile}_processor.pkl.gz"
@@ -2102,7 +2119,7 @@ def test_transformed_missing_and_unexpected_companions_are_actionable(
 @pytest.mark.parametrize(
     "missing_process",
     [
-        "signal_centralUL18",
+        "WWTo2L2Nu_centralUL18",
         "TTTo2L2Nu_centralUL18",
         "nonpromptUL18",
         "flipsUL18",
@@ -2129,9 +2146,9 @@ def test_independent_nonprompt_contract_rejects_partial_companion_loss_before_pu
     )
     assert required["njets"] == [
         "TTTo2L2Nu_centralUL18",
+        "WWTo2L2Nu_centralUL18",
         "flipsUL18",
         "nonpromptUL18",
-        "signal_centralUL18",
     ]
     assert contract["families"]["njets"]["consumed_source_processes"] == [
         "dataUL18"
@@ -2169,7 +2186,7 @@ def test_pre_product_contract_cannot_authorize_new_transformed_requirements(tmp_
             "mode": "full_custom",
             "rules": [
                 {
-                    "process_names": ["signal_centralUL18"],
+                    "process_names": ["WWTo2L2Nu_centralUL18"],
                     "variables": ["njets"],
                 }
             ],
@@ -2186,7 +2203,7 @@ def test_pre_product_contract_cannot_authorize_new_transformed_requirements(tmp_
                 "WCnames": [],
             },
             "signal_dataset": {
-                "histAxisName": "signal_centralUL18",
+                "histAxisName": "WWTo2L2Nu_centralUL18",
                 "isData": False,
                 "WCnames": ["ctG"],
             },
@@ -2199,7 +2216,7 @@ def test_pre_product_contract_cannot_authorize_new_transformed_requirements(tmp_
     source_payload = _processor_payload()
     source_payload["njets_sumw2"] = _fill_sparse(
         "njets_sumw2",
-        (("signal_centralUL18", "isSR_3l", 25.0),),
+        (("WWTo2L2Nu_centralUL18", "isSR_3l", 25.0),),
     )
     source_path = tmp_path / "selective_processor.pkl.gz"
     source_sidecar = write_histogram_artifact(
@@ -2392,18 +2409,18 @@ def test_transformed_required_tampering_cannot_authorize_partial_payload(tmp_pat
     )
     payload = get_hist_from_pkl(str(output_path))
     payload["njets_sumw2"] = payload["njets_sumw2"].remove(
-        "process", ["signal_centralUL18"]
+        "process", ["WWTo2L2Nu_centralUL18"]
     )
     _write_raw(output_path, payload)
     sidecar_path = metadata_sidecar_path(output_path)
     sidecar = json.loads(sidecar_path.read_text(encoding="utf-8"))
     family = sidecar["sumw2_content_manifest"]["families"]["njets"]
-    family["sumw2_processes"].remove("signal_centralUL18")
-    family["required_sumw2_processes"].remove("signal_centralUL18")
+    family["sumw2_processes"].remove("WWTo2L2Nu_centralUL18")
+    family["required_sumw2_processes"].remove("WWTo2L2Nu_centralUL18")
     sidecar_path.write_text(json.dumps(sidecar), encoding="utf-8")
     with pytest.raises(
         histogram_artifact_error,
-        match="required_sumw2_processes disagree.*signal_centralUL18",
+        match="required_sumw2_processes disagree.*WWTo2L2Nu_centralUL18",
     ):
         validate_histogram_artifact(output_path)
 

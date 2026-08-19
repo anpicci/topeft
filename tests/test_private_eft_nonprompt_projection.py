@@ -39,8 +39,8 @@ from topeft.modules.sumw2_policy import (
 
 
 PRIVATE_PROCESS = "tllq_privateUL18"
-CENTRAL_EQUIVALENT_PROCESS = "central_equivalentUL18"
-UNSELECTED_EFT_PROCESS = "unselected_eftUL18"
+CENTRAL_EQUIVALENT_PROCESS = "tZq_centralUL18"
+UNSELECTED_EFT_PROCESS = "WWTo2L2Nu_centralUL18"
 
 
 def _axes(dense_name, *, bins=1):
@@ -390,7 +390,10 @@ def test_private_eft_projection_streaming_roundtrip(tmp_path):
 @pytest.mark.parametrize(
     "mutation,match",
     [
-        ("missing_eft_source", "missing_source_nominal.*tllq_privateUL18"),
+        (
+            "missing_eft_source",
+            "omit active profile-required signals.*tllq_privateUL18",
+        ),
         ("duplicate_source", "duplicate process labels.*tllq_privateUL18"),
         (
             "missing_companion",

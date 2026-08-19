@@ -38,6 +38,10 @@ from topeft.modules.nominal_schema import (
     canonicalize_nominal_keys,
     validate_nominal_mapping,
 )
+from topeft.modules.nonprompt_policy import (
+    certify_active_nonprompt_policy,
+    nonprompt_policy_error,
+)
 from topeft.modules.axes import info as axes_info
 from topeft.modules.axes import info_2d as axes_info_2d
 from topeft.modules.sumw2_policy import (
@@ -77,6 +81,25 @@ WGT_VAR_LST = [
     #"nSumOfWeights_renormfactUp",
     #"nSumOfWeights_renormfactDown",
 ]
+
+
+def _certify_nonprompt_policy_before_executor(
+    samples,
+    *,
+    nonprompt_enabled,
+    configuration_source,
+):
+    """Hard-fail the active nonprompt universe before processor/executor setup."""
+
+    if not nonprompt_enabled:
+        return None
+    try:
+        return certify_active_nonprompt_policy(
+            samples,
+            configuration_source=configuration_source,
+        )
+    except nonprompt_policy_error as error:
+        raise SystemExit(str(error)) from None
 
 def _ensure_topcoffea_data_available(skip_check=False):
     if skip_check:
@@ -1772,6 +1795,21 @@ if __name__ == "__main__":
     except production_sample_profile_error as error:
         raise SystemExit(str(error)) from None
 
+    configured_nonprompt_enabled = (
+        bool(
+            data_driven_products_config.get("nonprompt", {}).get("enabled")
+        )
+        if data_driven_products_present
+        and isinstance(data_driven_products_config, Mapping)
+        and isinstance(data_driven_products_config.get("nonprompt"), Mapping)
+        else bool(do_np)
+    )
+    certified_nonprompt_policy = _certify_nonprompt_policy_before_executor(
+        samplesdict,
+        nonprompt_enabled=configured_nonprompt_enabled,
+        configuration_source=args.options or "<command-line/default>",
+    )
+
     resolved_data_driven_products = resolve_data_driven_products(
         data_driven_products_config,
         data_driven_products_present=data_driven_products_present,
@@ -1782,8 +1820,9 @@ if __name__ == "__main__":
         required_prompt_signal_processes=derive_required_prompt_signal_processes(
             active_universe.processes,
             signal_sample_profile=sumw2_mode.signal_sample_profile,
-            nonprompt_enabled=True,
+            nonprompt_enabled=configured_nonprompt_enabled,
         ),
+        nonprompt_policy=certified_nonprompt_policy,
     )
     if do_np and not resolved_data_driven_products.enabled_products():
         raise ValueError(

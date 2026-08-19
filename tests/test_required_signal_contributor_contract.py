@@ -176,30 +176,24 @@ def test_implicit_metadata_includes_active_profile_signal(
         ("production_central", "tZq_centralUL18", ()),
     ],
 )
-def test_explicit_signal_omission_reports_e007_before_processing(
+def test_explicit_signal_omission_fails_at_canonical_policy_gate(
     mode, signal_process, signal_wc_names
 ):
-    universe, products, policy = _resolve_case(
-        mode,
-        signal_process,
-        signal_wc_names=signal_wc_names,
-        product_block=_explicit_products(
-            prompt_processes=("TTTo2L2Nu_centralUL18",)
-        ),
-    )
-    with pytest.raises(production_sample_profile_error) as captured:
-        certify_production_sample_contract(universe, policy, products)
+    with pytest.raises(data_driven_product_error) as captured:
+        _resolve_case(
+            mode,
+            signal_process,
+            signal_wc_names=signal_wc_names,
+            product_block=_explicit_products(
+                prompt_processes=("TTTo2L2Nu_centralUL18",)
+            ),
+        )
     message = str(captured.value)
     for expected in (
-        "SUMW2-PROFILE-E007",
-        f"resolved_mode='{mode}'",
-        "expected_signal_profile=",
-        "sr_cfg_identities=",
-        "metadata_source='explicit'",
-        "active_required_prompt_signals=",
-        "resolved_contributor_processes=",
+        "NONPROMPT-POLICY-E009",
+        "cannot override the canonical resolved prompt process set",
+        "missing=",
         signal_process,
-        "Recommended correction:",
     ):
         assert expected in message
 
@@ -240,6 +234,7 @@ def test_actual_2022_cfgs_derive_only_evidenced_required_signals():
     ) == (
         "tHq_private2022",
         "tllq_private2022",
+        "ttll_private2022",
         "ttlnu_private2022",
         "tttt_private2022",
     )
@@ -429,7 +424,10 @@ def test_required_signal_provenance_rejects_list_and_contributor_tampering():
     ]
     output["source_contributors"]["prompt_mc"].remove(signal_process)
     output["required_source_sumw2_processes"].remove(signal_process)
-    with pytest.raises(data_driven_product_error, match="omit.*required"):
+    with pytest.raises(
+        data_driven_product_error,
+        match="Nominal prompt contributors.*certified resolved prompt process set differ",
+    ):
         validate_serialized_data_driven_contract(
             requested,
             missing_contributor,

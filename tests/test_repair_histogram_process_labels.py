@@ -119,13 +119,11 @@ def _write_synthetic_artifact(path: Path, *, include_collision=False):
     )
     products = resolve_data_driven_products(
         {
-            "nonprompt": {
-                "enabled": True,
-                "source_contributors": {
-                    "data": {"process_names": list(DATA_LABELS)},
-                    "prompt_mc": {"process_names": list(OLD_LABELS)},
-                },
-            },
+            # These fixtures intentionally contain process labels that predate
+            # the canonical policy.  Keep data-driven production disabled so
+            # the repair tool, rather than fresh-production certification,
+            # remains the component under test.
+            "nonprompt": {"enabled": False},
             "flips": {"enabled": False},
         },
         data_driven_products_present=True,
@@ -196,7 +194,6 @@ def test_exact_repair_is_dry_run_first_and_write_is_copy_only(tmp_path):
     assert {
         "sumw2_storage_provenance",
         "sumw2_content_manifest",
-        "resolved_data_driven_contract",
     } <= set(dry_run[0]["sidecar_surfaces_affected"])
     assert dry_run[0]["write_performed"] is False
     assert not output_dir.exists()

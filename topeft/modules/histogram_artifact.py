@@ -1836,6 +1836,11 @@ def _compose_resolved_data_driven_contract(
                 "Legacy resolved data-driven contracts must remain identical across fragments."
             )
         return copy.deepcopy(dict(first))
+    if all(
+        _canonical_identity(contract) == _canonical_identity(first)
+        for contract in contracts[1:]
+    ):
+        return copy.deepcopy(dict(first))
 
     products = {}
     for product_name, first_product in first["products"].items():
@@ -1900,6 +1905,67 @@ def _compose_resolved_data_driven_contract(
         }
     return {
         "contract_version": first["contract_version"],
+        "nonprompt_policy": (
+            {
+                "schema_version": first["nonprompt_policy"]["schema_version"],
+                "configuration_source": "merged_histogram_fragments",
+                "resolved_prompt_process_set": sorted(
+                    {
+                        process
+                        for contract in contracts
+                        for process in contract["resolved_prompt_process_set"]
+                    }
+                ),
+                "eft_prompt_processes": sorted(
+                    {
+                        process
+                        for contract in contracts
+                        for process in contract["nonprompt_policy"][
+                            "eft_prompt_processes"
+                        ]
+                    }
+                ),
+                "explicit_exclusions": sorted(
+                    {
+                        process
+                        for contract in contracts
+                        for process in contract["nonprompt_policy"][
+                            "explicit_exclusions"
+                        ]
+                    }
+                ),
+                "resolutions": sorted(
+                    {
+                        _canonical_identity(resolution): resolution
+                        for contract in contracts
+                        for resolution in contract["nonprompt_policy"]["resolutions"]
+                    }.values(),
+                    key=lambda resolution: resolution["raw_process_label"],
+                ),
+            }
+            if first["nonprompt_policy"] is not None
+            else None
+        ),
+        "resolved_prompt_process_set": sorted(
+            {
+                process
+                for contract in contracts
+                for process in contract["resolved_prompt_process_set"]
+            }
+        ),
+        "policy_migration": {
+            "status": "merged_resolution",
+            "previous_contract_version": None,
+            "serialized_prompt_process_set": [],
+            "added_prompt_processes": sorted(
+                {
+                    process
+                    for contract in contracts
+                    for process in contract["resolved_prompt_process_set"]
+                }
+            ),
+            "removed_prompt_processes": [],
+        },
         "required_prompt_signal_processes": sorted(
             {
                 process
