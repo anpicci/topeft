@@ -16,7 +16,11 @@ import cloudpickle
 
 from topeft.modules.data_driven_products import (
     CANONICAL_DATA_DRIVEN_YEARS,
+    FLIPS_OUTPUT_ARTIFACT_KIND,
+    NONPROMPT_NOMINAL_REFERENCE_ARTIFACT_KIND,
+    NONPROMPT_OUTPUT_ARTIFACT_KIND,
     RESOLVED_DATA_DRIVEN_CONTRACT_VERSION,
+    TRANSFORMED_DATA_DRIVEN_ARTIFACT_KINDS,
     data_driven_product_error,
     generated_output_processes_from_contract,
     validate_requested_product_input,
@@ -44,7 +48,7 @@ SUMW2_CONTENT_MANIFEST_VERSION = 1
 PRIOR_TRANSFORMATION_CONTRACT_VERSION = 2
 TRANSFORMATION_CONTRACT_VERSION = 3
 ARTIFACT_KINDS = frozenset(
-    {"processor_output", "nonprompt_output", "flips_output"}
+    {"processor_output", *TRANSFORMED_DATA_DRIVEN_ARTIFACT_KINDS}
 )
 NONPROMPT_APPLICATION_REGIONS = frozenset(
     {
@@ -57,6 +61,7 @@ NONPROMPT_APPLICATION_REGIONS = frozenset(
 FLIPS_APPLICATION_REGION = "isAR_2lSS_OS"
 SUPPORTED_DATA_DRIVEN_PRODUCTS = ("nonprompt", "flips")
 _PRODUCER_CONTEXT_TOKEN = object()
+NOMINAL_REFERENCE_CONTRACT_VERSION = 1
 
 
 def derive_data_driven_applicability(
@@ -250,6 +255,7 @@ def _build_sidecar_payload(
     requested_data_driven_products: Mapping[str, Any] | None,
     resolved_data_driven_contract: Mapping[str, Any] | None,
     production_sample_contract: Mapping[str, Any] | None,
+    nominal_reference_contract: Mapping[str, Any] | None,
 ) -> dict[str, Any]:
     identity = _file_identity(identity_path, pkl_basename=pkl_path.name)
     if artifact_kind == "processor_output":
@@ -336,6 +342,20 @@ def _build_sidecar_payload(
             "requested_data_driven_products and resolved_data_driven_contract "
             "must be provided together."
         )
+    normalized_reference_contract = None
+    if artifact_kind == NONPROMPT_NOMINAL_REFERENCE_ARTIFACT_KIND:
+        if nominal_reference_contract is None:
+            raise histogram_sidecar_error(
+                "A nominal-only reference output requires nominal_reference_contract."
+            )
+        if requested_data_driven_products is None or resolved_data_driven_contract is None:
+            raise histogram_sidecar_error(
+                "A nominal-only reference output requires data-driven provenance."
+            )
+    elif nominal_reference_contract is not None:
+        raise histogram_sidecar_error(
+            "nominal_reference_contract is valid only for nominal-only reference outputs."
+        )
     if requested_data_driven_products is not None:
         try:
             normalized_requested, normalized_data_driven_contract = (
@@ -345,12 +365,23 @@ def _build_sidecar_payload(
                     policy=resolved_policy_from_provenance(
                         sumw2_storage_provenance
                     ),
+                    allow_incomplete_nonprompt_sumw2=(
+                        artifact_kind
+                        == NONPROMPT_NOMINAL_REFERENCE_ARTIFACT_KIND
+                    ),
                 )
             )
         except data_driven_product_error as error:
             raise histogram_sidecar_error(str(error)) from error
         payload["requested_data_driven_products"] = normalized_requested
         payload["resolved_data_driven_contract"] = normalized_data_driven_contract
+        if artifact_kind == NONPROMPT_NOMINAL_REFERENCE_ARTIFACT_KIND:
+            normalized_reference_contract = _normalize_nominal_reference_contract(
+                nominal_reference_contract,
+                policy=policy,
+                resolved_data_driven_contract=normalized_data_driven_contract,
+            )
+            payload["nominal_reference_contract"] = normalized_reference_contract
     if normalized_contract is not None:
         payload["transformation_contract"] = normalized_contract
         if requested_data_driven_products is not None:
@@ -418,7 +449,10 @@ def _validate_transformation_against_data_driven_contract(
                 f"Family '{family}' is missing required private EFT source roles: "
                 + ", ".join(missing_required)
             )
-        if artifact_kind == "nonprompt_output":
+        if artifact_kind in {
+            NONPROMPT_OUTPUT_ARTIFACT_KIND,
+            NONPROMPT_NOMINAL_REFERENCE_ARTIFACT_KIND,
+        }:
             expected_projected_processes.update(
                 required_prompt_signals & source_eft_processes
             )
@@ -430,7 +464,7 @@ def _validate_transformation_against_data_driven_contract(
             f"expected={expected_projected} "
             f"observed={projection['required_processes']}."
         )
-    if artifact_kind == "flips_output" and projection["required_processes"]:
+    if artifact_kind == FLIPS_OUTPUT_ARTIFACT_KIND and projection["required_processes"]:
         raise histogram_sidecar_error(
             "flips_output cannot certify private EFT prompt projection."
         )
@@ -442,7 +476,11 @@ def _validate_transformation_against_data_driven_contract(
                 family,
                 "nonprompt",
             )
-            if artifact_kind == "nonprompt_output"
+            if artifact_kind
+            in {
+                NONPROMPT_OUTPUT_ARTIFACT_KIND,
+                NONPROMPT_NOMINAL_REFERENCE_ARTIFACT_KIND,
+            }
             else []
         )
         expected_flips = _certified_generated_processes_for_family(
@@ -451,7 +489,7 @@ def _validate_transformation_against_data_driven_contract(
             family,
             "flips",
         )
-        if artifact_kind == "flips_output":
+        if artifact_kind == FLIPS_OUTPUT_ARTIFACT_KIND:
             expected_nonprompt = []
         if roles["generated_nonprompt_processes"] != expected_nonprompt:
             raise histogram_sidecar_error(
@@ -608,6 +646,136 @@ def _normalize_eft_prompt_projection(value: Any) -> dict[str, Any]:
     }
 
 
+def _normalize_missing_processes_by_family(
+    value: Any,
+    *,
+    policy: Any,
+    label: str,
+) -> dict[str, list[str]]:
+    if not isinstance(value, Mapping):
+        raise histogram_sidecar_error(f"{label} must be an object.")
+    unknown = sorted(set(value) - set(policy.runtime_histogram_families))
+    if unknown:
+        raise histogram_sidecar_error(
+            f"{label} contains unknown runtime families: {unknown}."
+        )
+    return {
+        str(family): _require_sorted_unique_strings(
+            processes,
+            label=f"{label}.{family}",
+        )
+        for family, processes in value.items()
+    }
+
+
+def _normalize_nominal_reference_contract(
+    value: Any,
+    *,
+    policy: Any,
+    resolved_data_driven_contract: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Validate the explicit non-card-ready contract for a nominal reference."""
+
+    if not isinstance(value, Mapping):
+        raise histogram_sidecar_error("nominal_reference_contract must be an object.")
+    fields = {
+        "contract_version",
+        "reference_only",
+        "card_ready",
+        "statistically_complete",
+        "migration_status",
+        "serialized_contract_provenance",
+        "serialized_prompt_process_set",
+        "resolved_prompt_process_set",
+        "added_prompt_processes",
+        "removed_prompt_processes",
+        "missing_process_resolved_sumw2",
+        "missing_sumw2_policy_selection",
+    }
+    _require_exact_keys(value, fields, label="nominal_reference_contract")
+    if value["contract_version"] != NOMINAL_REFERENCE_CONTRACT_VERSION:
+        raise histogram_sidecar_error("Unsupported nominal_reference_contract version.")
+    if value["reference_only"] is not True or value["card_ready"] is not False:
+        raise histogram_sidecar_error(
+            "nominal_reference_contract must be explicitly reference_only and non-card-ready."
+        )
+    if value["statistically_complete"] is not False:
+        raise histogram_sidecar_error(
+            "nominal_reference_contract must mark the output statistically incomplete."
+        )
+    if value["migration_status"] not in {
+        "current_contract_revalidated",
+        "reresolved_changed",
+        "reresolved_unchanged",
+    }:
+        raise histogram_sidecar_error("Invalid nominal reference migration status.")
+    if not isinstance(value["serialized_contract_provenance"], Mapping):
+        raise histogram_sidecar_error(
+            "nominal_reference_contract.serialized_contract_provenance must be an object."
+        )
+    serialized = _require_sorted_unique_strings(
+        value["serialized_prompt_process_set"],
+        label="nominal_reference_contract.serialized_prompt_process_set",
+    )
+    resolved = _require_sorted_unique_strings(
+        value["resolved_prompt_process_set"],
+        label="nominal_reference_contract.resolved_prompt_process_set",
+    )
+    added = _require_sorted_unique_strings(
+        value["added_prompt_processes"],
+        label="nominal_reference_contract.added_prompt_processes",
+    )
+    removed = _require_sorted_unique_strings(
+        value["removed_prompt_processes"],
+        label="nominal_reference_contract.removed_prompt_processes",
+    )
+    if added != sorted(set(resolved) - set(serialized)) or removed != sorted(
+        set(serialized) - set(resolved)
+    ):
+        raise histogram_sidecar_error(
+            "nominal_reference_contract prompt migration differences are inconsistent."
+        )
+    if resolved != resolved_data_driven_contract["resolved_prompt_process_set"]:
+        raise histogram_sidecar_error(
+            "nominal_reference_contract resolved prompt set disagrees with the "
+            "current canonical data-driven contract."
+        )
+    migration = resolved_data_driven_contract["policy_migration"]
+    if (
+        serialized != migration["serialized_prompt_process_set"]
+        or added != migration["added_prompt_processes"]
+        or removed != migration["removed_prompt_processes"]
+    ):
+        raise histogram_sidecar_error(
+            "nominal_reference_contract migration evidence disagrees with the "
+            "resolved data-driven contract."
+        )
+    return {
+        "contract_version": NOMINAL_REFERENCE_CONTRACT_VERSION,
+        "reference_only": True,
+        "card_ready": False,
+        "statistically_complete": False,
+        "migration_status": value["migration_status"],
+        "serialized_contract_provenance": copy.deepcopy(
+            dict(value["serialized_contract_provenance"])
+        ),
+        "serialized_prompt_process_set": serialized,
+        "resolved_prompt_process_set": resolved,
+        "added_prompt_processes": added,
+        "removed_prompt_processes": removed,
+        "missing_process_resolved_sumw2": _normalize_missing_processes_by_family(
+            value["missing_process_resolved_sumw2"],
+            policy=policy,
+            label="nominal_reference_contract.missing_process_resolved_sumw2",
+        ),
+        "missing_sumw2_policy_selection": _normalize_missing_processes_by_family(
+            value["missing_sumw2_policy_selection"],
+            policy=policy,
+            label="nominal_reference_contract.missing_sumw2_policy_selection",
+        ),
+    }
+
+
 def _normalize_transformation_contract(
     transformation_contract: Mapping[str, Any],
     *,
@@ -650,7 +818,7 @@ def _normalize_transformation_contract(
     eft_prompt_projection = _normalize_eft_prompt_projection(
         transformation_contract["eft_prompt_projection"]
     )
-    if artifact_kind == "flips_output" and eft_prompt_projection[
+    if artifact_kind == FLIPS_OUTPUT_ARTIFACT_KIND and eft_prompt_projection[
         "required_processes"
     ]:
         raise histogram_sidecar_error(
@@ -736,7 +904,7 @@ def _normalize_transformation_contract(
                 f"Family '{family}' classifies source processes as generated: "
                 f"{sorted(generated_processes & source_processes)}."
             )
-        if artifact_kind == "flips_output" and generated_nonprompt:
+        if artifact_kind == FLIPS_OUTPUT_ARTIFACT_KIND and generated_nonprompt:
             raise histogram_sidecar_error(
                 f"flips_output family '{family}' cannot contain generated nonprompt roles."
             )
@@ -794,7 +962,7 @@ def required_sumw2_processes_from_transformation_contract(
                     "flips",
                 )
             )
-        if artifact_kind == "nonprompt_output":
+        if artifact_kind == NONPROMPT_OUTPUT_ARTIFACT_KIND:
             if resolved_data_driven_contract is None:
                 generated |= set(roles["generated_nonprompt_processes"])
             else:
@@ -827,7 +995,10 @@ def _expected_nominal_processes_from_transformation_contract(
                 "flips",
             )
         )
-    if transformation_contract["artifact_kind"] == "nonprompt_output":
+    if transformation_contract["artifact_kind"] in {
+        NONPROMPT_OUTPUT_ARTIFACT_KIND,
+        NONPROMPT_NOMINAL_REFERENCE_ARTIFACT_KIND,
+    }:
         if resolved_data_driven_contract is None:
             generated |= set(roles["generated_nonprompt_processes"])
         else:
@@ -852,7 +1023,7 @@ def derive_transformed_required_sumw2_processes(
 ) -> tuple[dict[str, Any], dict[str, list[str]]]:
     """Build expected transformed roles and their independent companion contract."""
 
-    if artifact_kind not in {"nonprompt_output", "flips_output"}:
+    if artifact_kind not in TRANSFORMED_DATA_DRIVEN_ARTIFACT_KINDS:
         raise histogram_sidecar_error(
             f"Cannot derive transformed requirements for {artifact_kind!r}."
         )
@@ -954,7 +1125,10 @@ def derive_transformed_required_sumw2_processes(
                 f"Family '{family}' is missing required private EFT source(s): "
                 + ", ".join(missing_required)
             )
-        if artifact_kind == "nonprompt_output":
+        if artifact_kind in {
+            NONPROMPT_OUTPUT_ARTIFACT_KIND,
+            NONPROMPT_NOMINAL_REFERENCE_ARTIFACT_KIND,
+        }:
             expected_projected_processes.update(
                 required_prompt_signals & eft_sources
             )
@@ -1176,6 +1350,8 @@ def _validate_sidecar_structure(
                 "resolved_data_driven_contract",
             }
         )
+    if artifact["artifact_kind"] == NONPROMPT_NOMINAL_REFERENCE_ARTIFACT_KIND:
+        expected_sidecar_fields.add("nominal_reference_contract")
     transformation_contract = None
     if artifact["artifact_kind"] == "processor_output":
         if "transformation_contract" in sidecar:
@@ -1209,6 +1385,10 @@ def _validate_sidecar_structure(
                 sidecar["requested_data_driven_products"],
                 sidecar["resolved_data_driven_contract"],
                 policy=policy,
+                allow_incomplete_nonprompt_sumw2=(
+                    artifact["artifact_kind"]
+                    == NONPROMPT_NOMINAL_REFERENCE_ARTIFACT_KIND
+                ),
             )
         except data_driven_product_error as error:
             raise histogram_sidecar_error(str(error)) from error
@@ -1216,6 +1396,12 @@ def _validate_sidecar_structure(
             _validate_transformation_against_data_driven_contract(
                 transformation_contract,
                 sidecar["resolved_data_driven_contract"],
+            )
+        if artifact["artifact_kind"] == NONPROMPT_NOMINAL_REFERENCE_ARTIFACT_KIND:
+            _normalize_nominal_reference_contract(
+                sidecar["nominal_reference_contract"],
+                policy=policy,
+                resolved_data_driven_contract=sidecar["resolved_data_driven_contract"],
             )
     manifest = sidecar["sumw2_content_manifest"]
     if not isinstance(manifest, Mapping):
@@ -1545,6 +1731,30 @@ def validate_nonprompt_output(
     )
 
 
+def validate_nonprompt_nominal_reference_output(
+    pkl_path: str | os.PathLike[str],
+    histograms: Mapping[str, Any],
+    sidecar: Mapping[str, Any],
+) -> None:
+    """Validate a deliberately incomplete non-card-ready nominal reference."""
+
+    _validate_transformed_output(
+        pkl_path,
+        histograms,
+        sidecar,
+        artifact_kind=NONPROMPT_NOMINAL_REFERENCE_ARTIFACT_KIND,
+    )
+    reference_contract = sidecar.get("nominal_reference_contract")
+    if not isinstance(reference_contract, Mapping):
+        raise histogram_content_error(
+            "Nominal-only reference output lacks nominal_reference_contract."
+        )
+    if reference_contract.get("statistically_complete") is not False:
+        raise histogram_content_error(
+            "Nominal-only reference output cannot be statistically complete."
+        )
+
+
 def validate_flips_output(
     pkl_path: str | os.PathLike[str],
     histograms: Mapping[str, Any],
@@ -1637,9 +1847,11 @@ def validate_histogram_artifact(
     artifact_kind = sidecar["artifact"]["artifact_kind"]
     if artifact_kind == "processor_output":
         validate_processor_output(pkl_path, loaded, sidecar)
-    elif artifact_kind == "nonprompt_output":
+    elif artifact_kind == NONPROMPT_OUTPUT_ARTIFACT_KIND:
         validate_nonprompt_output(pkl_path, loaded, sidecar)
-    elif artifact_kind == "flips_output":
+    elif artifact_kind == NONPROMPT_NOMINAL_REFERENCE_ARTIFACT_KIND:
+        validate_nonprompt_nominal_reference_output(pkl_path, loaded, sidecar)
+    elif artifact_kind == FLIPS_OUTPUT_ARTIFACT_KIND:
         validate_flips_output(pkl_path, loaded, sidecar)
     else:  # pragma: no cover - structural validation already rejects this
         raise histogram_sidecar_error(f"Unknown artifact kind {artifact_kind!r}.")
@@ -2072,6 +2284,11 @@ def merge_histogram_sidecars(
             + ", ".join(sorted(kinds))
         )
     kind = next(iter(kinds))
+    if kind == NONPROMPT_NOMINAL_REFERENCE_ARTIFACT_KIND:
+        raise histogram_merge_error(
+            "Nominal-only reference artifacts are non-card-ready comparison "
+            "products and cannot be merged."
+        )
     layouts = {
         (
             sidecar["artifact"]["nominal_container_schema_version"],
@@ -2274,6 +2491,7 @@ def write_histogram_sidecar(
     requested_data_driven_products: Mapping[str, Any] | None = None,
     resolved_data_driven_contract: Mapping[str, Any] | None = None,
     production_sample_contract: Mapping[str, Any] | None = None,
+    nominal_reference_contract: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Write one automatic sidecar for an already finalized PKL."""
 
@@ -2351,6 +2569,14 @@ def write_histogram_sidecar(
                 "Transformed output must preserve production_sample_contract unchanged."
             )
         production_sample_contract = input_production_contract
+        input_reference_contract = input_sidecar.get("nominal_reference_contract")
+        if nominal_reference_contract is not None and dict(
+            nominal_reference_contract
+        ) != input_reference_contract:
+            raise histogram_sidecar_error(
+                "Transformed output must preserve nominal_reference_contract unchanged."
+            )
+        nominal_reference_contract = input_reference_contract
     payload = _build_sidecar_payload(
         pkl_path,
         histograms,
@@ -2364,6 +2590,7 @@ def write_histogram_sidecar(
         requested_data_driven_products=requested_data_driven_products,
         resolved_data_driven_contract=resolved_data_driven_contract,
         production_sample_contract=production_sample_contract,
+        nominal_reference_contract=nominal_reference_contract,
     )
     _validate_sidecar_structure(payload, pkl_path=pkl_path)
     temporary_path = metadata_sidecar_path(pkl_path).with_name(
@@ -2398,6 +2625,7 @@ def write_histogram_artifact(
     requested_data_driven_products: Mapping[str, Any] | None = None,
     resolved_data_driven_contract: Mapping[str, Any] | None = None,
     production_sample_contract: Mapping[str, Any] | None = None,
+    nominal_reference_contract: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Stage, validate, and publish a PKL/sidecar pair as one logical output."""
 
@@ -2508,6 +2736,14 @@ def write_histogram_artifact(
                     "Transformed output must preserve production_sample_contract unchanged."
                 )
             production_sample_contract = input_production_contract
+            input_reference_contract = input_sidecar.get("nominal_reference_contract")
+            if nominal_reference_contract is not None and dict(
+                nominal_reference_contract
+            ) != input_reference_contract:
+                raise histogram_sidecar_error(
+                    "Transformed output must preserve nominal_reference_contract unchanged."
+                )
+            nominal_reference_contract = input_reference_contract
         sidecar = _build_sidecar_payload(
             pkl_path,
             manifest_histograms,
@@ -2521,13 +2757,20 @@ def write_histogram_artifact(
             requested_data_driven_products=requested_data_driven_products,
             resolved_data_driven_contract=resolved_data_driven_contract,
             production_sample_contract=production_sample_contract,
+            nominal_reference_contract=nominal_reference_contract,
         )
         _validate_sidecar_structure(sidecar, pkl_path=pkl_path)
         _validate_content_manifest(pkl_path, manifest_histograms, sidecar)
         if artifact_kind == "processor_output":
             validate_processor_output(pkl_path, manifest_histograms, sidecar)
-        elif artifact_kind == "nonprompt_output":
+        elif artifact_kind == NONPROMPT_OUTPUT_ARTIFACT_KIND:
             validate_nonprompt_output(pkl_path, manifest_histograms, sidecar)
+        elif artifact_kind == NONPROMPT_NOMINAL_REFERENCE_ARTIFACT_KIND:
+            validate_nonprompt_nominal_reference_output(
+                pkl_path,
+                manifest_histograms,
+                sidecar,
+            )
         else:
             validate_flips_output(pkl_path, manifest_histograms, sidecar)
         _write_json(staged_sidecar, sidecar)

@@ -10,8 +10,12 @@ from topcoffea.modules.hist_utils import iterate_hist_from_pkl
 from topeft.modules.axes import info_2d as axes_info_2d
 from topeft.modules.data_driven_products import (
     data_driven_product_error,
+    FLIPS_OUTPUT_ARTIFACT_KIND,
     generated_process_name,
+    NONPROMPT_NOMINAL_REFERENCE_ARTIFACT_KIND,
+    NONPROMPT_OUTPUT_ARTIFACT_KIND,
     parse_process_name,
+    TRANSFORMED_DATA_DRIVEN_ARTIFACT_KINDS,
     validate_requested_product_input,
 )
 from topeft.modules.nonprompt_policy import (
@@ -67,7 +71,7 @@ class DataDrivenProducer:
         self.outHist=None
         self.iterator_mode = iterator_mode
         self._dd_report_enabled = dd_report
-        if artifact_kind not in {"nonprompt_output", "flips_output"}:
+        if artifact_kind not in TRANSFORMED_DATA_DRIVEN_ARTIFACT_KINDS:
             raise RuntimeError(f"Unknown data-driven artifact kind {artifact_kind!r}.")
         self._artifact_kind = artifact_kind
         self._resolved_input_sidecar = None
@@ -169,7 +173,11 @@ class DataDrivenProducer:
         }
         if (
             not input_sidecar
-            or self._artifact_kind != "nonprompt_output"
+            or self._artifact_kind
+            not in {
+                NONPROMPT_OUTPUT_ARTIFACT_KIND,
+                NONPROMPT_NOMINAL_REFERENCE_ARTIFACT_KIND,
+            }
             or "resolved_data_driven_contract" not in input_sidecar
         ):
             return {}, empty_context
@@ -313,7 +321,7 @@ class DataDrivenProducer:
             raise RuntimeError(
                 "Transformation roles are available only for validated schema-v2 inputs."
             )
-        if artifact_kind not in {"nonprompt_output", "flips_output"}:
+        if artifact_kind not in TRANSFORMED_DATA_DRIVEN_ARTIFACT_KINDS:
             raise RuntimeError(
                 f"Unknown data-driven artifact kind {artifact_kind!r}."
             )
@@ -344,7 +352,7 @@ class DataDrivenProducer:
             roles["applicable_products"] = dict(
                 raw_roles["applicable_products"]
             )
-            if artifact_kind == "flips_output":
+            if artifact_kind == FLIPS_OUTPUT_ARTIFACT_KIND:
                 roles["retained_scalar_processes"] = []
                 roles["generated_nonprompt_processes"] = []
             families[family] = roles
@@ -528,7 +536,16 @@ class DataDrivenProducer:
         if input_sidecar is None or "resolved_data_driven_contract" not in input_sidecar:
             return {
                 "nonprompt": {
-                    "enabled": self._artifact_kind == "nonprompt_output",
+                    "enabled": self._artifact_kind
+                    in {
+                        NONPROMPT_OUTPUT_ARTIFACT_KIND,
+                        NONPROMPT_NOMINAL_REFERENCE_ARTIFACT_KIND,
+                    }
+                    and not (
+                        self._artifact_kind
+                        == NONPROMPT_NOMINAL_REFERENCE_ARTIFACT_KIND
+                        and key.endswith("_sumw2")
+                    ),
                     "generated_outputs": None,
                 },
                 "flips": {
@@ -546,7 +563,16 @@ class DataDrivenProducer:
                 **products["nonprompt"],
                 "enabled": (
                     products["nonprompt"]["enabled"]
-                    and self._artifact_kind == "nonprompt_output"
+                    and self._artifact_kind
+                    in {
+                        NONPROMPT_OUTPUT_ARTIFACT_KIND,
+                        NONPROMPT_NOMINAL_REFERENCE_ARTIFACT_KIND,
+                    }
+                    and not (
+                        self._artifact_kind
+                        == NONPROMPT_NOMINAL_REFERENCE_ARTIFACT_KIND
+                        and key.endswith("_sumw2")
+                    )
                 ),
             },
             "flips": products["flips"],
@@ -987,14 +1013,14 @@ class DataDrivenProducer:
             write_histogram_artifact(
                 self.outputName,
                 histograms=self.outHist,
-                artifact_kind="nonprompt_output",
+                artifact_kind=self._artifact_kind,
                 sumw2_storage_provenance=input_sidecar[
                     "sumw2_storage_provenance"
                 ],
                 lineage_inputs=[lineage_input_from_sidecar(input_sidecar)],
                 input_sidecar=input_sidecar,
                 transformation_context=self.get_transformation_context(
-                    "nonprompt_output"
+                    self._artifact_kind
                 ),
             )
         else:

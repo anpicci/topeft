@@ -34,6 +34,7 @@ from topeft.modules.histogram_artifact import (
     metadata_sidecar_path,
     read_histogram_sidecar,
     validate_histogram_artifact,
+    validate_nonprompt_output,
     write_histogram_artifact,
 )
 from topeft.modules import histogram_artifact
@@ -424,6 +425,53 @@ def _exercise_applicability_case(tmp_path, policy, source_application_regions):
         "sumw2_generated": sumw2_generated,
         "required_generated": required_generated,
     }
+
+
+def test_nominal_reference_artifact_is_distinct_non_card_ready_and_has_no_nonprompt_sumw2(
+    tmp_path,
+    policy,
+):
+    source_path = tmp_path / "processor.pkl.gz"
+    _write_processor(source_path, policy)
+    reference_path = tmp_path / "reference.pkl.gz"
+    producer = DataDrivenProducer(
+        str(source_path),
+        str(reference_path),
+        artifact_kind="nonprompt_nominal_reference_output",
+    )
+    transformed = producer.getDataDrivenHistogram()
+    producer.dumpToPickle()
+
+    metadata = read_histogram_sidecar(reference_path)
+    assert metadata["artifact"]["artifact_kind"] == "nonprompt_nominal_reference_output"
+    assert metadata["nominal_reference_contract"]["reference_only"] is True
+    assert metadata["nominal_reference_contract"]["card_ready"] is False
+    assert metadata["nominal_reference_contract"]["statistically_complete"] is False
+    scalar_processes = {
+        str(process)
+        for process in transformed[scalar_nominal_key("njets")].axes["process"]
+    }
+    sumw2_processes = {
+        str(process) for process in transformed["njets_sumw2"].axes["process"]
+    }
+    assert "nonpromptUL18" in scalar_processes
+    assert "nonpromptUL18" not in sumw2_processes
+    validate_histogram_artifact(reference_path)
+    with pytest.raises(histogram_artifact_error, match="Expected artifact_kind=nonprompt_output"):
+        validate_nonprompt_output(reference_path, transformed, metadata)
+    with pytest.raises(histogram_artifact_error, match="cannot be merged"):
+        load_and_merge_histogram_pkls([str(reference_path)])
+
+
+def test_nominal_reference_cli_interface_is_explicit_and_non_default():
+    parser = run_data_driven._build_argument_parser()
+    parsed = parser.parse_args(
+        ["--input-pkl", "processor.pkl.gz", "--nominal-only-reference"]
+    )
+    assert parsed.nominal_only_reference is True
+    assert run_data_driven._default_output_path(
+        "processor.pkl.gz", nominal_only_reference=True
+    ) == "processor_np_nominal_reference.pkl.gz"
 
 
 @pytest.mark.parametrize(

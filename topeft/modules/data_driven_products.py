@@ -28,6 +28,18 @@ RESOLVED_DATA_DRIVEN_CONTRACT_VERSION = 4
 PRECANONICAL_RESOLVED_DATA_DRIVEN_CONTRACT_VERSION = 3
 LEGACY_RESOLVED_DATA_DRIVEN_CONTRACT_VERSION = 1
 DATA_DRIVEN_PRODUCT_NAMES = ("nonprompt", "flips")
+NONPROMPT_OUTPUT_ARTIFACT_KIND = "nonprompt_output"
+NONPROMPT_NOMINAL_REFERENCE_ARTIFACT_KIND = (
+    "nonprompt_nominal_reference_output"
+)
+FLIPS_OUTPUT_ARTIFACT_KIND = "flips_output"
+TRANSFORMED_DATA_DRIVEN_ARTIFACT_KINDS = frozenset(
+    {
+        NONPROMPT_OUTPUT_ARTIFACT_KIND,
+        NONPROMPT_NOMINAL_REFERENCE_ARTIFACT_KIND,
+        FLIPS_OUTPUT_ARTIFACT_KIND,
+    }
+)
 _PRODUCT_ROLES = {
     "nonprompt": ("data", "prompt_mc"),
     "flips": ("data",),
@@ -1202,10 +1214,13 @@ def validate_generated_outputs_against_sumw2_policy(
     contract: Mapping[str, Any],
     *,
     policy: resolved_sumw2_policy,
+    skip_nonprompt: bool = False,
 ) -> None:
     """Combine the family-free output map with sumw2's family/process authority."""
 
     for product_name, product in contract["products"].items():
+        if skip_nonprompt and product_name == "nonprompt":
+            continue
         required_processes = set(
             required_source_processes_from_generated_outputs(
                 product["generated_outputs"]
@@ -1421,6 +1436,7 @@ def validate_serialized_data_driven_contract(
     contract: Mapping[str, Any],
     *,
     policy: resolved_sumw2_policy,
+    allow_incomplete_nonprompt_sumw2: bool = False,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Validate current contracts and safe read-only version-1 sidecars."""
 
@@ -1432,7 +1448,11 @@ def validate_serialized_data_driven_contract(
     version = contract.get("contract_version")
     if version == RESOLVED_DATA_DRIVEN_CONTRACT_VERSION:
         validate_generated_output_contract(requested, contract, policy=policy)
-        validate_generated_outputs_against_sumw2_policy(contract, policy=policy)
+        validate_generated_outputs_against_sumw2_policy(
+            contract,
+            policy=policy,
+            skip_nonprompt=allow_incomplete_nonprompt_sumw2,
+        )
     elif version == PRECANONICAL_RESOLVED_DATA_DRIVEN_CONTRACT_VERSION:
         _validate_precanonical_generated_output_contract(
             requested,
@@ -1611,8 +1631,26 @@ def resolve_requested_product_input(
 ) -> dict[str, Any]:
     """Resolve current transformation authority from actual stored identities."""
 
+    if artifact_kind not in TRANSFORMED_DATA_DRIVEN_ARTIFACT_KINDS:
+        raise data_driven_product_error(
+            f"Unknown requested transformed artifact kind {artifact_kind!r}."
+        )
     migration = reresolve_nonprompt_policy_from_sidecar(sidecar)
-    if not migration["statistically_complete"]:
+    product_name = (
+        "flips"
+        if artifact_kind == FLIPS_OUTPUT_ARTIFACT_KIND
+        else "nonprompt"
+    )
+    requested = sidecar["requested_data_driven_products"]
+    if not requested["products"][product_name]["enabled"]:
+        raise data_driven_product_error(
+            f"Data-driven product {product_name!r} was not requested in the processor "
+            "sidecar. Regenerate the processor PKL with that product enabled."
+        )
+
+    if artifact_kind == NONPROMPT_OUTPUT_ARTIFACT_KIND and not migration[
+        "statistically_complete"
+    ]:
         raise data_driven_product_error(
             "Cannot build a statistically complete data-driven product after canonical "
             "policy re-resolution; "
@@ -1624,20 +1662,50 @@ def resolve_requested_product_input(
             "second moments. Regenerate or safely augment the missing process-resolved "
             "sumw2 before transformation."
         )
-    effective_sidecar = migration["effective_sidecar"]
-    assert effective_sidecar is not None
-    requested = effective_sidecar["requested_data_driven_products"]
+
+    if artifact_kind == NONPROMPT_OUTPUT_ARTIFACT_KIND:
+        effective_sidecar = migration["effective_sidecar"]
+        assert effective_sidecar is not None
+    elif artifact_kind == NONPROMPT_NOMINAL_REFERENCE_ARTIFACT_KIND:
+        effective_sidecar = copy.deepcopy(dict(sidecar))
+        effective_sidecar["resolved_data_driven_contract"] = copy.deepcopy(
+            migration["resolved_data_driven_contract"]
+        )
+        effective_sidecar["nominal_reference_contract"] = {
+            "contract_version": 1,
+            "reference_only": True,
+            "card_ready": False,
+            "statistically_complete": False,
+            "migration_status": migration["status"],
+            "serialized_contract_provenance": copy.deepcopy(
+                migration["serialized_contract_provenance"]
+            ),
+            "serialized_prompt_process_set": list(
+                migration["serialized_prompt_process_set"]
+            ),
+            "resolved_prompt_process_set": list(
+                migration["resolved_prompt_process_set"]
+            ),
+            "added_prompt_processes": list(migration["added_prompt_processes"]),
+            "removed_prompt_processes": list(migration["removed_prompt_processes"]),
+            "missing_process_resolved_sumw2": copy.deepcopy(
+                migration["missing_process_resolved_sumw2"]
+            ),
+            "missing_sumw2_policy_selection": copy.deepcopy(
+                migration["missing_sumw2_policy_selection"]
+            ),
+        }
+        validate_serialized_data_driven_contract(
+            effective_sidecar["requested_data_driven_products"],
+            effective_sidecar["resolved_data_driven_contract"],
+            policy=resolved_sumw2_policy_from_sidecar(effective_sidecar),
+            allow_incomplete_nonprompt_sumw2=True,
+        )
+    else:
+        # Flips has no prompt-MC subtraction.  Keep its original certified
+        # source contract and validate only its own product requirements.
+        effective_sidecar = copy.deepcopy(dict(sidecar))
     contract = effective_sidecar["resolved_data_driven_contract"]
-    product_name = "flips" if artifact_kind == "flips_output" else "nonprompt"
-    if artifact_kind not in {"nonprompt_output", "flips_output"}:
-        raise data_driven_product_error(
-            f"Unknown requested transformed artifact kind {artifact_kind!r}."
-        )
-    if not requested["products"][product_name]["enabled"]:
-        raise data_driven_product_error(
-            f"Data-driven product {product_name!r} was not requested in the processor "
-            "sidecar. Regenerate the processor PKL with that product enabled."
-        )
     return {
         "effective_sidecar": effective_sidecar,
         "migration": migration,
@@ -1668,14 +1736,25 @@ def validate_requested_product_input(
     except ValueError as error:
         raise data_driven_product_error(str(error)) from error
     policy = resolved_sumw2_policy_from_sidecar(sidecar)
-    validate_serialized_data_driven_contract(requested, contract, policy=policy)
+    validate_serialized_data_driven_contract(
+        requested,
+        contract,
+        policy=policy,
+        allow_incomplete_nonprompt_sumw2=(
+            artifact_kind == NONPROMPT_NOMINAL_REFERENCE_ARTIFACT_KIND
+        ),
+    )
     resolution = resolve_requested_product_input(
         sidecar,
         artifact_kind=artifact_kind,
     )
     effective_sidecar = resolution["effective_sidecar"]
     contract = effective_sidecar["resolved_data_driven_contract"]
-    product_name = "flips" if artifact_kind == "flips_output" else "nonprompt"
+    product_name = (
+        "flips"
+        if artifact_kind == FLIPS_OUTPUT_ARTIFACT_KIND
+        else "nonprompt"
+    )
     product = contract["products"][product_name]
     required = set(
         required_source_processes_from_generated_outputs(
@@ -1698,7 +1777,10 @@ def validate_requested_product_input(
         companions = set(manifest["sumw2_processes"])
         missing_nominal = sorted(required - nominal)
         missing_companions = sorted(required - companions)
-        if missing_nominal or missing_companions:
+        if missing_nominal or (
+            missing_companions
+            and artifact_kind != NONPROMPT_NOMINAL_REFERENCE_ARTIFACT_KIND
+        ):
             raise data_driven_product_error(
                 f"Cannot build requested product {product_name!r}: family={family!r} "
                 f"missing_source_nominal={missing_nominal} "

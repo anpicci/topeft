@@ -2,12 +2,16 @@ from __future__ import annotations
 
 import copy
 
+import pytest
+
 from topeft.modules.axes import info as axes_info
 from topeft.modules.axes import info_2d as axes_info_2d
 from topeft.modules.data_driven_products import (
     PRECANONICAL_RESOLVED_DATA_DRIVEN_CONTRACT_VERSION,
     certify_data_driven_preflight,
+    data_driven_product_error,
     reresolve_nonprompt_policy_from_sidecar,
+    resolve_requested_product_input,
     resolve_data_driven_products,
 )
 from topeft.modules.nonprompt_policy import (
@@ -242,3 +246,67 @@ def test_valid_run2_precanonical_policy_reresolves_without_membership_change():
     assert len(migration["resolved_prompt_process_set"]) == 72
     assert migration["statistically_complete"] is True
     assert migration["effective_sidecar"] is not None
+
+
+def test_incomplete_run3_source_is_strict_for_nonprompt_but_not_flips_or_reference():
+    samples = _samples(RUN3_ACTIVE_BASES, ("2022",))
+    certificate, _current_policy, requested, contract = _resolved_contract(samples)
+    missing_new = {f"{base}2022" for base in RUN3_NEW_PROMPT_BASES}
+    stale_prompt = set(certificate.resolved_prompt_process_set) - missing_new
+    stale_contract = _precanonical_contract(contract, stale_prompt)
+    data_processes = {
+        sample["histAxisName"] for sample in samples.values() if sample["isData"]
+    }
+    stale_selected = sorted(data_processes | stale_prompt)
+    stale_policy = resolve_sumw2_storage_policy(
+        {"mode": "full_custom", "rules": [{"process_names": stale_selected, "variables": ["njets"]}]},
+        samples=samples,
+        runtime_families=("njets",),
+        axes_info=axes_info,
+        axes_info_2d=axes_info_2d,
+        sumw2_storage_present=True,
+    )
+    sidecar = {
+        "requested_data_driven_products": requested,
+        "resolved_data_driven_contract": stale_contract,
+        "sumw2_storage_provenance": stale_policy.to_provenance(),
+        "sumw2_content_manifest": _manifest(samples, stale_selected),
+    }
+
+    with pytest.raises(data_driven_product_error, match="missing process-resolved"):
+        resolve_requested_product_input(sidecar, artifact_kind="nonprompt_output")
+
+    reference = resolve_requested_product_input(
+        sidecar,
+        artifact_kind="nonprompt_nominal_reference_output",
+    )
+    reference_contract = reference["effective_sidecar"]["nominal_reference_contract"]
+    assert reference_contract["statistically_complete"] is False
+    assert reference_contract["card_ready"] is False
+    assert set(reference_contract["missing_process_resolved_sumw2"]["njets"]) == missing_new
+    assert reference["resolved_data_driven_contract"]["resolved_prompt_process_set"] == list(
+        certificate.resolved_prompt_process_set
+    )
+
+    flips = resolve_requested_product_input(sidecar, artifact_kind="flips_output")
+    assert flips["effective_sidecar"]["resolved_data_driven_contract"] == stale_contract
+
+
+def test_complete_run2_source_remains_a_normal_nonprompt_input():
+    samples = _samples(RUN2_ACTIVE_BASES, RUN2_YEARS)
+    certificate, policy, requested, contract = _resolved_contract(samples)
+    selected = set(certificate.resolved_prompt_process_set) | {
+        f"data{year}" for year in RUN2_YEARS
+    }
+    sidecar = {
+        "requested_data_driven_products": requested,
+        "resolved_data_driven_contract": _precanonical_contract(
+            contract,
+            certificate.resolved_prompt_process_set,
+        ),
+        "sumw2_storage_provenance": policy.to_provenance(),
+        "sumw2_content_manifest": _manifest(samples, selected),
+    }
+    normal = resolve_requested_product_input(sidecar, artifact_kind="nonprompt_output")
+    assert normal["migration"]["statistically_complete"] is True
+    assert "nominal_reference_contract" not in normal["effective_sidecar"]

@@ -387,6 +387,41 @@ def test_private_eft_projection_streaming_roundtrip(tmp_path):
     assert projection["generated_nonprompt_eft_dependence"] is False
 
 
+def test_private_eft_nominal_reference_uses_sm_prompt_subtraction_without_sumw2(
+    tmp_path,
+):
+    source_path = tmp_path / "reference_private.pkl.gz"
+    output_path = tmp_path / "reference_private_output.pkl.gz"
+    policy, source_sidecar = _write_processor(source_path, private=True)
+    producer = DataDrivenProducer(
+        str(source_path),
+        "",
+        artifact_kind="nonprompt_nominal_reference_output",
+    )
+    output = producer.getDataDrivenHistogram()
+
+    # The independent scalar closure is data (10) minus TT (3) minus the
+    # private EFT prompt at the SM point (4), not a WC-dependent subtraction.
+    assert _total(output[scalar_nominal_key("njets")], "nonpromptUL18") == pytest.approx(3.0)
+    assert "nonpromptUL18" not in [
+        str(value) for value in output["njets_sumw2"].axes["process"]
+    ]
+    sidecar = write_histogram_artifact(
+        output_path,
+        histograms=output,
+        artifact_kind="nonprompt_nominal_reference_output",
+        sumw2_storage_provenance=policy.to_provenance(),
+        lineage_inputs=[lineage_input_from_sidecar(source_sidecar)],
+        input_sidecar=producer._resolved_input_sidecar,
+        transformation_context=producer.get_transformation_context(
+            "nonprompt_nominal_reference_output"
+        ),
+    )
+    assert sidecar["nominal_reference_contract"]["statistically_complete"] is False
+    assert sidecar["nominal_reference_contract"]["card_ready"] is False
+    assert validate_histogram_artifact(output_path)["metadata"] == sidecar
+
+
 @pytest.mark.parametrize(
     "mutation,match",
     [
