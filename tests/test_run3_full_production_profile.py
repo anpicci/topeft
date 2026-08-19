@@ -3,6 +3,7 @@ import io
 import json
 import re
 import subprocess
+import sys
 import tarfile
 from functools import lru_cache
 from pathlib import Path
@@ -22,6 +23,14 @@ EXPECTED_BLOCKS = [
     ("run3_full_c", "3l_p_offZ", "njets lj0pt ptll lt"),
     ("run3_full_d", "3l_onZ_tau", "njets lj0pt ptz lt"),
     ("run3_full_e", "3l_fwd", "njets lj0pt ptz lt"),
+]
+REBIN_FINE_BLOCKS = [
+    ("run2_a", "2016APV 2016 2017 2018", "2lss_1tau 3l_m_offZ", "lj0pt ptll ptz_wtau"),
+    ("run2_b", "2016APV 2016 2017 2018", "3l_p_offZ 3l_onZ_tau", "lj0pt ptz ptll"),
+    ("run2_c", "2016APV 2016 2017 2018", "3l_fwd", "lt"),
+    ("run3_a", YEARS, "2lss_1tau 3l_m_offZ", "lj0pt ptll ptz_wtau"),
+    ("run3_b", YEARS, "3l_p_offZ 3l_onZ_tau", "lj0pt ptz ptll"),
+    ("run3_c", YEARS, "3l_fwd", "lt"),
 ]
 
 
@@ -165,6 +174,195 @@ def _resume_args(output_dir, env_file, campaign_tag="run3_complete"):
         "--env-file",
         str(env_file),
     )
+
+
+def _state_tool_source():
+    source = RUN_CR.read_text(encoding="utf-8")
+    start_marker = "production_state_tool() {\n  python - \"$@\" <<'PY'\n"
+    start = source.index(start_marker) + len(start_marker)
+    end = source.index("\nPY\n}\n", start)
+    return source[start:end]
+
+
+def _run_state_tool(tmp_path, *arguments):
+    state_tool = tmp_path / "production_state_tool.py"
+    state_tool.write_text(_state_tool_source(), encoding="utf-8")
+    return subprocess.run(
+        [sys.executable, str(state_tool), *arguments],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+
+def _write_production_plan(tmp_path, output_dir, campaign_tag, profile, blocks):
+    plan_path = tmp_path / f"{profile}_plan.tsv"
+    rows = []
+    for block_id, years, categories, histograms in blocks:
+        output_tag = "{}_{}_{}".format(
+            campaign_tag,
+            categories.replace(" ", "-"),
+            histograms.replace(" ", "-"),
+        )
+        output_name = "{}SRs_{}".format(years.replace(" ", "-"), output_tag)
+        rows.append(
+            "\t".join(
+                (
+                    block_id,
+                    years,
+                    categories,
+                    histograms,
+                    output_tag,
+                    output_name,
+                    str(output_dir / f"{output_name}.pkl.gz"),
+                    str(output_dir / f"{output_name}_np.pkl.gz"),
+                )
+            )
+        )
+    plan_path.write_text("\n".join(rows) + "\n", encoding="utf-8")
+    return plan_path
+
+
+def _write_run3_full_plan(tmp_path, output_dir, campaign_tag):
+    blocks = [
+        (block_id, YEARS, categories, histograms)
+        for block_id, categories, histograms in EXPECTED_BLOCKS
+    ]
+    return _write_production_plan(
+        tmp_path, output_dir, campaign_tag, "run3_full", blocks
+    )
+
+
+def test_fresh_run3_full_state_materializes_plan_before_first_block_update(tmp_path):
+    output_dir = tmp_path / "fresh_run3_full"
+    state_path = output_dir / STATE_FILENAME
+    plan_path = _write_run3_full_plan(tmp_path, output_dir, "run3_complete")
+    output_dir.mkdir()
+
+    initialize = _run_state_tool(
+        tmp_path,
+        "initialize",
+        str(state_path),
+        str(plan_path),
+        "run3_full",
+        "3",
+        "run3_complete",
+        str(output_dir),
+        "topeft-test-commit",
+        "/tmp/current_environment.tar.gz",
+        "environment-sha256",
+        "environment-fingerprint",
+        "topcoffea-test-commit",
+        "topcoffea-source-fingerprint",
+        "split",
+        "true",
+        "true",
+    )
+    assert initialize.returncode == 0, initialize.stderr
+
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert [block["id"] for block in state["blocks"]] == [
+        block_id for block_id, _categories, _histograms in EXPECTED_BLOCKS
+    ]
+    assert [block["years"] for block in state["blocks"]] == [
+        YEARS.split()
+    ] * len(EXPECTED_BLOCKS)
+    assert [block["category_groups"] for block in state["blocks"]] == [
+        categories.split() for _block_id, categories, _histograms in EXPECTED_BLOCKS
+    ]
+    assert [block["histograms"] for block in state["blocks"]] == [
+        histograms.split() for _block_id, _categories, histograms in EXPECTED_BLOCKS
+    ]
+    assert all("2016" not in block["years"] for block in state["blocks"])
+    assert all("CR" not in category for block in state["blocks"] for category in block["category_groups"])
+    assert all(block["status"] == "planned" for block in state["blocks"])
+    assert all(block["source_status"] == "planned" for block in state["blocks"])
+    assert all(block["nonprompt_status"] == "blocked" for block in state["blocks"])
+
+    first_status = _run_state_tool(tmp_path, "status", str(state_path), "run3_full_a")
+    assert first_status.returncode == 0, first_status.stderr
+    assert first_status.stdout.strip() == "planned\tplanned\tblocked"
+
+    source_ready = _run_state_tool(
+        tmp_path,
+        "mark",
+        str(state_path),
+        "run3_full_a",
+        "source",
+        "ready",
+        "0",
+        "source_child_exit_zero_expected_source_present",
+    )
+    assert source_ready.returncode == 0, source_ready.stderr
+    nonprompt_status = _run_state_tool(
+        tmp_path, "status", str(state_path), "run3_full_a"
+    )
+    assert nonprompt_status.returncode == 0, nonprompt_status.stderr
+    assert nonprompt_status.stdout.strip() == "source_ready\tready\tplanned"
+
+
+def test_fresh_rebin_fine_state_preserves_six_block_stage_model(tmp_path):
+    output_dir = tmp_path / "fresh_rebin_fine"
+    state_path = output_dir / ".rebin_fine_campaign_state.json"
+    plan_path = _write_production_plan(
+        tmp_path, output_dir, "fine_complete", "rebin_fine", REBIN_FINE_BLOCKS
+    )
+    output_dir.mkdir()
+
+    initialize = _run_state_tool(
+        tmp_path,
+        "initialize",
+        str(state_path),
+        str(plan_path),
+        "rebin_fine",
+        "3",
+        "fine_complete",
+        str(output_dir),
+        "topeft-test-commit",
+        "/tmp/current_environment.tar.gz",
+        "environment-sha256",
+        "environment-fingerprint",
+        "topcoffea-test-commit",
+        "topcoffea-source-fingerprint",
+        "split",
+        "true",
+        "true",
+    )
+    assert initialize.returncode == 0, initialize.stderr
+
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert [block["id"] for block in state["blocks"]] == [
+        block_id for block_id, _years, _categories, _histograms in REBIN_FINE_BLOCKS
+    ]
+    assert all(block["source_status"] == "planned" for block in state["blocks"])
+    assert all(block["nonprompt_status"] == "blocked" for block in state["blocks"])
+
+    source_ready = _run_state_tool(
+        tmp_path,
+        "mark",
+        str(state_path),
+        "run2_a",
+        "source",
+        "ready",
+        "0",
+        "source_child_exit_zero_expected_source_present",
+    )
+    assert source_ready.returncode == 0, source_ready.stderr
+    nonprompt_failed = _run_state_tool(
+        tmp_path,
+        "mark",
+        str(state_path),
+        "run2_a",
+        "nonprompt",
+        "failed",
+        "1",
+        "separate_nonprompt_failed_or_missing_output",
+    )
+    assert nonprompt_failed.returncode == 0, nonprompt_failed.stderr
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert state["blocks"][0]["status"] == "nonprompt_failed"
+    assert state["blocks"][0]["source_status"] == "ready"
+    assert state["blocks"][0]["nonprompt_status"] == "failed"
 
 
 def test_baseline_is_retired_and_no_argument_invocation_fails_closed():

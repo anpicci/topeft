@@ -675,12 +675,12 @@ if mode in {"initialize", "validate"}:
     if mode == "initialize":
         if state_path.exists():
             fail(f"refusing to overwrite existing {desired['production_profile']} campaign state: {state_path}")
-        state = desired
+        planned_blocks = desired["blocks"]
+        state = {**desired, "blocks": []}
         timestamp = now_utc()
         state["created_at_utc"] = timestamp
         state["updated_at_utc"] = timestamp
-        state["blocks"] = []
-        for block in desired["blocks"]:
+        for block in planned_blocks:
             initialized = {
                 **block,
                 "status": "planned",
