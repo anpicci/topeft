@@ -929,6 +929,16 @@ flip (flips) transformations. It complements the operational instructions in
 the [Run-2 README](../analysis/topeft_run2/README.md#applicability-aware-data-driven-outputs-and-recovery)
 and the practical [sidecar inspection tutorial](histeft_pkl_tutorial.md#18-inspecting-data-driven-applicability).
 
+The maintained complete Run-3 production path is
+`analysis/topeft_run2/run_cr.sh --production-profile run3_full`. Each block
+first runs the heavy processor with nonprompt enabled but deferred, waits for
+that process to exit, and then invokes `run_data_driven.py` in a fresh process
+on the completed source pkl. This process boundary releases processor memory;
+it does not weaken the policy or sumw2 validation described below. Campaign
+state records the source and transformation stages separately, and a block is
+complete only when both the source and independently transformed `_np` pkl are
+nonempty.
+
 ### Enabled, applicable, and generated
 
 The source-wide data-driven policy and each histogram family answer different

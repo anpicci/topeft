@@ -3,18 +3,20 @@ set -euo pipefail
 
 print_usage() {
   cat <<'EOF'
-Usage: ./run_cr.sh [--production-profile baseline|rebin_fine] [--dry-run] \
+Usage: ./run_cr.sh --production-profile run3_full|rebin_fine [--dry-run] \
   [--output-dir PATH] [--campaign-tag TAG] [--env-file PATH] [--resume]
 
-The default no-argument invocation preserves the existing baseline/resume
-configuration. The rebin_fine profile prepares only the source histogram
-families whose fitting bins changed. Its non-dry invocation requires an
-explicit fresh output directory, campaign tag, and verified absolute Poncho
-environment archive. Use --resume only for a matching rebin_fine campaign.
+run3_full is the canonical complete Run-3 SR source-production profile.
+rebin_fine is the specialized six-block Run-2/Run-3 source-production profile
+for fitting families whose bins changed. Both profiles require an explicit
+fresh output directory and campaign tag. A fresh run3_full campaign resolves
+one current environment automatically; --env-file pins an exact current
+archive, and rebin_fine requires that pin. Resume uses only the environment
+frozen in matching campaign state.
 EOF
 }
 
-production_profile="baseline"
+production_profile=""
 profile_dry_run=false
 profile_output_dir=""
 profile_campaign_tag=""
@@ -75,8 +77,14 @@ while (( $# > 0 )); do
   esac
 done
 
+if [[ -z "${production_profile}" ]]; then
+  echo "ERROR: --production-profile is required; no production was scheduled." >&2
+  print_usage >&2
+  exit 1
+fi
+
 case "${production_profile}" in
-  baseline|rebin_fine) ;;
+  run3_full|rebin_fine) ;;
   *)
     echo "ERROR: unsupported production profile '${production_profile}'." >&2
     exit 1
@@ -89,7 +97,7 @@ cd /users/apiccine/work/correction-lib/topeft/analysis/topeft_run2
 # Global configuration
 ###############################################################################
 
-output_dir="/groups/klannon/apiccine/preappr_v9_260729"
+output_dir=""
 chunk_size="100000"
 
 # Nominal TOP-23-002-like ttgamma sample-role strategy.
@@ -107,108 +115,58 @@ chunk_size="100000"
 # The diagnostic Run 2 NLO-only policy is intentionally not used here.
 ttgamma_sample_role_policy="split"
 
-# Use a strategy-specific tag to avoid mixing baseline, feature, and diagnostic
-# outputs.
-campaign_tag="ANv9"
-rebin_fine_env_file=""
-rebin_fine_env_file_sha256=""
-rebin_fine_environment_fingerprint=""
-rebin_fine_topcoffea_git_commit=""
-rebin_fine_topcoffea_source_fingerprint=""
-rebin_fine_state_path=""
-rebin_fine_git_commit=""
+campaign_tag=""
+production_env_file=""
+production_env_file_sha256=""
+production_environment_fingerprint=""
+production_topcoffea_git_commit=""
+production_topcoffea_source_fingerprint=""
+production_state_path=""
+production_git_commit=""
 
-if [[ "${production_profile}" == "rebin_fine" ]]; then
-  run_cr=false
-  run_sr=true
-  dry_run="${profile_dry_run}"
+run_cr=false
+run_sr=true
+dry_run="${profile_dry_run}"
 
-  if [[ "${dry_run}" == "true" ]]; then
-    output_dir="${profile_output_dir:-/tmp/rebin_fine_dry_run}"
-    campaign_tag="${profile_campaign_tag:-rebin_fine_dry_run}"
-  else
-    if [[ -z "${profile_output_dir}" || -z "${profile_campaign_tag}" ]]; then
-      cat >&2 <<EOF
-ERROR: rebin_fine production requires explicit --output-dir and --campaign-tag.
+if [[ -z "${profile_output_dir}" || -z "${profile_campaign_tag}" ]]; then
+  cat >&2 <<EOF
+ERROR: ${production_profile} requires explicit --output-dir and --campaign-tag.
 
-Use --dry-run to inspect the static plan without production side effects.
+No production or campaign-state mutation was performed.
 EOF
-      exit 1
-    fi
-    output_dir="${profile_output_dir}"
-    campaign_tag="${profile_campaign_tag}"
-  fi
+  exit 1
+fi
+output_dir="${profile_output_dir}"
+campaign_tag="${profile_campaign_tag}"
 
-  if [[ -z "${profile_env_file}" ]]; then
-    echo "ERROR: rebin_fine requires --env-file for both dry-run and production." >&2
+for production_state_value in "${output_dir}" "${campaign_tag}"; do
+  if [[ "${production_state_value}" == *$'\t'* || "${production_state_value}" == *$'\n'* ]]; then
+    echo "ERROR: ${production_profile} state fields must not contain tab or newline characters." >&2
     exit 1
   fi
+done
 
-  if [[ "${profile_env_file}" != /* ]]; then
-    echo "ERROR: rebin_fine --env-file must be an absolute path: ${profile_env_file}" >&2
-    exit 1
-  fi
+if [[ "${output_dir}" != /* ]]; then
+  echo "ERROR: ${production_profile} --output-dir must be an absolute path: ${output_dir}" >&2
+  exit 1
+fi
 
-  if [[ ! -f "${profile_env_file}" || ! -r "${profile_env_file}" || ! -s "${profile_env_file}" ]]; then
-    echo "ERROR: rebin_fine --env-file must be a readable, non-empty regular file: ${profile_env_file}" >&2
-    exit 1
-  fi
+if [[ "${production_profile}" == "run3_full" ]] \
+  && { [[ "${output_dir}" == "/groups/klannon/apiccine/preappr_v9_260729" ]] \
+    || [[ "${output_dir}" == "/groups/klannon/apiccine/rebin_fine_260818_v3" ]] \
+    || [[ "${campaign_tag}" == "ANv9" ]] \
+    || [[ "${campaign_tag}" == "rebin-fine-260818-v3" ]]; }; then
+  echo "ERROR: run3_full must use a fresh namespace, not a historical baseline or v3 campaign." >&2
+  exit 1
+fi
 
-  rebin_fine_env_file=$(readlink -f -- "${profile_env_file}")
-  if [[ -z "${rebin_fine_env_file}" || ! -f "${rebin_fine_env_file}" || ! -r "${rebin_fine_env_file}" || ! -s "${rebin_fine_env_file}" ]]; then
-    echo "ERROR: unable to resolve a readable, non-empty rebin_fine environment archive: ${profile_env_file}" >&2
-    exit 1
-  fi
-  rebin_fine_env_file_sha256=$(sha256sum -- "${rebin_fine_env_file}" | awk '{print $1}')
+if [[ "${profile_resume}" == "false" && -e "${output_dir}" ]]; then
+  echo "ERROR: ${production_profile} output directory already exists: ${output_dir}" >&2
+  exit 1
+fi
 
-  # The shared Python policy validates tar integrity, manifest SHA, and current
-  # environment compatibility.  It never builds an archive for an explicit file.
-  rebin_fine_validation_args=(--validate-env-file --env-file "${rebin_fine_env_file}")
-  if [[ "${dry_run}" == "true" ]]; then
-    rebin_fine_validation_args+=(--env-integrity-only)
-  fi
-  if ! rebin_fine_environment_validation=$(python ./run_analysis.py "${rebin_fine_validation_args[@]}"); then
-    echo "ERROR: rebin_fine requires a strict current environment archive; no campaign state was changed." >&2
-    exit 1
-  fi
-  printf '%s\n' "${rebin_fine_environment_validation}"
-  rebin_fine_environment_fingerprint=$(awk -F': ' '/^environment_fingerprint: / {print $2; exit}' <<< "${rebin_fine_environment_validation}")
-  rebin_fine_topcoffea_git_commit=$(awk -F': ' '/^topcoffea_git_commit: / {print $2; exit}' <<< "${rebin_fine_environment_validation}")
-  rebin_fine_topcoffea_source_fingerprint=$(awk -F': ' '/^topcoffea_relevant_source_fingerprint: / {print $2; exit}' <<< "${rebin_fine_environment_validation}")
-  if [[ -z "${rebin_fine_environment_fingerprint}" || -z "${rebin_fine_topcoffea_git_commit}" || -z "${rebin_fine_topcoffea_source_fingerprint}" ]]; then
-    echo "ERROR: strict environment validation did not report required topcoffea/environment identity." >&2
-    exit 1
-  fi
-
-  for rebin_fine_state_value in "${output_dir}" "${campaign_tag}" "${rebin_fine_env_file}"; do
-    if [[ "${rebin_fine_state_value}" == *$'\t'* || "${rebin_fine_state_value}" == *$'\n'* ]]; then
-      echo "ERROR: rebin_fine state fields must not contain tab or newline characters." >&2
-      exit 1
-    fi
-  done
-
-  if [[ "${output_dir}" == "/groups/klannon/apiccine/preappr_v9_260729" ]] \
-    || [[ "${campaign_tag}" == "ANv9" ]]; then
-    echo "ERROR: rebin_fine must not reuse the baseline/resume output namespace." >&2
-    exit 1
-  fi
-
-  if [[ "${dry_run}" == "false" && "${output_dir}" != /* ]]; then
-    echo "ERROR: rebin_fine --output-dir must be an absolute path: ${output_dir}" >&2
-    exit 1
-  fi
-
-  if [[ "${profile_resume}" == "false" && -e "${output_dir}" ]]; then
-    echo "ERROR: rebin_fine output directory already exists: ${output_dir}" >&2
-    exit 1
-  fi
-
-  if [[ "${profile_resume}" == "true" && "${dry_run}" == "false" && ! -d "${output_dir}" ]]; then
-    echo "ERROR: rebin_fine --resume requires an existing campaign output directory: ${output_dir}" >&2
-    exit 1
-  fi
-elif [[ "${profile_resume}" == "true" || -n "${profile_env_file}" ]]; then
-  echo "ERROR: --resume and --env-file are only supported with --production-profile rebin_fine." >&2
+if [[ "${profile_resume}" == "true" && ! -d "${output_dir}" ]]; then
+  echo "ERROR: ${production_profile} --resume requires an existing campaign output directory: ${output_dir}" >&2
   exit 1
 fi
 
@@ -298,24 +256,9 @@ sr_fwd_var_sets=(
   "njets lj0pt ptz lt"
 )
 
-# Run 2 retains the successful combined off-Z grouping. Run 3 splits the
-# negative- and positive-charge off-Z families so each large artifact remains
-# smaller and failures are isolated more narrowly.
-sr_run2_category_sets=(
-  "2l 2lss_1tau 2los_1tau 4l"
-  "3l_m_offZ 3l_p_offZ"
-  "3l_onZ_tau"
-  "3l_fwd"
-)
-
-sr_run2_category_var_set_names=(
-  "sr_with_ptz_wtau_var_sets"
-  "sr_offz_var_sets"
-  "sr_onz_tau_var_sets"
-  "sr_fwd_var_sets"
-)
-
-sr_run3_category_sets=(
+# The complete Run-3 plan keeps the two off-Z charge families in separate
+# source blocks so failures and output identities remain unambiguous.
+run3_full_category_sets=(
   "2l 2lss_1tau 2los_1tau 4l"
   "3l_m_offZ"
   "3l_p_offZ"
@@ -323,7 +266,7 @@ sr_run3_category_sets=(
   "3l_fwd"
 )
 
-sr_run3_category_var_set_names=(
+run3_full_category_var_set_names=(
   "sr_with_ptz_wtau_var_sets"
   "sr_offz_var_sets"
   "sr_offz_var_sets"
@@ -358,48 +301,6 @@ rebin_fine_category_var_set_names=(
   "rebin_fine_3l_fwd_var_sets"
 )
 
-# Each year expression selects its own category layout and variable mapping.
-sr_year_sets=(
-  "2016APV 2016 2017 2018"
-  "2022 2022EE 2023 2023BPix"
-)
-
-sr_year_category_set_names=(
-  "sr_run2_category_sets"
-  "sr_run3_category_sets"
-)
-
-sr_year_category_var_set_names=(
-  "sr_run2_category_var_set_names"
-  "sr_run3_category_var_set_names"
-)
-
-# Exact SR blocks that must not be rerun while resuming the current campaign.
-#
-# Key format:
-#   "<year expression>|<category expression>"
-#
-# The two split Run 3 off-Z entries are intentionally marked covered by the
-# already-produced combined Run 3 off-Z processor artifact. Keep them here only
-# after its manual streaming data-driven recovery has completed successfully.
-# Empty this array before a clean production from scratch.
-sr_completed_block_keys=(
-  "2016APV 2016 2017 2018|2l 2lss_1tau 2los_1tau 4l"
-  "2016APV 2016 2017 2018|3l_m_offZ 3l_p_offZ"
-  "2016APV 2016 2017 2018|3l_onZ_tau"
-  "2016APV 2016 2017 2018|3l_fwd"
-  "2022 2022EE 2023 2023BPix|2l 2lss_1tau 2los_1tau 4l"
-  "2022 2022EE 2023 2023BPix|3l_m_offZ"
-  "2022 2022EE 2023 2023BPix|3l_p_offZ"
-)
-
-# Guard the current campaign resume against accidentally treating the split
-# Run 3 off-Z blocks as complete before the manually recovered combined _np
-# artifact exists. Set to false only for a deliberately fresh campaign after
-# also resetting sr_completed_block_keys.
-require_recovered_run3_offz_np=true
-recovered_run3_offz_np="${output_dir}/2022-2022EE-2023-2023BPixSRs_ANv9_3l_m_offZ-3l_p_offZ_njets-lj0pt-ptz-lt_np.pkl.gz"
-
 if [[ "${production_profile}" == "rebin_fine" ]]; then
   sr_year_sets=(
     "2016APV 2016 2017 2018"
@@ -413,18 +314,26 @@ if [[ "${production_profile}" == "rebin_fine" ]]; then
     "rebin_fine_category_var_set_names"
     "rebin_fine_category_var_set_names"
   )
-  sr_completed_block_keys=()
-  require_recovered_run3_offz_np=false
+else
+  sr_year_sets=(
+    "2022 2022EE 2023 2023BPix"
+  )
+  sr_year_category_set_names=(
+    "run3_full_category_sets"
+  )
+  sr_year_category_var_set_names=(
+    "run3_full_category_var_set_names"
+  )
 fi
 
-rebin_fine_state_filename=".rebin_fine_campaign_state.json"
-rebin_fine_block_ids=()
-rebin_fine_plan_year_exprs=()
-rebin_fine_plan_category_sets=()
-rebin_fine_plan_var_sets=()
+production_state_filename=".${production_profile}_campaign_state.json"
+production_block_ids=()
+production_plan_year_exprs=()
+production_plan_category_sets=()
+production_plan_var_sets=()
 
 if [[ "${production_profile}" == "rebin_fine" ]]; then
-  rebin_fine_block_ids=(
+  production_block_ids=(
     "run2_a"
     "run2_b"
     "run2_c"
@@ -432,7 +341,7 @@ if [[ "${production_profile}" == "rebin_fine" ]]; then
     "run3_b"
     "run3_c"
   )
-  rebin_fine_plan_year_exprs=(
+  production_plan_year_exprs=(
     "2016APV 2016 2017 2018"
     "2016APV 2016 2017 2018"
     "2016APV 2016 2017 2018"
@@ -440,7 +349,7 @@ if [[ "${production_profile}" == "rebin_fine" ]]; then
     "2022 2022EE 2023 2023BPix"
     "2022 2022EE 2023 2023BPix"
   )
-  rebin_fine_plan_category_sets=(
+  production_plan_category_sets=(
     "2lss_1tau 3l_m_offZ"
     "3l_p_offZ 3l_onZ_tau"
     "3l_fwd"
@@ -448,13 +357,42 @@ if [[ "${production_profile}" == "rebin_fine" ]]; then
     "3l_p_offZ 3l_onZ_tau"
     "3l_fwd"
   )
-  rebin_fine_plan_var_sets=(
+  production_plan_var_sets=(
     "lj0pt ptll ptz_wtau"
     "lj0pt ptz ptll"
     "lt"
     "lj0pt ptll ptz_wtau"
     "lj0pt ptz ptll"
     "lt"
+  )
+else
+  production_block_ids=(
+    "run3_full_a"
+    "run3_full_b"
+    "run3_full_c"
+    "run3_full_d"
+    "run3_full_e"
+  )
+  production_plan_year_exprs=(
+    "2022 2022EE 2023 2023BPix"
+    "2022 2022EE 2023 2023BPix"
+    "2022 2022EE 2023 2023BPix"
+    "2022 2022EE 2023 2023BPix"
+    "2022 2022EE 2023 2023BPix"
+  )
+  production_plan_category_sets=(
+    "2l 2lss_1tau 2los_1tau 4l"
+    "3l_m_offZ"
+    "3l_p_offZ"
+    "3l_onZ_tau"
+    "3l_fwd"
+  )
+  production_plan_var_sets=(
+    "njets lj0pt ptz ptz_wtau lt"
+    "njets lj0pt ptll lt"
+    "njets lj0pt ptll lt"
+    "njets lj0pt ptz lt"
+    "njets lj0pt ptz lt"
   )
 fi
 
@@ -528,21 +466,7 @@ assert_array_defined() {
   fi
 }
 
-# Intentional workaround: clear cached remote-environment artifacts before each
-# production block to avoid the previously observed environment failure mode.
-# Do not remove this from the per-block execution path without revalidating that
-# failure mode.
-clean_env_cache() {
-  if [[ -d topeft-envs ]]; then
-    find topeft-envs \
-      -mindepth 1 \
-      -maxdepth 1 \
-      \( -type f -o -type l \) \
-      -delete
-  fi
-}
-
-rebin_fine_output_name() {
+production_output_name() {
   local year_expr="$1"
   local pkl_tag="$2"
   local years=()
@@ -553,7 +477,7 @@ rebin_fine_output_name() {
   printf '%sSRs_%s' "${year_label}" "${pkl_tag}"
 }
 
-write_rebin_fine_plan() {
+write_production_plan() {
   local plan_path="$1"
   local index
   local year_expr
@@ -567,18 +491,18 @@ write_rebin_fine_plan() {
   local output_name
 
   : > "${plan_path}"
-  for index in "${!rebin_fine_block_ids[@]}"; do
-    year_expr="${rebin_fine_plan_year_exprs[index]}"
-    category_set="${rebin_fine_plan_category_sets[index]}"
-    var_set="${rebin_fine_plan_var_sets[index]}"
+  for index in "${!production_block_ids[@]}"; do
+    year_expr="${production_plan_year_exprs[index]}"
+    category_set="${production_plan_category_sets[index]}"
+    var_set="${production_plan_var_sets[index]}"
     read -r -a cats <<< "${category_set}"
     read -r -a vars <<< "${var_set}"
     cat_tag=$(join_by - "${cats[@]}")
     var_tag=$(join_by - "${vars[@]}")
     pkl_tag="${sr_pkl_base_tag}_${cat_tag}_${var_tag}"
-    output_name=$(rebin_fine_output_name "${year_expr}" "${pkl_tag}")
+    output_name=$(production_output_name "${year_expr}" "${pkl_tag}")
     printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
-      "${rebin_fine_block_ids[index]}" \
+      "${production_block_ids[index]}" \
       "${year_expr}" \
       "${category_set}" \
       "${var_set}" \
@@ -590,7 +514,7 @@ write_rebin_fine_plan() {
   done
 }
 
-rebin_fine_state_tool() {
+production_state_tool() {
   python - "$@" <<'PY'
 import datetime
 import json
@@ -599,7 +523,17 @@ import sys
 from pathlib import Path
 
 
-VALID_STATUSES = {"planned", "running", "success", "failed_or_incomplete"}
+VALID_STATUSES = {
+    "planned",
+    "source_running",
+    "source_ready",
+    "source_failed",
+    "nonprompt_running",
+    "nonprompt_failed",
+    "success",
+}
+VALID_SOURCE_STATUSES = {"planned", "running", "ready", "failed"}
+VALID_NONPROMPT_STATUSES = {"blocked", "planned", "running", "failed", "success"}
 
 
 def now_utc():
@@ -637,39 +571,40 @@ def load(path):
         fail(f"cannot read campaign state {path}: {exc}")
 
 
-def read_plan(path):
+def read_plan(path, production_profile):
     blocks = []
     try:
         lines = path.read_text(encoding="utf-8").splitlines()
     except OSError as exc:
-        fail(f"cannot read generated rebin_fine plan {path}: {exc}")
+        fail(f"cannot read generated {production_profile} plan {path}: {exc}")
     for line in lines:
         fields = line.split("\t")
         if len(fields) != 8:
-            fail(f"invalid generated rebin_fine plan row: {line!r}")
+            fail(f"invalid generated {production_profile} plan row: {line!r}")
         block_id, years, categories, histograms, output_tag, output_name, nominal, nonprompt = fields
-        blocks.append(
-            {
-                "id": block_id,
-                "years": years.split(),
-                "category_groups": categories.split(),
-                "histograms": histograms.split(),
-                "output_tag": output_tag,
-                "output_name": output_name,
-                "expected_outputs": [nominal, nonprompt],
-            }
-        )
-    if len(blocks) != 6 or len({block["id"] for block in blocks}) != len(blocks):
-        fail("generated rebin_fine plan does not contain six unique blocks")
+        block = {
+            "id": block_id,
+            "years": years.split(),
+            "category_groups": categories.split(),
+            "histograms": histograms.split(),
+            "output_tag": output_tag,
+            "output_name": output_name,
+            "expected_outputs": [nominal, nonprompt],
+        }
+        block["expected_nominal_path"] = nominal
+        block["expected_np_path"] = nonprompt
+        blocks.append(block)
+    if not blocks or len({block["id"] for block in blocks}) != len(blocks):
+        fail(f"generated {production_profile} plan does not contain unique blocks")
     return blocks
 
 
 def desired_state(arguments):
     plan_path = Path(arguments[0])
-    tag, output_dir, commit, env_file, env_sha256, env_fingerprint, topcoffea_commit, topcoffea_source, ttgamma, do_systs, do_np = arguments[1:]
+    production_profile, schema_version, tag, output_dir, commit, env_file, env_sha256, env_fingerprint, topcoffea_commit, topcoffea_source, ttgamma, do_systs, do_np = arguments[1:]
     return {
-        "schema_version": 2,
-        "production_profile": "rebin_fine",
+        "schema_version": int(schema_version),
+        "production_profile": production_profile,
         "campaign_tag": tag,
         "output_dir": output_dir,
         "topeft_git_commit": commit,
@@ -681,7 +616,7 @@ def desired_state(arguments):
         "ttgamma_sample_role_policy": ttgamma,
         "do_systs": do_systs == "true",
         "do_np": do_np == "true",
-        "blocks": read_plan(plan_path),
+        "blocks": read_plan(plan_path, production_profile),
     }
 
 
@@ -705,96 +640,303 @@ def validate_state(state, desired):
             fail(f"campaign state mismatch for {key}: recorded={state.get(key)!r} requested={desired[key]!r}")
     recorded_blocks = state.get("blocks")
     if not isinstance(recorded_blocks, list) or len(recorded_blocks) != len(desired["blocks"]):
-        fail("campaign state block count does not match the live six-block plan")
-    block_keys = ("id", "years", "category_groups", "histograms", "output_tag", "output_name", "expected_outputs")
+        fail("campaign state block count does not match the live profile plan")
     for recorded, expected in zip(recorded_blocks, desired["blocks"]):
-        for key in block_keys:
+        for key in expected:
             if recorded.get(key) != expected[key]:
                 fail(f"campaign state mismatch for block {expected['id']} field {key}")
         if recorded.get("status") not in VALID_STATUSES:
             fail(f"campaign state has invalid status for block {expected['id']}: {recorded.get('status')!r}")
+        if recorded.get("source_status") not in VALID_SOURCE_STATUSES:
+            fail(f"campaign state has invalid source status for block {expected['id']}")
+        if recorded.get("nonprompt_status") not in VALID_NONPROMPT_STATUSES:
+            fail(f"campaign state has invalid nonprompt status for block {expected['id']}")
+        if not isinstance(recorded.get("transitions"), list):
+            fail(f"campaign state lacks transition history for block {expected['id']}")
+        expected_stage_statuses = {
+            "planned": ("planned", "blocked"),
+            "source_running": ("running", "blocked"),
+            "source_ready": ("ready", "planned"),
+            "source_failed": ("failed", "blocked"),
+            "nonprompt_running": ("ready", "running"),
+            "nonprompt_failed": ("ready", "failed"),
+            "success": ("ready", "success"),
+        }[recorded["status"]]
+        if (recorded["source_status"], recorded["nonprompt_status"]) != expected_stage_statuses:
+            fail(f"campaign state has contradictory stage statuses for block {expected['id']}")
 
 
 mode = sys.argv[1]
 state_path = Path(sys.argv[2])
 
 if mode in {"initialize", "validate"}:
-    desired = desired_state(sys.argv[3:15])
-    readonly = len(sys.argv) > 15 and sys.argv[15] == "true"
+    desired = desired_state(sys.argv[3:17])
+    readonly = len(sys.argv) > 17 and sys.argv[17] == "true"
     if mode == "initialize":
         if state_path.exists():
-            fail(f"refusing to overwrite existing rebin_fine campaign state: {state_path}")
+            fail(f"refusing to overwrite existing {desired['production_profile']} campaign state: {state_path}")
         state = desired
         timestamp = now_utc()
         state["created_at_utc"] = timestamp
         state["updated_at_utc"] = timestamp
-        state["blocks"] = [
-            {**block, "status": "planned", "exit_code": None, "last_transition_utc": timestamp}
-            for block in desired["blocks"]
-        ]
+        state["blocks"] = []
+        for block in desired["blocks"]:
+            initialized = {
+                **block,
+                "status": "planned",
+                "exit_code": None,
+                "source_status": "planned",
+                "source_exit_code": None,
+                "nonprompt_status": "blocked",
+                "nonprompt_exit_code": None,
+                "last_transition_utc": timestamp,
+                "last_transition_detail": "campaign_initialized",
+                "transitions": [
+                    {
+                        "timestamp_utc": timestamp,
+                        "stage": "campaign",
+                        "status": "planned",
+                        "exit_code": None,
+                        "detail": "campaign_initialized",
+                    }
+                ],
+            }
+            state["blocks"].append(initialized)
         atomic_write(state_path, state)
     else:
         state = load(state_path)
         validate_state(state, desired)
         changed = False
         for block in state["blocks"]:
-            if block["status"] == "running":
-                if not readonly:
-                    block["status"] = "failed_or_incomplete"
-                    block["last_transition_utc"] = now_utc()
-                    block["last_transition_detail"] = "resume_observed_previous_running_state"
-                    changed = True
+            if readonly:
+                continue
+            if block["source_status"] == "running":
+                timestamp = now_utc()
+                block["status"] = "source_failed"
+                block["source_status"] = "failed"
+                block["last_transition_utc"] = timestamp
+                block["last_transition_detail"] = "resume_observed_interrupted_source_stage"
+                block["transitions"].append(
+                    {
+                        "timestamp_utc": timestamp,
+                        "stage": "source",
+                        "status": "failed",
+                        "exit_code": block.get("source_exit_code"),
+                        "detail": block["last_transition_detail"],
+                    }
+                )
+                changed = True
+            elif block["nonprompt_status"] == "running":
+                timestamp = now_utc()
+                block["status"] = "nonprompt_failed"
+                block["nonprompt_status"] = "failed"
+                block["last_transition_utc"] = timestamp
+                block["last_transition_detail"] = "resume_observed_interrupted_nonprompt_stage"
+                block["transitions"].append(
+                    {
+                        "timestamp_utc": timestamp,
+                        "stage": "nonprompt",
+                        "status": "failed",
+                        "exit_code": block.get("nonprompt_exit_code"),
+                        "detail": block["last_transition_detail"],
+                    }
+                )
+                changed = True
         if changed:
             state["updated_at_utc"] = now_utc()
             atomic_write(state_path, state)
     raise SystemExit(0)
 
 state = load(state_path)
+if mode == "env_file":
+    expected_profile, expected_tag, expected_output_dir = sys.argv[3:6]
+    for key, expected in (
+        ("production_profile", expected_profile),
+        ("campaign_tag", expected_tag),
+        ("output_dir", expected_output_dir),
+    ):
+        if state.get(key) != expected:
+            fail(
+                f"campaign state mismatch for {key}: "
+                f"recorded={state.get(key)!r} requested={expected!r}"
+            )
+    env_file = state.get("env_file")
+    if not isinstance(env_file, str) or not env_file.startswith("/"):
+        fail("campaign state does not contain an absolute frozen env_file")
+    print(env_file)
+    raise SystemExit(0)
+
 if mode == "status":
     block_id = sys.argv[3]
     for block in state.get("blocks", []):
         if block.get("id") == block_id:
-            print(block.get("status", ""))
+            print(
+                "\t".join(
+                    (
+                        str(block.get("status", "")),
+                        str(block.get("source_status", "")),
+                        str(block.get("nonprompt_status", "")),
+                    )
+                )
+            )
             raise SystemExit(0)
     fail(f"campaign state does not contain block {block_id}")
 
 if mode == "mark":
-    block_id, status, exit_code, detail = sys.argv[3:7]
-    if status not in VALID_STATUSES:
-        fail(f"invalid requested block status {status!r}")
+    block_id, stage, stage_status, exit_code, detail = sys.argv[3:8]
+    if stage == "source" and stage_status not in VALID_SOURCE_STATUSES:
+        fail(f"invalid requested source status {stage_status!r}")
+    if stage == "nonprompt" and stage_status not in VALID_NONPROMPT_STATUSES:
+        fail(f"invalid requested nonprompt status {stage_status!r}")
+    if stage not in {"source", "nonprompt"}:
+        fail(f"invalid requested stage {stage!r}")
     for block in state.get("blocks", []):
         if block.get("id") == block_id:
-            block["status"] = status
-            block["exit_code"] = None if exit_code == "none" else int(exit_code)
+            parsed_exit_code = None if exit_code == "none" else int(exit_code)
+            if stage == "source":
+                block["source_status"] = stage_status
+                block["source_exit_code"] = parsed_exit_code
+                block["status"] = {
+                    "planned": "planned",
+                    "running": "source_running",
+                    "ready": "source_ready",
+                    "failed": "source_failed",
+                }[stage_status]
+                if stage_status == "ready":
+                    block["nonprompt_status"] = "planned"
+                    block["nonprompt_exit_code"] = None
+                else:
+                    block["nonprompt_status"] = "blocked"
+                    block["nonprompt_exit_code"] = None
+            else:
+                block["nonprompt_status"] = stage_status
+                block["nonprompt_exit_code"] = parsed_exit_code
+                block["status"] = {
+                    "blocked": "source_failed",
+                    "planned": "source_ready",
+                    "running": "nonprompt_running",
+                    "failed": "nonprompt_failed",
+                    "success": "success",
+                }[stage_status]
+            block["exit_code"] = parsed_exit_code
             block["last_transition_utc"] = now_utc()
             block["last_transition_detail"] = detail
+            block.setdefault("transitions", []).append(
+                {
+                    "timestamp_utc": block["last_transition_utc"],
+                    "stage": stage,
+                    "status": stage_status,
+                    "exit_code": parsed_exit_code,
+                    "detail": detail,
+                }
+            )
             state["updated_at_utc"] = now_utc()
             atomic_write(state_path, state)
             raise SystemExit(0)
     fail(f"campaign state does not contain block {block_id}")
 
-fail(f"unsupported rebin_fine state operation {mode!r}")
+fail(f"unsupported production state operation {mode!r}")
 PY
 }
 
-rebin_fine_block_id() {
+resolve_production_environment() {
+  local requested_env_file="${profile_env_file}"
+  local frozen_env_file=""
+  local canonical_requested_env_file=""
+  local validation_status=""
+  local validation_args=()
+
+  production_state_path="${output_dir}/${production_state_filename}"
+
+  if [[ "${profile_resume}" == "true" ]]; then
+    if [[ ! -f "${production_state_path}" ]]; then
+      echo "ERROR: ${production_profile} --resume requires campaign state: ${production_state_path}" >&2
+      exit 1
+    fi
+    frozen_env_file=$(production_state_tool env_file \
+      "${production_state_path}" "${production_profile}" "${campaign_tag}" "${output_dir}")
+    if [[ -n "${requested_env_file}" ]]; then
+      if [[ "${requested_env_file}" != /* ]]; then
+        echo "ERROR: ${production_profile} --env-file must be an absolute path: ${requested_env_file}" >&2
+        exit 1
+      fi
+      canonical_requested_env_file=$(readlink -f -- "${requested_env_file}" || true)
+      if [[ -z "${canonical_requested_env_file}" || "${canonical_requested_env_file}" != "${frozen_env_file}" ]]; then
+        echo "ERROR: resume --env-file does not match the exact archive frozen in campaign state." >&2
+        exit 1
+      fi
+    fi
+    requested_env_file="${frozen_env_file}"
+    validation_args=(--validate-env-file --env-file "${requested_env_file}")
+  elif [[ -n "${requested_env_file}" ]]; then
+    if [[ "${requested_env_file}" != /* ]]; then
+      echo "ERROR: ${production_profile} --env-file must be an absolute path: ${requested_env_file}" >&2
+      exit 1
+    fi
+    canonical_requested_env_file=$(readlink -f -- "${requested_env_file}" || true)
+    validation_args=(--validate-env-file --env-file "${requested_env_file}")
+  elif [[ "${production_profile}" == "run3_full" ]]; then
+    # This is the single campaign-level cache/build decision. run_analysis.py
+    # owns request fingerprinting, cache selection, manifest publication, and
+    # strict compatibility validation.
+    validation_args=(--prepare-env-only)
+  else
+    echo "ERROR: rebin_fine requires an explicit --env-file; no environment was built." >&2
+    exit 1
+  fi
+
+  if ! production_environment_validation=$(python ./run_analysis.py "${validation_args[@]}"); then
+    echo "ERROR: ${production_profile} could not resolve a strict current environment archive; no campaign state was changed." >&2
+    exit 1
+  fi
+  printf '%s\n' "${production_environment_validation}"
+
+  production_env_file=$(awk -F': ' '/^env_file: / {print $2; exit}' <<< "${production_environment_validation}")
+  production_env_file_sha256=$(awk -F': ' '/^env_file_sha256: / {print $2; exit}' <<< "${production_environment_validation}")
+  production_environment_fingerprint=$(awk -F': ' '/^environment_fingerprint: / {print $2; exit}' <<< "${production_environment_validation}")
+  production_topcoffea_git_commit=$(awk -F': ' '/^topcoffea_git_commit: / {print $2; exit}' <<< "${production_environment_validation}")
+  production_topcoffea_source_fingerprint=$(awk -F': ' '/^topcoffea_relevant_source_fingerprint: / {print $2; exit}' <<< "${production_environment_validation}")
+  validation_status=$(awk -F': ' '/^environment_validation_status: / {print $2; exit}' <<< "${production_environment_validation}")
+
+  if [[ "${production_env_file}" != /* ]] \
+    || [[ ! -f "${production_env_file}" || ! -r "${production_env_file}" || ! -s "${production_env_file}" ]] \
+    || [[ -z "${production_env_file_sha256}" ]] \
+    || [[ -z "${production_environment_fingerprint}" ]] \
+    || [[ -z "${production_topcoffea_git_commit}" ]] \
+    || [[ -z "${production_topcoffea_source_fingerprint}" ]] \
+    || [[ "${validation_status}" != "valid" ]]; then
+    echo "ERROR: run_analysis.py did not return a complete valid environment identity." >&2
+    exit 1
+  fi
+
+  if [[ "${profile_resume}" == "true" && "${production_env_file}" != "${frozen_env_file}" ]]; then
+    echo "ERROR: validated resume environment path differs from campaign state." >&2
+    exit 1
+  fi
+  if [[ -n "${canonical_requested_env_file}" && "${production_env_file}" != "${canonical_requested_env_file}" ]]; then
+    echo "ERROR: strict --env-file validation returned a different archive path." >&2
+    exit 1
+  fi
+}
+
+production_block_id() {
   local year_expr="$1"
   local category_set="$2"
   local index
 
-  for index in "${!rebin_fine_block_ids[@]}"; do
-    if [[ "${year_expr}" == "${rebin_fine_plan_year_exprs[index]}" ]] \
-      && [[ "${category_set}" == "${rebin_fine_plan_category_sets[index]}" ]]; then
-      printf '%s' "${rebin_fine_block_ids[index]}"
+  for index in "${!production_block_ids[@]}"; do
+    if [[ "${year_expr}" == "${production_plan_year_exprs[index]}" ]] \
+      && [[ "${category_set}" == "${production_plan_category_sets[index]}" ]]; then
+      printf '%s' "${production_block_ids[index]}"
       return 0
     fi
   done
 
-  echo "ERROR: unable to resolve rebin_fine block identity for '${year_expr}' / '${category_set}'." >&2
+  echo "ERROR: unable to resolve ${production_profile} block identity for '${year_expr}' / '${category_set}'." >&2
   return 1
 }
 
-rebin_fine_outputs_present() {
+production_outputs_present() {
   local block_id="$1"
   local plan_path="$2"
   local nominal_path
@@ -806,7 +948,7 @@ rebin_fine_outputs_present() {
   [[ -n "${nominal_path}" && -n "${nonprompt_path}" && -s "${nominal_path}" && -s "${nonprompt_path}" ]]
 }
 
-rebin_fine_any_output_exists() {
+production_any_output_exists() {
   local block_id="$1"
   local plan_path="$2"
   local nominal_path
@@ -818,107 +960,131 @@ rebin_fine_any_output_exists() {
   [[ -e "${nominal_path}" || -e "${nonprompt_path}" ]]
 }
 
-rebin_fine_assert_live_plan() {
+production_assert_live_plan() {
   local index
   local var_set_name
 
-  if (( ${#rebin_fine_block_ids[@]} != 6 )); then
-    echo "ERROR: rebin_fine state plan must contain exactly six blocks." >&2
-    exit 1
+  if [[ "${production_profile}" == "rebin_fine" ]]; then
+    if (( ${#production_block_ids[@]} != 6 )) \
+      || (( ${#sr_year_sets[@]} != 2 )) \
+      || [[ "${sr_year_sets[0]}" != "2016APV 2016 2017 2018" ]] \
+      || [[ "${sr_year_sets[1]}" != "2022 2022EE 2023 2023BPix" ]]; then
+      echo "ERROR: live rebin_fine packing no longer matches the frozen six-block contract." >&2
+      exit 1
+    fi
+
+    for index in 0 1 2; do
+      if [[ "${rebin_fine_category_sets[index]}" != "${production_plan_category_sets[index]}" ]] \
+        || [[ "${production_plan_category_sets[index]}" != "${production_plan_category_sets[index + 3]}" ]]; then
+        echo "ERROR: live rebin_fine category packing no longer matches the frozen plan." >&2
+        exit 1
+      fi
+      var_set_name="${rebin_fine_category_var_set_names[index]}"
+      declare -n profile_var_set_ref="${var_set_name}"
+      if (( ${#profile_var_set_ref[@]} != 1 )) \
+        || [[ "${profile_var_set_ref[0]}" != "${production_plan_var_sets[index]}" ]] \
+        || [[ "${production_plan_var_sets[index]}" != "${production_plan_var_sets[index + 3]}" ]]; then
+        echo "ERROR: live rebin_fine histogram packing no longer matches the frozen plan." >&2
+        unset -n profile_var_set_ref
+        exit 1
+      fi
+      unset -n profile_var_set_ref
+    done
+
+    for index in "${!production_plan_var_sets[@]}"; do
+      if [[ " ${production_plan_var_sets[index]} " == *" njets "* ]]; then
+        echo "ERROR: rebin_fine must not request njets." >&2
+        exit 1
+      fi
+    done
+  else
+    if (( ${#production_block_ids[@]} != 5 )) \
+      || (( ${#sr_year_sets[@]} != 1 )) \
+      || [[ "${sr_year_sets[0]}" != "2022 2022EE 2023 2023BPix" ]]; then
+      echo "ERROR: live run3_full packing no longer matches the five-block Run-3 contract." >&2
+      exit 1
+    fi
+    for index in "${!production_block_ids[@]}"; do
+      if [[ "${run3_full_category_sets[index]}" != "${production_plan_category_sets[index]}" ]]; then
+        echo "ERROR: live run3_full category packing no longer matches the frozen plan." >&2
+        exit 1
+      fi
+      var_set_name="${run3_full_category_var_set_names[index]}"
+      declare -n profile_var_set_ref="${var_set_name}"
+      if (( ${#profile_var_set_ref[@]} != 1 )) \
+        || [[ "${profile_var_set_ref[0]}" != "${production_plan_var_sets[index]}" ]]; then
+        echo "ERROR: live run3_full histogram packing no longer matches the frozen plan." >&2
+        unset -n profile_var_set_ref
+        exit 1
+      fi
+      unset -n profile_var_set_ref
+    done
   fi
-
-  if (( ${#sr_year_sets[@]} != 2 )) \
-    || [[ "${sr_year_sets[0]}" != "2016APV 2016 2017 2018" ]] \
-    || [[ "${sr_year_sets[1]}" != "2022 2022EE 2023 2023BPix" ]]; then
-    echo "ERROR: live rebin_fine year packing no longer matches the frozen six-block contract." >&2
-    exit 1
-  fi
-
-  for index in 0 1 2; do
-    if [[ "${rebin_fine_category_sets[index]}" != "${rebin_fine_plan_category_sets[index]}" ]] \
-      || [[ "${rebin_fine_plan_category_sets[index]}" != "${rebin_fine_plan_category_sets[index + 3]}" ]]; then
-      echo "ERROR: live rebin_fine category packing no longer matches the frozen plan." >&2
-      exit 1
-    fi
-    var_set_name="${rebin_fine_category_var_set_names[index]}"
-    declare -n rebin_fine_var_set_ref="${var_set_name}"
-    if (( ${#rebin_fine_var_set_ref[@]} != 1 )) \
-      || [[ "${rebin_fine_var_set_ref[0]}" != "${rebin_fine_plan_var_sets[index]}" ]] \
-      || [[ "${rebin_fine_plan_var_sets[index]}" != "${rebin_fine_plan_var_sets[index + 3]}" ]]; then
-      echo "ERROR: live rebin_fine histogram packing no longer matches the frozen plan." >&2
-      unset -n rebin_fine_var_set_ref
-      exit 1
-    fi
-    unset -n rebin_fine_var_set_ref
-  done
-
-  for index in "${!rebin_fine_plan_var_sets[@]}"; do
-    if [[ " ${rebin_fine_plan_var_sets[index]} " == *" njets "* ]]; then
-      echo "ERROR: rebin_fine must not request njets." >&2
-      exit 1
-    fi
-  done
 }
 
-prepare_rebin_fine_campaign() {
+prepare_production_campaign() {
   local plan_directory
+  local schema_version=3
 
-  rebin_fine_assert_live_plan
-  rebin_fine_git_commit=$(git -C /users/apiccine/work/correction-lib/topeft rev-parse HEAD)
-  rebin_fine_state_path="${output_dir}/${rebin_fine_state_filename}"
-
+  production_assert_live_plan
+  production_git_commit=$(git -C /users/apiccine/work/correction-lib/topeft rev-parse HEAD)
+  production_state_path="${output_dir}/${production_state_filename}"
   if [[ "${dry_run}" == "true" ]]; then
-    rebin_fine_plan_file=$(mktemp /tmp/rebin_fine_plan.XXXXXX)
+    production_plan_file=$(mktemp "/tmp/${production_profile}_plan.XXXXXX")
   else
     if [[ "${profile_resume}" == "false" ]]; then
       mkdir -- "${output_dir}"
     fi
     plan_directory="${output_dir}"
-    rebin_fine_plan_file=$(mktemp "${plan_directory}/.rebin_fine_plan.XXXXXX")
+    production_plan_file=$(mktemp "${plan_directory}/.${production_profile}_plan.XXXXXX")
   fi
-  write_rebin_fine_plan "${rebin_fine_plan_file}"
+  write_production_plan "${production_plan_file}"
 
   if [[ "${profile_resume}" == "true" ]]; then
-    if [[ ! -f "${rebin_fine_state_path}" ]]; then
-      echo "ERROR: rebin_fine --resume requires campaign state: ${rebin_fine_state_path}" >&2
+    if [[ ! -f "${production_state_path}" ]]; then
+      echo "ERROR: ${production_profile} --resume requires campaign state: ${production_state_path}" >&2
       exit 1
     fi
-    rebin_fine_state_tool validate \
-      "${rebin_fine_state_path}" \
-      "${rebin_fine_plan_file}" \
+    production_state_tool validate \
+      "${production_state_path}" \
+      "${production_plan_file}" \
+      "${production_profile}" \
+      "${schema_version}" \
       "${campaign_tag}" \
       "${output_dir}" \
-      "${rebin_fine_git_commit}" \
-      "${rebin_fine_env_file}" \
-      "${rebin_fine_env_file_sha256}" \
-      "${rebin_fine_environment_fingerprint}" \
-      "${rebin_fine_topcoffea_git_commit}" \
-      "${rebin_fine_topcoffea_source_fingerprint}" \
+      "${production_git_commit}" \
+      "${production_env_file}" \
+      "${production_env_file_sha256}" \
+      "${production_environment_fingerprint}" \
+      "${production_topcoffea_git_commit}" \
+      "${production_topcoffea_source_fingerprint}" \
       "${ttgamma_sample_role_policy}" \
       "${do_systs}" \
       "${do_np}" \
       "${dry_run}"
   elif [[ "${dry_run}" == "false" ]]; then
-    rebin_fine_state_tool initialize \
-      "${rebin_fine_state_path}" \
-      "${rebin_fine_plan_file}" \
+    production_state_tool initialize \
+      "${production_state_path}" \
+      "${production_plan_file}" \
+      "${production_profile}" \
+      "${schema_version}" \
       "${campaign_tag}" \
       "${output_dir}" \
-      "${rebin_fine_git_commit}" \
-      "${rebin_fine_env_file}" \
-      "${rebin_fine_env_file_sha256}" \
-      "${rebin_fine_environment_fingerprint}" \
-      "${rebin_fine_topcoffea_git_commit}" \
-      "${rebin_fine_topcoffea_source_fingerprint}" \
+      "${production_git_commit}" \
+      "${production_env_file}" \
+      "${production_env_file_sha256}" \
+      "${production_environment_fingerprint}" \
+      "${production_topcoffea_git_commit}" \
+      "${production_topcoffea_source_fingerprint}" \
       "${ttgamma_sample_role_policy}" \
       "${do_systs}" \
       "${do_np}"
   fi
 }
 
-cleanup_rebin_fine_plan() {
-  if [[ -n "${rebin_fine_plan_file:-}" && -f "${rebin_fine_plan_file}" ]]; then
-    rm -f -- "${rebin_fine_plan_file}"
+cleanup_production_plan() {
+  if [[ -n "${production_plan_file:-}" && -f "${production_plan_file}" ]]; then
+    rm -f -- "${production_plan_file}"
   fi
 }
 
@@ -970,21 +1136,6 @@ print_var_sets() {
     index=$((index + 1))
     echo "  ${index}: ${var_set}"
   done
-}
-
-is_completed_sr_block() {
-  local year_expr="$1"
-  local category_set="$2"
-  local block_key="${year_expr}|${category_set}"
-  local completed_block_key
-
-  for completed_block_key in "${sr_completed_block_keys[@]}"; do
-    if [[ "${block_key}" == "${completed_block_key}" ]]; then
-      return 0
-    fi
-  done
-
-  return 1
 }
 
 format_duration() {
@@ -1106,7 +1257,11 @@ build_common_command_options() {
   fi
 
   if [[ "${do_np}" == "true" ]]; then
-    cmd_ref+=(--do-np)
+    # --do-np configures and certifies the current nonprompt/sumw2 contract;
+    # --defer-np prevents run_analysis.py from materializing the _np artifact
+    # in the processor process. run_sr_block launches run_data_driven.py only
+    # after that child exits and the source artifact is verified.
+    cmd_ref+=(--do-np --defer-np)
   fi
 
   cmd_ref+=(
@@ -1114,9 +1269,7 @@ build_common_command_options() {
     --all-analysis
   )
 
-  if [[ "${production_profile}" == "rebin_fine" ]]; then
-    cmd_ref+=(--env-file "${rebin_fine_env_file}")
-  fi
+  cmd_ref+=(--env-file "${production_env_file}")
 
   if [[ "${split_lep_flavor}" == "true" ]]; then
     cmd_ref+=(--split-lep-flavor)
@@ -1163,10 +1316,6 @@ run_cr_block() {
   echo "Output dir: ${output_dir}"
   echo "Dry run: ${dry_run}"
   echo "----------------------------------------"
-
-  if [[ "${dry_run}" == "false" && "${production_profile}" != "rebin_fine" ]]; then
-    clean_env_cache
-  fi
 
   local cmd=(
     ./fullR3_run.sh
@@ -1226,12 +1375,18 @@ run_sr_block() {
   local cat_tag
   local var_tag
   local pkl_tag
+  local source_path
+  local nonprompt_path
   local start_epoch
   local end_epoch
   local duration_seconds
-  local exit_code
-  local rebin_fine_block=""
-  local rebin_fine_status=""
+  local source_exit_code=0
+  local nonprompt_exit_code=0
+  local production_block=""
+  local production_status=""
+  local source_status=""
+  local nonprompt_status=""
+  local source_reusable=false
 
   read -r -a years <<< "${year_expr}"
   read -r -a vars <<< "${var_set}"
@@ -1240,44 +1395,79 @@ run_sr_block() {
   var_tag=$(join_by - "${vars[@]}")
   pkl_tag="${sr_pkl_base_tag}_${cat_tag}_${var_tag}"
 
-  if [[ "${production_profile}" == "rebin_fine" ]]; then
-    rebin_fine_block=$(rebin_fine_block_id "${year_expr}" "${cats[*]}")
-    if [[ "${dry_run}" == "true" && "${profile_resume}" == "false" ]]; then
-      rebin_fine_status="planned"
+  production_block=$(production_block_id "${year_expr}" "${cats[*]}")
+  IFS=$'\t' read -r _ _ _ _ _ _ source_path nonprompt_path < <(
+    awk -F '\t' -v block_id="${production_block}" '$1 == block_id {print; exit}' "${production_plan_file}"
+  )
+  if [[ -z "${source_path}" || -z "${nonprompt_path}" ]]; then
+    echo "ERROR: unable to resolve expected output paths for ${production_block}." >&2
+    exit 1
+  fi
+
+  if [[ "${dry_run}" == "true" && "${profile_resume}" == "false" ]]; then
+    production_status="planned"
+    source_status="planned"
+    nonprompt_status="blocked"
+  else
+    IFS=$'\t' read -r production_status source_status nonprompt_status < <(
+      production_state_tool status "${production_state_path}" "${production_block}"
+    )
+  fi
+
+  if [[ "${production_status}" == "success" ]]; then
+    if [[ -s "${source_path}" && -s "${nonprompt_path}" ]]; then
+      echo "----------------------------------------"
+      echo "Skipping validated ${production_profile} block: ${production_block}"
+      echo "Campaign state, source artifact, and separate nonprompt artifact are complete."
+      echo "----------------------------------------"
+      record_block_result \
+        "SKIPPED" "SR" "${year_expr}" "${cats[*]}" "${vars[*]}" \
+        "${pkl_tag}" "0" "0"
+      return 0
+    fi
+    if [[ ! -s "${source_path}" ]]; then
+      production_state_tool mark \
+        "${production_state_path}" "${production_block}" \
+        "source" "failed" "none" "success_state_missing_expected_source"
     else
-      rebin_fine_status=$(rebin_fine_state_tool status "${rebin_fine_state_path}" "${rebin_fine_block}")
+      production_state_tool mark \
+        "${production_state_path}" "${production_block}" \
+        "nonprompt" "failed" "none" "success_state_missing_expected_nonprompt"
     fi
+    echo "ERROR: ${production_profile} state marks ${production_block} successful, but an expected artifact is missing or empty." >&2
+    exit 1
+  fi
 
-    if [[ "${rebin_fine_status}" == "success" ]]; then
-      if rebin_fine_outputs_present "${rebin_fine_block}" "${rebin_fine_plan_file}"; then
-        echo "----------------------------------------"
-        echo "Skipping validated rebin_fine block: ${rebin_fine_block}"
-        echo "Campaign state and both expected artifacts are present."
-        echo "----------------------------------------"
-        record_block_result \
-          "SKIPPED" "SR" "${year_expr}" "${cats[*]}" "${vars[*]}" \
-          "${pkl_tag}" "0" "0"
-        return 0
+  case "${source_status}" in
+    ready)
+      if [[ ! -s "${source_path}" ]]; then
+        production_state_tool mark \
+          "${production_state_path}" "${production_block}" \
+          "source" "failed" "none" "source_ready_state_missing_expected_source"
+        echo "ERROR: ${production_block} records a reusable source, but it is missing or empty." >&2
+        exit 1
       fi
-      if [[ "${dry_run}" == "false" ]]; then
-        rebin_fine_state_tool mark \
-          "${rebin_fine_state_path}" "${rebin_fine_block}" \
-          "failed_or_incomplete" "none" "success_state_missing_expected_output"
+      source_reusable=true
+      ;;
+    planned|failed)
+      if [[ -e "${source_path}" || -e "${nonprompt_path}" ]]; then
+        echo "ERROR: ${production_profile} block ${production_block} is ${production_status}, but an expected output path already exists. Refusing ambiguous overwrite." >&2
+        exit 1
       fi
-      echo "ERROR: rebin_fine state marks ${rebin_fine_block} successful, but an expected artifact is missing or empty." >&2
+      ;;
+    running)
+      echo "ERROR: ${production_block} has an ambiguous interrupted source stage; run a non-dry --resume preflight before retrying." >&2
       exit 1
-    fi
-
-    if rebin_fine_any_output_exists "${rebin_fine_block}" "${rebin_fine_plan_file}"; then
-      echo "ERROR: rebin_fine block ${rebin_fine_block} is ${rebin_fine_status}, but an expected output path already exists. Refusing ambiguous overwrite." >&2
+      ;;
+    *)
+      echo "ERROR: ${production_block} has invalid source status '${source_status}'." >&2
       exit 1
-    fi
+      ;;
+  esac
 
-    if [[ "${dry_run}" == "false" ]]; then
-      rebin_fine_state_tool mark \
-        "${rebin_fine_state_path}" "${rebin_fine_block}" \
-        "running" "none" "child_command_started"
-    fi
+  if [[ -e "${nonprompt_path}" ]]; then
+    echo "ERROR: ${production_block} is not successful, but its expected _np path already exists. Refusing ambiguous overwrite." >&2
+    exit 1
   fi
 
   echo "----------------------------------------"
@@ -1289,14 +1479,12 @@ run_sr_block() {
   echo "Campaign tag: ${campaign_tag}"
   echo "Output tag: ${pkl_tag}"
   echo "Output dir: ${output_dir}"
+  echo "Source stage status: ${source_status}"
+  echo "Nonprompt stage status: ${nonprompt_status}"
   echo "Dry run: ${dry_run}"
   echo "----------------------------------------"
 
-  if [[ "${dry_run}" == "false" && "${production_profile}" != "rebin_fine" ]]; then
-    clean_env_cache
-  fi
-
-  local cmd=(
+  local source_cmd=(
     ./fullR3_run.sh
     -y "${years[@]}"
     -t "${pkl_tag}"
@@ -1306,95 +1494,122 @@ run_sr_block() {
     --category-groups "${cats[@]}"
   )
 
-  build_common_command_options cmd
+  build_common_command_options source_cmd
+  local nonprompt_cmd=(
+    python ./run_data_driven.py
+    --input-pkl "${source_path}"
+    --output-pkl "${nonprompt_path}"
+  )
 
-  print_command "${cmd[@]}"
   start_epoch=$(date +%s)
 
-  # Keep child stdout/stderr attached directly to the caller. The conditional
-  # invocation only captures the exit status so set -e does not terminate the
-  # campaign when one production block fails or its Python child is killed.
-  if "${cmd[@]}"; then
-    exit_code=0
+  if [[ "${source_reusable}" == "false" ]]; then
+    if [[ "${dry_run}" == "false" ]]; then
+      production_state_tool mark \
+        "${production_state_path}" "${production_block}" \
+        "source" "running" "none" "source_child_started"
+    fi
+    print_command "${source_cmd[@]}"
+    # This conditional waits for the heavy processor child to exit completely.
+    # The separate data-driven process is not created until after this returns.
+    if "${source_cmd[@]}"; then
+      source_exit_code=0
+    else
+      source_exit_code=$?
+    fi
   else
-    exit_code=$?
+    echo "Reusing validated completed source for ${production_block}: ${source_path}"
+  fi
+
+  if [[ "${dry_run}" == "true" ]]; then
+    if (( source_exit_code != 0 )); then
+      end_epoch=$(date +%s)
+      duration_seconds=$((end_epoch - start_epoch))
+      record_block_result \
+        "FAILED" "SR" "${year_expr}" "${cats[*]}" "${vars[*]}" \
+        "${pkl_tag}" "${source_exit_code}" "${duration_seconds}"
+      echo "ERROR: ${production_block} source dry-run resolution failed with exit code ${source_exit_code}." >&2
+      return 0
+    fi
+    echo "Separate nonprompt command (not executed by dry-run):"
+    printf ' %q' "${nonprompt_cmd[@]}"
+    echo
+    end_epoch=$(date +%s)
+    duration_seconds=$((end_epoch - start_epoch))
+    record_block_result \
+      "DRY_RUN" "SR" "${year_expr}" "${cats[*]}" "${vars[*]}" \
+      "${pkl_tag}" "0" "${duration_seconds}"
+    echo "${year_expr} ${production_profile} two-stage dry-run resolved for ${cat_tag} / ${var_tag}"
+    echo "----------------------------------------"
+    echo
+    return 0
+  fi
+
+  if [[ "${source_reusable}" == "false" ]]; then
+    if (( source_exit_code != 0 )); then
+      production_state_tool mark \
+        "${production_state_path}" "${production_block}" \
+        "source" "failed" "${source_exit_code}" "source_child_exit_nonzero"
+      end_epoch=$(date +%s)
+      duration_seconds=$((end_epoch - start_epoch))
+      record_block_result \
+        "FAILED" "SR" "${year_expr}" "${cats[*]}" "${vars[*]}" \
+        "${pkl_tag}" "${source_exit_code}" "${duration_seconds}"
+      echo "ERROR: ${production_block} source production failed with exit code ${source_exit_code}; continuing." >&2
+      return 0
+    fi
+    if [[ ! -s "${source_path}" || -e "${nonprompt_path}" ]]; then
+      production_state_tool mark \
+        "${production_state_path}" "${production_block}" \
+        "source" "failed" "${source_exit_code}" "source_exit_zero_invalid_stage_outputs"
+      end_epoch=$(date +%s)
+      duration_seconds=$((end_epoch - start_epoch))
+      record_block_result \
+        "FAILED" "SR" "${year_expr}" "${cats[*]}" "${vars[*]}" \
+        "${pkl_tag}" "${source_exit_code}" "${duration_seconds}"
+      echo "ERROR: ${production_block} source stage did not produce exactly one nonempty source and no _np output." >&2
+      return 0
+    fi
+    production_state_tool mark \
+      "${production_state_path}" "${production_block}" \
+      "source" "ready" "${source_exit_code}" "source_child_exit_zero_expected_source_present"
+  fi
+
+  production_state_tool mark \
+    "${production_state_path}" "${production_block}" \
+    "nonprompt" "running" "none" "separate_nonprompt_child_started_after_source_exit"
+  print_command "${nonprompt_cmd[@]}"
+  if "${nonprompt_cmd[@]}"; then
+    nonprompt_exit_code=0
+  else
+    nonprompt_exit_code=$?
   fi
 
   end_epoch=$(date +%s)
   duration_seconds=$((end_epoch - start_epoch))
 
-  if [[ "${production_profile}" == "rebin_fine" && "${dry_run}" == "true" ]]; then
-    record_block_result \
-      "DRY_RUN" "SR" "${year_expr}" "${cats[*]}" "${vars[*]}" \
-      "${pkl_tag}" "${exit_code}" "${duration_seconds}"
-    echo "${year_expr} rebin_fine dry-run resolved for ${cat_tag} / ${var_tag}"
-  elif (( exit_code == 0 )) \
-    && [[ "${production_profile}" == "rebin_fine" ]] \
-    && ! rebin_fine_outputs_present "${rebin_fine_block}" "${rebin_fine_plan_file}"; then
-    rebin_fine_state_tool mark \
-      "${rebin_fine_state_path}" "${rebin_fine_block}" \
-      "failed_or_incomplete" "${exit_code}" "child_exit_zero_missing_expected_output"
-    record_block_result \
-      "FAILED" "SR" "${year_expr}" "${cats[*]}" "${vars[*]}" \
-      "${pkl_tag}" "${exit_code}" "${duration_seconds}"
-    echo "ERROR: ${year_expr} SR returned zero for ${cat_tag} / ${var_tag}, but expected rebin_fine artifacts are missing or empty." >&2
-  elif (( exit_code == 0 )); then
-    if [[ "${production_profile}" == "rebin_fine" ]]; then
-      rebin_fine_state_tool mark \
-        "${rebin_fine_state_path}" "${rebin_fine_block}" \
-        "success" "${exit_code}" "child_exit_zero_expected_outputs_present"
-    fi
+  if (( nonprompt_exit_code == 0 )) && [[ -s "${nonprompt_path}" ]]; then
+    production_state_tool mark \
+      "${production_state_path}" "${production_block}" \
+      "nonprompt" "success" "${nonprompt_exit_code}" "separate_nonprompt_exit_zero_expected_output_present"
     record_block_result \
       "SUCCESS" "SR" "${year_expr}" "${cats[*]}" "${vars[*]}" \
-      "${pkl_tag}" "${exit_code}" "${duration_seconds}"
-    echo "${year_expr} SR done for ${cat_tag} / ${var_tag}"
+      "${pkl_tag}" "${nonprompt_exit_code}" "${duration_seconds}"
+    echo "${year_expr} SR source and separate nonprompt stages done for ${cat_tag} / ${var_tag}"
   else
-    if [[ "${production_profile}" == "rebin_fine" ]]; then
-      rebin_fine_state_tool mark \
-        "${rebin_fine_state_path}" "${rebin_fine_block}" \
-        "failed_or_incomplete" "${exit_code}" "child_exit_nonzero"
-    fi
+    production_state_tool mark \
+      "${production_state_path}" "${production_block}" \
+      "nonprompt" "failed" "${nonprompt_exit_code}" "separate_nonprompt_failed_or_missing_output"
     record_block_result \
       "FAILED" "SR" "${year_expr}" "${cats[*]}" "${vars[*]}" \
-      "${pkl_tag}" "${exit_code}" "${duration_seconds}"
+      "${pkl_tag}" "${nonprompt_exit_code}" "${duration_seconds}"
     echo \
-      "ERROR: ${year_expr} SR failed for ${cat_tag} / ${var_tag} with exit code ${exit_code}; continuing with the next block." \
+      "ERROR: ${production_block} separate nonprompt stage failed or its _np output is missing/empty; continuing with the next block." \
       >&2
   fi
 
   echo "----------------------------------------"
   echo
-}
-
-record_completed_sr_block() {
-  local year_expr="$1"
-  local category_set="$2"
-  local var_set="$3"
-  local cats=()
-  local vars=()
-  local cat_tag
-  local var_tag
-  local pkl_tag
-
-  read -r -a cats <<< "${category_set}"
-  read -r -a vars <<< "${var_set}"
-
-  cat_tag=$(join_by - "${cats[@]}")
-  var_tag=$(join_by - "${vars[@]}")
-
-  # The split Run 3 off-Z blocks are currently skipped because the completed
-  # combined artifact covers both logical category families. Report that actual
-  # artifact tag rather than implying that separate split files already exist.
-  if [[ "${year_expr}" == "2022 2022EE 2023 2023BPix" ]] \
-    && [[ "${category_set}" == "3l_m_offZ" || "${category_set}" == "3l_p_offZ" ]]; then
-    pkl_tag="${sr_pkl_base_tag}_3l_m_offZ-3l_p_offZ_${var_tag}"
-  else
-    pkl_tag="${sr_pkl_base_tag}_${cat_tag}_${var_tag}"
-  fi
-
-  record_block_result \
-    "SKIPPED" "SR" "${year_expr}" "${category_set}" "${var_set}" \
-    "${pkl_tag}" "0" "0"
 }
 
 ###############################################################################
@@ -1407,7 +1622,6 @@ assert_boolean "${dry_run}" "dry_run"
 assert_boolean "${do_systs}" "do_systs"
 assert_boolean "${do_np}" "do_np"
 assert_boolean "${split_lep_flavor}" "split_lep_flavor"
-assert_boolean "${require_recovered_run3_offz_np}" "require_recovered_run3_offz_np"
 assert_boolean "${profile_resume}" "profile_resume"
 
 assert_parallel_array_lengths \
@@ -1416,14 +1630,14 @@ assert_parallel_array_lengths \
   "${#cr_category_var_set_names[@]}"
 
 assert_parallel_array_lengths \
-  "Run 2 SR category-to-variable mapping" \
-  "${#sr_run2_category_sets[@]}" \
-  "${#sr_run2_category_var_set_names[@]}"
+  "run3_full SR category-to-variable mapping" \
+  "${#run3_full_category_sets[@]}" \
+  "${#run3_full_category_var_set_names[@]}"
 
 assert_parallel_array_lengths \
-  "Run 3 SR category-to-variable mapping" \
-  "${#sr_run3_category_sets[@]}" \
-  "${#sr_run3_category_var_set_names[@]}"
+  "rebin_fine SR category-to-variable mapping" \
+  "${#rebin_fine_category_sets[@]}" \
+  "${#rebin_fine_category_var_set_names[@]}"
 
 assert_parallel_array_lengths \
   "SR year-to-category mapping" \
@@ -1437,8 +1651,8 @@ assert_parallel_array_lengths \
 
 for var_set_name in \
   "${cr_category_var_set_names[@]}" \
-  "${sr_run2_category_var_set_names[@]}" \
-  "${sr_run3_category_var_set_names[@]}"; do
+  "${run3_full_category_var_set_names[@]}" \
+  "${rebin_fine_category_var_set_names[@]}"; do
   assert_array_defined "${var_set_name}"
 done
 
@@ -1450,23 +1664,7 @@ for mapping_array_name in "${sr_year_category_var_set_names[@]}"; do
   assert_array_defined "${mapping_array_name}"
 done
 
-if [[ "${run_sr}" == "true" ]] \
-  && [[ "${require_recovered_run3_offz_np}" == "true" ]] \
-  && [[ "${dry_run}" == "false" ]] \
-  && [[ ! -s "${recovered_run3_offz_np}" ]]; then
-  cat >&2 <<EOF
-ERROR: the current resume configuration marks the split Run 3 off-Z blocks as
-covered by the previously produced combined artifact, but the manually recovered
-combined _np output is not present or is empty:
-
-  ${recovered_run3_offz_np}
-
-Complete and validate that recovery before restarting this campaign, or set
-require_recovered_run3_offz_np=false and adjust sr_completed_block_keys for a
-deliberately fresh/reprocessed campaign.
-EOF
-  exit 1
-fi
+resolve_production_environment
 
 echo "========================================"
 echo "run_cr.sh configuration"
@@ -1481,14 +1679,17 @@ echo "dry_run: ${dry_run}"
 echo "do_systs: ${do_systs}"
 echo "do_np: ${do_np}"
 echo "split_lep_flavor: ${split_lep_flavor}"
-echo "require_recovered_run3_offz_np: ${require_recovered_run3_offz_np}"
-if [[ "${production_profile}" == "rebin_fine" ]]; then
-  echo "resume: ${profile_resume}"
-  echo "env_file: ${rebin_fine_env_file}"
-  echo "env_file_sha256: ${rebin_fine_env_file_sha256}"
+echo "resume: ${profile_resume}"
+echo "env_file: ${production_env_file}"
+echo "env_file_sha256: ${production_env_file_sha256}"
+if [[ "${profile_resume}" == "true" ]]; then
+  echo "environment_policy: state_frozen_strict_single_archive"
+elif [[ -n "${profile_env_file}" ]]; then
   echo "environment_policy: explicit_single_archive"
-  echo "campaign_state: ${output_dir}/${rebin_fine_state_filename}"
+else
+  echo "environment_policy: auto_current_once_then_frozen"
 fi
+echo "campaign_state: ${output_dir}/${production_state_filename}"
 print_var_sets "CR non-tau" "${cr_non_tau_var_sets[@]}"
 print_var_sets "CR tau" "${cr_tau_var_sets[@]}"
 print_var_sets "SR with ptz_wtau" "${sr_with_ptz_wtau_var_sets[@]}"
@@ -1500,19 +1701,8 @@ if [[ "${production_profile}" == "rebin_fine" ]]; then
   echo "rebin_fine SR category blocks (used for both Run 2 and Run 3):"
   printf '  %s\n' "${rebin_fine_category_sets[@]}"
 else
-  echo "Run 2 SR category blocks:"
-  printf '  %s\n' "${sr_run2_category_sets[@]}"
-  echo "Run 3 SR category blocks:"
-  printf '  %s\n' "${sr_run3_category_sets[@]}"
-fi
-
-echo "SR completed-block skip list:"
-if (( ${#sr_completed_block_keys[@]} == 0 )); then
-  echo "  none"
-else
-  for completed_block_key in "${sr_completed_block_keys[@]}"; do
-    echo "  ${completed_block_key}"
-  done
+  echo "run3_full Run-3 SR category blocks:"
+  printf '  %s\n' "${run3_full_category_sets[@]}"
 fi
 
 echo "========================================"
@@ -1534,10 +1724,8 @@ EOF
     ;;
 esac
 
-if [[ "${production_profile}" == "rebin_fine" ]]; then
-  trap cleanup_rebin_fine_plan EXIT
-  prepare_rebin_fine_campaign
-fi
+trap cleanup_production_plan EXIT
+prepare_production_campaign
 
 ###############################################################################
 # Main CR production
@@ -1589,21 +1777,6 @@ if [[ "${run_sr}" == "true" ]]; then
       assert_array_defined "${category_var_set_name}"
       declare -n category_var_sets="${category_var_set_name}"
       read -r -a cats <<< "${category_set}"
-
-      if is_completed_sr_block "${year_expr}" "${category_set}"; then
-        for var_set in "${category_var_sets[@]}"; do
-          echo "----------------------------------------"
-          echo "Skipping completed SR block"
-          echo "Years: ${year_expr}"
-          echo "Categories: ${category_set}"
-          echo "Variables: ${var_set}"
-          echo "----------------------------------------"
-          echo
-          record_completed_sr_block "${year_expr}" "${category_set}" "${var_set}"
-        done
-        unset -n category_var_sets
-        continue
-      fi
 
       for var_set in "${category_var_sets[@]}"; do
         run_sr_block "${year_expr}" "${var_set}" "${cats[@]}"

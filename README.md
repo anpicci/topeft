@@ -42,6 +42,12 @@ A colleague unfamiliar with the repository followed the quickstart above to a su
 | Deferred | `--do-np --np-postprocess=defer` (or `fullR3_run.sh --do-np --defer-np`) | Separate heavy processing from later nonprompt combination runs. | Run the printed `run_data_driven.py --input-pkl ... --output-pkl ...` command to finalize. |
 | Skip | `--np-postprocess=skip` | Disable the nonprompt helper entirely. | None—no `_np.pkl.gz` is created. |
 
+The maintained complete Run-3 production path is
+`analysis/topeft_run2/run_cr.sh --production-profile run3_full`. It always uses
+deferred mode and starts `run_data_driven.py` as a separate fresh process only
+after each heavy processor child exits. Inline mode remains a lower-level API
+capability; it is not the canonical production lifecycle.
+
 ### Where to go next
 * Processor- and plotting-specific details live in `analysis/topeft_run2/README.md`.
 * See [Nonprompt workflows](#nonprompt-workflows) for inline vs. deferred recipes.
@@ -69,6 +75,11 @@ The next time you return to the repository, all you have to do is activate the e
 
 ## Nonprompt workflows
 When `--do-np` is passed `run_analysis.py` produces the nonprompt-enhanced `_np.pkl.gz` histogram in one of two ways controlled by `--np-postprocess={inline,defer,skip}`. Inline mode mirrors the historical behaviour so the nonprompt/flips histogram is ready as soon as the jobs finish. Deferred mode emits the base pickle and prints the direct `run_data_driven.py` follow-up command.
+
+For maintained full Run-3 production, use `run_cr.sh --production-profile
+run3_full` rather than inline mode. Its campaign state distinguishes source and
+nonprompt stages, can reuse a completed source after a nonprompt-stage failure,
+and requires both outputs before marking a block successful.
 
 Finalize deferred outputs by pointing the helper directly at the pickle paths:
 ```bash
@@ -132,7 +143,7 @@ The [v0.5 tag](https://github.com/TopEFT/topcoffea/releases/tag/v0.5) was used t
     time source fullR3_run.sh
     ```
 
-    Inline mode is still the default, but `fullR3_run.sh` does **not** automatically add `--do-np`. Pass it yourself (e.g. `time source fullR3_run.sh --do-np ...`) so that `run_analysis.py --np-postprocess=inline --do-np` runs and the `_np.pkl.gz` file is ready when the wrapper exits. To defer the nonprompt/flips step (e.g. when you want to rerun the data-driven combination without repeating the entire processing campaign) pass both `--do-np` and `--defer-np` to the helper; the former enables the producer and the latter switches it to deferred mode. The wrapper prints a direct `run_data_driven.py --input-pkl ... --output-pkl ...` follow-up command; run it to materialize the `_np.pkl.gz` file before moving on to Step 2. The historical combined renorm/fact envelope is unsupported; use the independent `renormUp`, `renormDown`, `factUp`, and `factDown` shapes, retained as separate `renorm` and `fact` nuisances.
+    Inline mode remains the low-level default, but maintained full Run-3 production must use `run_cr.sh --production-profile run3_full`. That profile passes `--do-np --defer-np` so the processor certifies the nonprompt/sumw2 contract without running the transform in its large process, waits for the processor to exit, then launches `run_data_driven.py` separately. Direct `fullR3_run.sh` users can request the same lower-level contract with `--do-np --defer-np`. The historical combined renorm/fact envelope is unsupported; use the independent `renormUp`, `renormDown`, `factUp`, and `factDown` shapes, retained as separate `renorm` and `fact` nuisances.
 
 2. Run the datacard maker to obtain the cards and templates from SM (from the pickled histogram file produced in Step 1, be sure to use the version with the nonprompt estimation, i.e. the one with `_np` appended to the name you specified for the `OUT_NAME` in `fullR3_run.sh`). Whether you produced `_np.pkl.gz` inline or via the deferred helper, point the datacard maker at the final `_np.pkl.gz`. This step would also produce scalings-preselect.json file which the later version is necessary for IM workspace making. Note that command option `--wc-scalings` is not mandatory but to enforce the ordering of wcs in scalings. Add command `-A` to include all EFT templates in datacards for previous AAC model. Add option `-C` to run on condor.
     ```

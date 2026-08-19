@@ -259,84 +259,80 @@ or datacard validation implicit.
 
 > **Sourcing helpers:** `run_plotter.sh`, `submit_plotter_condor.sh`, `fullR3_run.sh`, `fullR3_run_diboson.sh`, and `condor_plotter_entry.sh` now funnel their work through a `main()` function. They return non-zero statuses instead of exiting outright when validation fails, so sourcing them in an interactive shell will surface the error without tearing down your session. Executing the scripts directly still exits with the same return codes as before.
 
-### User-run `rebin_fine` campaign
+### User-run production profiles
 
-`run_cr.sh --production-profile rebin_fine` is a six-block, user-run SR
-production workflow: Run 2 and Run 3 each run the A (`2lss_1tau` plus
-`3l_m_offZ`), B (`3l_p_offZ` plus `3l_onZ_tau`), and C (`3l_fwd`) blocks.
-The histogram unions are fixed by the maintained profile; `njets` is not part
-of this campaign.
+`run_cr.sh` has two maintained active profiles. `run3_full` is the canonical
+complete final Run-3 SR source workflow: it runs exactly five blocks over
+`2022 2022EE 2023 2023BPix`, including separate `3l_m_offZ` and `3l_p_offZ`
+blocks. It schedules no Run-2 or CR work. `rebin_fine` remains the specialized
+six-block Run-2/Run-3 workflow for fitting families whose bins changed; its
+fixed histogram unions still exclude `njets`. The historical `baseline`
+profile is retired and is rejected by the CLI. A no-argument invocation also
+fails before resolving an environment or scheduling work.
 
-Freeze the production checkout first. `run_analysis.py` normally resolves and
-reuses a current worker environment automatically; add `--rebuild-env` to a
-normal command to force its recreation. To prepare exactly one current archive
-without loading samples or starting an executor, run:
+Every block has two separate child-process stages. `fullR3_run.sh` invokes
+`run_analysis.py` with `--do-np --np-postprocess=defer`, which certifies the
+current nonprompt and process-resolved sumw2 contract but writes only the
+processor/source PKL. After that heavy child exits completely and the source is
+nonempty, `run_cr.sh` starts a fresh `run_data_driven.py --input-pkl ...
+--output-pkl ...` process. The standalone helper discovers and validates the
+processor sidecar, uses the maintained streaming transform, and rejects stale
+or incomplete nonprompt/sumw2 policy. A block is successful only when both PKLs
+are nonempty.
+
+For a fresh `run3_full` campaign, omit `--env-file` to ask
+`run_analysis.py --prepare-env-only` once before campaign-state initialization.
+That API resolves the current environment/source fingerprint, reuses a valid
+matching cache entry, or builds only the required fingerprinted archive, then
+strictly validates it. `run_cr.sh` freezes the returned canonical path, SHA256,
+environment fingerprint, topcoffea commit, and relevant-source fingerprint and
+passes that one archive to all five source stages. To pin a prebuilt archive,
+pass an explicit absolute `--env-file`; it is validated exactly and is never
+rebuilt or substituted. `rebin_fine` continues to require this explicit pin.
+
+Use a fresh absolute namespace and explicit campaign tag:
 
 ```bash
-cd /users/apiccine/work/correction-lib/topeft/analysis/topeft_run2
-python run_analysis.py --prepare-env-only --rebuild-env
+./run_cr.sh --production-profile run3_full --dry-run \
+  --output-dir /absolute/new/run3_full_campaign \
+  --campaign-tag run3_full_<frozen_head>
+
+./run_cr.sh --production-profile run3_full \
+  --output-dir /absolute/new/run3_full_campaign \
+  --campaign-tag run3_full_<frozen_head>
 ```
 
-This validates the new archive and prints `env_file`, `env_file_sha256`,
-`env_manifest`, and `environment_fingerprint`. The resulting canonical archive
-is the printed `analysis/topeft_run2/topeft-envs/env_spec_*.tar.gz` path. Keep
-that exact path, SHA256, manifest, and fingerprint for the full campaign.
-Rebuild it when the frozen topeft
-or topcoffea checkout, active environment, repository package specification,
-or archive validation changes; do not rebuild it per block.
+Add `--env-file /absolute/path/to/current/archive.tar.gz` to either command for
+strict pinning. A fresh run refuses any existing output directory, including
+historical baseline or v3 namespaces.
 
-An explicit current archive is strict by default:
+Resume never calls the automatic environment build path and never changes the
+frozen archive:
 
 ```bash
-python run_analysis.py <normal args> --env-file /path/env.tar.gz
+./run_cr.sh --production-profile run3_full --resume \
+  --output-dir /absolute/new/run3_full_campaign \
+  --campaign-tag run3_full_<frozen_head>
 ```
 
-For intentional historical reproduction only, use an explicit snapshot:
+The schema-v3 state records source and nonprompt stage statuses, exit codes,
+and transition history. Resume reruns the heavy processor only when no valid
+source exists. A `source_ready`/`nonprompt_failed` block reuses its source and
+runs only the fresh-process data-driven stage. State/output contradictions,
+empty files, and unrecorded partial outputs fail closed rather than being
+overwritten. Production and the data-driven transform remain manually launched
+through the top-level `run_cr.sh` command; analysis-scale validation is not
+implied by a dry-run.
 
-```bash
-python run_analysis.py <normal args> --env-file /path/historical_env.tar.gz --snapshot
-```
-
-`--snapshot` bypasses current-environment compatibility only. It still rejects
-missing, empty, corrupt archives and a manifest SHA mismatch. It does not
-recreate the matching historical source/configuration/input state.
-
-First resolve the six commands without production side effects:
+The specialized profile retains its six-block plan and explicit environment
+pin:
 
 ```bash
 ./run_cr.sh --production-profile rebin_fine --dry-run \
-  --output-dir /absolute/new/campaign_directory \
+  --output-dir /absolute/new/rebin_fine_campaign \
   --campaign-tag rebin_fine_<frozen_head> \
-  --env-file "$env_file"
+  --env-file /absolute/path/to/current/archive.tar.gz
 ```
-
-For a fresh user-run campaign, the output directory must not exist:
-
-```bash
-./run_cr.sh --production-profile rebin_fine \
-  --output-dir /absolute/new/campaign_directory \
-  --campaign-tag rebin_fine_<frozen_head> \
-  --env-file "$env_file"
-```
-
-After an interruption, resume only from the same frozen checkout, campaign
-tag, output directory, and byte-identical archive:
-
-```bash
-./run_cr.sh --production-profile rebin_fine --resume \
-  --output-dir /absolute/new/campaign_directory \
-  --campaign-tag rebin_fine_<frozen_head> \
-  --env-file "$env_file"
-python -m json.tool /absolute/new/campaign_directory/.rebin_fine_campaign_state.json
-```
-
-`rebin_fine` accepts only a strict explicit current archive; it does not support
-snapshot mode. The state file records the archive SHA256, effective environment
-fingerprint, relevant topcoffea identity, and each block's planned, running,
-success, or failed/incomplete state. Resume skips only a recorded-success block
-whose nominal and inline-nonprompt PKLs are both present and non-empty. It
-refuses a partial/unrecorded output instead of overwriting it. Production is
-user-run, and analysis-scale numerical validation remains pending.
 
 
 ### Scripts for finding, comparing and plotting yields from histograms (from the processor)

@@ -517,22 +517,26 @@ analysis/topeft_run2/run_cr.sh
 
 Important local behavior:
 
-- `analysis/topeft_run2/run_cr.sh:10-33`: workspace-specific output path,
-  chunk size, pkl tag, default histogram variables, years, and category sets.
-- `analysis/topeft_run2/run_cr.sh:72-119`: active `run_cr_block` delegates to
-  `./fullR3_run.sh` with `--cr`, `--hist-vars`, `--do-systs`, output path,
-  category groups, tau analysis, and split lepton flavor.
-- `analysis/topeft_run2/run_cr.sh:125-130`: active main loop runs CR jobs over
-  the configured years and category sets.
-- `analysis/topeft_run2/run_cr.sh:177-220`: commented SR scaffold shows the
-  same script family used for SR runs, with `--sr`, `--do-systs`, `--do-np`,
-  category groups, and `--all-analysis`.
+- `run3_full` is the canonical complete Run-3 SR production profile. It
+  resolves exactly five blocks over `2022 2022EE 2023 2023BPix`, schedules no
+  Run-2 or CR work, and keeps the two off-Z charge families separate.
+- `rebin_fine` is the specialized six-block Run-2/Run-3 changed-family profile;
+  it is not a complete Run-3 source set and excludes `njets`.
+- `baseline` is retired. No-argument execution fails before environment
+  resolution or production scheduling.
+- Each block uses `fullR3_run.sh --do-np --defer-np` for source production,
+  waits for that heavy process to exit, then launches a fresh
+  `run_data_driven.py --input-pkl ... --output-pkl ...` process. Campaign state
+  records the two stages separately and success requires both nonempty files.
+- A fresh `run3_full` campaign normally resolves one current environment via
+  `run_analysis.py --prepare-env-only` and freezes it for every block. An
+  explicit absolute `--env-file` is a strict pin. Resume never builds or
+  switches environments.
 
-Do not run this script blindly for a tutorial. As inspected, the active body is
-a CR production-style loop over multiple years and category sets. For an SR
-tutorial, treat `run_cr.sh` as the source of the command shape, then use
-`fullR3_run.sh --dry-run` to source-validate the downstream command before any
-real processing.
+Do not run this production script blindly for a tutorial. Use its explicit
+`--dry-run`, fresh absolute output namespace, and campaign tag to inspect both
+stage commands. For a one-sample tutorial, continue to use
+`fullR3_run.sh --dry-run` with an explicit input override.
 
 `fullR3_run.sh` provides the safe dry-run switch and the tutorial input
 override:
@@ -581,8 +585,8 @@ Why this sample:
 
 ### Level 1: Recommended wrapper path
 
-This is the safe command shape derived from the commented SR block in
-`run_cr.sh` and the option parser in `fullR3_run.sh`. The explicit
+This is the safe command shape derived from the maintained SR command builder
+and the option parser in `fullR3_run.sh`. The explicit
 `--sample-json` option keeps the input to one Run 3 EFT signal JSON without
 editing production CFG files. It does not launch the processor because of
 `--dry-run`. This is the recommended tutorial path because it keeps the same
@@ -737,25 +741,13 @@ It should also print `Resolved output path: /tmp/cl007ac_default`, and the
 reconstructed command should contain exactly one output-path option:
 `-p /tmp/cl007ac_default`.
 
-### If you temporarily edit `run_cr.sh` for a broader tutorial
+### Do not edit `run_cr.sh` for a tutorial
 
-Do not commit such edits unless the analysis conveners request them. The active
-file currently runs CR blocks. For an SR tutorial edit, make a temporary local
-change modeled on the commented SR scaffold around
-`analysis/topeft_run2/run_cr.sh:177-220`, for example:
-
-```diff
-- years=(2022 2022EE 2023 2023BPix 2018)
-- pkl_base_tag="CR_muonres"
-- vars=(invmass tau0Tpt l0ptcorr)
-+ years=(2023)
-+ pkl_base_tag="CL007AC_SR_tutorial_ttH"
-+ vars=(njets)
-```
-
-Then use the SR scaffold, add `--dry-run` first, and keep the output path in a
-scratch location. The point is to prove command construction before launching
-any real processing.
+The maintained profile arrays and campaign-state contract are production
+policy, not tutorial knobs. Use `fullR3_run.sh --dry-run` with
+`--sample-json`/`--cfg-override`, a small histogram list, and a scratch output
+path for a bounded tutorial. Use `run_cr.sh --dry-run` only to inspect an exact
+maintained production profile and its separate nonprompt follow-up commands.
 
 ## 10. How `make_cr_and_sr_plots.py` consumes pkl files
 
@@ -979,7 +971,8 @@ CR/SR mismatch:
 
 - `--cr` makes `fullR3_run.sh` add `--skip-sr`.
 - `--sr` makes `fullR3_run.sh` add `--skip-cr`.
-- The active `run_cr.sh` body is CR-oriented in this workspace.
+- The active `run_cr.sh` profiles are SR-only: complete Run-3 `run3_full` and
+  targeted Run-2/Run-3 `rebin_fine`.
 
 Wrong sample JSON/CFG:
 
@@ -1477,10 +1470,8 @@ Processor:
 
 Runner:
 
-- `analysis/topeft_run2/run_cr.sh:10-33`: local runner defaults.
-- `analysis/topeft_run2/run_cr.sh:72-119`: active CR block.
-- `analysis/topeft_run2/run_cr.sh:125-130`: active main CR loop.
-- `analysis/topeft_run2/run_cr.sh:177-220`: commented SR scaffold.
+- `analysis/topeft_run2/run_cr.sh`: fail-closed profile selection, frozen
+  campaign/environment identity, two-stage source/nonprompt state, and resume.
 - `analysis/topeft_run2/fullR3_run.sh:4-28`: usage and options.
 - `analysis/topeft_run2/fullR3_run.sh:59-144`: option parsing.
 - `analysis/topeft_run2/fullR3_run.sh:146-184`: pass-through chunk-size and

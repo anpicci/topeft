@@ -5,7 +5,10 @@ import json
 import subprocess
 import tarfile
 import sys
+from functools import lru_cache
 from pathlib import Path
+
+from topcoffea.modules import remote_environment
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
@@ -32,34 +35,22 @@ def _commit():
     ).strip()
 
 
+@lru_cache(maxsize=1)
+def _current_environment_request():
+    return remote_environment.resolve_environment_request(
+        extra_pip_local={"topeft": ["topeft", "setup.py"]},
+        unstaged="fail",
+    )
+
+
 def _write_env(tmp_path, content=b"synthetic poncho archive"):
     path = tmp_path / "verified_env.tar.gz"
     with tarfile.open(path, "w:gz") as archive:
         entry = tarfile.TarInfo("environment.txt")
         entry.size = len(content)
         archive.addfile(entry, io.BytesIO(content))
-    archive_sha256 = hashlib.sha256(path.read_bytes()).hexdigest()
-    path.with_name(f"{path.name}.manifest.json").write_text(
-        json.dumps(
-            {
-                "schema_version": 1,
-                "archive_basename": path.name,
-                "archive_sha256": archive_sha256,
-                "created_at_utc": "2026-08-18T00:00:00Z",
-                "environment_fingerprint": "synthetic-environment-fingerprint",
-                "python_version": "3.9.23",
-                "resolved_environment_spec": {"conda": {"packages": []}, "pip": []},
-                "resolved_environment_spec_fingerprint": "synthetic-spec-fingerprint",
-                "editable_packages": [
-                    {
-                        "package_name": "topcoffea",
-                        "git_commit": "synthetic-topcoffea-commit",
-                        "watched_source_fingerprint": "synthetic-topcoffea-source",
-                    }
-                ],
-            }
-        ),
-        encoding="utf-8",
+    remote_environment.write_archive_manifest(
+        str(path), _current_environment_request()
     )
     return path
 
@@ -93,9 +84,17 @@ def _planned_blocks(output_dir, campaign_tag):
                     str(output_dir / f"{output_name}.pkl.gz"),
                     str(output_dir / f"{output_name}_np.pkl.gz"),
                 ],
+                "expected_nominal_path": str(output_dir / f"{output_name}.pkl.gz"),
+                "expected_np_path": str(output_dir / f"{output_name}_np.pkl.gz"),
                 "status": "planned",
                 "exit_code": None,
+                "source_status": "planned",
+                "source_exit_code": None,
+                "nonprompt_status": "blocked",
+                "nonprompt_exit_code": None,
                 "last_transition_utc": "2026-01-01T00:00:00Z",
+                "last_transition_detail": "campaign_initialized",
+                "transitions": [],
             }
         )
     return blocks
@@ -105,17 +104,28 @@ def _write_state(output_dir, campaign_tag, env_file, *, status="planned"):
     blocks = _planned_blocks(output_dir, campaign_tag)
     for block in blocks:
         block["status"] = status
+        if status == "success":
+            block["source_status"] = "ready"
+            block["source_exit_code"] = 0
+            block["nonprompt_status"] = "success"
+            block["nonprompt_exit_code"] = 0
+    manifest = json.loads(
+        env_file.with_name(f"{env_file.name}.manifest.json").read_text(encoding="utf-8")
+    )
+    topcoffea = next(
+        item for item in manifest["editable_packages"] if item["package_name"] == "topcoffea"
+    )
     state = {
-        "schema_version": 2,
+        "schema_version": 3,
         "production_profile": "rebin_fine",
         "campaign_tag": campaign_tag,
         "output_dir": str(output_dir),
         "topeft_git_commit": _commit(),
         "env_file": str(env_file.resolve()),
         "env_file_sha256": hashlib.sha256(env_file.read_bytes()).hexdigest(),
-        "environment_fingerprint": "synthetic-environment-fingerprint",
-        "topcoffea_git_commit": "synthetic-topcoffea-commit",
-        "topcoffea_relevant_source_fingerprint": "synthetic-topcoffea-source",
+        "environment_fingerprint": manifest["environment_fingerprint"],
+        "topcoffea_git_commit": topcoffea["git_commit"],
+        "topcoffea_relevant_source_fingerprint": topcoffea["watched_source_fingerprint"],
         "ttgamma_sample_role_policy": "split",
         "do_systs": True,
         "do_np": True,
@@ -144,9 +154,11 @@ def test_rebin_fine_requires_verified_absolute_environment_archive(tmp_path):
         "--dry-run",
         "--output-dir",
         str(output_dir),
+        "--campaign-tag",
+        "fine_test",
     )
     assert no_env.returncode != 0
-    assert "requires --env-file" in no_env.stderr
+    assert "requires an explicit --env-file" in no_env.stderr
 
     relative = _run(
         "--production-profile",
@@ -154,6 +166,8 @@ def test_rebin_fine_requires_verified_absolute_environment_archive(tmp_path):
         "--dry-run",
         "--output-dir",
         str(output_dir),
+        "--campaign-tag",
+        "fine_test",
         "--env-file",
         "relative.tar.gz",
     )
@@ -166,11 +180,13 @@ def test_rebin_fine_requires_verified_absolute_environment_archive(tmp_path):
         "--dry-run",
         "--output-dir",
         str(output_dir),
+        "--campaign-tag",
+        "fine_test",
         "--env-file",
         str(missing_env),
     )
     assert missing.returncode != 0
-    assert "readable, non-empty regular file" in missing.stderr
+    assert "readable non-empty regular file" in missing.stderr
 
     empty_env = tmp_path / "empty.tar.gz"
     empty_env.touch()
@@ -180,11 +196,13 @@ def test_rebin_fine_requires_verified_absolute_environment_archive(tmp_path):
         "--dry-run",
         "--output-dir",
         str(output_dir),
+        "--campaign-tag",
+        "fine_test",
         "--env-file",
         str(empty_env),
     )
     assert empty.returncode != 0
-    assert "readable, non-empty regular file" in empty.stderr
+    assert "readable non-empty regular file" in empty.stderr
 
 
 def test_rebin_fine_dry_run_reuses_one_env_without_output_side_effects(tmp_path):
@@ -208,7 +226,9 @@ def test_rebin_fine_dry_run_reuses_one_env_without_output_side_effects(tmp_path)
     assert f"env_file: {env_file.resolve()}" in result.stdout
     assert f"env_file_sha256: {env_sha256}" in result.stdout
     assert "environment_policy: explicit_single_archive" in result.stdout
-    assert result.stdout.count("rebin_fine dry-run resolved") == 6
+    assert result.stdout.count("rebin_fine two-stage dry-run resolved") == 6
+    assert result.stdout.count("Separate nonprompt command (not executed by dry-run)") == 6
+    assert result.stdout.count("--np-postprocess=defer") >= 6
     assert result.stdout.count(f"--env-file {env_file.resolve()}") >= 6
     assert "poncho_package_create" not in result.stdout
     with tarfile.open(env_file, "r:gz") as archive:
@@ -305,10 +325,8 @@ def test_environment_cli_rejects_invalid_snapshot_combinations(tmp_path):
 
 def test_rebin_fine_does_not_run_legacy_environment_cache_cleanup():
     source = RUN_CR.read_text(encoding="utf-8")
-    assert (
-        'if [[ "${dry_run}" == "false" && "${production_profile}" != "rebin_fine" ]]; then\n'
-        "    clean_env_cache"
-    ) in source
+    assert "clean_env_cache" not in source
+    assert 'cmd_ref+=(--env-file "${production_env_file}")' in source
 
 
 def test_rebin_fine_preserves_the_frozen_six_block_physics_packing():
@@ -467,10 +485,8 @@ def test_resume_marks_missing_success_output_incomplete_and_dry_runs_failed_bloc
     assert missing_success.returncode != 0
     assert "marks run2_a successful" in missing_success.stderr
     updated = json.loads(state_path.read_text())
-    assert updated["blocks"][0]["status"] == "failed_or_incomplete"
+    assert updated["blocks"][0]["status"] == "nonprompt_failed"
 
-    for output in state["blocks"][0]["expected_outputs"]:
-        Path(output).unlink(missing_ok=True)
     dry_resume = _run(
         "--production-profile",
         "rebin_fine",
@@ -485,8 +501,9 @@ def test_resume_marks_missing_success_output_incomplete_and_dry_runs_failed_bloc
     )
     assert dry_resume.returncode == 0, dry_resume.stderr
     assert dry_resume.stdout.count("Skipping validated rebin_fine block") == 5
-    assert dry_resume.stdout.count("rebin_fine dry-run resolved") == 1
-    assert json.loads(state_path.read_text())["blocks"][0]["status"] == "failed_or_incomplete"
+    assert dry_resume.stdout.count("rebin_fine two-stage dry-run resolved") == 1
+    assert "Reusing validated completed source for run2_a" in dry_resume.stdout
+    assert json.loads(state_path.read_text())["blocks"][0]["status"] == "nonprompt_failed"
 
 
 def test_resume_rejects_environment_sha_drift(tmp_path):
