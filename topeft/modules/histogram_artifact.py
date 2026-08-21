@@ -421,40 +421,30 @@ def _validate_transformation_against_data_driven_contract(
 ) -> None:
     artifact_kind = transformation_contract["artifact_kind"]
     projection = transformation_contract["eft_prompt_projection"]
-    required_prompt_signals = set(
-        data_driven_contract["required_prompt_signal_processes"]
+    selected_prompt_processes = set(
+        data_driven_contract["resolved_prompt_process_set"]
     )
     expected_projected_processes = set()
     for family, roles in transformation_contract["families"].items():
         source_scalar_processes = set(roles["source_scalar_processes"])
         source_eft_processes = set(roles["source_eft_processes"])
-        duplicated_required = sorted(
-            required_prompt_signals
+        duplicated_selected = sorted(
+            selected_prompt_processes
             & source_scalar_processes
             & source_eft_processes
         )
-        if duplicated_required:
+        if duplicated_selected:
             raise histogram_sidecar_error(
-                f"Family '{family}' duplicates required private EFT sources in "
+                f"Family '{family}' duplicates selected prompt sources in "
                 "scalar and EFT nominal source roles: "
-                + ", ".join(duplicated_required)
-            )
-        missing_required = sorted(
-            required_prompt_signals
-            - source_scalar_processes
-            - source_eft_processes
-        )
-        if missing_required:
-            raise histogram_sidecar_error(
-                f"Family '{family}' is missing required private EFT source roles: "
-                + ", ".join(missing_required)
+                + ", ".join(duplicated_selected)
             )
         if artifact_kind in {
             NONPROMPT_OUTPUT_ARTIFACT_KIND,
             NONPROMPT_NOMINAL_REFERENCE_ARTIFACT_KIND,
         }:
             expected_projected_processes.update(
-                required_prompt_signals & source_eft_processes
+                selected_prompt_processes & source_eft_processes
             )
     expected_projected = sorted(expected_projected_processes)
     if projection["required_processes"] != expected_projected:
@@ -1065,8 +1055,8 @@ def derive_transformed_required_sumw2_processes(
         )
 
     contract_families = {}
-    required_prompt_signals = set(
-        data_driven_contract["required_prompt_signal_processes"]
+    selected_prompt_processes = set(
+        data_driven_contract["resolved_prompt_process_set"]
     )
     expected_projected_processes = set()
     for family, input_family in input_manifest.items():
@@ -1108,29 +1098,21 @@ def derive_transformed_required_sumw2_processes(
         expected_source_eft = input_family["eft_nominal_processes"]
         scalar_sources = set(expected_source_scalar)
         eft_sources = set(expected_source_eft)
-        duplicated_required = sorted(
-            required_prompt_signals & scalar_sources & eft_sources
+        duplicated_selected = sorted(
+            selected_prompt_processes & scalar_sources & eft_sources
         )
-        if duplicated_required:
+        if duplicated_selected:
             raise histogram_sidecar_error(
-                f"Family '{family}' has the same required private EFT source in "
+                f"Family '{family}' has the same selected prompt source in "
                 "scalar and EFT nominal siblings: "
-                + ", ".join(duplicated_required)
-            )
-        missing_required = sorted(
-            required_prompt_signals - scalar_sources - eft_sources
-        )
-        if missing_required:
-            raise histogram_sidecar_error(
-                f"Family '{family}' is missing required private EFT source(s): "
-                + ", ".join(missing_required)
+                + ", ".join(duplicated_selected)
             )
         if artifact_kind in {
             NONPROMPT_OUTPUT_ARTIFACT_KIND,
             NONPROMPT_NOMINAL_REFERENCE_ARTIFACT_KIND,
         }:
             expected_projected_processes.update(
-                required_prompt_signals & eft_sources
+                selected_prompt_processes & eft_sources
             )
         if roles["source_scalar_processes"] != expected_source_scalar:
             raise histogram_sidecar_error(
@@ -2128,15 +2110,6 @@ def _compose_resolved_data_driven_contract(
                         for process in contract["resolved_prompt_process_set"]
                     }
                 ),
-                "eft_prompt_processes": sorted(
-                    {
-                        process
-                        for contract in contracts
-                        for process in contract["nonprompt_policy"][
-                            "eft_prompt_processes"
-                        ]
-                    }
-                ),
                 "explicit_exclusions": sorted(
                     {
                         process
@@ -2178,13 +2151,6 @@ def _compose_resolved_data_driven_contract(
             ),
             "removed_prompt_processes": [],
         },
-        "required_prompt_signal_processes": sorted(
-            {
-                process
-                for contract in contracts
-                for process in contract["required_prompt_signal_processes"]
-            }
-        ),
         "products": products,
     }
 

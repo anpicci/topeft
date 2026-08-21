@@ -49,8 +49,8 @@ _PRODUCT_FIELDS = frozenset({"enabled", "source_contributors"})
 CANONICAL_DATA_DRIVEN_YEARS = CANONICAL_NONPROMPT_YEARS
 _KNOWN_YEARS = frozenset(CANONICAL_DATA_DRIVEN_YEARS)
 _get_te_param = GetParam(topeft_path("params/params.json"))
-_LEGACY_PROMPT_BASE_NAMES = tuple(_get_te_param("prompt_subtraction_samples"))
-validate_legacy_prompt_compatibility(_LEGACY_PROMPT_BASE_NAMES)
+_CONFIGURED_PROMPT_BASE_NAMES = tuple(_get_te_param("prompt_subtraction_samples"))
+validate_legacy_prompt_compatibility(_CONFIGURED_PROMPT_BASE_NAMES)
 
 
 class data_driven_product_error(ValueError):
@@ -125,7 +125,6 @@ class resolved_data_driven_products:
     runtime_families: tuple[str, ...]
     products: tuple[tuple[str, resolved_product], ...]
     nonprompt_policy: certified_nonprompt_policy | None = None
-    required_prompt_signal_processes: tuple[str, ...] = ()
     warnings: tuple[str, ...] = ()
 
     def product(self, name: str) -> resolved_product:
@@ -490,9 +489,7 @@ def _validate_role_metadata(
     processes: Sequence[str],
     *,
     by_process: Mapping[str, Sequence[tuple[str, Mapping[str, Any]]]],
-    allowed_eft_prompt_processes: Sequence[str] = (),
 ) -> None:
-    allowed_eft_prompt_processes = set(allowed_eft_prompt_processes)
     for process in processes:
         entries = by_process[process]
         if role == "data":
@@ -506,16 +503,11 @@ def _validate_role_metadata(
                 dataset
                 for dataset, sample in entries
                 if sample["isData"]
-                or (
-                    bool(sample["WCnames"])
-                    and process not in allowed_eft_prompt_processes
-                )
             ]
             if invalid:
                 raise data_driven_product_error(
                     f"DATA-DRIVEN-E004: {product_name}.{role} process {process!r} "
-                    "must be scalar non-EFT MC unless independently derived as an "
-                    f"active profile-required prompt signal; invalid datasets={invalid}."
+                    f"must be non-data MC; invalid datasets={invalid}."
                 )
 
 
@@ -524,8 +516,7 @@ def _implicit_product_configuration(
     enabled: bool,
     available_processes: Sequence[str],
     by_process: Mapping[str, Sequence[tuple[str, Mapping[str, Any]]]],
-    required_prompt_signal_processes: Sequence[str] = (),
-    certified_prompt_processes: Sequence[str] | None = None,
+    certified_prompt_processes: Sequence[str],
 ) -> dict[str, Any]:
     if not enabled:
         return {
@@ -533,26 +524,12 @@ def _implicit_product_configuration(
             for name in DATA_DRIVEN_PRODUCT_NAMES
         }
     data_processes = []
-    prompt_processes = []
     for process in available_processes:
         base_name, _year = parse_process_name(process)
         entries = by_process[process]
         if base_name == "data" and all(sample["isData"] for _dataset, sample in entries):
             data_processes.append(process)
-        elif certified_prompt_processes is None and (
-            base_name in _LEGACY_PROMPT_BASE_NAMES
-            and all(
-                not sample["isData"] and not sample["WCnames"]
-                for _dataset, sample in entries
-            )
-        ):
-            prompt_processes.append(process)
-    if certified_prompt_processes is not None:
-        prompt_processes = sorted(set(certified_prompt_processes))
-    else:
-        prompt_processes = sorted(
-            set(prompt_processes) | set(required_prompt_signal_processes)
-        )
+    prompt_processes = sorted(set(certified_prompt_processes))
     return {
         "nonprompt": {
             "enabled": True,
@@ -578,7 +555,6 @@ def resolve_data_driven_products(
     samples: Mapping[str, Mapping[str, Any]],
     runtime_families: Sequence[str],
     metadata_path: str | None,
-    required_prompt_signal_processes: Sequence[str] = (),
     nonprompt_policy: certified_nonprompt_policy | None = None,
 ) -> resolved_data_driven_products:
     """Resolve explicit or exact legacy-derived product contributors."""
@@ -604,6 +580,7 @@ def resolve_data_driven_products(
             nonprompt_policy = certify_active_nonprompt_policy(
                 samples,
                 configuration_source=metadata_path or "<command-line/default>",
+                configured_prompt_aliases=_CONFIGURED_PROMPT_BASE_NAMES,
             )
         except nonprompt_policy_error as error:
             raise data_driven_product_error(str(error)) from error
@@ -633,7 +610,6 @@ def resolve_data_driven_products(
             enabled=legacy_do_np,
             available_processes=available_processes,
             by_process=by_process,
-            required_prompt_signal_processes=required_prompt_signal_processes,
             certified_prompt_processes=certified_prompt_processes,
         )
         source = "implicit_legacy_data_driven_default"
@@ -711,11 +687,6 @@ def resolve_data_driven_products(
                     role,
                     matches,
                     by_process=by_process,
-                    allowed_eft_prompt_processes=(
-                        nonprompt_policy.eft_prompt_processes
-                        if nonprompt_policy is not None
-                        else required_prompt_signal_processes
-                    ),
                 )
             configured_selectors.append((role, selector))
             resolved_roles.append((role, matches))
@@ -773,9 +744,6 @@ def resolve_data_driven_products(
         runtime_families=families,
         products=tuple(resolved_entries),
         nonprompt_policy=nonprompt_policy,
-        required_prompt_signal_processes=tuple(
-            sorted(set(required_prompt_signal_processes))
-        ),
         warnings=tuple(product_warnings),
     )
 
@@ -812,11 +780,6 @@ def _serialize_resolved_data_driven_contract(
             "canonical policy before contract serialization."
         )
     certified_policy = resolved_products.nonprompt_policy
-    required_prompt_signals = (
-        resolved_products.required_prompt_signal_processes
-        if nonprompt_enabled
-        else ()
-    )
     resolved_prompt_process_set = (
         certified_policy.resolved_prompt_process_set
         if certified_policy is not None and nonprompt_enabled
@@ -836,7 +799,6 @@ def _serialize_resolved_data_driven_contract(
         ),
         "resolved_prompt_process_set": list(resolved_prompt_process_set),
         "policy_migration": dict(migration or default_migration),
-        "required_prompt_signal_processes": list(required_prompt_signals),
         "products": serialized_products,
     }
     return contract
@@ -949,7 +911,6 @@ def validate_generated_output_contract(
         "nonprompt_policy",
         "resolved_prompt_process_set",
         "policy_migration",
-        "required_prompt_signal_processes",
         "products",
     }:
         raise data_driven_product_error("Invalid resolved_data_driven_contract fields.")
@@ -1164,51 +1125,6 @@ def validate_generated_output_contract(
         raise data_driven_product_error(
             "policy_migration differences do not match the serialized/current prompt sets."
         )
-
-    required_prompt_signals = contract["required_prompt_signal_processes"]
-    if (
-        not isinstance(required_prompt_signals, list)
-        or required_prompt_signals != sorted(set(required_prompt_signals))
-        or any(
-            not isinstance(process, str) or not process
-            for process in required_prompt_signals
-        )
-    ):
-        raise data_driven_product_error(
-            "required_prompt_signal_processes must be a sorted unique list of "
-            "nonempty process names."
-        )
-    from topeft.modules.production_sample_profile import (
-        derive_required_prompt_signal_processes,
-    )
-
-    expected_required = list(
-        derive_required_prompt_signal_processes(
-            policy.resolved_processes,
-            signal_sample_profile=policy.signal_sample_profile,
-            nonprompt_enabled=nonprompt_enabled,
-        )
-    )
-    missing_profile_requirements = sorted(
-        set(expected_required) - set(required_prompt_signals)
-    )
-    if missing_profile_requirements:
-        raise data_driven_product_error(
-            "required_prompt_signal_processes contradict the active profile and "
-            f"nonprompt request: expected={expected_required} "
-            f"observed={required_prompt_signals} "
-            f"missing={missing_profile_requirements}."
-        )
-    resolved_prompt_mc = set(product_prompt_processes)
-    missing_required = sorted(set(required_prompt_signals) - resolved_prompt_mc)
-    if missing_required:
-        raise data_driven_product_error(
-            "Resolved nonprompt prompt_mc contributors omit active profile-required "
-            f"signals: required={required_prompt_signals} "
-            f"resolved_prompt_mc={sorted(resolved_prompt_mc)} "
-            f"missing={missing_required}."
-        )
-
 
 def validate_generated_outputs_against_sumw2_policy(
     contract: Mapping[str, Any],
@@ -1447,9 +1363,22 @@ def validate_serialized_data_driven_contract(
         )
     version = contract.get("contract_version")
     if version == RESOLVED_DATA_DRIVEN_CONTRACT_VERSION:
-        validate_generated_output_contract(requested, contract, policy=policy)
+        normalized_contract = copy.deepcopy(dict(contract))
+        normalized_contract.pop("required_prompt_signal_processes", None)
+        serialized_policy = normalized_contract.get("nonprompt_policy")
+        if isinstance(serialized_policy, Mapping):
+            normalized_policy = dict(serialized_policy)
+            normalized_policy.pop("eft_prompt_processes", None)
+            normalized_policy.pop("eft_sm_point", None)
+            for resolution in normalized_policy.get("resolutions", ()):
+                if isinstance(resolution, dict):
+                    resolution.pop("eft_sm_point", None)
+            normalized_contract["nonprompt_policy"] = normalized_policy
+        validate_generated_output_contract(
+            requested, normalized_contract, policy=policy
+        )
         validate_generated_outputs_against_sumw2_policy(
-            contract,
+            normalized_contract,
             policy=policy,
             skip_nonprompt=allow_incomplete_nonprompt_sumw2,
         )
@@ -1469,17 +1398,15 @@ def validate_serialized_data_driven_contract(
         raise data_driven_product_error(
             f"Unsupported resolved_data_driven_contract version {version!r}."
         )
-    return copy.deepcopy(dict(requested)), copy.deepcopy(dict(contract))
+    return copy.deepcopy(dict(requested)), copy.deepcopy(
+        normalized_contract if version == RESOLVED_DATA_DRIVEN_CONTRACT_VERSION else dict(contract)
+    )
 
 
 def reresolve_nonprompt_policy_from_sidecar(
     sidecar: Mapping[str, Any],
 ) -> dict[str, Any]:
     """Re-resolve stored source identities while preserving old contract provenance."""
-
-    from topeft.modules.production_sample_profile import (
-        derive_required_prompt_signal_processes,
-    )
 
     requested = sidecar.get("requested_data_driven_products")
     serialized_contract = sidecar.get("resolved_data_driven_contract")
@@ -1496,7 +1423,11 @@ def reresolve_nonprompt_policy_from_sidecar(
         {
             process
             for family_manifest in manifest.values()
-            for field in ("scalar_nominal_processes", "eft_nominal_processes")
+            for field in (
+                "scalar_nominal_processes",
+                "eft_nominal_processes",
+                "sumw2_processes",
+            )
             for process in family_manifest[field]
         }
     )
@@ -1504,6 +1435,7 @@ def reresolve_nonprompt_policy_from_sidecar(
         certificate = certify_active_nonprompt_policy(
             source_processes,
             configuration_source="stored_source_process_universe",
+            configured_prompt_aliases=_CONFIGURED_PROMPT_BASE_NAMES,
         )
     except nonprompt_policy_error as error:
         raise data_driven_product_error(str(error)) from error
@@ -1546,11 +1478,6 @@ def reresolve_nonprompt_policy_from_sidecar(
         samples=synthetic_samples,
         runtime_families=tuple(manifest),
         metadata_path="stored_source_process_universe",
-        required_prompt_signal_processes=derive_required_prompt_signal_processes(
-            policy.resolved_processes,
-            signal_sample_profile=policy.signal_sample_profile,
-            nonprompt_enabled=requested_products["nonprompt"]["enabled"],
-        ),
         nonprompt_policy=(
             certificate if requested_products["nonprompt"]["enabled"] else None
         ),

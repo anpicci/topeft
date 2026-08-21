@@ -262,6 +262,42 @@ def test_params_legacy_surface_is_additive_and_cannot_override_policy():
     assert set(canonical_prompt_aliases()) <= set(entries)
     assert not set(explicit_exclusion_aliases()) & set(entries)
 
+    configured = certify_active_nonprompt_policy(
+        ("ttH_private2022", "WWTo2L2Nu_central2022"),
+        configuration_source="legacy_non_orchestrated_source",
+        configured_prompt_aliases=entries,
+    )
+    direct = certify_active_nonprompt_policy(
+        ("ttH_private2022", "WWTo2L2Nu_central2022"),
+        configuration_source="current_orchestrated_source",
+    )
+    assert configured.resolved_prompt_process_set == direct.resolved_prompt_process_set
+    assert configured.explicit_exclusions == direct.explicit_exclusions
+    serialized = configured.to_dict()
+    assert "eft_prompt_processes" not in serialized
+    assert all("eft_sm_point" not in row for row in serialized["resolutions"])
+
+
+def test_prompt_membership_ignores_signal_background_role_metadata():
+    resolved_sets = []
+    for analysis_role in ("signal", "background"):
+        certificate = certify_active_nonprompt_policy(
+            {
+                "sample": {
+                    "histAxisName": "ttH_private2022",
+                    "isData": False,
+                    "WCnames": ["ctW"],
+                    "analysis_role": analysis_role,
+                }
+            },
+            configuration_source=f"role_{analysis_role}",
+        )
+        resolved_sets.append(certificate.resolved_prompt_process_set)
+    assert resolved_sets == [
+        ("ttH_private2022",),
+        ("ttH_private2022",),
+    ]
+
 
 def test_invalid_policy_call_precedes_processor_and_executor_construction():
     source_path = Path(__file__).parents[1] / "analysis/topeft_run2/run_analysis.py"

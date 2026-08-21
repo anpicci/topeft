@@ -906,18 +906,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                 else NONPROMPT_OUTPUT_ARTIFACT_KIND
             ),
         )
-        effective_input_sidecar = (
-            DataDrivenProducer.prepare_input_sidecar_for_prompt_subtraction(
-                resolution["effective_sidecar"],
-                artifact_kind=(
-                    FLIPS_OUTPUT_ARTIFACT_KIND
-                    if args.only_flips
-                    else NONPROMPT_NOMINAL_REFERENCE_ARTIFACT_KIND
-                    if args.nominal_only_reference
-                    else NONPROMPT_OUTPUT_ARTIFACT_KIND
-                ),
-            )
-        )
+        effective_input_sidecar = resolution["effective_sidecar"]
 
         def _write_payload(staged_path: str) -> Dict[str, Any]:
             transformation_context = _finalize_histograms(

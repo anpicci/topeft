@@ -1056,10 +1056,10 @@ def test_processor_sidecar_uses_family_free_generated_output_contract(
         "nonprompt_policy",
         "resolved_prompt_process_set",
         "policy_migration",
-        "required_prompt_signal_processes",
         "products",
     }
-    assert contract["required_prompt_signal_processes"] == []
+    assert "required_prompt_signal_processes" not in contract
+    assert "eft_prompt_processes" not in contract["nonprompt_policy"]
     assert "families" not in contract
     assert contract["products"]["nonprompt"] == {
         "enabled": True,
@@ -1991,7 +1991,6 @@ def test_private_and_central_profile_transformed_artifacts_do_not_merge(tmp_path
             samples=samples,
             runtime_families=("njets",),
             metadata_path=f"{profile}.yml",
-            required_prompt_signal_processes=(signal_process,),
         )
         requested, contract = certify_data_driven_preflight(products, policy)
         processor_path = tmp_path / f"{profile}_processor.pkl.gz"

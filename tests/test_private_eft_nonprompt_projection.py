@@ -31,7 +31,6 @@ from topeft.modules.nonprompt_policy import certify_active_nonprompt_policy
 from topeft.modules.production_sample_profile import (
     build_active_sample_universe,
     certify_production_sample_contract,
-    derive_required_prompt_signal_processes,
 )
 from topeft.modules.sumw2_policy import (
     resolve_sumw2_storage_mode,
@@ -146,11 +145,6 @@ def _contracts(prompt_process, *, private):
         sumw2_storage_present=True,
     )
     universe = build_active_sample_universe(samples, wrapper_identity="pytest")
-    required = derive_required_prompt_signal_processes(
-        universe.processes,
-        signal_sample_profile=mode_resolution.signal_sample_profile,
-        nonprompt_enabled=True,
-    )
     products = resolve_data_driven_products(
         {
             "nonprompt": {
@@ -172,7 +166,6 @@ def _contracts(prompt_process, *, private):
         samples=samples,
         runtime_families=("njets",),
         metadata_path="private_eft_projection.yml",
-        required_prompt_signal_processes=required,
     )
     policy = resolve_sumw2_storage_policy(
         storage,
@@ -423,23 +416,28 @@ def test_private_eft_projection_is_sm_only_and_preserves_passthrough(tmp_path):
     )
 
 
+@pytest.mark.parametrize(
+    "prompt_process",
+    [TTH_PRIVATE_PROCESS, "WZTo3LNu_central2022"],
+)
 @pytest.mark.parametrize("representation", ["scalar", "eft"])
 def test_prompt_membership_and_execution_are_representation_independent(
     tmp_path,
+    prompt_process,
     representation,
 ):
     result = _transform_representation(
         tmp_path,
-        TTH_PRIVATE_PROCESS,
+        prompt_process,
         representation,
     )
     source_contract = result["source_sidecar"]["resolved_data_driven_contract"]
     execution = result["execution"]["families"]["njets"]
 
-    assert TTH_PRIVATE_PROCESS in source_contract["resolved_prompt_process_set"]
-    assert TTH_PRIVATE_PROCESS in execution["selected_processes"]
-    assert TTH_PRIVATE_PROCESS in execution["executed_processes"]
-    assert execution["nominal_evaluation_route"][TTH_PRIVATE_PROCESS] == (
+    assert prompt_process in source_contract["resolved_prompt_process_set"]
+    assert prompt_process in execution["selected_processes"]
+    assert prompt_process in execution["executed_processes"]
+    assert execution["nominal_evaluation_route"][prompt_process] == (
         "eft_sm_point" if representation == "eft" else "scalar_nominal"
     )
     assert execution["executed_processes"] == execution[
@@ -454,15 +452,13 @@ def test_prompt_membership_and_execution_are_representation_independent(
     ) == pytest.approx(3.0)
 
     if representation == "eft":
-        assert TTH_PRIVATE_PROCESS not in source_contract[
-            "required_prompt_signal_processes"
-        ]
-        assert TTH_PRIVATE_PROCESS in result["effective_sidecar"][
-            "resolved_data_driven_contract"
-        ]["required_prompt_signal_processes"]
+        assert "required_prompt_signal_processes" not in source_contract
+        assert "required_prompt_signal_processes" not in result[
+            "effective_sidecar"
+        ]["resolved_data_driven_contract"]
         assert result["sidecar"]["transformation_contract"][
             "eft_prompt_projection"
-        ]["required_processes"] == [TTH_PRIVATE_PROCESS]
+        ]["required_processes"] == [prompt_process]
 
 
 def test_selected_absent_is_distinct_from_unhandled_and_ambiguity_fails_closed():
@@ -516,9 +512,7 @@ def test_tth_private_streaming_path_uses_canonical_selection(tmp_path):
     )
     source_contract = source_sidecar["resolved_data_driven_contract"]
     assert TTH_PRIVATE_PROCESS in source_contract["resolved_prompt_process_set"]
-    assert TTH_PRIVATE_PROCESS not in source_contract[
-        "required_prompt_signal_processes"
-    ]
+    assert "required_prompt_signal_processes" not in source_contract
 
     assert run_data_driven.main(
         [
@@ -655,7 +649,7 @@ def test_private_eft_nominal_reference_uses_sm_prompt_subtraction_without_sumw2(
     [
         (
             "missing_eft_source",
-            "omit active profile-required signals.*tllq_privateUL18",
+            "missing_source_nominal=.*tllq_privateUL18",
         ),
         ("duplicate_source", "duplicate process labels.*tllq_privateUL18"),
         (

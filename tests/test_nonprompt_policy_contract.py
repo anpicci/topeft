@@ -94,7 +94,6 @@ def _resolved_contract(samples):
         samples=samples,
         runtime_families=("njets",),
         metadata_path="fresh_synthetic_source",
-        required_prompt_signal_processes=certificate.eft_prompt_processes,
         nonprompt_policy=certificate,
     )
     selected = sorted(set(data_processes) | set(certificate.resolved_prompt_process_set))
@@ -147,9 +146,7 @@ def _precanonical_contract(contract, prompt_processes):
     ):
         stale.pop(field)
     prompt_processes = set(prompt_processes)
-    stale["required_prompt_signal_processes"] = sorted(
-        set(stale["required_prompt_signal_processes"]) & prompt_processes
-    )
+    stale["required_prompt_signal_processes"] = sorted(prompt_processes)
     for output in stale["products"]["nonprompt"]["generated_outputs"].values():
         data = output["source_contributors"]["data"]
         prompt = sorted(
@@ -160,7 +157,7 @@ def _precanonical_contract(contract, prompt_processes):
     return stale
 
 
-def test_fresh_contract_uses_one_prompt_set_for_nominal_sumw2_and_eft_boundary():
+def test_fresh_contract_uses_one_prompt_set_and_omits_representation_hints():
     samples = _samples(RUN3_ACTIVE_BASES, ("2022",))
     certificate, _policy, _requested, contract = _resolved_contract(samples)
     output = contract["products"]["nonprompt"]["generated_outputs"][
@@ -173,10 +170,13 @@ def test_fresh_contract_uses_one_prompt_set_for_nominal_sumw2_and_eft_boundary()
     )
     assert nominal_prompt == contract["resolved_prompt_process_set"]
     assert sumw2_prompt == contract["resolved_prompt_process_set"]
-    assert contract["required_prompt_signal_processes"] == list(
-        certificate.eft_prompt_processes
+    assert "ttH_private2022" in certificate.resolved_prompt_process_set
+    assert "required_prompt_signal_processes" not in contract
+    assert "eft_prompt_processes" not in contract["nonprompt_policy"]
+    assert all(
+        "eft_sm_point" not in resolution
+        for resolution in contract["nonprompt_policy"]["resolutions"]
     )
-    assert "ttH_private2022" in contract["required_prompt_signal_processes"]
 
 
 def test_stale_run3_contract_is_reresolved_with_provenance_and_missing_sumw2():

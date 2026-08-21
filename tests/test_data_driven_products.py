@@ -84,7 +84,6 @@ def _resolve_products(
     *,
     present=True,
     legacy_do_np=False,
-    required_prompt_signal_processes=(),
 ):
     return resolve_data_driven_products(
         block,
@@ -93,7 +92,6 @@ def _resolve_products(
         samples=samples,
         runtime_families=("njets", "met"),
         metadata_path="run_options.yml",
-        required_prompt_signal_processes=required_prompt_signal_processes,
     )
 
 
@@ -191,7 +189,7 @@ def test_overlapping_roles_and_ambiguous_duplicate_selector_resolution_fail(samp
     overlapping["nonprompt"]["source_contributors"]["prompt_mc"] = {
         "process_names": ["dataUL18"]
     }
-    with pytest.raises(data_driven_product_error, match="scalar non-EFT MC"):
+    with pytest.raises(data_driven_product_error, match="must be non-data MC"):
         _resolve_products(overlapping, samples)
 
     ambiguous = _explicit_block()
@@ -212,7 +210,6 @@ def test_both_disabled_is_valid_and_requires_no_targets(samples):
 
 
 def test_implicit_production_selects_only_requested_source_targets(samples):
-    required_signals = ("ttHJet_privateUL18",)
     block = _explicit_block()
     block["nonprompt"]["source_contributors"]["prompt_mc"] = {
         "process_names": [
@@ -220,11 +217,7 @@ def test_implicit_production_selects_only_requested_source_targets(samples):
             "ttHJet_privateUL18",
         ]
     }
-    products = _resolve_products(
-        block,
-        samples,
-        required_prompt_signal_processes=required_signals,
-    )
+    products = _resolve_products(block, samples)
     policy = resolve_sumw2_storage_policy(
         None,
         samples=samples,
@@ -249,13 +242,11 @@ def test_implicit_production_selects_only_requested_source_targets(samples):
         "nonprompt_policy",
         "resolved_prompt_process_set",
         "policy_migration",
-        "required_prompt_signal_processes",
         "products",
     }
     assert contract["contract_version"] == 4
-    assert contract["required_prompt_signal_processes"] == [
-        "ttHJet_privateUL18"
-    ]
+    assert "required_prompt_signal_processes" not in contract
+    assert "eft_prompt_processes" not in contract["nonprompt_policy"]
     assert contract["products"]["flips"]["generated_outputs"]["flipsUL18"][
         "required_source_sumw2_processes"
     ] == ["dataUL18"]
@@ -292,11 +283,7 @@ def test_explicit_production_and_taufitter_require_complete_product_sources(samp
             "ttHJet_privateUL18",
         ]
     }
-    products = _resolve_products(
-        block,
-        samples,
-        required_prompt_signal_processes=("ttHJet_privateUL18",),
-    )
+    products = _resolve_products(block, samples)
     source_rule = {
         "process_names": [
             "dataUL18",
@@ -380,6 +367,23 @@ def test_serialized_contract_validation_rejects_tampering(samples):
         contract,
         policy=policy,
     ) == (requested, contract)
+
+    historical = copy.deepcopy(contract)
+    historical["required_prompt_signal_processes"] = ["stale_processUL18"]
+    historical["nonprompt_policy"]["eft_prompt_processes"] = [
+        "stale_processUL18"
+    ]
+    historical["nonprompt_policy"]["eft_sm_point"] = True
+    historical["nonprompt_policy"]["resolutions"][0]["eft_sm_point"] = True
+    normalized_requested, normalized_contract = (
+        validate_serialized_data_driven_contract(
+            requested,
+            historical,
+            policy=policy,
+        )
+    )
+    assert normalized_requested == requested
+    assert normalized_contract == contract
 
     tampered = copy.deepcopy(contract)
     tampered["products"]["nonprompt"]["generated_outputs"]["nonpromptUL18"][

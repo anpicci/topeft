@@ -97,12 +97,7 @@ class DataDrivenProducer:
                     self._input_artifact_validation["metadata"],
                     artifact_kind=artifact_kind,
                 )
-                self._resolved_input_sidecar = (
-                    self.prepare_input_sidecar_for_prompt_subtraction(
-                        resolution["effective_sidecar"],
-                        artifact_kind=artifact_kind,
-                    )
-                )
+                self._resolved_input_sidecar = resolution["effective_sidecar"]
                 self._nonprompt_policy_migration = resolution["migration"]
         self._transformation_role_context = self._initialize_transformation_role_context()
         self._prompt_subtraction_execution_by_family = (
@@ -217,52 +212,6 @@ class DataDrivenProducer:
                 "nonprompt_applicable": False,
             }
         return plans
-
-    @classmethod
-    def prepare_input_sidecar_for_prompt_subtraction(
-        cls,
-        input_sidecar,
-        *,
-        artifact_kind,
-    ):
-        """Synchronize legacy projection provenance from policy plus representation."""
-
-        prepared = copy.deepcopy(dict(input_sidecar))
-        if artifact_kind not in {
-            NONPROMPT_OUTPUT_ARTIFACT_KIND,
-            NONPROMPT_NOMINAL_REFERENCE_ARTIFACT_KIND,
-        }:
-            return prepared
-        contract = prepared["resolved_data_driven_contract"]
-        policy = contract["nonprompt_policy"]
-        family_inventories = {
-            family: {
-                "scalar": manifest["scalar_nominal_processes"],
-                "eft": manifest["eft_nominal_processes"],
-                "sumw2": manifest["sumw2_processes"],
-            }
-            for family, manifest in prepared["sumw2_content_manifest"][
-                "families"
-            ].items()
-        }
-        plans = cls._build_prompt_subtraction_execution_plan(
-            contract["resolved_prompt_process_set"],
-            policy["explicit_exclusions"],
-            family_inventories,
-        )
-        selected_eft_processes = {
-            process
-            for plan in plans.values()
-            for process in plan["eft_processes"]
-        }
-        # The unchanged sidecar schema still names this historical field.  It is
-        # now a mechanically derived provenance superset and is never consulted
-        # to decide scientific membership or execution routing.
-        contract["required_prompt_signal_processes"] = sorted(
-            set(contract["required_prompt_signal_processes"])
-            | selected_eft_processes
-        )
-        return prepared
 
     def _initialize_prompt_subtraction_execution_context(self):
         if self._artifact_kind not in {

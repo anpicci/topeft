@@ -32,7 +32,6 @@ class nonprompt_alias_definition:
     policy_role: str
     policy_reason: str
     source_of_alias: str
-    eft_sm_point: bool = False
 
 
 @dataclass(frozen=True)
@@ -45,7 +44,6 @@ class resolved_nonprompt_process:
     policy_role: str
     policy_reason: str
     source_of_alias: str
-    eft_sm_point: bool
 
     @property
     def is_prompt_member(self) -> bool:
@@ -83,16 +81,6 @@ class certified_nonprompt_policy:
         )
 
     @property
-    def eft_prompt_processes(self) -> tuple[str, ...]:
-        return tuple(
-            sorted(
-                resolution.raw_process_label
-                for resolution in self.resolutions
-                if resolution.is_prompt_member and resolution.eft_sm_point
-            )
-        )
-
-    @property
     def explicit_exclusions(self) -> tuple[str, ...]:
         return tuple(
             sorted(
@@ -107,7 +95,6 @@ class certified_nonprompt_policy:
             "schema_version": NONPROMPT_POLICY_SCHEMA_VERSION,
             "configuration_source": self.configuration_source,
             "resolved_prompt_process_set": list(self.resolved_prompt_process_set),
-            "eft_prompt_processes": list(self.eft_prompt_processes),
             "explicit_exclusions": list(self.explicit_exclusions),
             "resolutions": [resolution.to_dict() for resolution in self.resolutions],
         }
@@ -121,7 +108,6 @@ def _alias(
     role: str = PROMPT_SUBTRACTION_MEMBER,
     reason: str = "historical_selective_prompt_policy",
     source: str = "maintained_nonprompt_policy",
-    eft_sm_point: bool = False,
 ) -> nonprompt_alias_definition:
     return nonprompt_alias_definition(
         raw_process_base=raw_process_base,
@@ -130,7 +116,6 @@ def _alias(
         policy_role=role,
         policy_reason=reason,
         source_of_alias=source,
-        eft_sm_point=eft_sm_point,
     )
 
 
@@ -164,15 +149,15 @@ DEFAULT_NONPROMPT_ALIAS_DEFINITIONS = (
     _alias("WZZ_ext_central", "wzz", _RUN2_ONLY),
     _alias("ZZTo4L_central", "zz_to_4l_prompt_family", _BOTH_ERAS),
     _alias("ZZZ_central", "zzz", _BOTH_ERAS),
-    _alias("tHq_private", "private_thq", _BOTH_ERAS, eft_sm_point=True),
-    _alias("tllq_private", "private_tllq", _BOTH_ERAS, eft_sm_point=True),
-    _alias("ttHJet_private", "private_tth", _RUN2_ONLY, eft_sm_point=True),
-    _alias("ttH_private", "private_tth", _RUN3_ONLY, reason="run3_additive_alias_of_run2_private_tth", eft_sm_point=True),
-    _alias("ttllJet_private", "private_ttll", _RUN2_ONLY, eft_sm_point=True),
-    _alias("ttll_private", "private_ttll", _RUN3_ONLY, reason="run3_additive_alias_of_run2_private_ttll", eft_sm_point=True),
-    _alias("ttlnuJet_private", "private_ttlnu", _RUN2_ONLY, eft_sm_point=True),
-    _alias("ttlnu_private", "private_ttlnu", _RUN3_ONLY, reason="run3_additive_alias_of_run2_private_ttlnu", eft_sm_point=True),
-    _alias("tttt_private", "private_tttt", _BOTH_ERAS, eft_sm_point=True),
+    _alias("tHq_private", "private_thq", _BOTH_ERAS),
+    _alias("tllq_private", "private_tllq", _BOTH_ERAS),
+    _alias("ttHJet_private", "private_tth", _RUN2_ONLY),
+    _alias("ttH_private", "private_tth", _RUN3_ONLY, reason="run3_additive_alias_of_run2_private_tth"),
+    _alias("ttllJet_private", "private_ttll", _RUN2_ONLY),
+    _alias("ttll_private", "private_ttll", _RUN3_ONLY, reason="run3_additive_alias_of_run2_private_ttll"),
+    _alias("ttlnuJet_private", "private_ttlnu", _RUN2_ONLY),
+    _alias("ttlnu_private", "private_ttlnu", _RUN3_ONLY, reason="run3_additive_alias_of_run2_private_ttlnu"),
+    _alias("tttt_private", "private_tttt", _BOTH_ERAS),
     _alias("tZq_central", "private_tllq", _RUN2_ONLY),
     _alias("ttHJet_central", "private_tth", _RUN2_ONLY),
     _alias("ttH_central", "private_tth", _RUN2_ONLY),
@@ -298,11 +283,16 @@ def certify_active_nonprompt_policy(
     *,
     configuration_source: str,
     required_canonical_families: Iterable[str] = (),
+    configured_prompt_aliases: Sequence[str] | None = None,
     alias_definitions: Sequence[nonprompt_alias_definition] = DEFAULT_NONPROMPT_ALIAS_DEFINITIONS,
 ) -> certified_nonprompt_policy:
     """Resolve every exact active identity and reject all silent fall-through."""
 
     aliases = _validated_alias_index(alias_definitions)
+    configured_prompt_alias_set = None
+    if configured_prompt_aliases is not None:
+        validate_legacy_prompt_compatibility(configured_prompt_aliases)
+        configured_prompt_alias_set = set(configured_prompt_aliases)
     processes, data_flags = _active_process_metadata(samples_or_processes)
     resolutions = []
     for process in processes:
@@ -313,6 +303,15 @@ def certify_active_nonprompt_policy(
                 "NONPROMPT-POLICY-E006: unknown active process alias has no explicit nonprompt role; "
                 f"process={process!r} process_base={process_base!r} "
                 f"configuration_source={configuration_source!r}."
+            )
+        if (
+            definition.policy_role == PROMPT_SUBTRACTION_MEMBER
+            and configured_prompt_alias_set is not None
+            and process_base not in configured_prompt_alias_set
+        ):
+            raise nonprompt_policy_error(
+                "NONPROMPT-POLICY-E008: configured prompt policy omits a canonical "
+                f"prompt alias; process={process!r} process_base={process_base!r}."
             )
         if run_era not in definition.run_eras:
             raise nonprompt_policy_error(
@@ -342,7 +341,6 @@ def certify_active_nonprompt_policy(
                 policy_role=definition.policy_role,
                 policy_reason=definition.policy_reason,
                 source_of_alias=definition.source_of_alias,
-                eft_sm_point=definition.eft_sm_point,
             )
         )
     active_families = {resolution.canonical_family for resolution in resolutions}
