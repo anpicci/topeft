@@ -27,6 +27,7 @@ from topeft.modules.histogram_artifact import (
     write_histogram_artifact,
 )
 from topeft.modules.nominal_schema import eft_nominal_key, scalar_nominal_key
+from topeft.modules.nonprompt_policy import certify_active_nonprompt_policy
 from topeft.modules.production_sample_profile import (
     build_active_sample_universe,
     certify_production_sample_contract,
@@ -41,6 +42,7 @@ from topeft.modules.sumw2_policy import (
 PRIVATE_PROCESS = "tllq_privateUL18"
 CENTRAL_EQUIVALENT_PROCESS = "tZq_centralUL18"
 UNSELECTED_EFT_PROCESS = "WWTo2L2Nu_centralUL18"
+TTH_PRIVATE_PROCESS = "ttH_private2022"
 
 
 def _axes(dense_name, *, bins=1):
@@ -97,14 +99,19 @@ def _total(histogram, process, wc_values=None):
 
 
 def _samples(prompt_process, *, private):
+    is_run3 = prompt_process.endswith(("2022", "2022EE", "2023", "2023BPix"))
+    data_process = "data2022" if is_run3 else "dataUL18"
+    baseline_prompt = (
+        "TTto2L2Nu_central2022" if is_run3 else "TTTo2L2Nu_centralUL18"
+    )
     samples = {
         "data_dataset": {
-            "histAxisName": "dataUL18",
+            "histAxisName": data_process,
             "isData": True,
             "WCnames": [],
         },
         "prompt_dataset": {
-            "histAxisName": "TTTo2L2Nu_centralUL18",
+            "histAxisName": baseline_prompt,
             "isData": False,
             "WCnames": [],
         },
@@ -119,14 +126,16 @@ def _samples(prompt_process, *, private):
 
 def _contracts(prompt_process, *, private):
     samples = _samples(prompt_process, private=private)
+    data_process = samples["data_dataset"]["histAxisName"]
+    baseline_prompt = samples["prompt_dataset"]["histAxisName"]
     mode = "production" if private else "full_diagnostics"
     storage = {"mode": mode}
     if private:
         storage["rules"] = [
             {
                 "process_names": [
-                    "dataUL18",
-                    "TTTo2L2Nu_centralUL18",
+                    data_process,
+                    baseline_prompt,
                     prompt_process,
                 ],
                 "variables": ["njets"],
@@ -147,10 +156,10 @@ def _contracts(prompt_process, *, private):
             "nonprompt": {
                 "enabled": True,
                 "source_contributors": {
-                    "data": {"process_names": ["dataUL18"]},
+                    "data": {"process_names": [data_process]},
                     "prompt_mc": {
                         "process_names": [
-                            "TTTo2L2Nu_centralUL18",
+                            baseline_prompt,
                             prompt_process,
                         ]
                     },
@@ -221,6 +230,45 @@ def _payload(*, private=True):
     }
 
 
+def _representation_payload(prompt_process, representation):
+    samples = _samples(prompt_process, private=representation == "eft")
+    data_process = samples["data_dataset"]["histAxisName"]
+    baseline_prompt = samples["prompt_dataset"]["histAxisName"]
+    excluded_process = (
+        "WWTo2L2Nu_central2022"
+        if prompt_process.endswith("2022")
+        else UNSELECTED_EFT_PROCESS
+    )
+    scalar_entries = [
+        (data_process, "isAR_3l", 10.0),
+        (baseline_prompt, "isAR_3l", 3.0),
+    ]
+    eft_entries = [
+        (excluded_process, "isAR_3l", 2.0, [1.0, 0.0, 0.0]),
+    ]
+    if representation == "scalar":
+        scalar_entries.append((prompt_process, "isAR_3l", 4.0))
+    else:
+        eft_entries.append(
+            (prompt_process, "isAR_3l", 4.0, [1.0, 0.0, 0.0])
+        )
+        eft_entries.append(
+            (prompt_process, "isSR_3l", 1.0, [1.0, 0.0, 0.0])
+        )
+    companion_entries = [
+        (data_process, "isAR_3l", 100.0),
+        (baseline_prompt, "isAR_3l", 9.0),
+        (prompt_process, "isAR_3l", 16.0),
+    ]
+    if representation == "eft":
+        companion_entries.append((prompt_process, "isSR_3l", 1.0))
+    return {
+        scalar_nominal_key("njets"): _fill_sparse("njets", scalar_entries),
+        eft_nominal_key("njets"): _fill_eft(eft_entries),
+        "njets_sumw2": _fill_sparse("njets_sumw2", companion_entries),
+    }
+
+
 def _write_processor(path, *, private=True, payload=None):
     prompt_process = PRIVATE_PROCESS if private else CENTRAL_EQUIVALENT_PROCESS
     policy, requested, resolved, profile = _contracts(
@@ -258,7 +306,7 @@ def _transform(tmp_path, *, private=True):
         artifact_kind="nonprompt_output",
         sumw2_storage_provenance=policy.to_provenance(),
         lineage_inputs=[lineage_input_from_sidecar(source_sidecar)],
-        input_sidecar=source_sidecar,
+        input_sidecar=producer.get_effective_input_sidecar(),
         transformation_context=context,
     )
     return {
@@ -270,6 +318,58 @@ def _transform(tmp_path, *, private=True):
         "context": context,
         "histograms": transformed,
         "sidecar": output_sidecar,
+    }
+
+
+def _write_representation_processor(source_path, prompt_process, representation):
+    policy, requested, resolved, profile = _contracts(
+        prompt_process,
+        private=representation == "eft",
+    )
+    source_sidecar = write_histogram_artifact(
+        source_path,
+        histograms=_representation_payload(prompt_process, representation),
+        artifact_kind="processor_output",
+        sumw2_storage_provenance=policy.to_provenance(),
+        production_sample_contract=profile,
+        requested_data_driven_products=requested,
+        resolved_data_driven_contract=resolved,
+    )
+    return policy, source_sidecar
+
+
+def _transform_representation(tmp_path, prompt_process, representation):
+    source_path = tmp_path / f"{representation}_source.pkl.gz"
+    output_path = tmp_path / f"{representation}_nonprompt.pkl.gz"
+    policy, source_sidecar = _write_representation_processor(
+        source_path,
+        prompt_process,
+        representation,
+    )
+    producer = DataDrivenProducer(
+        str(source_path),
+        "",
+        artifact_kind="nonprompt_output",
+    )
+    transformed = producer.getDataDrivenHistogram()
+    effective_sidecar = producer.get_effective_input_sidecar()
+    output_sidecar = write_histogram_artifact(
+        output_path,
+        histograms=transformed,
+        artifact_kind="nonprompt_output",
+        sumw2_storage_provenance=policy.to_provenance(),
+        lineage_inputs=[lineage_input_from_sidecar(source_sidecar)],
+        input_sidecar=effective_sidecar,
+        transformation_context=producer.get_transformation_context(
+            "nonprompt_output"
+        ),
+    )
+    return {
+        "source_sidecar": source_sidecar,
+        "effective_sidecar": effective_sidecar,
+        "histograms": transformed,
+        "sidecar": output_sidecar,
+        "execution": producer.get_prompt_subtraction_execution_evidence(),
     }
 
 
@@ -310,6 +410,134 @@ def test_private_eft_projection_is_sm_only_and_preserves_passthrough(tmp_path):
     assert validate_histogram_artifact(result["output_path"])["metadata"] == result[
         "sidecar"
     ]
+    execution = result["producer"].get_prompt_subtraction_execution_evidence()[
+        "families"
+    ]["njets"]
+    assert execution["executed_processes"] == execution[
+        "selected_present_processes"
+    ]
+    assert execution["nominal_evaluation_route"][PRIVATE_PROCESS] == "eft_sm_point"
+    assert (
+        execution["nominal_evaluation_route"]["TTTo2L2Nu_centralUL18"]
+        == "scalar_nominal"
+    )
+
+
+@pytest.mark.parametrize("representation", ["scalar", "eft"])
+def test_prompt_membership_and_execution_are_representation_independent(
+    tmp_path,
+    representation,
+):
+    result = _transform_representation(
+        tmp_path,
+        TTH_PRIVATE_PROCESS,
+        representation,
+    )
+    source_contract = result["source_sidecar"]["resolved_data_driven_contract"]
+    execution = result["execution"]["families"]["njets"]
+
+    assert TTH_PRIVATE_PROCESS in source_contract["resolved_prompt_process_set"]
+    assert TTH_PRIVATE_PROCESS in execution["selected_processes"]
+    assert TTH_PRIVATE_PROCESS in execution["executed_processes"]
+    assert execution["nominal_evaluation_route"][TTH_PRIVATE_PROCESS] == (
+        "eft_sm_point" if representation == "eft" else "scalar_nominal"
+    )
+    assert execution["executed_processes"] == execution[
+        "selected_present_processes"
+    ]
+    excluded_process = "WWTo2L2Nu_central2022"
+    assert excluded_process in execution["excluded_processes"]
+    assert excluded_process not in execution["executed_processes"]
+    assert _total(
+        result["histograms"][scalar_nominal_key("njets")],
+        "nonprompt2022",
+    ) == pytest.approx(3.0)
+
+    if representation == "eft":
+        assert TTH_PRIVATE_PROCESS not in source_contract[
+            "required_prompt_signal_processes"
+        ]
+        assert TTH_PRIVATE_PROCESS in result["effective_sidecar"][
+            "resolved_data_driven_contract"
+        ]["required_prompt_signal_processes"]
+        assert result["sidecar"]["transformation_contract"][
+            "eft_prompt_projection"
+        ]["required_processes"] == [TTH_PRIVATE_PROCESS]
+
+
+def test_selected_absent_is_distinct_from_unhandled_and_ambiguity_fails_closed():
+    certificate = certify_active_nonprompt_policy(
+        [TTH_PRIVATE_PROCESS],
+        configuration_source="focused_execution_contract",
+    )
+    selected = certificate.resolved_prompt_process_set
+    excluded = certificate.explicit_exclusions
+    absent = DataDrivenProducer._build_prompt_subtraction_execution_plan(
+        selected,
+        excluded,
+        {"njets": {"scalar": (), "eft": (), "sumw2": ()}},
+    )["njets"]
+    assert absent["selected_absent_processes"] == {TTH_PRIVATE_PROCESS}
+    assert absent["unhandled_processes"] == set()
+
+    with pytest.raises(RuntimeError, match="without a supported scalar or EFT"):
+        DataDrivenProducer._build_prompt_subtraction_execution_plan(
+            selected,
+            excluded,
+            {
+                "njets": {
+                    "scalar": (),
+                    "eft": (),
+                    "sumw2": (TTH_PRIVATE_PROCESS,),
+                }
+            },
+        )
+    with pytest.raises(RuntimeError, match="ambiguous scalar and EFT"):
+        DataDrivenProducer._build_prompt_subtraction_execution_plan(
+            selected,
+            excluded,
+            {
+                "njets": {
+                    "scalar": (TTH_PRIVATE_PROCESS,),
+                    "eft": (TTH_PRIVATE_PROCESS,),
+                    "sumw2": (TTH_PRIVATE_PROCESS,),
+                }
+            },
+        )
+
+
+def test_tth_private_streaming_path_uses_canonical_selection(tmp_path):
+    source_path = tmp_path / "tth_private_source.pkl.gz"
+    output_path = tmp_path / "tth_private_nonprompt.pkl.gz"
+    _policy, source_sidecar = _write_representation_processor(
+        source_path,
+        TTH_PRIVATE_PROCESS,
+        "eft",
+    )
+    source_contract = source_sidecar["resolved_data_driven_contract"]
+    assert TTH_PRIVATE_PROCESS in source_contract["resolved_prompt_process_set"]
+    assert TTH_PRIVATE_PROCESS not in source_contract[
+        "required_prompt_signal_processes"
+    ]
+
+    assert run_data_driven.main(
+        [
+            "--input-pkl",
+            str(source_path),
+            "--output-pkl",
+            str(output_path),
+            "--quiet",
+        ]
+    ) == 0
+    output = get_hist_from_pkl(str(output_path))
+    assert _total(
+        output[scalar_nominal_key("njets")],
+        "nonprompt2022",
+    ) == pytest.approx(3.0)
+    sidecar = read_histogram_sidecar(output_path)
+    assert sidecar["transformation_contract"]["eft_prompt_projection"][
+        "required_processes"
+    ] == [TTH_PRIVATE_PROCESS]
 
 
 def test_ar_only_eft_input_produces_empty_no_appl_sibling():
