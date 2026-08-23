@@ -283,6 +283,14 @@ def _write_processor(path, policy, products_block=None, source_payload=None):
     )
 
 
+def _legacy_v3_contract_from_current(contract, *, signal_processes):
+    return {
+        "contract_version": 3,
+        "required_prompt_signal_processes": sorted(set(signal_processes)),
+        "products": copy.deepcopy(contract["products"]),
+    }
+
+
 def _write_disjoint_source_processor(
     path,
     *,
@@ -1078,6 +1086,101 @@ def test_processor_sidecar_uses_family_free_generated_output_contract(
         },
         "output_processes": ["nonpromptUL18"],
     }
+
+
+def test_certified_precanonical_contract_normalizes_from_prompt_contributors(
+    tmp_path, policy
+):
+    path = tmp_path / "legacy_v3_processor.pkl.gz"
+    _write_processor(path, policy)
+    sidecar_path = metadata_sidecar_path(path)
+    serialized = json.loads(sidecar_path.read_text(encoding="utf-8"))
+    current = serialized["resolved_data_driven_contract"]
+    serialized["resolved_data_driven_contract"] = _legacy_v3_contract_from_current(
+        current,
+        signal_processes=[],
+    )
+    sidecar_path.write_text(json.dumps(serialized), encoding="utf-8")
+
+    normalized = read_histogram_sidecar(path)["resolved_data_driven_contract"]
+    assert normalized["contract_version"] == 4
+    assert normalized["resolved_prompt_process_set"] == [
+        "TTTo2L2Nu_centralUL18"
+    ]
+    assert "required_prompt_signal_processes" not in normalized
+    assert normalized["policy_migration"] == {
+        "status": "normalized_certified_legacy_contract",
+        "previous_contract_version": 3,
+        "serialized_prompt_process_set": ["TTTo2L2Nu_centralUL18"],
+        "added_prompt_processes": [],
+        "removed_prompt_processes": [],
+    }
+
+
+def test_modern_contract_readback_is_unchanged_by_legacy_normalization(
+    tmp_path, policy
+):
+    path = tmp_path / "modern_processor.pkl.gz"
+    _write_processor(path, policy)
+    serialized = json.loads(metadata_sidecar_path(path).read_text(encoding="utf-8"))
+
+    normalized = read_histogram_sidecar(path)["resolved_data_driven_contract"]
+    assert normalized == serialized["resolved_data_driven_contract"]
+
+
+@pytest.mark.parametrize("tamper", ["missing_contributors", "wrong_year", "extra_field"])
+def test_precanonical_contract_normalization_fails_closed(tmp_path, policy, tamper):
+    path = tmp_path / f"legacy_v3_{tamper}.pkl.gz"
+    _write_processor(path, policy)
+    sidecar_path = metadata_sidecar_path(path)
+    serialized = json.loads(sidecar_path.read_text(encoding="utf-8"))
+    legacy = _legacy_v3_contract_from_current(
+        serialized["resolved_data_driven_contract"],
+        signal_processes=[],
+    )
+    output = legacy["products"]["nonprompt"]["generated_outputs"][
+        "nonpromptUL18"
+    ]
+    if tamper == "missing_contributors":
+        output.pop("source_contributors")
+    elif tamper == "wrong_year":
+        output["source_contributors"]["prompt_mc"] = [
+            "TTTo2L2Nu_centralUL17"
+        ]
+        output["required_source_sumw2_processes"] = [
+            "TTTo2L2Nu_centralUL17",
+            "dataUL18",
+        ]
+    else:
+        legacy["resolved_prompt_process_set"] = ["TTTo2L2Nu_centralUL18"]
+    serialized["resolved_data_driven_contract"] = legacy
+    sidecar_path.write_text(json.dumps(serialized), encoding="utf-8")
+
+    with pytest.raises(histogram_artifact_error):
+        read_histogram_sidecar(path)
+
+
+def test_normalized_precanonical_contract_uses_current_merge_path(tmp_path, policy):
+    sidecars = []
+    for index in range(2):
+        path = tmp_path / f"legacy_v3_merge_{index}.pkl.gz"
+        _write_processor(path, policy)
+        sidecar_path = metadata_sidecar_path(path)
+        serialized = json.loads(sidecar_path.read_text(encoding="utf-8"))
+        serialized["resolved_data_driven_contract"] = (
+            _legacy_v3_contract_from_current(
+                serialized["resolved_data_driven_contract"],
+                signal_processes=[],
+            )
+        )
+        sidecar_path.write_text(json.dumps(serialized), encoding="utf-8")
+        sidecars.append(read_histogram_sidecar(path))
+
+    merged = merge_histogram_sidecars(sidecars)
+    assert merged["resolved_data_driven_contract"]["contract_version"] == 4
+    assert merged["resolved_data_driven_contract"]["resolved_prompt_process_set"] == [
+        "TTTo2L2Nu_centralUL18"
+    ]
 
 
 def test_legacy_sumw2_profile_sidecar_reopens_but_cannot_transform(

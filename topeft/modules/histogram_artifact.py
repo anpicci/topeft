@@ -19,12 +19,18 @@ from topeft.modules.data_driven_products import (
     FLIPS_OUTPUT_ARTIFACT_KIND,
     NONPROMPT_NOMINAL_REFERENCE_ARTIFACT_KIND,
     NONPROMPT_OUTPUT_ARTIFACT_KIND,
+    PRECANONICAL_RESOLVED_DATA_DRIVEN_CONTRACT_VERSION,
     RESOLVED_DATA_DRIVEN_CONTRACT_VERSION,
     TRANSFORMED_DATA_DRIVEN_ARTIFACT_KINDS,
     data_driven_product_error,
     generated_output_processes_from_contract,
+    resolved_prompt_processes_from_contract,
     validate_requested_product_input,
     validate_serialized_data_driven_contract,
+)
+from topeft.modules.nonprompt_policy import (
+    certify_active_nonprompt_policy,
+    nonprompt_policy_error,
 )
 from topeft.modules.axes import info_2d as axes_info_2d
 from topeft.modules.nominal_schema import (
@@ -1230,6 +1236,88 @@ def _require_immutable_input_provenance(
         )
 
 
+def _normalize_certified_precanonical_data_driven_contract(
+    contract: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Upgrade the certified version-3 reader shape without altering sidecars.
+
+    Version 3 stored the complete prompt-MC membership under the nonprompt
+    generated-output contributors, but retained a narrower signal-only list as
+    ``required_prompt_signal_processes``.  The latter must not be promoted to
+    the current prompt-subtraction authority.
+    """
+
+    normalized = copy.deepcopy(dict(contract))
+    if normalized.get("contract_version") != (
+        PRECANONICAL_RESOLVED_DATA_DRIVEN_CONTRACT_VERSION
+    ):
+        return normalized
+    expected_fields = {
+        "contract_version",
+        "required_prompt_signal_processes",
+        "products",
+    }
+    if set(normalized) != expected_fields:
+        raise histogram_sidecar_error(
+            "Cannot normalize a pre-canonical resolved_data_driven_contract "
+            "with an unrecognized field shape."
+        )
+
+    nonprompt = normalized["products"]["nonprompt"]
+    prompt_processes = list(resolved_prompt_processes_from_contract(normalized))
+    if nonprompt["enabled"]:
+        contributor_universe = sorted(
+            {
+                process
+                for output in nonprompt["generated_outputs"].values()
+                for processes in output["source_contributors"].values()
+                for process in processes
+            }
+        )
+        try:
+            certified_policy = certify_active_nonprompt_policy(
+                contributor_universe,
+                configuration_source=(
+                    "certified_legacy_resolved_data_driven_contract_v3"
+                ),
+            )
+        except nonprompt_policy_error as error:
+            raise histogram_sidecar_error(
+                "Cannot normalize pre-canonical resolved_data_driven_contract "
+                f"from its certified contributors: {error}"
+            ) from error
+        if list(certified_policy.resolved_prompt_process_set) != prompt_processes:
+            raise histogram_sidecar_error(
+                "Cannot normalize pre-canonical resolved_data_driven_contract: "
+                "the canonical policy classification disagrees with the exact "
+                "serialized nonprompt prompt_mc contributors."
+            )
+        nonprompt_policy = certified_policy.to_dict()
+    else:
+        if prompt_processes:
+            raise histogram_sidecar_error(
+                "Disabled pre-canonical nonprompt product cannot contain "
+                "prompt_mc contributors."
+            )
+        nonprompt_policy = None
+
+    return {
+        "contract_version": RESOLVED_DATA_DRIVEN_CONTRACT_VERSION,
+        "nonprompt_policy": nonprompt_policy,
+        "resolved_prompt_process_set": prompt_processes,
+        "policy_migration": {
+            "status": "normalized_certified_legacy_contract",
+            "previous_contract_version": (
+                PRECANONICAL_RESOLVED_DATA_DRIVEN_CONTRACT_VERSION
+            ),
+            "serialized_prompt_process_set": prompt_processes,
+            "added_prompt_processes": [],
+            "removed_prompt_processes": [],
+        },
+        "products": normalized["products"],
+    }
+
+
 def _validate_sidecar_structure(
     sidecar: Mapping[str, Any],
     *,
@@ -1237,6 +1325,7 @@ def _validate_sidecar_structure(
 ) -> dict[str, Any]:
     if not isinstance(sidecar, Mapping):
         raise histogram_sidecar_error("Histogram sidecar must be a JSON object.")
+    sidecar = copy.deepcopy(dict(sidecar))
     common_fields = {
         "metadata_schema_version",
         "artifact",
@@ -1363,17 +1452,37 @@ def _validate_sidecar_structure(
 
     if has_requested_products:
         try:
-            validate_serialized_data_driven_contract(
-                sidecar["requested_data_driven_products"],
-                sidecar["resolved_data_driven_contract"],
-                policy=policy,
-                allow_incomplete_nonprompt_sumw2=(
-                    artifact["artifact_kind"]
-                    == NONPROMPT_NOMINAL_REFERENCE_ARTIFACT_KIND
-                ),
+            normalized_requested, normalized_contract = (
+                validate_serialized_data_driven_contract(
+                    sidecar["requested_data_driven_products"],
+                    sidecar["resolved_data_driven_contract"],
+                    policy=policy,
+                    allow_incomplete_nonprompt_sumw2=(
+                        artifact["artifact_kind"]
+                        == NONPROMPT_NOMINAL_REFERENCE_ARTIFACT_KIND
+                    ),
+                )
+            )
+            normalized_contract = (
+                _normalize_certified_precanonical_data_driven_contract(
+                    normalized_contract
+                )
+            )
+            normalized_requested, normalized_contract = (
+                validate_serialized_data_driven_contract(
+                    normalized_requested,
+                    normalized_contract,
+                    policy=policy,
+                    allow_incomplete_nonprompt_sumw2=(
+                        artifact["artifact_kind"]
+                        == NONPROMPT_NOMINAL_REFERENCE_ARTIFACT_KIND
+                    ),
+                )
             )
         except data_driven_product_error as error:
             raise histogram_sidecar_error(str(error)) from error
+        sidecar["requested_data_driven_products"] = normalized_requested
+        sidecar["resolved_data_driven_contract"] = normalized_contract
         if transformation_contract is not None:
             _validate_transformation_against_data_driven_contract(
                 transformation_contract,
