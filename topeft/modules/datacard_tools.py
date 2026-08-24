@@ -1382,6 +1382,26 @@ class DatacardMaker():
             channel=channel,
         )
 
+    def _scaling_histogram_for_json(self, channel_hist, channel, process):
+        """Project one card-facing signal histogram onto its scaling payload axes."""
+        scaling_hist = channel_hist[
+            {
+                "channel": channel,
+                "process": process,
+                "systematic": "nominal",
+            }
+        ]
+        scaling_hist = self.select_final_sr_appl(
+            scaling_hist, channel, process=process
+        )
+        retained_categories = tuple(scaling_hist.categorical_axes.name)
+        if retained_categories:
+            raise ValueError(
+                "Scaling JSON requires category-projected HistEFT input; "
+                f"retained categorical axes: {retained_categories!r}."
+            )
+        return scaling_hist
+
     # TODO: Can be a static member function
     def load_systematics(self,rs_fpath,mp_fpath):
         """
@@ -1921,7 +1941,7 @@ class DatacardMaker():
                             pass
                 # obtain the scalings for scalings.json file
                 if p in self.SIGNALS:
-                    scaling_hist = proc_hist.integrate("systematic", ["nominal"])
+                    scaling_hist = self._scaling_histogram_for_json(ch_hist, ch, p)
                     validate_matching_histogram_edges(
                         proc_hist,
                         scaling_hist,

@@ -169,3 +169,87 @@ def test_selected_views_keep_sumw2_eft_and_scaling_payloads_aligned():
             "systematic", ["nominal"]
         ).make_scaling()
         assert scalings.shape[-2] - 1 == expected_scaling_bins
+
+
+@pytest.mark.parametrize(
+    ("family", "source_axis", "expected_edges"),
+    (
+        ("njets", hist.axis.Regular(2, 0, 2, name="njets"), [0, 1, 2]),
+        ("lj0pt", hist.axis.Regular(12, 0, 600, name="lj0pt"), [0, 150, 250, 350]),
+    ),
+)
+def test_scaling_json_projects_categories_before_underflow_removal(
+    family, source_axis, expected_edges
+):
+    source = _signal_histogram(dense_axis=source_axis)
+    coordinate = family
+    source.fill(
+        process="ttH",
+        channel=CHANNEL,
+        systematic="nominal",
+        **{
+            coordinate: np.array([0.25, 0.75]) if family == "njets" else np.array([25.0, 75.0]),
+            "eft_coeff": np.array([[2.0, 1.0, 0.5], [3.0, 2.0, 1.0]]),
+        },
+    )
+    maker = _maker_for_mode("fitting", source)
+    maker.wc_ranges = {"ctG": (-1.0, 1.0)}
+    channel_hist = maker.binning_view(
+        source.integrate("channel", [CHANNEL]), family, CHANNEL
+    )
+    retained = channel_hist.integrate("process", ["ttH"]).integrate(
+        "systematic", ["nominal"]
+    )
+    stale_scaling = np.asarray(retained.make_scaling())
+    assert stale_scaling.shape[:3] == (1, 1, 1)
+    assert stale_scaling.tolist()[1:] == []
+
+    retained_before = next(iter(retained.view(flow=True).values())).copy()
+    scaling_hist = maker._scaling_histogram_for_json(channel_hist, CHANNEL, "ttH")
+    retained_after = next(iter(retained.view(flow=True).values()))
+    expected_scaling = np.asarray(scaling_hist.make_scaling())
+    records = maker.make_scalings_json(
+        [], CHANNEL, family, "ttH", ["ctG"], expected_scaling
+    )
+    serialized_scaling = np.asarray(records[0]["scaling"])
+
+    assert tuple(scaling_hist.categorical_axes.name) == ()
+    assert np.array_equal(histogram_dense_edges(scaling_hist), expected_edges)
+    np.testing.assert_allclose(retained_before, retained_after)
+    np.testing.assert_allclose(serialized_scaling, expected_scaling[1:])
+    assert serialized_scaling.shape[0] == expected_scaling.shape[0] - 1
+    assert np.all(np.isfinite(serialized_scaling))
+
+    historical_projection = channel_hist[
+        {"channel": CHANNEL, "process": "ttH", "systematic": "nominal"}
+    ]
+    np.testing.assert_allclose(
+        serialized_scaling, np.asarray(historical_projection.make_scaling())[1:]
+    )
+
+
+def test_scaling_json_rejects_retained_categorical_axes():
+    source = HistEFT(
+        hist.axis.StrCategory([], name="process", growth=True),
+        hist.axis.StrCategory([], name="channel", growth=True),
+        hist.axis.StrCategory([], name="systematic", growth=True),
+        hist.axis.StrCategory([], name="source", growth=True),
+        hist.axis.Regular(12, 0, 600, name="lj0pt"),
+        wc_names=["ctG"],
+        label="Events",
+    )
+    source.fill(
+        process="ttH",
+        channel=CHANNEL,
+        systematic="nominal",
+        source="unexpected",
+        lj0pt=np.array([25.0]),
+        eft_coeff=np.array([[2.0, 1.0, 0.5]]),
+    )
+    maker = _maker_for_mode("fitting", source)
+    channel_hist = maker.binning_view(
+        source.integrate("channel", [CHANNEL]), "lj0pt", CHANNEL
+    )
+
+    with pytest.raises(ValueError, match="category-projected HistEFT input"):
+        maker._scaling_histogram_for_json(channel_hist, CHANNEL, "ttH")
