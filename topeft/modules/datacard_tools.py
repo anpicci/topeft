@@ -1829,6 +1829,11 @@ class DatacardMaker():
                             if "Down" in syst:
                                 syst = syst_base + "Down"
 
+                        if syst_base == "JES_Total":
+                            continue
+                        sum_arr = sum(arr[0])
+                        if sum_arr == 0: continue #TODO find a more elegant solution
+
                         if syst_base not in seen:
                             seen[syst_base] = [False, False] # check[Up, Down]
                         if "Up" in syst:
@@ -1836,10 +1841,6 @@ class DatacardMaker():
                         if "Down" in syst:
                             seen[syst_base][1] = True
 
-                        if syst_base == "JES_Total":
-                            continue
-                        sum_arr = sum(arr[0])
-                        if sum_arr == 0: continue #TODO find a more elegant solution
                         if syst == "nominal" and base == "sm":
                             if self.verbose:
                                 print(f"\t{proc_name:<12}: {sum_arr:.4f} {arr[0]}")
