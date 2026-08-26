@@ -1,3 +1,10 @@
+"""Select a card topology and deterministically finalize EFT scaling records.
+
+The command consumes a directory produced by ``make_cards.py``. It does not
+consume or create ``combinedcard.txt``; card combination belongs to the later
+EFTFit/Combine workflow.
+"""
+
 import os
 import shutil
 import argparse
@@ -18,6 +25,7 @@ IGNORE_LINES = [
 
 # Return list of lines in a file
 def read_file(filename):
+    """Return stripped text lines from *filename*."""
     with open(filename) as f:
         content = f.readlines()
     content = [x.strip() for x in content]
@@ -25,6 +33,7 @@ def read_file(filename):
 
 # Check if we want to ignore the line or not (based on whether or not any of a list of strings we don't care about shows up in the line)
 def ignore_line(line_to_check,list_of_str_to_ignore=IGNORE_LINES):
+    """Return whether a log line contains an explicitly ignored fragment."""
     ignore = False
     for str_to_ignore in list_of_str_to_ignore:
         if str_to_ignore in line_to_check:
@@ -32,10 +41,12 @@ def ignore_line(line_to_check,list_of_str_to_ignore=IGNORE_LINES):
     return ignore
 
 def extract_number(item):
+    """Return the decimal characters embedded in a channel jet-bin label."""
     return str(''.join(char for char in item if char.isdigit()))
 
 # Check the output of the datacard maekr
 def main():
+    """Parse one topology selector, copy selected cards, and write scalings."""
 
     parser = argparse.ArgumentParser()
     parser.add_argument("datacards_path", help = "The path to the directory with the datacards in it.")

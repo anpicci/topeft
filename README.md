@@ -49,6 +49,10 @@ after each heavy processor child exits. Inline mode remains a lower-level API
 capability; it is not the canonical production lifecycle.
 
 ### Where to go next
+* Start with the maintained [analysis workflow tutorial](docs/analysis_workflow_tutorial.md).
+* Use the [analysis workflow how-to](docs/analysis_workflow_how_to.md) for wrapper and direct-entrypoint commands.
+* Consult the [analysis workflow reference](docs/analysis_workflow_reference.md) for CLI defaults, sumw2, binning, card, scaling, and artifact contracts.
+* Read the [analysis workflow architecture](docs/analysis_workflow_architecture.md) for ownership and the EFTFit/Combine boundary.
 * Processor- and plotting-specific details live in `analysis/topeft_run2/README.md`.
 * See [Nonprompt workflows](#nonprompt-workflows) for inline vs. deferred recipes.
 * Jump to [Executor diagnostics and troubleshooting](#executor-diagnostics-and-troubleshooting) for advanced flags and data checks.
