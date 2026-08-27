@@ -187,3 +187,9 @@ Exact schemas and option contracts are in the
 [datacards/scalings reference](../reference/datacards_and_scalings.md). The
 [EFTFit boundary explanation](../explanation/datacards_and_eftfit.md) describes
 why finalization and card combination remain separate responsibilities.
+
+Use [categories and observables](categories_and_observables.md) before changing
+the physical category or distribution that a card consumes, and use
+[corrections, weights, and systematics](corrections_weights_and_systematics.md)
+before changing the upstream variation. This guide owns the card-facing rate,
+applicability, fitting-view, selected-WC, and scaling-export changes only.

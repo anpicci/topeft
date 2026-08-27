@@ -137,3 +137,11 @@ Read [sumw2 operations](sumw2.md) before changing companion selection. The
 [artifact and provenance explanation](../explanation/artifacts_and_provenance.md)
 describes why the transform publishes a new identity, while the
 [software reference](../reference/entrypoints.md) records exact CLI contracts.
+
+For a fake/flip payload or evaluator change, use
+[corrections, weights, and systematics](corrections_weights_and_systematics.md)
+and return here to validate product propagation. For a prompt, conversion,
+subtraction, or target-role change, use
+[sample roles and normalization](sample_roles_and_normalization.md). The
+[data-driven reference](../reference/data_driven_estimation.md) is the direct
+semantic/default bridge for low-level product helpers.

@@ -468,6 +468,15 @@ not own a universal copy-paste EFTFit command.
 
 ## 10. Where to continue
 
+One representative physics path ties the layers together: select the
+`2los_CRZ` category group and `invmass` observable, let the processor apply
+era/sample corrections and event masks, and retain nominal plus applicable
+systematic content in the artifact. Plotting may display the processing view;
+cards may select an exact fitting view. The category remains owned by
+`ch_lst.json`, the observable by `axes.py`, and the view by `axis_binning.py`.
+See the [processor physics map](../reference/analysis_processor.md) before
+following the operating links below.
+
 - To inspect HistEFT objects and source/transformed artifacts, continue with
   the [histogram-artifact tutorial](histogram_artifacts.md).
 - To change one supported operation, choose the relevant page from the

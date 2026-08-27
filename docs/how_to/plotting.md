@@ -171,3 +171,10 @@ An extension must preserve those boundaries and the invariants in
 | missing/ambiguous sumw2 dense axis | correct the companion artifact/schema; do not use a nominal histogram as variance |
 | memory growth with `--workers` | reduce workers; parallel processes each load input state |
 | Condor job starts but cannot import/read | fix worker-visible checkout, environment, payload, or storage permissions before resubmission |
+
+To add a physics observable or category, use
+[categories and observables](categories_and_observables.md) before updating the
+plot metadata. To change only region context, group membership, plotted
+variables, a supported binning view, or coverage validation, keep the change in
+this guide and the canonical
+[`cr_sr_plots_metadata.yml`](../../topeft/params/cr_sr_plots_metadata.yml).

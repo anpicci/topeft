@@ -36,8 +36,16 @@ and is not a substitute for these current tutorials.
 ### Production and artifacts
 
 - [Run or extend the production entrypoints](how_to/production.md)
+- [Change sample roles or normalization inputs](how_to/sample_roles_and_normalization.md)
 - [Produce and recover data-driven nonprompt artifacts](how_to/nonprompt.md)
 - [Run with Work Queue](how_to/work_queue.md)
+
+### Objects, corrections, and categories
+
+- [Change objects, selections, or triggers](how_to/objects_selections_and_triggers.md)
+- [Change corrections, weights, or systematics](how_to/corrections_weights_and_systematics.md)
+- [Change categories or observables](how_to/categories_and_observables.md)
+- [Extend EFT inputs or consumers](how_to/eft.md)
 
 ### Plotting, cards, and statistical inputs
 
@@ -62,6 +70,13 @@ Start with the [reference index](reference/README.md) when you need an exact
 contract rather than a procedure. The corpus is divided by authority:
 
 - [Supported wrappers and direct entrypoints](reference/entrypoints.md)
+- [Analysis processor physics map](reference/analysis_processor.md)
+- [Objects, selections, and triggers](reference/objects_selections_and_triggers.md)
+- [Corrections, weights, and systematics](reference/corrections_weights_and_systematics.md)
+- [Categories and observables](reference/categories_and_observables.md)
+- [Sample roles and normalization](reference/sample_roles_and_normalization.md)
+- [Data-driven estimation](reference/data_driven_estimation.md)
+- [Shared topcoffea mechanism ownership](reference/shared_topcoffea_interfaces.md)
 - [Production profiles, sample configuration, and option ownership](reference/production_configuration.md)
 - [Histogram PKLs, sidecars, and transformed artifacts](reference/histogram_artifacts.md)
 - [HistEFT software contract](reference/histeft.md)
@@ -79,6 +94,7 @@ currently publish generated API documentation.
 
 ## Explanation
 
+- [Physics analysis flow](explanation/physics_analysis_flow.md)
 - [Workflow architecture and actor boundaries](explanation/architecture.md)
 - [Artifact and provenance model](explanation/artifacts_and_provenance.md)
 - [Why sumw2 is a policy and artifact contract](explanation/sumw2.md)

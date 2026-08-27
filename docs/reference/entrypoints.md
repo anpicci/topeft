@@ -150,3 +150,99 @@ option authority. Focused ownership tests include
 `tests/test_run_analysis_preflight.py`, `tests/test_run_data_driven.py`,
 `tests/test_make_cr_and_sr_plots.py`, and
 `tests/test_make_cards_multi_pkl.py`.
+
+## Physics-policy control map
+
+The maintained processor-facing controls fall into five semantic classes. The
+classification describes downstream meaning; it does not change parser
+authority.
+
+### Physics selection
+
+Analysis mode, category groups, histogram groups, tau/forward/all-analysis
+selection, CR/SR inclusion, flavor splitting, off-Z splitting, and the Run-3
+MVA path change which objects, masks, categories, or observables are processed.
+They are not interchangeable with executor or file-selection controls.
+
+### Physics corrections
+
+Systematic activation controls whether registered object and weight variations
+are produced. The forward stochastic-JER suppression and forward eta-band pT
+policy must be read together: the former controls a shared jet-factory hook and
+the latter resolves concrete forward-object application. Their reusable
+mechanism belongs to `topcoffea`; their activation and default analysis policy
+belong to `topeft`.
+
+### Sample semantics
+
+Input year/sample configuration, EFT/WC inputs, the ttgamma sample-role policy,
+and production-profile sample matrices change how the input dataset is
+interpreted. The maintained production path uses the split ttgamma role
+contract. `lo_xsec_samples` remains a role set, not numeric cross-section data.
+
+### Expert or diagnostic controls
+
+`--ecut` is an upper event-energy diagnostic cut. It is not an electron
+threshold and is not part of ordinary object-selection guidance. Statistical
+storage controls such as the sumw2 opt-out affect downstream uncertainty
+capability without defining a physics nuisance.
+
+### Execution only
+
+Executor, worker, chunk, prefix, output-path, output-name, dry-run, and resume
+controls govern scheduling, coverage, storage, or recovery. They should not be
+used to explain a physics choice even when an incomplete test run naturally
+changes the amount of data processed.
+
+## Active, conflicting, and inactive controls
+
+YAML option values replace corresponding CLI-derived values in the implemented
+configuration path. Current help prose describes the opposite ordering. The
+runtime behavior is documented here as authority, while the contradiction
+remains visible rather than being resolved by documentation.
+
+The legacy `--do-renormfact-envelope` entry is deprecated and has no active
+processor effect. It is not a supported alternative to the maintained scale-
+weight variations. Active physics controls, diagnostic controls, and inactive
+compatibility entries must remain separated in examples and operating guides.
+
+The source-derived processor stages are in
+[analysis processor physics map](analysis_processor.md). Diboson and
+sum-of-weights entrypoints are maintained specialist interfaces described in
+[specialist interfaces](specialist_interfaces.md).
+
+## Physics-control defaults and practical bridge
+
+| Control | Class | Default or required behavior | Physics consequence | Change route |
+| --- | --- | --- | --- | --- |
+| `--analysis-mode` | physics selection | `standard`; `taufitter` is specialist | Selects top-level processor mode and compatible category/variation contracts | [categories/observables](../how_to/categories_and_observables.md) |
+| `--do-systs` | physics correction | false | Adds applicable object and weight variation templates | [corrections/systematics](../how_to/corrections_weights_and_systematics.md) |
+| `--noRun3MVA` | physics selection | Run-3 MVA enabled | Disables the maintained Run-3 MVA object-selection branch | [objects/selections](../how_to/objects_selections_and_triggers.md) |
+| `--ecut` | expert/diagnostic | unset | Applies an upper event-energy diagnostic cut; not an electron threshold | Extend at parser and processor consumer with focused diagnostics |
+| `--ttgamma-sample-role-policy` | sample semantics | `split` | Changes ttgamma source-role masks; alternate is constrained Run-2 diagnostic use | [sample roles](../how_to/sample_roles_and_normalization.md) |
+| `--no-sumw2` | expert/statistical | sumw2 enabled | Removes statistical companions and may make variance-dependent consumers inadmissible | [sumw2](../how_to/sumw2.md) |
+| `--no-suppress-forward-eta-stochastic-jer` | physics correction | suppression enabled | Disables the default forward stochastic-JER hook policy | [corrections/systematics](../how_to/corrections_weights_and_systematics.md) |
+| `--fwd-eta-band-pt-apply` | physics correction | `auto` | Resolves eta-band pT policy by era; interacts with forward JER and categories | [corrections/systematics](../how_to/corrections_weights_and_systematics.md) |
+| `--category-groups` | physics selection | all groups in each active block | Filters maintained category groups | [categories/observables](../how_to/categories_and_observables.md) |
+| `--hist-list` | physics selection | analysis-selected list | Filters observable families built and filled | [categories/observables](../how_to/categories_and_observables.md) |
+| tau/forward/all-analysis, SR/CR, flavor/off-Z flags | physics selection | inactive unless selected | Enables or partitions the corresponding category surface | [objects](../how_to/objects_selections_and_triggers.md) and [categories](../how_to/categories_and_observables.md) |
+| `fullR3_run.sh --cr|--sr` | physics selection | exactly one required | Selects wrapper region behavior and forwarded skip policy | [production](../how_to/production.md) |
+| `fullR3_run.sh --year`, sample JSON, or cfg override | sample semantics | wrapper year/config authority | Selects sample universe, era, payloads, triggers, and normalization | [production](../how_to/production.md) and [sample roles](../how_to/sample_roles_and_normalization.md) |
+| `fullR3_run.sh --hist-vars` and forwarded analysis controls | physics selection | region-owned list unless overridden | Selects observables/categories/modes for all enabled variations | [production](../how_to/production.md) |
+| `run_cr.sh --production-profile` | sample semantics | required; no implicit profile | Selects a frozen years/regions/categories/histograms/nonprompt matrix | [production](../how_to/production.md) |
+| `run_cr.sh` category/histogram and nonprompt/systematic policy | selection/correction | profile-owned | Defines each campaign block's physics output and transformation schedule | [production](../how_to/production.md) |
+
+Representative direct invocation:
+
+```bash
+python analysis/topeft_run2/run_analysis.py <sample.json> \
+  --analysis-mode standard \
+  --skip-sr --category-groups 2los_CRZ \
+  --hist-list invmass --do-systs
+```
+
+This is a semantic example, not a production authorization. Executor, input,
+and output details belong to [the production guide](../how_to/production.md).
+If `--options` is supplied, recognized YAML values replace corresponding CLI-
+derived values in the implemented path even though current help prose claims
+the opposite.

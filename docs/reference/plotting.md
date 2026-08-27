@@ -87,3 +87,37 @@ artifact compatibility belongs to merge/sidecar owners.
 - `analysis/topeft_run2/make_cr_and_sr_plots.py`
 - `topeft/params/cr_sr_plots_metadata.yml`
 - `tests/test_make_cr_and_sr_plots.py`
+
+## Physics-facing view semantics
+
+Plotting consumes already-produced categories, processes, observables,
+systematic labels, and artifact provenance. Region context selects the
+maintained CR or SR channel authority, process grouping, luminosity/year view,
+and eligible variables. A processing or fitting binning view changes the exact
+displayed aggregation; it does not redefine the processor observable.
+
+Systematic and validation views expose stored variations and coverage. They do
+not create missing templates or assign new nuisance meaning. Negative-weight
+and effective-entry diagnostics report properties of the selected content
+without changing the histogram stack.
+
+Physics-facing region, grouping, observable, and binning policy is distinct
+from scheduling, file paths, rendering mechanics, and presentation styling.
+The source establishes displayed behavior and source-owned binning; no
+unrecorded aesthetic or physics motivation is assigned here. See
+[categories and observables](categories_and_observables.md) and
+[histogram artifacts](histogram_artifacts.md).
+
+## Practical defaults and change bridge
+
+The maintained region/group/sample/default authority is
+[`cr_sr_plots_metadata.yml`](../../topeft/params/cr_sr_plots_metadata.yml),
+while [`axes.py`](../../topeft/modules/axes.py) and
+[`axis_binning.py`](../../topeft/modules/axis_binning.py) own the observable and
+view. A representative CR view selects CR region context, an `invmass`
+histogram, the processing binning view, and metadata-owned process groups. It
+does not create an `invmass` observable or CR category.
+
+Use [run and extend CR/SR plotting](../how_to/plotting.md) to change a region,
+group, variable, binning view, or coverage gate. Source/artifact and physics-
+category changes remain at their owning pages.

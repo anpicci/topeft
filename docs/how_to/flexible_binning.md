@@ -248,3 +248,9 @@ target boundaries absent from processing, a target extending past processing,
 missing flow traits, more than one physical dense axis, physical edge mismatch,
 and grouped channels with incompatible fitting views. Correct the definition or
 reproduce compatible PKLs; do not approximate a boundary or drop a channel.
+
+When the task also adds a category or observable, start with
+[change categories or observables](categories_and_observables.md). Add the
+processing axis/value/fill contract first, then add an exactly aggregatable
+fitting view here. A fitting override cannot make an unfilled observable or
+category current.

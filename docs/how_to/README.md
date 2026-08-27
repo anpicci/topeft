@@ -10,6 +10,11 @@ ownership boundaries.
 ## Current production and downstream tasks
 
 - [Run or extend histogram production](production.md)
+- [Change objects, selections, or triggers](objects_selections_and_triggers.md)
+- [Change corrections, weights, or systematics](corrections_weights_and_systematics.md)
+- [Change categories or observables](categories_and_observables.md)
+- [Change sample roles or normalization inputs](sample_roles_and_normalization.md)
+- [Extend EFT inputs or consumers](eft.md)
 - [Run deferred nonprompt and charge-flip production](nonprompt.md)
 - [Run or extend plotting](plotting.md)
 - [Create cards and finalize EFT scalings](datacards_and_scalings.md)

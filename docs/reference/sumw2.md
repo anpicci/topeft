@@ -92,3 +92,31 @@ See [histogram artifacts](histogram_artifacts.md) for publication/readback and
 - `tests/test_sumw2_policy.py`
 - `tests/test_run_analysis_preflight.py`
 - `tests/test_run_analysis_hist_outputs.py`
+
+## Physics-facing consequence
+
+Sumw2 content is the statistical second moment of the stored weighted yield.
+It is not a detector, modeling, or theory nuisance variation. Retaining it
+allows plotting and card consumers to derive variance-dependent quantities
+under the certified policy; opting out removes those companions and can make a
+downstream consumer inadmissible even when nominal yields are present.
+
+For EFT content, the policy distinguishes scalar companions and the maintained
+SM-point statistical treatment from the coefficient-bearing nominal object.
+Data-driven transformations must preserve or validate the required companion
+families rather than synthesize a missing variance. See
+[data-driven estimation](data_driven_estimation.md) and
+[histogram artifacts](histogram_artifacts.md).
+
+## Practical bridge
+
+The canonical registry/default/resolver is
+[`topeft/modules/sumw2_policy.py`](../../topeft/modules/sumw2_policy.py).
+Sumw2 storage is enabled in the direct CLI unless `--no-sumw2` is supplied;
+modern YAML `sumw2_storage` policy is resolved before processor construction.
+Artifact families can have different applicable companion sets, so there is no
+single universal companion key list.
+
+Use [select or change sumw2 storage](../how_to/sumw2.md) for mode, default,
+schema, and consumer changes. Low-level resolver/schema entries link to that
+owning procedure rather than receiving separate editing recipes.

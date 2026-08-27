@@ -30,6 +30,11 @@ checks important fail-before-execution paths.
 | processing/fitting binning | `test_axis_binning.py`, `test_datacard_late_rebin.py`, affected plotting tests |
 | plotting metadata or CLI | `test_make_cr_and_sr_plots*.py` |
 | cards/multi-PKL merge | `test_make_cards*.py`, selective-sumw2 and split-boundary tests |
+| object roles, triggers, and event masks | `test_event_selection_lepton_tau.py`, relevant trigger/era tests, and a processor/category consumer test |
+| corrections and systematic propagation | correction-specific tests plus `test_run_analysis_hist_outputs.py` and the affected plot/card test |
+| sample roles and ttgamma overlap | `test_production_sample_profile.py`, JSON metadata validation, and `test_ttgamma_photon_history.py` |
+| EFT treatment and consumption | `test_sm_only_eft_treatment.py`, `test_eft_dataset_key_integration.py`, processor sumw2 and HistEFT API tests |
+| specialist diboson or sum-of-weights path | its parser/processor contract and a current consumer/readback check; do not substitute main-processor tests |
 
 A focused passing test establishes only its asserted contract. It does not
 replace source review, cross-document link checks, or a representative

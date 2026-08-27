@@ -902,3 +902,39 @@ Proposed future tests before any replacement:
   provided by a one-time converter plus clear migration boundary?
 - Should `as_hist` output include flow bins exactly as current plotter expects,
   or should plotting be migrated to an explicit flow policy at the same time?
+
+## Analysis policy and shared-mechanism boundary
+
+`topcoffea.modules.eft_helper` owns reusable coefficient ordering and
+evaluation, and `topcoffea.modules.histEFT.HistEFT` owns the coefficient-bearing
+histogram API. `topeft` owns the per-sample decision to use EFT, ordinary SM,
+or ignored treatment; the requested coefficient list; processor preparation
+and filling; SM-point use for prompt subtraction; and the later plotting,
+datacard, and scaling consumers.
+
+An EFT-capable storage class therefore does not make every sample an EFT
+sample, and no universal coefficient basis or benchmark is implied. The sample
+metadata and processor resolver establish concrete treatment. Mathematical
+semantics stay with the shared `topcoffea` interface rather than being copied
+into analysis policy prose.
+
+See [sample roles and normalization](sample_roles_and_normalization.md), the
+[analysis processor map](analysis_processor.md), and the
+[shared-interface ownership index](shared_topcoffea_interfaces.md).
+
+## Practical EFT bridge
+
+There is no single WC-basis or benchmark default. `ctG` is a representative
+coefficient used by maintained tests. A minimal consumer distinction is:
+
+```python
+sm_hist = eft_hist.eval({})
+ctg_hist = eft_hist.eval({"ctG": 1.0})
+```
+
+The empty mapping is the SM point; the nonzero point is illustrative, not an
+analysis default. Sample metadata and the direct CLI's `--wc-list` own the
+concrete coefficient set. Use [extend EFT inputs or consumers](../how_to/eft.md)
+for `topeft` treatment/filling changes and the
+[`topcoffea` extension guide](https://github.com/TopEFT/topcoffea/blob/HEAD/docs/physics_extension_guides.md)
+for algebra or `HistEFT` changes.

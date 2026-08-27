@@ -152,3 +152,35 @@ For the in-memory histogram API and pickle compatibility surface, see
 - `tests/test_histogram_artifact_sidecars.py`
 - `tests/test_nominal_schema.py`
 - `tests/test_data_driven_products.py`
+
+## Physics-content boundary
+
+An artifact schema records process, category, observable, systematic, EFT, and
+statistical content together with provenance. It does not assign scientific
+meaning to a process or region name independently of the processor and
+registries that produced it. Source artifacts represent the processor fill;
+transformed artifacts additionally represent the certified data-driven
+product and its lineage.
+
+Consumers must validate the content family they need. A nominal histogram does
+not imply that every systematic variation, sumw2 companion, EFT coefficient,
+or data-driven target is present. See the
+[analysis processor map](analysis_processor.md),
+[data-driven estimation](data_driven_estimation.md), and
+[categories and observables](categories_and_observables.md).
+
+## Practical schema and change bridge
+
+Canonical schemas and writers are
+[`nominal_schema.py`](../../topeft/modules/nominal_schema.py),
+[`histogram_artifact.py`](../../topeft/modules/histogram_artifact.py), and
+[`data_driven_products.py`](../../topeft/modules/data_driven_products.py).
+There is no single artifact default: source, split nominal/sumw2, transformed,
+and bounded compatibility readbacks are distinct families.
+
+For a representative source-to-transformed chain, begin with a processor
+artifact and its sidecar, validate it, then let `run_data_driven.py` publish a
+new artifact/sidecar with source lineage. Use
+[production](../how_to/production.md) for source publication,
+[nonprompt](../how_to/nonprompt.md) for transformation, and
+[sumw2](../how_to/sumw2.md) for companion-policy changes.

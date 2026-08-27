@@ -14,6 +14,13 @@ than treating an option table as a recipe.
 | Topic | What it specifies |
 | --- | --- |
 | [Entrypoints and wrappers](entrypoints.md) | Supported production, transformation, plotting, card, and scaling commands and their responsibility boundaries |
+| [Analysis processor physics map](analysis_processor.md) | Source-derived physics execution sections, inputs, applicability, systematic propagation, ownership, and outputs |
+| [Objects, selections, and triggers](objects_selections_and_triggers.md) | Maintained object roles, working-point ownership, triggers, cleaning, overlap, and event-selection consequences |
+| [Corrections, weights, and systematics](corrections_weights_and_systematics.md) | Concrete correction dispatch, payload/working-point policy, central and varied behavior, and downstream effects |
+| [Categories and observables](categories_and_observables.md) | CR/SR and category implementation, observable authority, and processing/fitting views |
+| [Sample roles and normalization](sample_roles_and_normalization.md) | Sample metadata, role sets, ttgamma policy, normalization, and specialist sum-of-weights boundary |
+| [Data-driven estimation](data_driven_estimation.md) | Nonprompt and charge-flip source roles, transformations, variations, and product authority |
+| [Shared topcoffea interfaces](shared_topcoffea_interfaces.md) | Cross-repository mechanism versus analysis-policy ownership index |
 | [Production configuration](production_configuration.md) | Sample cfg/JSON inputs, production profiles, option overlays, current NDSkim reachability, and output defaults |
 | [Histogram artifacts and provenance](histogram_artifacts.md) | PKL/sidecar pairs, schemas, content manifests, lineage, transformation, merge, and validation contracts |
 | [HistEFT and SparseHist](histeft.md) | Current histogram API, consumers, and pickle compatibility, with future replacement-parity design clearly separated |
@@ -45,8 +52,19 @@ than treating an option table as a recipe.
 
 ### Modules, classes, and symbols
 
-- `analysis_processor.AnalysisProcessor` and its EFT/category helpers:
-  [production configuration](production_configuration.md).
+- `analysis_processor.AnalysisProcessor` physics execution sections:
+  [analysis processor physics map](analysis_processor.md); constructor and
+  configuration interface: [production configuration](production_configuration.md).
+- Object/event policy and shared selection boundaries:
+  [objects, selections, and triggers](objects_selections_and_triggers.md).
+- Correction dispatch, event weights, and variation propagation:
+  [corrections, weights, and systematics](corrections_weights_and_systematics.md).
+- Category masks, observables, and views:
+  [categories and observables](categories_and_observables.md).
+- Sample metadata/roles and normalization:
+  [sample roles and normalization](sample_roles_and_normalization.md).
+- Nonprompt and charge-flip products:
+  [data-driven estimation](data_driven_estimation.md).
 - `production_sample_profile`: [production configuration](production_configuration.md).
 - `sumw2_policy`: [sumw2 policy](sumw2.md).
 - `axes` and `axis_binning`: [flexible binning](flexible_binning.md).
@@ -73,6 +91,8 @@ than treating an option table as a recipe.
   [datacards and scalings](datacards_and_scalings.md).
 - Installed correction inputs: [B-tag payloads](btag_scale_factor_payloads.md)
   and [missing-parton payloads](missing_parton_payloads.md).
+- Cross-repository shared mechanisms and analysis policy:
+  [shared topcoffea interfaces](shared_topcoffea_interfaces.md).
 
 Statuses used on these pages are `public supported` for analyst-facing
 interfaces, `developer-facing` for maintained extension contracts, `internal

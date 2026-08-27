@@ -221,3 +221,27 @@ nonprompt it also produces the distinct transformed artifact and sidecar.
 For exact options and defaults, use the
 [entry-point reference](../reference/entrypoints.md). For why the three layers
 are separated, see the [architecture explanation](../explanation/architecture.md).
+
+## Route physics-policy changes to their owner
+
+Do not extend a wrapper merely to avoid the owning analysis contract:
+
+| Intended change | Owning route |
+| --- | --- |
+| Object threshold, working point, trigger, filter, or overlap policy | [Objects, selections, and triggers](objects_selections_and_triggers.md) |
+| Correction tag/payload, event weight, variation, or forward-JER policy | [Corrections, weights, and systematics](corrections_weights_and_systematics.md) |
+| Category group, observable, or wrapper histogram matrix | [Categories and observables](categories_and_observables.md) |
+| Sample metadata, role, active universe, or normalization input | [Sample roles and normalization](sample_roles_and_normalization.md) |
+| EFT sample treatment, coefficient input, or consumer | [EFT](eft.md) |
+
+For a new `run_cr.sh` profile, update the frozen year/region/category/histogram/
+nonprompt matrix, its fail-closed validation, and profile tests together. For a
+new `fullR3_run.sh` policy, preserve exactly one CR/SR choice and the sample
+JSON/cfg exclusivity. For a new direct option, classify it as execution,
+selection, correction, sample semantics, or expert/diagnostic in the
+[entrypoint reference](../reference/entrypoints.md).
+
+The diboson and sum-of-weights CLIs are maintained specialist paths. Extend
+their own parser, processor/config authority, and focused tests without adding
+their defaults to the core wrapper chain. See
+[specialist interfaces](../reference/specialist_interfaces.md).

@@ -194,3 +194,41 @@ See [flexible binning](flexible_binning.md) and
 - `tests/test_make_cards_multi_pkl.py`
 - `tests/test_datacard_late_rebin.py`
 - `tests/test_datacard_tools_selective_sumw2.py`
+
+## Physics effects and authorities
+
+Card construction maps selected process and category content to nominal rates,
+shape templates, rate/shape nuisances, MC-stat terms, and EFT scaling records.
+Rate-systematic files own configured values and applicability; correction
+variation labels own the candidate shape inputs; the missing-parton contract
+owns its category/payload layout; sumw2 owns statistical companions; and the
+binning resolver owns the exact processing-to-fitting view.
+
+The ineffective legacy rate/envelope override is not an active default.
+Current era-selected rate-systematic files and the implemented consumer remain
+authority. Numeric inputs and current effects can be documented without
+inferring their scientific derivation.
+
+Category-to-distribution behavior starts from
+[categories and observables](categories_and_observables.md). EFT projection
+uses the shared `HistEFT` mechanism under the analysis policy described in
+[HistEFT](histeft.md).
+
+## Practical defaults and change bridge
+
+Current numerical/applicability authorities include
+[`rate_systs_run2.json`](../../topeft/params/rate_systs_run2.json),
+[`rate_systs_run3.json`](../../topeft/params/rate_systs_run3.json), the
+[`missing_parton_contract.py`](../../topeft/modules/missing_parton_contract.py)
+registry/payload layout, and the fitting views in
+[`axis_binning.py`](../../topeft/modules/axis_binning.py). The selected-WC and
+scaling record are category/process dependent, so one representative record is
+not a universal default.
+
+A concrete chain is physical category + distribution → fitting view → nominal
+and systematic card templates → selected WCs → physical-channel scaling
+record. Use
+[create cards and finalize EFT scalings](../how_to/datacards_and_scalings.md)
+to change rate files, applicability, binning, selected WCs, or export. Use the
+[missing-parton payload guide](../how_to/missing_parton_payloads.md) for that
+separately owned payload family.
