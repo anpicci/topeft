@@ -1522,6 +1522,80 @@ def test_merge_rejects_incompatible_generated_output_maps(tmp_path, policy):
         merge_histogram_sidecars([first, second])
 
 
+def test_merge_composes_requested_warnings_without_weakening_policy_checks(tmp_path):
+    first = _write_disjoint_source_processor(
+        tmp_path / "first.pkl.gz",
+        process_prefix="run3_2022",
+        year="2022",
+        runtime_families=("njets",),
+        contribution=1.0,
+    )
+    second = _write_disjoint_source_processor(
+        tmp_path / "second.pkl.gz",
+        process_prefix="run3_2022EE",
+        year="2022EE",
+        runtime_families=("njets",),
+        contribution=2.0,
+    )
+    first["requested_data_driven_products"]["warnings"] = [
+        "2022 contributors",
+        "shared warning",
+    ]
+    second["requested_data_driven_products"]["warnings"] = [
+        "2022EE contributors",
+        "shared warning",
+    ]
+    for sidecar in (first, second):
+        sidecar["requested_data_driven_products"]["source"] = (
+            "implicit_legacy_data_driven_default"
+        )
+
+    merged = merge_histogram_sidecars([first, second])
+    requested = merged["requested_data_driven_products"]
+    assert requested["schema_version"] == 1
+    assert requested["source"] == "implicit_legacy_data_driven_default"
+    assert requested["products"] == first["requested_data_driven_products"]["products"]
+    assert requested["warnings"] == [
+        "2022 contributors",
+        "2022EE contributors",
+        "shared warning",
+    ]
+    generated_outputs = merged["resolved_data_driven_contract"]["products"][
+        "nonprompt"
+    ]["generated_outputs"]
+    assert {
+        output["year"]: output["source_contributors"]
+        for output in generated_outputs.values()
+    } == {
+        "2022": {
+            "data": ["data2022"],
+            "prompt_mc": ["TTto2L2Nu_central2022"],
+        },
+        "2022EE": {
+            "data": ["data2022EE"],
+            "prompt_mc": ["TTto2L2Nu_central2022EE"],
+        },
+    }
+
+    product_mismatch = copy.deepcopy(second)
+    product_mismatch["requested_data_driven_products"]["products"]["nonprompt"][
+        "enabled"
+    ] = False
+    with pytest.raises(
+        histogram_artifact_error,
+        match="identical requested data-driven product policy",
+    ):
+        merge_histogram_sidecars([first, product_mismatch])
+
+    source_mismatch = copy.deepcopy(second)
+    source_mismatch["requested_data_driven_products"]["source"] = "explicit"
+    with pytest.raises(
+        histogram_artifact_error,
+        match="identical requested data-driven product policy",
+    ):
+        merge_histogram_sidecars([first, source_mismatch])
+
+
 def test_explicit_nonprompt_only_contract_suppresses_unrequested_flips(
     tmp_path, policy
 ):

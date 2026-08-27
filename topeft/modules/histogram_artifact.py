@@ -2264,6 +2264,40 @@ def _compose_resolved_data_driven_contract(
     }
 
 
+def _compose_requested_data_driven_products(
+    requested_products: Iterable[Mapping[str, Any]],
+) -> dict[str, Any]:
+    """Compose compatible requested policy while retaining all diagnostics."""
+
+    requested_products = tuple(requested_products)
+    first = requested_products[0]
+    compatibility_fields = ("schema_version", "source", "products")
+    if any(
+        any(
+            requested[field_name] != first[field_name]
+            for field_name in compatibility_fields
+        )
+        for requested in requested_products[1:]
+    ):
+        raise histogram_merge_error(
+            "Same-run histogram fragments require identical requested "
+            "data-driven product policy."
+        )
+    return {
+        **{
+            field_name: copy.deepcopy(first[field_name])
+            for field_name in compatibility_fields
+        },
+        "warnings": sorted(
+            {
+                warning
+                for requested in requested_products
+                for warning in requested["warnings"]
+            }
+        ),
+    }
+
+
 def _compose_merged_contract_set(
     sidecars: Iterable[Mapping[str, Any]],
 ) -> tuple[
@@ -2318,16 +2352,9 @@ def _compose_merged_contract_set(
     requested = None
     resolved = None
     if requested_presence == {True}:
-        requested = copy.deepcopy(sidecars[0]["requested_data_driven_products"])
-        if any(
-            _canonical_identity(sidecar["requested_data_driven_products"])
-            != _canonical_identity(requested)
-            for sidecar in sidecars[1:]
-        ):
-            raise histogram_merge_error(
-                "Same-run histogram fragments require identical requested "
-                "data-driven product policy."
-            )
+        requested = _compose_requested_data_driven_products(
+            sidecar["requested_data_driven_products"] for sidecar in sidecars
+        )
         resolved = _compose_resolved_data_driven_contract(
             sidecar["resolved_data_driven_contract"] for sidecar in sidecars
         )
