@@ -1,5 +1,11 @@
 # Visualize Extreme Events
 
+> **Archival, externally dependent procedure.** This page records the event
+> displays preserved under `analysis/extreme_events_study/visualization`. It
+> depends on historical CMS data tiers, DBS/DAS access, CMSSW `10_6_2`, and a
+> pinned external iSpy analyzer commit. It is not a maintained TOP-26-006
+> workflow and has not been revalidated.
+
 ## Event Display
 
 Copy the `.ig` file to local. Open the file in [iSpy WebGL](https://ispy-webgl.web.cern.ch/).
@@ -16,7 +22,7 @@ Copy the `.ig` file to local. Open the file in [iSpy WebGL](https://ispy-webgl.w
 ## Procedure to get the `.ig` file
 
 * Modify this [section](https://github.com/xinyuewu21/topcoffea/blob/9ac14eaa057b225e061558597517ea93cd0f3532/analysis/extreme_events_study/visualization/find_file.py#L67-L74) of `find_file.py` to generate a dataframe of selected event(s) from the skimmed files.
-* Modify `run_extreme_events.py` to run the `find_file` processor (replace `extreme_events` with `find_file` in the script). 
+* Modify `run_extreme_events.py` to run the `find_file` processor (replace `extreme_events` with `find_file` in the script).
 * Run `find_file.py` on the non-skimmed data `data_samples.cfg`.
 * Get run, luminosityBlock, event, and the non-skimmed root file of the event from the output dataframe.
 * Use `dasgoclient` to find the AOD file:
@@ -42,3 +48,6 @@ edmCopyPickMerge outputFile=pickevents.root   eventsToProcess=297296:266:3852066
 
 * Still following the iSpy instructions, run the iSpy analyzer with `pickevents.root` as the input file to generate the `.ig` file.
 
+The three `.ig` files are the durable record in this repository. Repeating the
+network queries or CMSSW procedure requires a separately supported historical
+environment and current service access.

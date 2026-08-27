@@ -1,17 +1,30 @@
-# HistEFT API contract and replacement parity specification
+# HistEFT and SparseHist reference
+
+## Reader map
+
+This page separates current software lookup from non-normative design material
+for a possible future histogram backend.
+
+| Need | Status | Read here |
+| --- | --- | --- |
+| Callable methods, properties, inputs, returns, mutation, and failures | Current API | [Implementation inventory](#3-implementation-inventory), [HistEFT API](#5-histeft-public-api-contract), and [SparseHist behavior](#6-sparsehist-inherited-behavior-contract) |
+| EFT coefficient ordering, filling, and evaluation | Current semantics | [EFT semantics](#7-eft-semantics-contract) |
+| Current serialization and consumers | Current integration | [Pickle compatibility](#8-pickle-and-pkl-compatibility-contract), [consumer map](#9-consumer-contract-from-current-topeft-usage), and [contracts owned elsewhere](#current-contracts-owned-outside-histeft) |
+| Replacement requirements, parity fixtures, proposed tests, and open questions | Future design; not a stable API contract or approved implementation plan | [Future replacement design](#future-replacement-design-non-normative) |
+
+The exact nominal-container, sidecar, transformation, and selective-sumw2
+schemas live in [histogram artifacts](histogram_artifacts.md) and
+[sumw2 policy](sumw2.md), not on this page.
 
 ## 1. Purpose and scope
 
-This document is the CL007AD compatibility contract for the current
-`HistEFT`/`SparseHist` implementation and for the way `topeft` actually uses it.
-It is intended to gate any future EFT-aware histogram replacement, including a
-possible `scikit-hist` backend.
-
-This is not an implementation plan for the replacement. It does not change
-physics behavior, `HistEFT`, `SparseHist`, processors, plotting, datacard logic,
-runner scripts, sample JSON/CFG files, payloads, or production outputs. It
-extracts the existing contract from source inspection and small current-behavior
-tests.
+The current sections are a curated reference for the
+`HistEFT`/`SparseHist` implementation and the way `topeft` consumes it. The
+separately labelled future-design section records parity questions that would
+need resolution before any EFT-aware histogram replacement, including a
+possible `scikit-hist` backend. It is not an approved replacement plan and does
+not change physics behavior, histogram classes, consumers, configuration, or
+production output.
 
 The central distinction is:
 
@@ -19,9 +32,9 @@ The central distinction is:
   inherited from `topcoffea.modules.sparseHist.SparseHist`.
 - `Used by topeft`: behavior directly or practically used by processors,
   plotting, datacards/yields, pkl helpers, or existing tests.
-- `Replacement priority`: whether a future backend must reproduce the behavior
-  immediately, only for old pkl compatibility, only if a consumer is not
-  migrated, or can defer it.
+- `Future-design priority`: non-normative notes about which behavior a possible
+  replacement would need immediately, only for old-PKL compatibility, only if a
+  consumer is not migrated, or could defer.
 
 ## 2. Source map
 
@@ -52,9 +65,9 @@ Implementation sources inspected read-only:
 
 Prior documentation context:
 
-- `docs/histeft_pkl_tutorial.md:992-1365` documents student-facing API notes and
-  a broad future replacement mapping. This CL007AD document turns that material
-  into an explicit implemented-versus-used matrix and parity-test gate.
+- The [histogram-artifact tutorial](../tutorials/histogram_artifacts.md)
+  provides the guided reader path. This page provides current API and consumer
+  lookup; its separately labelled final section retains future parity design.
 
 ## 3. Implementation inventory
 
@@ -157,14 +170,15 @@ Not implemented directly in `SparseHist`/`HistEFT` but observed or mentioned in
   or non-primary scripts, not in the current processor/plotter/datacard path
   inspected for this contract.
 
-## 4. Implemented versus used feature matrix
+## 4. Current implementation and consumer use
 
-This is the required implemented-versus-used feature matrix. `Used by topeft`
-means source inspection found a direct or practical consumer in the current
-`topeft` codebase. `Implemented, apparently unused` means the feature exists in
-`HistEFT`/`SparseHist` but no current inspected topeft call site was found.
+`Used by topeft` means source inspection found a direct or practical consumer
+in the current codebase. `Implemented, apparently unused` means the feature
+exists in `HistEFT`/`SparseHist` but no current inspected call site was found.
+The future-design priority column is explicitly non-normative: it records a
+possible migration constraint and does not expand or redefine the current API.
 
-| Feature / method | Implemented where | Used by processor? | Used by plotter? | Used by datacards/yields? | Used by pkl helper? | Replacement priority | Evidence | Notes |
+| Feature / method | Implemented where | Used by processor? | Used by plotter? | Used by datacards/yields? | Used by pkl helper? | Future-design priority (non-normative) | Evidence | Notes |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | `HistEFT.__init__` | `histEFT.py:74-126` | Yes | Indirect | Indirect | Indirect | Required immediately | `analysis_processor.py:268-292`; `analysis_processor_diboson.py:93-110` | Constructor shape is the processor-facing creation API. |
 | `HistEFT.fill(eft_coeff=...)` | `histEFT.py:197-249` | Yes | No | No | No | Required immediately | `analysis_processor.py:1900-1924`; `analysis_processor_diboson.py:1297-1334` | Must preserve weight times coefficient storage and scalar categorical labels. |
@@ -201,10 +215,9 @@ means source inspection found a direct or practical consumer in the current
 | `variances` | Not implemented by HistEFT | No | Dense regular hist paths | No | Probed | Can defer for HistEFT replacement if `_sumw2` preserved | `inspect_histeft_pkl.py:192-199`; `_sumw2` fills at `analysis_processor.py:1913-1924` | Current HistEFT uncertainty convention is top-level `_sumw2`, not `variances`. |
 | `.sum`, `.project`, `.identifiers` | Not implemented by SparseHist | No current primary processor | Older/non-primary scripts | No | No | Probably unused for current replacement | Search found older validation/training scripts, not current primary flow | Can defer unless those legacy workflows are explicitly supported. |
 
-The replacement does not need to reproduce every implemented method if the
-method is not used by topeft and old-pkl compatibility is not required. It does
-need to reproduce any feature above marked `Required immediately` before it can
-replace current runtime output.
+The final column is interpreted only in the
+[future replacement design](#future-replacement-design-non-normative). Current
+API status and current callers are established by the other columns.
 
 ## 5. HistEFT public API contract
 
@@ -224,7 +237,7 @@ Source: `../topcoffea/topcoffea/modules/histEFT.py:74-126`.
 - Hidden-axis dependency: yes, creates or accepts `quadratic_term`.
 - WC metadata dependency: yes, computes `_quad_count` from WC count.
 - Used by topeft: yes, processors instantiate it directly.
-- Replacement exactness: Required immediately for processor compatibility.
+- Current consumer dependency: processor construction uses this interface.
 
 ### `HistEFT.fill(eft_coeff=None, **values)`
 
@@ -243,7 +256,7 @@ Source: `histEFT.py:197-249`.
 - WC metadata dependency: yes, validates coefficient length against `_quad_count`
   indirectly through array shape and dense fill.
 - Used by topeft: yes, processor and diboson processor fill all 1D histograms.
-- Replacement exactness: Required immediately.
+- Current consumer dependency: processor filling uses this interface.
 
 Current fill semantics:
 
@@ -272,7 +285,8 @@ Source: `histEFT.py:271-284`.
   coefficient-axis flow slots with `[..., 1:-1]`.
 - WC metadata dependency: yes, mapping keys are checked against `wc_names`.
 - Used by topeft: yes, plotter, datacards, yields, and pkl helper.
-- Replacement exactness: Required immediately.
+- Current consumer dependency: plotting, datacards, yields, and inspection use
+  this interface.
 
 Mapping behavior:
 
@@ -295,7 +309,7 @@ Source: `histEFT.py:286-305`.
   output.
 - WC metadata dependency: uses `eval`.
 - Used by topeft: yes, plotter and existing tests.
-- Replacement exactness: Required if plotting is not migrated.
+- Current consumer dependency: the maintained plotter uses this interface.
 
 ### `HistEFT.make_scaling(flow="show", wc_list=None)`
 
@@ -310,7 +324,8 @@ Source: `histEFT.py:321-353`.
   and removes coefficient flow columns.
 - WC metadata dependency: optional remapping through `efth.remap_coeffs`.
 - Used by topeft: yes, datacard code.
-- Replacement exactness: Required if datacards/yields are not migrated.
+- Current consumer dependency: the maintained datacard path uses this
+  interface.
 
 ### `HistEFT.__reduce__()` and `_read_from_reduce`
 
@@ -326,16 +341,17 @@ Sources: `histEFT.py:307-319`, `histEFT.py:355-356`,
   explicit `quadratic_term` axis was pickled in the constructor args.
 - WC metadata dependency: `wc_names` must survive.
 - Used by topeft: yes through pkl writing/loading.
-- Replacement exactness: Required for old-pkl compatibility. For new runs only,
-  an explicit converter or new serialization contract could replace it.
+- Current consumer dependency: existing PKLs require this reconstruction path.
+  A future converter or serialization change belongs to the non-normative
+  design section.
 
 ### WC helpers and current usage
 
 - `wc_names` is Required immediately because merge validation, datacards, and pkl
   inspection use it.
 - `quadratic_term_index` is a public coefficient-order helper, but no current
-  primary topeft runtime call was found. It is Nice to have and useful for parity
-  tests.
+  primary topeft runtime call was found. It remains useful for direct inspection
+  and for the future parity design below.
 - `index_of_wc` is Implemented, apparently unused by topeft except internally by
   `quadratic_term_index`.
 - `calc_eft_weights` as an instance method is Implemented, apparently unused by
@@ -343,8 +359,9 @@ Sources: `histEFT.py:307-319`, `histEFT.py:355-356`,
 
 ## 6. SparseHist inherited behavior contract
 
-A replacement for HistEFT must either inherit/reproduce these `SparseHist`
-behaviors or migrate every consumer that relies on them:
+Current HistEFT consumers rely on the inherited `SparseHist` behaviors below.
+A future backend would need either compatible behavior or a coordinated
+consumer migration:
 
 | Behavior | Required behavior | Mutation/return | Evidence |
 | --- | --- | --- | --- |
@@ -467,8 +484,7 @@ Source: `histEFT.py:214-224`.
 - A mapping with two WCs includes linear, pure quadratic, and cross terms.
 - Unknown WC names raise `LookupError`.
 - Array-like values are interpreted in current `wc_names` order.
-- Repeated evaluation is expected not to mutate stored coefficients; this is part
-  of the parity-test specification.
+- Repeated evaluation is expected not to mutate stored coefficients or metadata.
 
 ### Systematics and sumw2
 
@@ -488,29 +504,25 @@ variance object.
 
 The codebase contains quartic/squared-weight helpers, but nonzero-WC quartic
 sumw2 is outside the maintained storage and consumer contract.
+The [sumw2 reference](sumw2.md) owns companion selection, naming, provenance,
+and failure conditions.
 
 ## 8. Pickle and pkl compatibility contract
 
-### Top-level pkl structure
+### Current container boundary
 
-Schema-v2 processor output is a gzip-compressed pickle containing a dictionary
-whose 1D nominal content is split by source type:
+The exact top-level key layout, nominal-container schema, companion naming,
+sidecar fields, and compatibility rules are owned by the
+[histogram-artifact reference](histogram_artifacts.md) and the
+[sumw2 reference](sumw2.md). They are deliberately not restated here.
 
-```text
-{
-  "<family>__scalar_nominal": SparseHist,  # when scalar content exists
-  "<family>__eft_nominal": HistEFT,        # when EFT content exists
-  "<family>_sumw2": SparseHist,            # when policy-selected
-  ...
-}
-```
+The HistEFT-specific serialization fact is that each EFT nominal component in
+the authoritative container is a `HistEFT` object whose coefficient order,
+axes, WC metadata, and sparse blocks must survive gzip/cloudpickle round-trip.
+Scalar nominal and statistical-second-moment components use `SparseHist`; that
+type distinction is enforced by the nominal-schema owner.
 
-The original unsplit 1D `<family>` key is forbidden in schema-v2 producer
-output. A 2D family remains a scalar `SparseHist` at `<family>` and can have
-an optional `<family>_sumw2` companion. See
-[`histeft_pkl_tutorial.md`](histeft_pkl_tutorial.md) for artifact inspection.
-
-Evidence:
+Serialization evidence:
 
 - `analysis/topeft_run2/run_analysis.py:1760-1765` writes `output` with
   `gzip.open(..., "wb")` and `cloudpickle.dump`.
@@ -518,10 +530,10 @@ Evidence:
   gzip and cloudpickle.
 - `../topcoffea/topcoffea/modules/hist_utils.py:274-293` materializes pkl files
   as dictionaries when requested.
-- `topeft/modules/datacard_tools.py:175-302` requires base histogram keys and
-  matching `_sumw2` companions by default.
-- `analysis/topeft_run2/make_cr_and_sr_plots.py:5347-5351,7802-7816` discovers
-  `_sumw2` companions and loads/merges pkl payloads.
+- `topeft/modules/datacard_tools.py:175-302` validates and merges the current
+  container through the schema owner.
+- `analysis/topeft_run2/make_cr_and_sr_plots.py:5347-5351,7802-7816` loads and
+  merges current histogram artifacts.
 
 ### Hist object graph
 
@@ -549,38 +561,24 @@ does the analogous storage at `sparseHist.py:466-475`.
 - `../topcoffea/topcoffea/modules/compat.py:13-51` provides compatibility shims
   for old import/type expectations.
 
-### Replacement pkl requirements
+### Current serialization compatibility boundary
 
-Required for new runs only:
+Current outputs must conform to the container and sidecar schemas linked above,
+remain loadable by the maintained plotter/datacard/yield paths, expose their
+axis and WC metadata, and remain mergeable after load. Existing HistEFT PKLs
+also depend on the old module/class import path, `__reduce__` state shape,
+`_dense_hists` layout, sparse-key namedtuples, WC metadata, and hidden
+coefficient-axis reconstruction. The reconstructed object must still support
+SM and nonzero-WC evaluation, grouping, integration, and merge.
 
-- New output must be loadable by the current plotter/datacard/yield path unless
-  those consumers are migrated in the same change.
-- Top-level dictionary keys and `_sumw2` naming must remain compatible unless
-  consumers are migrated.
-- Axis names and labels must remain discoverable.
-- WC metadata must remain discoverable.
-- Histograms must be mergeable after pkl load.
-
-Required for old-pkl compatibility:
-
-- Old module/class import paths must remain importable, or an explicit converter
-  must be supplied.
-- Old `__reduce__` state shape must be readable.
-- Old `_dense_hists` block layout and sparse key namedtuple behavior must be
-  translated correctly.
-- Old WC metadata and hidden coefficient-axis state must reconstruct enough to
-  support `eval({})`, nonzero WC eval, grouping, integration, and pkl merge.
-
-Optional / legacy:
-
-- Preserving the plotter's monkey-patched fast loader is optional if replacement
-  pkl loading is already fast and old pkls are handled by a converter.
-- Preserving `identity()` is only required for old accumulator compatibility if a
-  still-supported workflow uses it.
+The plotter's monkey-patched fast loader and `identity()` accumulator behavior
+are compatibility surfaces only for consumers that still use them. Decisions
+to replace these mechanisms or provide a converter are recorded separately in
+the [future-design section](#future-replacement-design-non-normative).
 
 ## 9. Consumer contract from current topeft usage
 
-| Consumer | File | HistEFT/SparseHist feature used | Required behavior | Evidence | Replacement priority |
+| Consumer | File | HistEFT/SparseHist feature used | Required behavior | Evidence | Current dependency or migration boundary |
 | --- | --- | --- | --- | --- | --- |
 | Main processor | `analysis/topeft_run2/analysis_processor.py` | `HistEFT.__init__`, `SparseHist.__init__`, `HistEFT.fill`, `SparseHist.fill` | Construct 1D EFT hists and 2D non-EFT sparse hists; fill scalar categories, dense arrays, weights, optional `eft_coeff` | `analysis_processor.py:245-343,620-631,1900-1924` | Required immediately |
 | Diboson processor | `analysis/topeft_run2/analysis_processor_diboson.py` | `HistEFT.__init__`, `HistEFT.fill` | Construct/fill HistEFT and `_sumw2` for all axes | `analysis_processor_diboson.py:72-110,297-304,1297-1334` | Required immediately |
@@ -595,9 +593,41 @@ Optional / legacy:
 | Pkl inspector | `analysis/topeft_run2/inspect_histeft_pkl.py` | `.axes`, `wc_names`/`_wc_names`, `.integrate`, `.eval`, `.values`, `.variances` probe | Read-only summary of top-level keys, axes, labels, and nominal yield | `inspect_histeft_pkl.py:20-345` | Nice to have for replacement introspection; `variances` can defer if `_sumw2` preserved |
 | Pkl utilities | `topcoffea` utils/hist_utils | gzip/cloudpickle dict load/write; empty filtering | Load materialized pkl dictionaries and optionally stream entries | `utils.py:399-477`; `hist_utils.py:36-293` | Required for old-pkl/new-output compatibility unless serialization is migrated |
 
-## 10. Replacement requirements
+## Current contracts owned outside HistEFT
 
-### Required immediately
+HistEFT supplies the EFT-polynomial object and its current serialization
+behavior; it does not own the surrounding artifact policy:
+
+- [Sumw2 policy](sumw2.md) owns modes, target selection, companion naming,
+  provenance, content requirements, and consumer failures. The HistEFT-specific
+  implication retained here is that an EFT event contributes to the separate
+  scalar second moment only after evaluation at the SM point; nonzero-WC
+  quartic variance is not a maintained HistEFT product.
+- [Histogram artifacts](histogram_artifacts.md) owns nominal-container keys and
+  types, sidecar fields and versions, data-driven applicability, transformed
+  product schemas, readback, merge, and collision validation. The
+  [histogram-artifact tutorial](../tutorials/histogram_artifacts.md) gives the
+  guided container view.
+- [Sumw2 operations](../how_to/sumw2.md) owns mode/default/schema change
+  procedures. [Nonprompt operations](../how_to/nonprompt.md) owns transformed
+  artifact production and extension. The
+  [datacard reference](datacards_and_scalings.md) owns final-SR application-axis
+  selection and card-local materialization.
+
+Those pages are authoritative for their schemas and procedures. This page
+retains coefficient ordering, scalar-SM second-moment implications, HistEFT
+object serialization, and current consumer/parity obligations without creating
+a competing artifact contract.
+
+## Future replacement design (non-normative)
+
+The remainder is preserved design input for a possible future backend. It is
+not stable API lookup, an approved implementation plan, or authorization to
+change serialization or physics behavior.
+
+### Replacement requirements
+
+#### Required immediately
 
 - Constructor compatibility for processor-created 1D HistEFT objects:
   evidence `analysis_processor.py:268-292`,
@@ -623,7 +653,7 @@ Optional / legacy:
   in scope: evidence `analysis_processor.py:293-342` and
   `make_cr_and_sr_plots.py:6461-6531`.
 
-### Required for old-pkl compatibility
+#### Required for old-pkl compatibility
 
 - Read old `HistEFT.__reduce__` state: evidence `histEFT.py:307-319`.
 - Read old `SparseHist.__reduce__` state: evidence `sparseHist.py:466-483`.
@@ -632,7 +662,7 @@ Optional / legacy:
 - Support the plotter/yield compatibility helpers or remove the need for them
   with a documented migration.
 
-### Required if plotting is not migrated
+#### Required if plotting is not migrated
 
 - `as_hist({})`, `.axes`, `.integrate`, `__getitem__` with `sum`, `.group`,
   `.remove`, `.empty`, `.scale`, `.values`, and `.view`.
@@ -640,21 +670,21 @@ Optional / legacy:
   `_eval_without_underflow`.
 - Existing process/channel/systematic/appl labels and group maps.
 
-### Required if datacards/yields are not migrated
+#### Required if datacards/yields are not migrated
 
 - `make_scaling`, `dense_axis`, raw coefficient `view(flow=True, as_dict=True)`,
   `categorical_keys`, `.prune`, `.group`, `.remove`, `should_rebin`.
 - `replace_axis` remains Unknown and needs a fixture if
   `restore_split_channel_labels` remains supported.
 
-### Nice to have
+#### Nice to have
 
 - `quadratic_term_index` for public coefficient-order inspection.
 - `index_of_wc` if `quadratic_term_index` is preserved.
 - Pkl inspector-friendly fallback `values` and `variances` probes, as long as
   the official variance contract is explicit.
 
-### Can defer
+#### Can defer
 
 - Native `variances` for HistEFT if `_sumw2` companions remain the source of
   squared-weight uncertainty.
@@ -663,7 +693,7 @@ Optional / legacy:
 - Streaming pkl optimizations if new pkl loading is small/fast in the first
   prototype and old pkl compatibility is out of scope.
 
-### Probably unused
+#### Probably unused
 
 - `HistEFT.index_of_wc` direct runtime calls.
 - `HistEFT.calc_eft_weights` instance method.
@@ -671,7 +701,7 @@ Optional / legacy:
 - `.sum`, `.project`, and old `.identifiers()` for the current primary
   processor/plotter/datacard flow.
 
-### Unknown
+#### Unknown
 
 - `replace_axis` with SparseHist/HistEFT in `yield_tools.restore_split_channel_labels`.
 - Whether old non-primary scripts under `analysis/topeft_run2/make_cr_and_sr_plots_v*`,
@@ -681,12 +711,13 @@ Optional / legacy:
   convention in a future physics review. Current processors compute but do not
   use `eft_w2_coeffs`.
 
-## 11. HistEFT parity-test suite specification
+### Proposed HistEFT parity-test suite
 
-Any future histogram backend must pass these tests before replacing HistEFT.
-Tests may use current `HistEFT` as the reference implementation.
+A future histogram backend would need to satisfy these proposed checks before
+it could be considered as a HistEFT replacement. The design may use current
+`HistEFT` as the reference implementation.
 
-### Constructor parity
+#### Constructor parity
 
 - Same sparse axis names, labels, growth behavior, and order.
 - Same dense physics axis metadata: name, label, type, bin edges, flow policy.
@@ -697,7 +728,7 @@ Tests may use current `HistEFT` as the reference implementation.
   position/type, reserved axis names, and `rebin=True` if replacement is claiming
   drop-in compatibility.
 
-### Fill parity
+#### Fill parity
 
 - One bin, no WC list, `eft_coeff=None` gives SM-only coefficient storage.
 - One WC coefficient array: SM, linear, quadratic terms.
@@ -710,7 +741,7 @@ Tests may use current `HistEFT` as the reference implementation.
 - Fill without required `eft_coeff` for non-EFT samples.
 - Shape failures for incompatible coefficient arrays and dense value arrays.
 
-### Evaluation parity
+#### Evaluation parity
 
 - SM point `eval({})`.
 - `eval(None)`.
@@ -723,7 +754,7 @@ Tests may use current `HistEFT` as the reference implementation.
 - Array-like WC input in `wc_names` order.
 - Repeated eval does not mutate source values or metadata.
 
-### Histogram operation parity
+#### Histogram operation parity
 
 - `values(flow=False)` and `values(flow=True)` raw coefficient views.
 - `view(flow=True, as_dict=True)` shape and sparse keys.
@@ -738,31 +769,31 @@ Tests may use current `HistEFT` as the reference implementation.
 - Multiplication by scalar through `scale`.
 - Rebin only if the replacement claims support or datacard migration requires it.
 
-### Pickle parity
+#### Pickle parity
 
 - Pickle/unpickle current HistEFT and replacement object.
 - Evaluate after unpickle at SM and nonzero WC points.
 - Merge/add after unpickle.
 - Compare WC metadata after unpickle.
 - Compare axes and categorical labels after unpickle.
-- Preserve the schema-v2 sibling layout and policy-selected scalar companion
-  contract for new producer output.
+- Preserve the authoritative current nominal-container layout and
+  policy-selected scalar companion contract linked above.
 - Load one representative old pkl if a small safe fixture exists, or define a
   converter test that proves old content can be translated.
 
-### Processor/plotter compatibility parity
+#### Processor/plotter compatibility parity
 
 - Mock a processor-like fill with `process/channel/systematic/appl`, dense axis,
   event weights, and `eft_coeff`.
 - Mock non-EFT fill with `eft_coeff=None`.
-- Build a schema-v2 top-level dict with 1D scalar/EFT siblings and any selected
-  scalar `<hist>_sumw2` companion.
+- Build a conforming top-level mapping through the current nominal-schema and
+  sumw2-policy owners, including a selected scalar companion where required.
 - Run a minimal plotter-like flow: integrate nominal, group processes, sum
   process axis, evaluate `eval({})`, materialize `as_hist({})`, and read values.
 - Preserve `process/channel/systematic/appl` labels exactly.
 - Validate datacard-like merge for two disjoint process payloads.
 
-### Numerical tolerance policy
+#### Numerical tolerance policy
 
 - Use exact equality for axis names, category labels, WC names, coefficient term
   order, top-level pkl keys, and error types.
@@ -774,9 +805,9 @@ Tests may use current `HistEFT` as the reference implementation.
   point differences; do not hide label or coefficient-order mismatches with
   numeric tolerances.
 
-## 12. Synthetic fixture design
+### Proposed synthetic fixtures
 
-### Fixture A: one dense axis, one WC
+#### Fixture A: one dense axis, one WC
 
 - Purpose: constructor, SM-only fill, one-WC linear/quadratic evaluation.
 - Axes: `process`, `channel`, `systematic`, `appl`, dense `x` with two bins.
@@ -787,7 +818,7 @@ Tests may use current `HistEFT` as the reference implementation.
 - Metadata: hidden coefficient term count `3`; axis labels preserved.
 - Tests: constructor, fill, eval, pickle.
 
-### Fixture B: one dense axis, two WCs
+#### Fixture B: one dense axis, two WCs
 
 - Purpose: lower-triangle coefficient order and cross-term behavior.
 - Axes: same as Fixture A.
@@ -799,7 +830,7 @@ Tests may use current `HistEFT` as the reference implementation.
   `SM*SM, ctG*SM, ctG*ctG, cpt*SM, cpt*ctG, cpt*cpt`.
 - Tests: fill parity, evaluation parity, coefficient-order parity.
 
-### Fixture C: realistic topeft-like sparse axes
+#### Fixture C: realistic topeft-like sparse axes
 
 - Purpose: processor/plotter sparse-axis contract.
 - Axes: `process=["ttH", "ttlnu"]`, `channel=["2lss_p"]`,
@@ -812,21 +843,22 @@ Tests may use current `HistEFT` as the reference implementation.
 - Metadata: labels remain exactly as filled.
 - Tests: integrate, group, remove, `__getitem__` sum, plotter-like value flow.
 
-### Fixture D: `_sumw2` companion behavior
+#### Fixture D: scalar SM second-moment integration
 
-- Purpose: schema-v2 scalar second-moment companion contract.
-- Axes: categorical axes match the selected base source; its dense axis is
-  `njets_sumw2`.
+- Purpose: exercise the HistEFT-specific SM-point second-moment implication
+  within the authoritative nominal-container and sumw2 contracts linked above.
+- Axes and container placement: construct them through the current schema and
+  policy owners rather than defining a second key/type schema here.
 - Event inputs: scalar base contribution `w`; EFT event contribution evaluated
   at WC=0 and folded into the scalar event weight before it is squared.
 - Expected content: a scalar `SparseHist` second moment, not an EFT polynomial
   that can be evaluated at a nonzero WC.
-- Metadata: its top-level key is `njets_sumw2`; schema-v2 1D nominal sources
-  are `njets__scalar_nominal` and/or `njets__eft_nominal`.
+- Metadata: use the exact current container, sidecar, and policy records from
+  [histogram artifacts](histogram_artifacts.md) and [sumw2](sumw2.md).
 - Tests: pkl payload, schema/coverage validation, datacard merge validation,
   and plotter uncertainty input.
 
-### Fixture E: pickle round-trip fixture
+#### Fixture E: pickle round-trip fixture
 
 - Purpose: serialization and old/new pkl boundary.
 - Axes: use Fixture B or C.
@@ -836,7 +868,7 @@ Tests may use current `HistEFT` as the reference implementation.
 - Expected metadata: class, axes, labels, `wc_names`, and dense axis survive.
 - Tests: pickle/unpickle, add after unpickle, old-pkl converter if available.
 
-## 13. Optional tests added or proposed
+### Existing and proposed tests
 
 These tests use current `HistEFT` as the reference behavior and do not require
 production files or large pkls. They cover:
@@ -846,7 +878,7 @@ production files or large pkls. They cover:
 - SM-only fill when `eft_coeff` is omitted;
 - unknown-WC failure;
 - integrate/group/copy/add/as_hist consumer operations;
-- pickle round-trip and `_sumw2` companion shape.
+- pickle round-trip and policy-selected scalar-companion integration.
 
 Proposed future tests before any replacement:
 
@@ -856,7 +888,7 @@ Proposed future tests before any replacement:
 - an old-pkl fixture or converter test once a small representative pkl can be
   safely stored.
 
-## 14. Open questions
+### Open design questions
 
 - Does `yield_tools.restore_split_channel_labels` need to support HistEFT/
   SparseHist long term, and does its `replace_axis` call work on current objects
@@ -870,217 +902,3 @@ Proposed future tests before any replacement:
   provided by a one-time converter plus clear migration boundary?
 - Should `as_hist` output include flow bins exactly as current plotter expects,
   or should plotting be migrated to an explicit flow policy at the same time?
-
-## 15. Selective sumw2 schema and consumer contract
-
-### Source components and selected companions
-
-Schema version 2 uses `split_sibling_v1` for each 1D family. Scalar nominal
-content and EFT nominal content are separate, non-overlapping process sources:
-`<family>__scalar_nominal` is an exact `SparseHist`, while
-`<family>__eft_nominal` is an exact `HistEFT`. Either sibling can be absent
-when that content class is empty. The original unsplit 1D `<family>` producer
-key is not valid schema-v2 output.
-
-`<family>_sumw2`, when selected, is a scalar `SparseHist` holding a selected SM
-second moment. An EFT contribution enters it as the complete event evaluated at
-WC=0 before squaring; it is not a quadratic or quartic EFT variance payload.
-Nonzero-WC quartic sumw2 is intentionally unsupported. The selection policy
-resolves rules over dataset, process, and family and records the resolved
-provenance; a selected required target without a companion is invalid.
-
-2D families remain scalar `SparseHist` objects under the base `<family>` key
-and may carry an optional `<family>_sumw2` companion. They never use
-scalar/EFT split siblings.
-
-### Serialization, merge, and consumer-local views
-
-Serialization retains schema/provenance and validates known families, sibling
-types, non-overlapping process labels, companion axes, and selected-process
-coverage. Merge validation happens before consumers transform the mapping. The
-uniform/scalar dictionaries used by plotting or card making are bounded
-consumer-local views, not an alternate producer format.
-
-Legacy uniform pkls may be read through the established compatibility path, but
-that does not relax schema-v2 producer requirements. Deprecated `no_sumw2` and
-`do_errors` flags are migration mappings, not a promise of broad legacy
-production behavior. This contract adds no compatibility shim.
-
-### Application-axis and merge-and-collision boundaries
-
-The producer retains the `appl` axis. Data-driven nonprompt processing may use
-AR content transiently at WC=0 while constructing scalar output. At the
-DatacardMaker boundary, only the exact metadata-defined final SR application
-label is selected; CR/AR card production, label guessing, and fallback are not
-implemented.
-
-Collision handling is consumer-specific. A supported merge validates schema and
-provenance, permits only the consumer's documented disjoint/allowed source
-merge behavior, and reports exact duplicate or incompatible process content.
-Remediate a collision by removing the duplicate input, separating incompatible
-productions, or using the supported consumer workflow with explicitly
-documented collision handling. Do not rename inputs, suppress the diagnostic,
-or add an adapter merely to force an unsupported merge.
-
-## 16. Data-driven applicability and transformed artifacts
-
-This section is the normative contract for the maintained nonprompt and charge-
-flip (flips) transformations. It complements the operational instructions in
-the [Run-2 README](../analysis/topeft_run2/README.md#applicability-aware-data-driven-outputs-and-recovery)
-and the practical [sidecar inspection tutorial](histeft_pkl_tutorial.md#18-inspecting-data-driven-applicability).
-
-The maintained complete Run-3 production path is
-`analysis/topeft_run2/run_cr.sh --production-profile run3_full`. Each block
-first runs the heavy processor with nonprompt enabled but deferred, waits for
-that process to exit, and then invokes `run_data_driven.py` in a fresh process
-on the completed source pkl. This process boundary releases processor memory;
-it does not weaken the policy or sumw2 validation described below. Campaign
-state records the source and transformation stages separately, and a block is
-complete only when both the source and independently transformed `_np` pkl are
-nonempty.
-
-### Enabled, applicable, and generated
-
-The source-wide data-driven policy and each histogram family answer different
-questions:
-
-- **Enabled** means that the source-wide `requested_data_driven_products`
-  policy requests a product. It is a policy decision shared by the artifact;
-  it does not assert that every family contains the inputs for that product.
-- **Applicable** means that one family’s authoritative `appl` axis contains a
-  maintained application region consumed by that product’s transformer. It is
-  family-specific and is derived from actual source histogram content.
-- **Generated** means that the transformed nominal or `_sumw2` payload contains
-  the certified output process labels for an enabled-and-applicable product.
-
-Thus, enabled does not imply applicable, applicable is family-specific, and
-generated labels are required exactly when the product is both enabled and
-applicable. A family with no maintained data-driven application region keeps
-its ordinary source content and generates neither product.
-
-The current application-region policy is centralized in
-`histogram_artifact.py`:
-
-| Product | Maintained application regions |
-| --- | --- |
-| nonprompt | `isAR_1l`, `isAR_2lSS`, `isAR_2lOS`, `isAR_3l` |
-| flips | `isAR_2lSS_OS` |
-
-This is an explicit mapping. A string merely beginning with `isAR_` is not
-automatically a nonprompt region. Unknown application labels are not silently
-reclassified; they are not a supported runtime policy override.
-
-For the established 1-lepton/1-tau control-region shape, the physical output
-pattern is nonprompt-only when the source contains `isAR_1l` alongside the
-`isSR_1l` content, flips-only when `isAR_2lSS_OS` is present, and neither when
-there is no maintained data-driven AR. The broader mapping above is the
-authoritative rule for other maintained categories.
-
-### Version-3 transformed sidecars
-
-The source processor sidecar remains a schema-v2 `split_sibling_v1` artifact.
-The transformed sidecar adds `transformation_contract` with
-`contract_version: 3`. Its top-level normalized shape is:
-
-```json
-{
-  "contract_version": 3,
-  "artifact_kind": "nonprompt_output",
-  "eft_prompt_projection": {
-    "mode": "sm_point",
-    "required_processes": [],
-    "generated_nonprompt_eft_dependence": false
-  },
-  "families": {
-    "njets": {
-      "source_scalar_processes": [],
-      "source_eft_processes": [],
-      "retained_scalar_processes": [],
-      "retained_eft_processes": [],
-      "generated_nonprompt_processes": ["nonpromptUL18"],
-      "generated_flips_processes": ["flipsUL18"],
-      "consumed_source_processes": [],
-      "source_application_regions": [
-        "isAR_2lSS_OS",
-        "isAR_3l",
-        "isSR_3l"
-      ],
-      "applicable_products": {
-        "flips": true,
-        "nonprompt": true
-      }
-    }
-  }
-}
-```
-
-The excerpt uses the exact normalized field names and shape emitted by the
-maintained producer; a real sidecar contains the complete runtime family order
-and complete process lists. `source_application_regions` is producer-derived
-evidence from the scalar source sibling. `applicable_products` is recomputed
-from that evidence and validated, not accepted as an independent caller
-choice. Generated process sets must agree with the enabled-and-applicable
-products. `required_sumw2_processes` is independently derived from those roles,
-so generated companions are mandatory only for applicable products. In
-particular, a nonprompt-only family must not acquire flips companions merely
-because the source-wide flips product is enabled.
-
-The maintained reader rejects tampering when applicable booleans contradict
-the source regions, generated labels disagree with the certified resolved
-product contract, or serialized required companions disagree with the
-independently derived requirement. The writer also requires the transformation
-context generated by `DataDrivenProducer`; caller-authored replacement
-contexts/contracts are rejected. Editing a sidecar by hand cannot redefine the
-contract.
-
-### Merge and version-2 compatibility
-
-Version-3 merges union each family’s authoritative
-`source_application_regions` deterministically, recompute
-`applicable_products`, and then revalidate generated roles and required
-sumw2 companions. If merged evidence makes a product applicable, its certified
-generated labels and companions remain mandatory. The merged contract must
-remain internally consistent with the resolved source-wide data-driven policy.
-
-Version-2 transformed contracts contain the prior maintained role fields but
-not the version-3 applicability evidence. They remain readable and mergeable
-under their established semantics. Version-2 and version-3 transformed
-contracts are not silently mixed or reinterpreted: a merge containing both
-versions is rejected. Version 3 changes transformed-artifact provenance and
-validation; it does not rewrite the source processor contract or old artifacts.
-
-### Changing the data-driven applicability contract
-
-Use this procedure when the policy itself changes. A category that uses only
-already recognized AR labels is not an applicability-contract semantic change;
-adding a new AR label, changing an AR’s meaning, or adding a product is.
-
-1. Define the physics meaning of the region and its owning data-driven product.
-2. Update the centralized checked-in applicability policy/helper.
-3. Update `DataDrivenProducer` transformation logic when the new meaning
-   requires it.
-4. Update normalization, generated-process validation, and tamper checks.
-5. Update exhaustive `ch_lst.json` registry coverage and union tests.
-6. Add old/new read and merge compatibility tests.
-7. Bump the transformation-contract version when semantics changed.
-8. Update this API contract, the [pkl tutorial](histeft_pkl_tutorial.md), and
-   the [Run-2 operational README](../analysis/topeft_run2/README.md).
-9. Validate at least one representative synthetic or real artifact.
-10. Preserve truthful provenance and never fabricate empty products.
-
-The cases are:
-
-- **Existing recognized AR only:** adding or modifying a category that uses
-  already recognized labels normally needs no applicability-contract version
-  bump.
-- **New AR mapped to an existing product:** applicability semantics change;
-  introduce the next transformation-contract version and compatibility tests.
-- **Changed AR meaning or new product:** this is semantically incompatible;
-  introduce a new contract version and update every producer/reader gate.
-
-These are not supported change mechanisms: adding an unknown `isAR_*` label to
-`ch_lst.json` alone; editing `applicable_products` or generated-process lists
-in a sidecar; introducing an unrecorded CLI/runtime override; or disabling
-validation to accept a new region. A future runtime-configurable policy would
-need a versioned policy identity serialized in the artifact and independently
-validated; no such override is currently supported.

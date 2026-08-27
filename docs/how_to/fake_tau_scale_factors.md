@@ -6,6 +6,23 @@ data and MC fake-rate points, and fits their ratio with a linear scale-factor
 model. Printed tables are the primary output; `--output-json` optionally writes
 the fitted TauFakeSF payload.
 
+The direct interface owns input normalization and compatible merge, exact
+histogram/axis checks, year filtering, split-or-aggregate channel resolution,
+weighted fake-rate construction, the linear fit, and optional JSON
+serialization. It reads channel expectations from `topeft/channels/ch_lst.json`
+unless `--channels-json` selects another complete registry. It does not own tau
+control-region event selection, histogram production, the sumw2 storage policy,
+payload installation, or the downstream correction-consumer decision.
+
+| Setting | Current default or authority | Consequence |
+| --- | --- | --- |
+| input | `histos/plotsTopEFT.pkl.gz` | a convenience only; pass `-f` explicitly for a maintained fit |
+| channel configuration | `TAU_CH_LST_CR["2los_1tau"]` in `ch_lst.json` | establishes expected Ftau/Ttau split and aggregate labels |
+| years | no filter | all compatible MC/data process labels in the selected artifact participate |
+| regrouped tau-pT edges | `[20, 30, 40, 50, 60, 200]` in the fitter | native source bins must support the regrouping |
+| uncertainty | required `tau0Fpt_sumw2` and `tau0Tpt_sumw2` | no count-based or nominal-content fallback |
+| JSON output | disabled unless `--output-json` is passed | console tables remain the default result |
+
 > **Migration:** direct `tauFitter.py` execution is deprecated and aborts
 > without producing a fit or output. Use `faketau_sf_fitter.py` for maintained
 > fake-tau scale-factor extraction.
@@ -15,7 +32,7 @@ actual `channel` axes in the input histograms. A filename, directory name, or
 production tag is not evidence that the required histograms or channels are
 present.
 
-### Input histogram contract
+## Input histogram contract
 
 Each input pkl must contain both active histogram keys:
 
@@ -25,9 +42,9 @@ Each input pkl must contain both active histogram keys:
 Both `tau0Fpt_sumw2` and `tau0Tpt_sumw2` companions are mandatory supported
 inputs. No count-based uncertainty fallback exists, and the fitter does not
 reconstruct their uncertainty from nominal yields. Produce a `taufitter`-mode
-artifact with both selected companions. See the
-[Run 2 analysis README](README.md#run-scripts-and-processors)
-for the shared sumw² production guidance.
+artifact with both selected companions. See
+[select or change sumw2 storage](sumw2.md) for the shared companion production
+contract.
 
 For multiple input pkls, required `tau0Fpt`, `tau0Tpt`, `tau0Fpt_sumw2`, and
 `tau0Tpt_sumw2` histograms are combined only after schema and merge consistency
@@ -41,7 +58,7 @@ Configured Ftau/Ttau channel expectations come from
 selected with `--channels-json`. The fitter then compares those expectations to
 the channel labels actually stored in each histogram.
 
-### Flavor-split and aggregate tau channels
+## Flavor-split and aggregate tau channels
 
 The fitter supports two channel-axis layouts. A complete flavor-split layout
 contains, for example:
@@ -97,7 +114,7 @@ The fitter selects `2los_1tau_Ftau_2j` for the fake family and the matching
 aggregate tight bin for the tight family. Regeneration is required only when a
 family has neither complete split bins nor its aggregate fallback.
 
-### Inspecting channels before fitting
+## Inspect channels before fitting
 
 `--dump-channels` prints or writes the Ftau/Ttau channel names derived from the
 channel configuration. It does not inspect the pkl input(s) and does not prove
@@ -135,7 +152,7 @@ Before running a fit:
   the selected bins, resolution mode, and missing split-bin details;
 * do not rely on filename tags as proof of histogram contents.
 
-### Running the fitter
+## Run the fitter
 
 Run from the repository root so relative paths resolve correctly:
 
@@ -182,7 +199,7 @@ The regrouped tau-pT binning defaults to `[20, 30, 40, 50, 60, 200]` and is
 derived from the input histogram. Underflow and overflow are folded into the
 physical range before fake rates are computed.
 
-### Understanding the output
+## Understand the output
 
 The console output documents the major processing stages:
 
@@ -199,35 +216,37 @@ The internal `tau_channel_resolution` stage detail records, for Ftau and Ttau,
 the selected bins, `flavor_split` or `aggregate` resolution mode, missing split
 bins, and aggregate fallback status.
 
-### Known limitations and validation status
+## Modify or extend the maintained fitter
 
-* Split-first/aggregate-fallback behavior is covered by synthetic unit and
-  integration-style tests.
-* Production campaign validation was not run when aggregate fallback support
-  was implemented.
-* Inspect and validate a representative real pkl before using final scale
-  factors for analysis approval.
-* Broader legacy/stale test failures observed during that implementation are
-  separate from the channel-resolution contract and remain unresolved.
+Keep configuration and calculation responsibilities distinct:
 
-### Future cleanup and refactor roadmap
+1. Change expected tau control labels in the authoritative
+   `TAU_CH_LST_CR["2los_1tau"]` registry, or pass a complete reviewed registry
+   through `--channels-json`; do not add a second label list to the fitter.
+2. Change the regrouped pT view only at `TAU_PT_BIN_EDGES` and validate that
+   every source histogram can be exactly regrouped with the intended flow
+   treatment. This changes reported points and the JSON payload bins but does
+   not change the stored processing histogram.
+3. Add a CLI selector only for a user operation the fitter truly owns. Define
+   its parser default, validate it before fitting, include it in printed or JSON
+   provenance when it changes the result, and test the default and override.
+4. Preserve exact nominal/sumw2 axis alignment, process/year filtering,
+   split-first/aggregate-fallback selection, native-to-regrouped propagation,
+   invalid-point filtering, and the requirement that at least two valid points
+   remain for a linear fit.
+5. Treat a change to fake-rate algebra, MC/data grouping, fit model, or
+   up/down construction as a physics-policy change requiring dedicated review;
+   it is not merely a wrapper extension.
 
-The following items are future work; they are not part of the current behavior:
+Use `tests/test_faketau_sf_fitter_cli.py` for parser/output behavior,
+`tests/test_faketau_sf_fitter_input_loading.py` for multi-input and companion
+contracts, `tests/test_faketau_sf_fitter_channel_coverage.py` for split and
+aggregate resolution, and `tests/test_fake_tau_sf_taufitter_policy.py` for the
+production-policy coupling. Also inspect one representative artifact's actual
+axes and retain the printed input, channel-resolution, regrouping, and fit
+summaries with any payload used downstream.
 
-1. Split `getPoints` into smaller units for channel resolution and validation,
-   sample/year filtering, histogram reduction/integration, fake-rate point
-   extraction, and stage-detail/report construction.
-2. Split `main` into CLI parsing, input loading, fit orchestration, output
-   serialization, and logging/reporting.
-3. Replace hardcoded `ee/em/mm` channel-name surgery with structured metadata
-   describing the channel family, lepton-flavor mode, fake/tight family, jet-bin
-   suffix, and aggregate counterpart.
-4. Harmonize duplicated validation and error-message construction around one
-   canonical channel-resolution result, one missing-bin formatter, and one
-   logging/reporting surface for selected bins.
-5. Preserve current behavior with focused tests before any broad rewrite, and
-   add tests incrementally as each helper is extracted.
-
-This sequence targets duplicated-concern harmonization, a lighter structure,
-simpler code paths, and improved readability without changing the fake-tau SF
-physics definition.
+A change can affect TauFakeSF JSON bin keys and values, their statistical
+uncertainties, and every correction consumer that installs the payload. The
+fitter writes a payload file but deliberately does not install it or certify a
+campaign-wide physics result.

@@ -5,6 +5,22 @@ histogram. Its default final binning is `[0, 1, 2, 3, 4, 5, 6]`. Statistical
 uncertainties are propagated by default from the paired scalar
 `njets_sumw2` histogram.
 
+The direct interface owns input/config pairing, exact process-role validation,
+year and channel selection, source-to-final-bin membership, scale-factor and
+variance calculation, the unweighted linear fit, and JSON/plot publication.
+It does not own histogram production, process labels, the sumw2 producer
+policy, correction installation, or downstream use of the derived factors.
+
+| Setting | Current default or authority | Extension boundary |
+| --- | --- | --- |
+| input | required `--pkl` list/template | must resolve coherently with the config list/template |
+| config | adjacent tracked `diboson_sf_run3_config.yml` | owns exact roles and the configured propagation choice |
+| histogram | `njets` only | the parser rejects another `--hist-name` under the maintained contract |
+| channel | `3l_CR` | pass an exact stored label; changing its definition belongs upstream |
+| years | `2022 2022EE 2023 2023BPix` | explicit values or `all` control process filtering/output rows |
+| final edges | hard-coded `[0, 1, 2, 3, 4, 5, 6]` | changing them is an executable estimator-contract change |
+| output root | current directory | each resolved year gets its own subdirectory |
+
 ## Process roles and configuration
 
 Every selected process must appear exactly once in the user-facing YAML
@@ -13,7 +29,9 @@ prefixes, and substrings are not interpreted. The `data`, `background`, and
 `diboson` roles must be nonempty. Processes assigned to `ignored` enter neither
 the central estimator nor its variance.
 
-The tracked [`diboson_sf_run3_config.yml`](diboson_sf_run3_config.yml) is a
+The tracked
+[`diboson_sf_run3_config.yml`](../../analysis/diboson_njets/diboson_sf_run3_config.yml)
+is a
 complete configuration for the focused current-format fixture. For another
 input, copy that file and replace every role list with the exact labels on that
 input's `process` axis, then pass the file with `--config`. There is no hidden
@@ -165,3 +183,36 @@ The fixture at `tests/data/run3_histogram.pkl.gz.base64` is a small deterministi
 pickle generated with the pinned current environment. It includes multiple
 processes in several roles, weighted data with `sumw2 != nominal`, ignored
 content, and two source bins per final bin.
+
+## Modify or extend the maintained interface
+
+For a new sample set, normally change only the YAML role assignment and the
+CLI input/year/channel selection:
+
+1. Inspect exact `process`, `channel`, and `njets` axes in the input artifact.
+2. Copy the tracked config and assign every selected process to exactly one of
+   `data`, `background`, `diboson`, or `ignored`.
+3. Choose propagation in the config or with one explicit CLI boolean override.
+   Do not use inconsistent per-file propagation choices in one invocation.
+4. Run into a fresh output root and review logged input/config identities,
+   role membership, source-to-final-bin membership, and the enabled/disabled
+   uncertainty state before consuming the JSON.
+
+When adding a supported CLI option, keep its parsing and fail-before-write
+validation in `diboson_sf_run3.py`, thread the resolved value through
+`process_year` once, and serialize it when it changes the result. Preserve the
+rule that all input/config pairs are validated and all numerical results are
+computed before any final JSON or plot is written. The tool has no wrapper or
+Condor forwarding layer to update.
+
+Changing the hard-coded final edges, role algebra, variance formula, fit
+definition, or supported histogram family changes the estimator contract.
+Update source-bin membership validation, result provenance, JSON/plot schemas,
+and `tests/test_diboson_sf_run3.py` together. Validate shared-input discovery,
+independent input/config pairing, `{year}` expansion, exact-role failures,
+nominal/sumw2 axis mismatch, nonpositive denominators, disabled propagation,
+and fail-before-write behavior.
+
+The outputs can affect correction values and statistical uncertainties used by
+later analysis configuration. Derivation does not install them: payload
+placement and consumer activation remain separate reviewed operations.
