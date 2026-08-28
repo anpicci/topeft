@@ -25,6 +25,7 @@ import numpy as np
 from topcoffea.modules.utils import get_hist_from_pkl
 from topeft.modules.histogram_artifact import (
     build_sumw2_content_manifest,
+    histogram_artifact_error,
     metadata_sidecar_path,
     validate_histogram_artifact,
 )
@@ -61,6 +62,12 @@ _PROCESS_LIST_FIELDS = frozenset(
         "sumw2_processes",
     }
 )
+_known_legacy_metadata_schema_version = 2
+_known_legacy_artifact_kind = "nonprompt_output"
+_known_legacy_data_driven_contract_version = 3
+_known_legacy_sumw2_provenance_schema_version = 2
+_known_legacy_transformation_contract_version = 3
+_legacy_process_fragments = ("WWW_central", "WWZ_central")
 
 
 class repair_error(RuntimeError):
@@ -77,6 +84,93 @@ def _sha256(path: Path) -> str:
 
 def _file_identity(path: Path) -> tuple[int, str]:
     return path.stat().st_size, _sha256(path)
+
+
+def _read_json_mapping(path: Path) -> dict[str, Any]:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise repair_error(f"Could not read repair input sidecar {path}: {error}") from error
+    if not isinstance(value, Mapping):
+        raise repair_error(f"Repair input sidecar must be a JSON object: {path}")
+    return dict(value)
+
+
+def _is_legacy_like_process_label(value: Any) -> bool:
+    return isinstance(value, str) and any(
+        fragment in value for fragment in _legacy_process_fragments
+    )
+
+
+def _legacy_like_label_paths(
+    value: Any, path: tuple[Any, ...] = ()
+) -> list[tuple[Any, ...]]:
+    paths = []
+    if isinstance(value, Mapping):
+        for key, child in value.items():
+            paths.extend(_legacy_like_label_paths(child, (*path, key)))
+    elif isinstance(value, list):
+        for index, child in enumerate(value):
+            paths.extend(_legacy_like_label_paths(child, (*path, index)))
+    elif _is_legacy_like_process_label(value):
+        paths.append(path)
+    return paths
+
+
+def _preflight_typed_metadata(
+    value: Any, path: tuple[Any, ...] = ()
+) -> set[str]:
+    found_labels: set[str] = set()
+    if isinstance(value, Mapping):
+        for key, child in value.items():
+            child_path = (*path, key)
+            if key == "production_sample_contract":
+                occurrences = _legacy_like_label_paths(child, child_path)
+                if occurrences:
+                    raise repair_error(
+                        "A legacy-like label occurs in production_sample_contract, "
+                        f"which is not repairable: {occurrences!r}."
+                    )
+            elif key in _PROCESS_SCALAR_FIELDS:
+                if not isinstance(child, str):
+                    raise repair_error(
+                        f"Typed process field {child_path!r} is not a string."
+                    )
+                if child in RUN2_PROCESS_LABEL_REPAIRS:
+                    found_labels.add(child)
+                elif _is_legacy_like_process_label(child):
+                    raise repair_error(
+                        "Unknown or fuzzy legacy process label in typed metadata "
+                        f"field {child_path!r}: {child!r}."
+                    )
+            elif key in _PROCESS_LIST_FIELDS:
+                if not isinstance(child, list) or not all(
+                    isinstance(item, str) for item in child
+                ):
+                    raise repair_error(
+                        f"Typed process-list field {child_path!r} is not a string list."
+                    )
+                for item in child:
+                    if item in RUN2_PROCESS_LABEL_REPAIRS:
+                        found_labels.add(item)
+                    elif _is_legacy_like_process_label(item):
+                        raise repair_error(
+                            "Unknown or fuzzy legacy process label in typed metadata "
+                            f"field {child_path!r}: {item!r}."
+                        )
+            else:
+                found_labels.update(_preflight_typed_metadata(child, child_path))
+    elif isinstance(value, list):
+        for index, child in enumerate(value):
+            found_labels.update(_preflight_typed_metadata(child, (*path, index)))
+    elif isinstance(value, str) and (
+        value in RUN2_PROCESS_LABEL_REPAIRS or _is_legacy_like_process_label(value)
+    ):
+        raise repair_error(
+            f"Legacy process label occurs in unsupported metadata field {path!r}: "
+            f"{value!r}."
+        )
+    return found_labels
 
 
 def _process_labels(histogram: Any) -> set[str]:
@@ -303,6 +397,154 @@ def _repair_sidecar(
     return repaired, surfaces
 
 
+def _load_known_legacy_sidecar(
+    input_path: Path,
+    sidecar_path: Path,
+    input_pkl_identity: tuple[int, str],
+) -> tuple[dict[str, Any], set[str]]:
+    sidecar = _read_json_mapping(sidecar_path)
+    expected_sidecar_fields = {
+        "metadata_schema_version",
+        "artifact",
+        "sumw2_storage_provenance",
+        "sumw2_content_manifest",
+        "lineage",
+        "production_sample_contract",
+        "requested_data_driven_products",
+        "resolved_data_driven_contract",
+        "transformation_contract",
+    }
+    if set(sidecar) != expected_sidecar_fields:
+        raise repair_error(
+            "Known legacy repair requires the exact supported sidecar field shape: "
+            f"missing={sorted(expected_sidecar_fields - set(sidecar))} "
+            f"unknown={sorted(set(sidecar) - expected_sidecar_fields)}."
+        )
+    if sidecar["metadata_schema_version"] != _known_legacy_metadata_schema_version:
+        raise repair_error("Known legacy repair requires metadata schema version 2.")
+
+    artifact = sidecar["artifact"]
+    expected_artifact_fields = {
+        "pkl_basename",
+        "pkl_size_bytes",
+        "pkl_sha256",
+        "artifact_kind",
+        "merged",
+        "nominal_container_schema_version",
+        "nominal_container_layout",
+    }
+    if not isinstance(artifact, Mapping) or set(artifact) != expected_artifact_fields:
+        raise repair_error("Known legacy repair requires the exact artifact identity shape.")
+    if artifact["artifact_kind"] != _known_legacy_artifact_kind:
+        raise repair_error(
+            "Canonical-validation bootstrap is supported only for nonprompt_output artifacts."
+        )
+    observed_pkl_size, observed_pkl_sha256 = input_pkl_identity
+    if (
+        artifact["pkl_basename"] != input_path.name
+        or artifact["pkl_size_bytes"] != observed_pkl_size
+        or artifact["pkl_sha256"] != observed_pkl_sha256
+    ):
+        raise repair_error(
+            "Raw sidecar artifact identity does not match the exact input PKL "
+            f"basename/size/SHA: {input_path}."
+        )
+
+    provenance = sidecar["sumw2_storage_provenance"]
+    if (
+        not isinstance(provenance, Mapping)
+        or provenance.get("schema_version")
+        != _known_legacy_sumw2_provenance_schema_version
+    ):
+        raise repair_error("Known legacy repair requires sumw2 provenance schema version 2.")
+    contract = sidecar["resolved_data_driven_contract"]
+    if not isinstance(contract, Mapping) or set(contract) != {
+        "contract_version",
+        "required_prompt_signal_processes",
+        "products",
+    }:
+        raise repair_error(
+            "Known legacy repair requires the exact pre-canonical data-driven contract shape."
+        )
+    if contract["contract_version"] != _known_legacy_data_driven_contract_version:
+        raise repair_error("Known legacy repair requires data-driven contract version 3.")
+    products = contract["products"]
+    if (
+        not isinstance(products, Mapping)
+        or not isinstance(products.get("nonprompt"), Mapping)
+        or products["nonprompt"].get("enabled") is not True
+    ):
+        raise repair_error("Known legacy repair requires an enabled nonprompt contract.")
+    transformation_contract = sidecar["transformation_contract"]
+    if (
+        not isinstance(transformation_contract, Mapping)
+        or transformation_contract.get("contract_version")
+        != _known_legacy_transformation_contract_version
+        or transformation_contract.get("artifact_kind")
+        != _known_legacy_artifact_kind
+    ):
+        raise repair_error(
+            "Known legacy repair requires a version-3 nonprompt transformation contract."
+        )
+
+    metadata_labels = _preflight_typed_metadata(sidecar)
+    if not metadata_labels:
+        raise repair_error(
+            "Canonical validation failed, but the sidecar contains no exact maintained "
+            "Run-2 process label eligible for this repair."
+        )
+    return sidecar, metadata_labels
+
+
+def _preflight_payload_labels(
+    histograms: Mapping[str, Any], metadata_labels: set[str]
+) -> None:
+    payload_labels = set()
+    unknown_legacy_labels = set()
+    for histogram in histograms.values():
+        for label in _process_labels(histogram):
+            if label in RUN2_PROCESS_LABEL_REPAIRS:
+                payload_labels.add(label)
+            elif _is_legacy_like_process_label(label):
+                unknown_legacy_labels.add(label)
+    if unknown_legacy_labels:
+        raise repair_error(
+            "Payload contains unknown or fuzzy legacy process labels: "
+            + ", ".join(sorted(unknown_legacy_labels))
+        )
+    if payload_labels != metadata_labels:
+        raise repair_error(
+            "Legacy process labels claimed by metadata and materialized by payload "
+            "process axes differ: "
+            f"metadata={sorted(metadata_labels)} payload={sorted(payload_labels)}."
+        )
+
+
+def _validate_repaired_representation(
+    input_path: Path,
+    repaired_histograms: Mapping[str, Any],
+    repaired_sidecar: Mapping[str, Any],
+) -> None:
+    with tempfile.TemporaryDirectory(
+        prefix=".process-label-repair-validation-"
+    ) as temporary_root:
+        validation_path = Path(temporary_root) / input_path.name
+        validation_path.symlink_to(input_path)
+        validation_sidecar_path = metadata_sidecar_path(validation_path)
+        validation_sidecar_path.write_text(
+            json.dumps(repaired_sidecar, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        validation = validate_histogram_artifact(
+            validation_path,
+            histograms=repaired_histograms,
+        )
+        if validation["schema"] == "legacy_uniform" or validation["metadata"] is None:
+            raise repair_error(
+                f"Repaired representation is not a canonical split artifact: {input_path}"
+            )
+
+
 def _load_and_prepare(input_path: Path, output_dir: Path | None) -> dict[str, Any]:
     input_path = input_path.resolve()
     if not input_path.is_file():
@@ -312,10 +554,21 @@ def _load_and_prepare(input_path: Path, output_dir: Path | None) -> dict[str, An
         raise repair_error(f"Required adjacent sidecar does not exist: {sidecar_path}")
     input_identity = (_file_identity(input_path), _file_identity(sidecar_path))
     histograms = dict(get_hist_from_pkl(str(input_path)))
-    validation = validate_histogram_artifact(input_path, histograms=histograms)
-    if validation["schema"] == "legacy_uniform" or validation["metadata"] is None:
-        raise repair_error(f"Unsupported legacy artifact: {input_path}")
-    sidecar = validation["metadata"]
+    try:
+        validation = validate_histogram_artifact(input_path, histograms=histograms)
+    except histogram_artifact_error:
+        sidecar, metadata_labels = _load_known_legacy_sidecar(
+            input_path,
+            sidecar_path,
+            input_identity[0],
+        )
+        _preflight_payload_labels(histograms, metadata_labels)
+        input_validation_mode = "known_repairable_legacy"
+    else:
+        if validation["schema"] == "legacy_uniform" or validation["metadata"] is None:
+            raise repair_error(f"Unsupported legacy artifact: {input_path}")
+        sidecar = validation["metadata"]
+        input_validation_mode = "already_canonical"
     _check_process_collisions(histograms)
     expected_numerical = _numerical_snapshot(histograms, apply_mapping=True)
     repaired_histograms, affected = _repair_histograms(histograms)
@@ -328,6 +581,11 @@ def _load_and_prepare(input_path: Path, output_dir: Path | None) -> dict[str, An
         )
     repaired_sidecar, sidecar_surfaces = _repair_sidecar(
         sidecar, repaired_histograms
+    )
+    _validate_repaired_representation(
+        input_path,
+        repaired_histograms,
+        repaired_sidecar,
     )
     found_labels = sorted(
         {
@@ -351,6 +609,7 @@ def _load_and_prepare(input_path: Path, output_dir: Path | None) -> dict[str, An
         "input_path": input_path,
         "sidecar_path": sidecar_path,
         "input_identity": input_identity,
+        "input_validation_mode": input_validation_mode,
         "histograms": repaired_histograms,
         "sidecar": repaired_sidecar,
         "mapping_entries_found": {
@@ -359,6 +618,9 @@ def _load_and_prepare(input_path: Path, output_dir: Path | None) -> dict[str, An
         "mapping_entries_absent": absent_labels,
         "payload_histograms_affected": affected,
         "sidecar_surfaces_affected": sidecar_surfaces,
+        "repaired_representation_validation": (
+            "passed_unchanged_validate_histogram_artifact"
+        ),
         "output_path": output_path,
         "output_sidecar_path": output_sidecar_path,
     }
@@ -368,10 +630,14 @@ def _summary(prepared: Mapping[str, Any], *, write_performed: bool) -> dict[str,
     return {
         "input_path": str(prepared["input_path"]),
         "sidecar_path": str(prepared["sidecar_path"]),
+        "input_validation_mode": prepared["input_validation_mode"],
         "mapping_entries_found": prepared["mapping_entries_found"],
         "mapping_entries_absent": prepared["mapping_entries_absent"],
         "payload_histograms_affected": prepared["payload_histograms_affected"],
         "sidecar_surfaces_affected": prepared["sidecar_surfaces_affected"],
+        "repaired_representation_validation": prepared[
+            "repaired_representation_validation"
+        ],
         "collision_check": "passed_no_overlapping_categorical_support",
         "numerical_invariance_plan": "exact_remapped_categorical_cell_array_equality",
         "would_write_output_path": str(prepared["output_path"]),
