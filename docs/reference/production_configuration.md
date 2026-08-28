@@ -49,20 +49,17 @@ those resolved contracts. See [histogram artifacts](histogram_artifacts.md) and
 `run_analysis.py --options FILE` loads one top-level YAML mapping. The current
 parser and loader do not support selecting a named submapping. Recognized YAML values are
 applied after the parsed CLI values and therefore replace the corresponding CLI
-values when both are present. This is the current implementation contract in
-the options-loading block of `run_analysis.py`; the argparse help text still
-claims the opposite precedence and must not be treated as runtime authority for
-this point. The overlay is configuration, not an arbitrary function-call
-interface: use the exact keys popped by the loader and values accepted by the
-corresponding downstream owner.
+values when both are present. The overlay is configuration, not an arbitrary
+function-call interface: use the exact keys popped by the loader and values
+accepted by the corresponding downstream owner.
 
 `sumw2_storage`, `data_driven_products`, and their presence flags are resolved
 before processor construction. The deprecated `no_sumw2`/`do_errors` inputs
 are compatibility inputs with explicit conflict checks; they must not coexist
-as an alternative policy owner. Unrecognized top-level YAML keys remain in the
-loaded mapping after the recognized keys are popped and are currently ignored;
-they do not fail closed. Invalid YAML shape, modern/legacy conflicts, or values
-rejected by downstream resolvers stop the run before event processing.
+as an alternative policy owner. Unrecognized top-level YAML keys are rejected
+with their names sorted in the diagnostic. Invalid YAML shape, modern/legacy
+conflicts, unsupported keys, or values rejected by downstream resolvers stop
+the run before event processing.
 
 ## `analysis_processor.AnalysisProcessor`
 

@@ -169,8 +169,9 @@ filename—define the active sample universe.
 the current implementation, recognized YAML values are applied after argparse
 values and therefore replace the corresponding parser-derived value. Do not set
 the same option in both places expecting the CLI to win. There is no supported
-`FILE:KEY` selector in this CLI. Use `--pretend` to resolve samples, policies,
-categories, and output planning without processing events.
+`FILE:KEY` selector in this CLI, and unrecognized top-level keys fail before
+processing. Use `--pretend` to resolve samples, policies, categories, and output
+planning without processing events.
 
 Important parser defaults are executor `work_queue`, 8 workers, chunksize
 100000, output directory `histos`, output name `plotsTopEFT`, tree `Events`,

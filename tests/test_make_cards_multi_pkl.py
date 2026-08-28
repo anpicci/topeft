@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sys
 from types import SimpleNamespace
 
@@ -534,6 +535,122 @@ def test_condor_options_propagate_resolved_year_coverage_policy(year_coverage_po
     options = make_cards._build_condor_base_other_opts(dc, year_coverage_policy)
 
     assert options[-2:] == ["--year-coverage-policy", year_coverage_policy]
+
+
+def test_condor_options_propagate_explicit_rate_systematics_override():
+    dc = SimpleNamespace(
+        do_mc_stat=False,
+        verbose=False,
+        use_real_data=False,
+        do_nuisance=False,
+        year_lst=[],
+        drop_syst=[],
+        sr_registry="an_v9",
+        skip_missing_parton_rate_syst=False,
+        binning_mode="fitting",
+    )
+
+    options = make_cards._build_condor_base_other_opts(
+        dc,
+        "warn",
+        rate_syst_json="custom/rate_systematics.json",
+    )
+
+    assert options[-6:] == [
+        "--rate-syst-json",
+        "custom/rate_systematics.json",
+        "--binning",
+        "fitting",
+        "--year-coverage-policy",
+        "warn",
+    ]
+
+
+def test_use_selected_materializes_signal_only_output_without_mutating_source(
+    monkeypatch,
+    tmp_path,
+):
+    source_path = tmp_path / "input_selected_wcs.json"
+    source_content = {"signal": ["ctW"], "background": []}
+    source_path.write_text(json.dumps(source_content), encoding="utf-8")
+    output_dir = tmp_path / "cards"
+
+    class fake_datacard_maker:
+        hists = {"met": object()}
+        scalings = []
+
+        def __init__(self, **kwargs):
+            pass
+
+        def is_signal(self, process):
+            return process == "signal"
+
+        def processes(self, _distribution):
+            return ["signal", "background"]
+
+    captured_selected_wcs = {}
+
+    def capture_run_local(_dc, _dists, _channels, selected_wcs, *_args):
+        captured_selected_wcs.update(selected_wcs)
+
+    monkeypatch.setattr(
+        make_cards,
+        "load_and_merge_histogram_pkls",
+        lambda *args, **kwargs: ({}, {}),
+    )
+    monkeypatch.setattr(make_cards, "_emit_merge_report", lambda *args: None)
+    monkeypatch.setattr(make_cards, "DatacardMaker", fake_datacard_maker)
+    monkeypatch.setattr(make_cards, "run_local", capture_run_local)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "make_cards.py",
+            "input.pkl.gz",
+            "--out-dir",
+            str(output_dir),
+            "--var-lst",
+            "met",
+            "--use-selected",
+            str(source_path),
+        ],
+    )
+
+    make_cards.main()
+
+    assert json.loads(source_path.read_text(encoding="utf-8")) == source_content
+    assert json.loads(
+        (output_dir / "selectedWCs.txt").read_text(encoding="utf-8")
+    ) == {"signal": ["ctW"]}
+    assert captured_selected_wcs == {"signal": ["ctW"], "background": []}
+
+
+def test_use_selected_same_file_is_reused_only_when_canonical(tmp_path):
+    output_path = tmp_path / "selectedWCs.txt"
+    selected_wcs = {"signal": ["ctW"]}
+    output_path.write_text(json.dumps(selected_wcs), encoding="utf-8")
+
+    resolved_path = make_cards._materialize_selected_wcs(
+        str(tmp_path),
+        selected_wcs,
+        source_path=str(output_path),
+    )
+
+    assert resolved_path == str(output_path)
+    assert json.loads(output_path.read_text(encoding="utf-8")) == selected_wcs
+
+    noncanonical_selected_wcs = {"signal": ["ctW"], "background": []}
+    output_path.write_text(
+        json.dumps(noncanonical_selected_wcs),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="canonical signal-only representation"):
+        make_cards._materialize_selected_wcs(
+            str(tmp_path),
+            selected_wcs,
+            source_path=str(output_path),
+        )
+    assert json.loads(output_path.read_text(encoding="utf-8")) == noncanonical_selected_wcs
 
 
 def test_resolve_pkl_paths_from_file(tmp_path):

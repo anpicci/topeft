@@ -17,9 +17,9 @@ and EFT scaling extraction.
 
 The normal WC-discovery path writes individual card/template pairs,
 `selectedWCs.txt`, and `scalings-preselect.json` to the direct output directory.
-With `--use-selected FILE`, `make_cards.py` reads the supplied WC selection but
-does not copy it to the output directory; the caller must provide the required
-output-side `selectedWCs.txt` before scaling finalization. A preselect record
+With `--use-selected FILE`, `make_cards.py` reads the supplied WC selection and
+materializes the same canonical signal-only representation as output-side
+`selectedWCs.txt` without modifying the caller's file. A preselect record
 contains a physical `channel`, a producer-owned `process`, `parameters`, and
 scaling coefficient payload. Multiple records for one physical channel/process
 are valid producer output.
@@ -33,16 +33,16 @@ are:
 | Output/selection | `--out-dir .`; repeatable variables/channels; optional ignore/drop lists | `--ch-lst` patterns are regex selectors over physical channel names. This is distinct from exact fitting override keys. |
 | Years/coverage | Optional supported year list; coverage `warn`, `error`, or `off`, default `warn` | Mixed input identities and structural year gaps follow the selected fail/warn policy. |
 | Binning | `fitting` or `processing`, default `fitting` | Fitting performs exact late aggregation per selected physical channel. |
-| WCs | POI list, reference/selected-WC files, select-only/check controls, optional WC values/scaling order | WC selection uses the card-facing fitting view; selected files must match the producer's supported process/WC structure. `--use-selected` reads its file but does not copy it to `--out-dir`. |
-| Nuisances | Nuisance and MC-stat switches, `--rate-syst-json`, missing-parton payload/registry/skip option | Run era selects maintained defaults. The parsed `--rate-syst-json` is currently ineffective because `make_cards.py` forwards `rate_syst_path` while `DatacardMaker` consumes `rate_systs_path`; the era-selected default is therefore used. An explicit missing-parton path must match the selected registry/era. |
+| WCs | POI list, reference/selected-WC files, select-only/check controls, optional WC values/scaling order | WC selection uses the card-facing fitting view; selected files must match the producer's supported process/WC structure. `--use-selected` materializes canonical signal-only `selectedWCs.txt` in `--out-dir`. |
+| Nuisances | Nuisance and MC-stat switches, `--rate-syst-json`, missing-parton payload/registry/skip option | Run era selects maintained defaults when the override is omitted. An explicit `--rate-syst-json` is forwarded as `rate_systs_path`, including to Condor child commands. An explicit missing-parton path must match the selected registry/era. |
 | Data/negative bins | Asimov by default; `--unblind` for observed data; crop negative bins by default | These choices affect card contents and must be recorded with production evidence. |
 | Execution | Local default or `--condor`; chunks default 1 | Condor mode prepares/submits per-channel jobs and has external side effects; it requires separately authorized execution. |
 
 `make_cards.main()` resolves inputs, validates/merges them, constructs one
 `DatacardMaker`, selects or loads WCs, dispatches `run_local()` or
 `run_condor()`, and writes `scalings-preselect.json`. It writes
-`selectedWCs.txt` only when it derives the selection; `--use-selected` does not
-copy the input selection file.
+canonical signal-only `selectedWCs.txt` for both derived and `--use-selected`
+selection paths.
 `run_local()` selects physical channels by regex and calls `analyze()` per
 channel/distribution. `run_condor()` materializes the job boundary and
 submission commands; it is a developer-facing execution interface, not a
@@ -82,11 +82,9 @@ raises `TypeError`.
 | `sr_registry` | Registered name, default current SR registry | A nondefault registry requires an explicitly matching missing-parton payload. |
 | `ignore` | Sequence, default empty | Additional pre-grouping process names to exclude. |
 
-The constructor key is the plural `rate_systs_path`. The direct CLI currently
-passes the singular `rate_syst_path`, which remains an unused extra keyword;
-until that executable mismatch is fixed in a separately authorized source
-change, `--rate-syst-json` cannot override the constructor's era-selected
-default.
+The constructor key is the plural `rate_systs_path`. The direct CLI forwards
+that key only for an explicit `--rate-syst-json`; omission preserves the
+constructor's era-selected default.
 
 Construction reads/validates the input, loads `params/wc_ranges.json`, selects
 the rate-systematic registry, optionally loads missing-parton payload content,
@@ -139,11 +137,10 @@ subdirectory, copies matching `.txt`/`.root` files plus `selectedWCs.txt`, and
 writes `scalings.json`. A pre-existing output directory, missing required
 inputs, or selector-count error fails. Post-copy count checks are
 selector-specific: `-s` requires 43 text and 43 ROOT files, `-z` requires 75 of
-each, `-t` requires 60 of each, `-a` checks only for 129 ROOT files, and `-f`
-checks neither count. The current diagnostic labelled "Number of root templates
-copied" prints `n_txt`, not `n_root`; it is not independent ROOT-count evidence.
-The finalizer therefore provides no generic completeness check across all
-selectors. It returns process status rather than a library object.
+each, `-t` requires 60 of each, and `-a` requires 129 of each. Every selector
+requires text/ROOT symmetry; `-f` deliberately has no hard-coded exact total.
+The text and ROOT diagnostics report their independent observed counts. The
+finalizer returns process status rather than a library object.
 
 `scalings-preselect.json` and `scalings.json` are JSON arrays. Each producer
 record has:

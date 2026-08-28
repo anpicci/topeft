@@ -1010,7 +1010,10 @@ if __name__ == "__main__":
     parser.add_argument(
         "--options",
         default=None,
-        help="YAML file that specifies command-line options. Options explicitly set at command-line take precedence",
+        help=(
+            "YAML file that specifies supported options. Recognized YAML values "
+            "replace overlapping command-line and parser-default values."
+        ),
     )
     parser.add_argument(
         "--analysis-mode",
@@ -1258,6 +1261,11 @@ if __name__ == "__main__":
         env_file_override = ops.pop("env_file", env_file_override)
         use_remote_env = ops.pop("use_remote_env", use_remote_env)
         skip_topcoffea_data_check = ops.pop("skip_topcoffea_data_check", skip_topcoffea_data_check)
+        if ops:
+            unsupported_option_keys = ", ".join(sorted(str(key) for key in ops))
+            raise ValueError(
+                f"Unsupported YAML option key(s): {unsupported_option_keys}"
+            )
 
     if do_renormfact_envelope:
         raise_unsupported_renormfact_envelope()

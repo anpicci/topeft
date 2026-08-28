@@ -212,6 +212,39 @@ def test_local_cli_omission_passes_direct_default_resolution_inputs(monkeypatch)
     assert exc_info.value.args[0]["missing_parton_path"] is None
     assert exc_info.value.args[0]["year_lst"] == ["UL18"]
     assert exc_info.value.args[0]["sr_registry"] == DEFAULT_SR_REGISTRY
+    assert "rate_systs_path" not in exc_info.value.args[0]
+
+
+def test_local_cli_propagates_explicit_rate_systematics_override(monkeypatch):
+    class captured_kwargs(RuntimeError):
+        pass
+
+    def capture_datacard_maker(*, hists, **kwargs):
+        assert hists == {}
+        raise captured_kwargs(kwargs)
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "make_cards.py",
+            "input.pkl.gz",
+            "--rate-syst-json",
+            "custom/rate_systematics.json",
+        ],
+    )
+    monkeypatch.setattr(
+        make_cards,
+        "load_and_merge_histogram_pkls",
+        lambda *args, **kwargs: ({}, {}),
+    )
+    monkeypatch.setattr(make_cards, "_emit_merge_report", lambda *args: None)
+    monkeypatch.setattr(make_cards, "DatacardMaker", capture_datacard_maker)
+
+    with pytest.raises(captured_kwargs) as exc_info:
+        make_cards.main()
+
+    assert exc_info.value.args[0]["rate_systs_path"] == "custom/rate_systematics.json"
 
 
 def test_local_cli_propagates_registry_and_exact_payload_override(monkeypatch):

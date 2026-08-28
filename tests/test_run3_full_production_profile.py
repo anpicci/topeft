@@ -414,6 +414,40 @@ def test_run3_full_dry_run_resolves_exact_complete_five_block_plan(tmp_path):
     assert not output_dir.exists()
 
 
+def test_run_cr_derives_checkout_paths_and_runs_from_unrelated_cwd(tmp_path):
+    source = RUN_CR.read_text(encoding="utf-8")
+    assert "/users/apiccine/work/correction-lib/topeft" not in source
+    assert 'dirname -- "${BASH_SOURCE[0]}"' in source
+    assert 'git -C "${script_dir}" rev-parse --show-toplevel' in source
+
+    env_file = _write_env(tmp_path)
+    output_dir = tmp_path / "portable_dry_run"
+    unrelated_cwd = tmp_path / "unrelated"
+    unrelated_cwd.mkdir()
+    result = subprocess.run(
+        [
+            str(RUN_CR),
+            "--production-profile",
+            "run3_full",
+            "--dry-run",
+            "--output-dir",
+            str(output_dir),
+            "--campaign-tag",
+            "portable_dry_run",
+            "--env-file",
+            str(env_file),
+        ],
+        cwd=unrelated_cwd,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.count("run3_full two-stage dry-run resolved") == 5
+    assert not output_dir.exists()
+
+
 def test_run3_full_requires_explicit_output_identity_and_pins_explicit_archives(tmp_path):
     env_file = _write_env(tmp_path)
     output_dir = tmp_path / "fresh"

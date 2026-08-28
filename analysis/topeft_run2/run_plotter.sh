@@ -488,8 +488,6 @@ main() {
             ;;
     esac
 
-    mkdir -p "${output_dir}"
-
     local -a cmd=("${PYTHON_BIN}" "${PLOTTER_SCRIPT}")
     for input_path in "${input_paths[@]}"; do
         cmd+=("-f" "${input_path}")
@@ -550,6 +548,7 @@ main() {
     if (( dry_run )); then
         echo "Dry-run requested; skipping execution."
     else
+        mkdir -p "${output_dir}"
         "${cmd[0]}" "${cmd[@]:1}"
     fi
 

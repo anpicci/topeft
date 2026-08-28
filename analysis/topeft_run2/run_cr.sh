@@ -91,7 +91,9 @@ case "${production_profile}" in
     ;;
 esac
 
-cd /users/apiccine/work/correction-lib/topeft/analysis/topeft_run2
+script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+repository_root=$(git -C "${script_dir}" rev-parse --show-toplevel)
+cd -- "${script_dir}"
 
 ###############################################################################
 # Global configuration
@@ -1027,7 +1029,7 @@ prepare_production_campaign() {
   local schema_version=3
 
   production_assert_live_plan
-  production_git_commit=$(git -C /users/apiccine/work/correction-lib/topeft rev-parse HEAD)
+  production_git_commit=$(git -C "${repository_root}" rev-parse HEAD)
   production_state_path="${output_dir}/${production_state_filename}"
   if [[ "${dry_run}" == "true" ]]; then
     production_plan_file=$(mktemp "/tmp/${production_profile}_plan.XXXXXX")

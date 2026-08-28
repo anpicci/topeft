@@ -12,10 +12,10 @@ layer retains. It is a lookup page, not a production recipe. See the
 | `analysis/topeft_run2/fullR3_run.sh` | Maintained command/configuration wrapper | Years, exactly one of `--cr` or `--sr`, optional histogram/input/output overrides, and forwarded analysis options | Year/config-dependent `run_analysis.py` command | Rejects conflicting input overrides, missing cfg/JSON inputs, and unsupported region/year combinations |
 | `analysis/topeft_run2/run_analysis.py` | Direct developer CLI | Sample JSON/cfg expression and CLI or YAML options | Executor `work_queue`; 8 workers; chunksize 100000; `histos/plotsTopEFT.pkl.gz` | Validates executor, active sample universe, categories, environment, policies, and artifact contracts at their owning boundaries |
 | `analysis/topeft_run2/run_data_driven.py` | Direct transformed-artifact CLI | A validated source PKL/sidecar and requested data-driven product | Streaming input; output name derived from the input when omitted | Rejects missing/incompatible sidecars, uncertified input policy, invalid product requests, and incomplete transformed companions |
-| `analysis/topeft_run2/run_plotter.sh` | Maintained plotting wrapper | Readable PKL, output directory, and years | Forwards to the direct plotter; can infer CR/SR from the filename; creates the output directory even in dry-run mode | Rejects missing inputs/years; the direct plotter owns artifact and metadata validation |
+| `analysis/topeft_run2/run_plotter.sh` | Maintained plotting wrapper | Readable PKL, output directory, and years | Forwards to the direct plotter; can infer CR/SR from the filename; dry-run prints the resolved command without creating the output directory | Rejects missing inputs/years; the direct plotter owns artifact and metadata validation |
 | `analysis/topeft_run2/make_cr_and_sr_plots.py` | Direct plotting CLI | Repeatable `-f` inputs or a list file, output, years, and plot controls | Processing binning; merged channels; one worker; year coverage `warn` | Rejects incoherent artifacts, ambiguous channel authority, invalid binning, and mixed Run 2/Run 3 inputs |
 | `analysis/topeft_run2/make_cards.py` | Direct card CLI | Positional PKLs or a list file, variables/channels, and card controls | Fitting binning; year coverage `warn`; Asimov data | Rejects incoherent artifacts, invalid exact aggregation, incomplete shape pairs, and selected-WC/coverage failures according to options |
-| `analysis/topeft_run2/datacards_post_processing.py` | Direct topology/scaling finalizer | Datacard directory plus exactly one topology selector | Selected copy directory and final `scalings.json` | Rejects selector count, missing inputs, output collisions, and the copied-file counts checked for the selected topology; `-a` checks ROOT count only and `-f` has no count check |
+| `analysis/topeft_run2/datacards_post_processing.py` | Direct topology/scaling finalizer | Datacard directory plus exactly one topology selector | Selected copy directory and final `scalings.json` | Rejects selector count, missing inputs, output collisions, text/ROOT asymmetry, and source-grounded exact counts; `-f` has no hard-coded exact count |
 
 All rows above are `public_supported`. The executable file and its usage/parser
 block are signature authority. Normal success is exit status 0; parser,
@@ -118,10 +118,10 @@ cfg files, and histogram family, then constructs `run_analysis.py`. Calling a
 lower layer transfers its omitted responsibilities to the user; it does not
 silently reconstruct the higher-level campaign record.
 
-`run_plotter.sh` is a convenience layer over `make_cr_and_sr_plots.py`. It
-creates the requested output directory before testing `--dry-run`; dry-run
-skips the Python plotter but does not suppress that directory-creation side
-effect.
+`run_plotter.sh` is a convenience layer over `make_cr_and_sr_plots.py`.
+Dry-run validates and prints the resolved Python command without creating the
+requested output directory; normal execution creates it immediately before
+launching the plotter.
 `make_cards.py` is already the direct supported card interface and delegates
 card/template construction to `topeft.modules.datacard_tools.DatacardMaker`.
 `datacards_post_processing.py` finalizes selected scaling records after the
@@ -197,9 +197,7 @@ changes the amount of data processed.
 ## Active, conflicting, and inactive controls
 
 YAML option values replace corresponding CLI-derived values in the implemented
-configuration path. Current help prose describes the opposite ordering. The
-runtime behavior is documented here as authority, while the contradiction
-remains visible rather than being resolved by documentation.
+configuration path. Parser help and this reference describe the same ordering.
 
 The legacy `--do-renormfact-envelope` entry is deprecated and has no active
 processor effect. It is not a supported alternative to the maintained scale-
@@ -244,5 +242,4 @@ python analysis/topeft_run2/run_analysis.py <sample.json> \
 This is a semantic example, not a production authorization. Executor, input,
 and output details belong to [the production guide](../how_to/production.md).
 If `--options` is supplied, recognized YAML values replace corresponding CLI-
-derived values in the implemented path even though current help prose claims
-the opposite.
+derived values in the implemented path.

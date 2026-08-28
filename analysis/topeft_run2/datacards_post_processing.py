@@ -44,6 +44,30 @@ def extract_number(item):
     """Return the decimal characters embedded in a channel jet-bin label."""
     return str(''.join(char for char in item if char.isdigit()))
 
+
+def _validate_copied_template_counts(args, n_txt, n_root):
+    if n_txt != n_root:
+        raise Exception(
+            f"Error, expected one text card per ROOT template but copied "
+            f"{n_txt} text and {n_root} ROOT files"
+        )
+
+    expected_count = None
+    if args.set_up_top22006:
+        expected_count = 43
+    elif args.set_up_offZdivision:
+        expected_count = 75
+    elif args.tau_flag:
+        expected_count = 60
+    elif args.all_analysis:
+        expected_count = 129
+
+    if expected_count is not None and n_txt != expected_count:
+        raise Exception(
+            f"Error, unexpected number of text ({n_txt}) or root ({n_root}) "
+            "files copied"
+        )
+
 # Check the output of the datacard maekr
 def main():
     """Parse one topology selector, copy selected cards, and write scalings."""
@@ -73,8 +97,8 @@ def main():
     # check exactly one is True
     if sum(flags) != 1:
         raise ValueError(
-            "Exactly one of --set_up_top22006, "
-            "--set_up_offZdivision, --tau_flag, --fwd_flag must be set."
+            "Exactly one of --set-up-top22006, --set-up-offZdivision, "
+            "--tau-flag, --fwd-flag, or --all-analysis must be set."
         )
     
     ###### Print out general info ######
@@ -217,12 +241,9 @@ def main():
 
     # Check that we got the expected number and print what we learn
     print(f"\tNumber of text templates copied: {n_txt}")
-    print(f"\tNumber of root templates copied: {n_txt}")
-    print(args.tau_flag)
-    print((n_txt != 60) or (n_root != 60))
-    print((args.tau_flag and ((n_txt != 60) or (n_root != 60))))
-    if (args.set_up_top22006 and ((n_txt != 43) or (n_root != 43)))   or   (args.set_up_offZdivision and ((n_txt != 75) or (n_root != 75)))   or   (args.tau_flag and ((n_txt != 60) or (n_root != 60))) or (args.all_analysis and (n_root != 129)):
-        raise Exception(f"Error, unexpected number of text ({n_txt}) or root ({n_root}) files copied")
+    print(f"\tNumber of root templates copied: {n_root}")
+    _validate_copied_template_counts(args, n_txt, n_root)
     print("Done.\n")
 
-main()
+if __name__ == "__main__":
+    main()
