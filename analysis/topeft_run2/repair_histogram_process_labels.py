@@ -68,6 +68,10 @@ _known_legacy_data_driven_contract_version = 3
 _known_legacy_sumw2_provenance_schema_version = 2
 _known_legacy_transformation_contract_version = 3
 _legacy_process_fragments = ("WWW_central", "WWZ_central")
+_non_authoritative_warning_path = (
+    "requested_data_driven_products",
+    "warnings",
+)
 
 
 class repair_error(RuntimeError):
@@ -117,6 +121,15 @@ def _legacy_like_label_paths(
     return paths
 
 
+def _validate_non_authoritative_warning_text(
+    value: Any, path: tuple[Any, ...]
+) -> None:
+    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+        raise repair_error(
+            f"Non-authoritative warning text at {path!r} must be a string list."
+        )
+
+
 def _preflight_typed_metadata(
     value: Any, path: tuple[Any, ...] = ()
 ) -> set[str]:
@@ -124,7 +137,9 @@ def _preflight_typed_metadata(
     if isinstance(value, Mapping):
         for key, child in value.items():
             child_path = (*path, key)
-            if key == "production_sample_contract":
+            if child_path == _non_authoritative_warning_path:
+                _validate_non_authoritative_warning_text(child, child_path)
+            elif key == "production_sample_contract":
                 occurrences = _legacy_like_label_paths(child, child_path)
                 if occurrences:
                     raise repair_error(
@@ -284,7 +299,10 @@ def _repair_typed_metadata(value: Any, path: tuple[Any, ...] = ()) -> Any:
         repaired = {}
         for key, child in value.items():
             child_path = (*path, key)
-            if key == "production_sample_contract":
+            if child_path == _non_authoritative_warning_path:
+                _validate_non_authoritative_warning_text(child, child_path)
+                repaired[key] = copy.deepcopy(child)
+            elif key == "production_sample_contract":
                 occurrences = _old_label_paths(child, child_path)
                 if occurrences:
                     raise repair_error(

@@ -244,7 +244,7 @@ def _write_raw_sidecar(input_path, sidecar):
     )
 
 
-def _write_enabled_precanonical_v3_artifact(input_path):
+def _write_enabled_precanonical_v3_artifact(input_path, *, warning_texts=()):
     source_path = input_path.parent / f"{input_path.stem}_source.pkl.gz"
     samples = {
         **{
@@ -354,6 +354,9 @@ def _write_enabled_precanonical_v3_artifact(input_path):
         legacy_sidecar,
         _legacy_labels_by_canonical,
     )
+    legacy_sidecar["requested_data_driven_products"]["warnings"] = list(
+        warning_texts
+    )
     legacy_sidecar["artifact"]["pkl_size_bytes"] = input_path.stat().st_size
     legacy_sidecar["artifact"]["pkl_sha256"] = _sha256(input_path)
     _write_raw_sidecar(input_path, legacy_sidecar)
@@ -459,6 +462,40 @@ def test_enabled_precanonical_v3_fixture_dry_run_is_canonically_validated(tmp_pa
         input_path.read_bytes(),
         metadata_sidecar_path(input_path).read_bytes(),
     )
+
+
+def test_enabled_precanonical_v3_warning_text_is_non_authoritative(tmp_path):
+    input_path = tmp_path / "warning_text.pkl.gz"
+    warning_texts = (
+        "DATA-DRIVEN-W001: historical request mentions " + ", ".join(OLD_LABELS),
+    )
+    legacy_histograms, legacy_sidecar = _write_enabled_precanonical_v3_artifact(
+        input_path,
+        warning_texts=warning_texts,
+    )
+    output_dir = tmp_path / "corrected"
+
+    with pytest.raises(histogram_artifact_error) as baseline_error:
+        validate_histogram_artifact(input_path, histograms=legacy_histograms)
+    assert "active alias is not valid for its exact run era" in str(
+        baseline_error.value
+    )
+
+    dry_run = repair_artifacts([input_path], output_dir=output_dir)
+    prepared = repair_module._load_and_prepare(input_path, output_dir)
+
+    assert dry_run[0]["input_validation_mode"] == "known_repairable_legacy"
+    assert (
+        dry_run[0]["repaired_representation_validation"]
+        == "passed_unchanged_validate_histogram_artifact"
+    )
+    assert legacy_sidecar["requested_data_driven_products"]["warnings"] == list(
+        warning_texts
+    )
+    assert prepared["sidecar"]["requested_data_driven_products"]["warnings"] == list(
+        warning_texts
+    )
+    assert not output_dir.exists()
 
 
 def test_enabled_precanonical_v3_fixture_write_is_copy_only_and_canonical(
@@ -589,6 +626,44 @@ def test_unsupported_old_label_surface_is_refused(tmp_path):
         repair_artifacts([input_path])
 
 
+def test_top_level_free_text_with_legacy_label_is_refused(tmp_path):
+    input_path = tmp_path / "top_level_free_text.pkl.gz"
+    _write_enabled_precanonical_v3_artifact(input_path)
+    sidecar_path = metadata_sidecar_path(input_path)
+    sidecar = json.loads(sidecar_path.read_text(encoding="utf-8"))
+    sidecar["free_text"] = f"Historical note: {OLD_LABELS[0]}"
+    _write_raw_sidecar(input_path, sidecar)
+
+    with pytest.raises(repair_error, match="exact supported sidecar field shape"):
+        repair_artifacts([input_path])
+
+
+def test_unrelated_nested_warnings_with_legacy_label_are_refused(tmp_path):
+    input_path = tmp_path / "unrelated_nested_warnings.pkl.gz"
+    _write_enabled_precanonical_v3_artifact(input_path)
+    sidecar_path = metadata_sidecar_path(input_path)
+    sidecar = json.loads(sidecar_path.read_text(encoding="utf-8"))
+    sidecar["lineage"]["warnings"] = [OLD_LABELS[0]]
+    _write_raw_sidecar(input_path, sidecar)
+
+    with pytest.raises(repair_error, match="unsupported metadata field"):
+        repair_artifacts([input_path])
+
+
+def test_malformed_non_authoritative_warning_text_is_refused(tmp_path):
+    input_path = tmp_path / "malformed_warning_text.pkl.gz"
+    _write_enabled_precanonical_v3_artifact(input_path)
+    sidecar_path = metadata_sidecar_path(input_path)
+    sidecar = json.loads(sidecar_path.read_text(encoding="utf-8"))
+    sidecar["requested_data_driven_products"]["warnings"] = {
+        "warning": OLD_LABELS[0]
+    }
+    _write_raw_sidecar(input_path, sidecar)
+
+    with pytest.raises(repair_error, match="Non-authoritative warning text"):
+        repair_artifacts([input_path])
+
+
 def test_production_sample_contract_old_label_is_refused(tmp_path):
     input_path = tmp_path / "production_contract.pkl.gz"
     _write_enabled_precanonical_v3_artifact(input_path)
@@ -612,6 +687,26 @@ def test_unknown_or_fuzzy_legacy_label_is_refused(tmp_path):
     _write_raw_sidecar(input_path, sidecar)
 
     with pytest.raises(repair_error, match="Unknown or fuzzy legacy process label"):
+        repair_artifacts([input_path])
+
+
+def test_payload_unknown_or_fuzzy_legacy_label_is_refused(tmp_path):
+    input_path = tmp_path / "payload_fuzzy.pkl.gz"
+    _write_enabled_precanonical_v3_artifact(input_path)
+    sidecar_path = metadata_sidecar_path(input_path)
+    histograms = dict(get_hist_from_pkl(str(input_path)))
+    payload = _map_histogram_processes(
+        histograms,
+        {OLD_LABELS[0]: "WWW_centralUL18"},
+    )
+    with gzip.open(input_path, "wb") as stream:
+        cloudpickle.dump(payload, stream)
+    sidecar = json.loads(sidecar_path.read_text(encoding="utf-8"))
+    sidecar["artifact"]["pkl_size_bytes"] = input_path.stat().st_size
+    sidecar["artifact"]["pkl_sha256"] = _sha256(input_path)
+    _write_raw_sidecar(input_path, sidecar)
+
+    with pytest.raises(repair_error, match="Payload contains unknown or fuzzy"):
         repair_artifacts([input_path])
 
 
