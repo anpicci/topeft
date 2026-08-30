@@ -1,4 +1,5 @@
 import copy
+import concurrent.futures
 import csv
 import re
 import warnings
@@ -448,6 +449,115 @@ def test_none_summary_reports_successful_plot_count_not_task_count(
     output = capsys.readouterr().out
     assert expected_summary in output
     assert expected_tasks in output
+
+
+def _parallel_test_region_context(variable_names):
+    return SimpleNamespace(
+        dict_of_hists={name: object() for name in variable_names},
+        name="SR",
+        apply_category_skips=False,
+        skip_variables=set(),
+        unblind_default=False,
+    )
+
+
+def _parallel_test_payload():
+    return {
+        "channel_dict": {},
+        "channel_transformations": {},
+        "is_sparse2d": False,
+    }
+
+
+def test_parallel_rendering_caps_worker_count_at_task_count(monkeypatch):
+    variable_names = ["met", "lt"]
+    captured = {"max_workers": None, "submitted": []}
+
+    class _FakeExecutor:
+        def __init__(self, *, max_workers, **_kwargs):
+            captured["max_workers"] = max_workers
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def submit(self, _function, task_id, payload):
+            captured["submitted"].append((task_id, payload))
+            future = concurrent.futures.Future()
+            future.set_result((task_id, 0, 0, set(), []))
+            return future
+
+    monkeypatch.setattr(
+        make_cr_and_sr_plots,
+        "_resolve_requested_variables",
+        lambda *_args, **_kwargs: variable_names,
+    )
+    monkeypatch.setattr(
+        make_cr_and_sr_plots,
+        "_prepare_variable_payload",
+        lambda *_args, **_kwargs: _parallel_test_payload(),
+    )
+    monkeypatch.setattr(concurrent.futures, "ProcessPoolExecutor", _FakeExecutor)
+
+    make_cr_and_sr_plots.produce_region_plots(
+        _parallel_test_region_context(variable_names),
+        None,
+        None,
+        "none",
+        False,
+        False,
+        workers=9,
+    )
+
+    assert captured["max_workers"] == 2
+    assert captured["submitted"] == [(1, "met"), (2, "lt")]
+
+
+def test_parallel_rendering_propagates_worker_failure(monkeypatch):
+    variable_names = ["met", "lt"]
+
+    class _FakeExecutor:
+        def __init__(self, **_kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def submit(self, _function, task_id, _payload):
+            future = concurrent.futures.Future()
+            if task_id == 1:
+                future.set_exception(RuntimeError("synthetic render failure"))
+            else:
+                future.set_result((task_id, 0, 0, set(), []))
+            return future
+
+    monkeypatch.setattr(
+        make_cr_and_sr_plots,
+        "_resolve_requested_variables",
+        lambda *_args, **_kwargs: variable_names,
+    )
+    monkeypatch.setattr(
+        make_cr_and_sr_plots,
+        "_prepare_variable_payload",
+        lambda *_args, **_kwargs: _parallel_test_payload(),
+    )
+    monkeypatch.setattr(concurrent.futures, "ProcessPoolExecutor", _FakeExecutor)
+
+    with pytest.raises(RuntimeError, match="synthetic render failure"):
+        make_cr_and_sr_plots.produce_region_plots(
+            _parallel_test_region_context(variable_names),
+            None,
+            None,
+            "none",
+            False,
+            False,
+            workers=2,
+        )
 
 
 @pytest.mark.parametrize("unblind", [False, True])
