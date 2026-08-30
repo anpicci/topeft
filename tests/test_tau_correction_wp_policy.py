@@ -27,6 +27,21 @@ class _RecordingCorrection:
         return np.ones(len(args[0]), dtype=np.float32)
 
 
+class _DirectionalCorrection(_RecordingCorrection):
+    def evaluate(self, *args):
+        self.calls.append(args)
+        systematic = args[-2] if args[-1] == "dm" else args[-1]
+        if systematic == "nom":
+            value = 2.0
+        elif systematic.endswith("up"):
+            value = 4.0
+        elif systematic.endswith("down"):
+            value = 1.0
+        else:
+            raise AssertionError(f"Unexpected systematic {systematic}")
+        return np.full(len(args[0]), value, dtype=np.float32)
+
+
 class _RecordingEvaluator:
     def __init__(self):
         self.keys = []
@@ -85,6 +100,99 @@ def _tau_record(year, gen_part_flav):
     )
 
 
+def _run3_tau_records(etas, gen_part_flav):
+    return ak.Array(
+        [
+            [
+            {
+                "pt": 35.0,
+                "mass": 1.2,
+                "eta": eta,
+                "decayMode": 0,
+                "genPartFlav": gen_part_flav,
+                "isMedium": 1,
+                "iseTight": 1,
+                "ismTight": 1,
+                "idDeepTau2018v2p5VSjet": 5,
+                "idDeepTau2018v2p5VSe": 2,
+                "idDeepTau2018v2p5VSmu": 4,
+            }
+            ]
+            for eta in etas
+        ]
+    )
+
+
+@pytest.mark.parametrize(
+    ("source", "gen_part_flav", "etas", "expected_tokens"),
+    [
+        (
+            "VSe",
+            1,
+            (1.4599, 1.46, 1.5599, 1.56, 2.5),
+            (
+                "abseta0to1p46",
+                "abseta1p46to1p56",
+                "abseta1p46to1p56",
+                "abseta1p56to2p5",
+                "abseta1p56to2p5",
+            ),
+        ),
+        (
+            "VSmu",
+            2,
+            (0.3999, 0.4, 1.6999, 1.7, 2.4),
+            (
+                "abseta0to0p4",
+                "abseta0p4to0p8",
+                "abseta1p2to1p7",
+                "abseta1p7to2p4",
+                "abseta1p7to2p4",
+            ),
+        ),
+    ],
+)
+def test_run3_eta_nuisance_masks_are_source_specific_and_boundary_exact(
+    monkeypatch, source, gen_part_flav, etas, expected_tokens
+):
+    recording_corrections = {
+        name: _DirectionalCorrection(name)
+        for name in (
+            "DeepTau2018v2p5VSjet",
+            "DeepTau2018v2p5VSe",
+            "DeepTau2018v2p5VSmu",
+        )
+    }
+    monkeypatch.setattr(
+        corrections.correctionlib,
+        "CorrectionSet",
+        SimpleNamespace(from_file=lambda path: recording_corrections),
+    )
+    monkeypatch.setattr(corrections, "SFevaluator", _RecordingEvaluator())
+    weights = corrections.AttachTauSF(
+        {},
+        _run3_tau_records(etas, gen_part_flav),
+        "2022",
+        vsJetWP="Medium",
+    )
+
+    for index, expected_token in enumerate(expected_tokens):
+        expected_name = (
+            f"CMS_fake_t_DeepTau2018v2p5_{source}_{expected_token}_2022"
+        )
+        for name, directions in weights["variations"].items():
+            if f"_{source}_" not in name:
+                continue
+            expected_ratio = 2.0 if name == expected_name else 1.0
+            assert directions["up"][index] == pytest.approx(expected_ratio)
+        other_source = "VSmu" if source == "VSe" else "VSe"
+        assert all(
+            directions["up"][index] == pytest.approx(1.0)
+            for name, directions in weights["variations"].items()
+            if f"_{other_source}_" in name
+        )
+
+
 @pytest.mark.parametrize(
     ("year", "vsjet_correction_name", "expected_vsjet_wp", "fake_sf_key"),
     [
@@ -102,6 +210,7 @@ def test_tau_vsjet_payload_uses_configured_wp_and_fake_sf_stays_separate(
     recording_corrections = {
         vsjet_correction_name: _RecordingCorrection(vsjet_correction_name),
         "DeepTau2018v2p5VSe": _RecordingCorrection("DeepTau2018v2p5VSe"),
+        "DeepTau2018v2p5VSmu": _RecordingCorrection("DeepTau2018v2p5VSmu"),
     }
     monkeypatch.setattr(
         corrections.correctionlib,
@@ -184,6 +293,7 @@ def test_jet_faking_tau_sf_uses_configured_payload(
     recording_corrections = {
         vsjet_correction_name: _RecordingCorrection(vsjet_correction_name),
         "DeepTau2018v2p5VSe": _RecordingCorrection("DeepTau2018v2p5VSe"),
+        "DeepTau2018v2p5VSmu": _RecordingCorrection("DeepTau2018v2p5VSmu"),
     }
     monkeypatch.setattr(
         corrections.correctionlib,
@@ -361,6 +471,7 @@ def test_run3_year_specific_fake_tau_sf_still_uses_split_payload(monkeypatch):
     recording_corrections = {
         "DeepTau2018v2p5VSjet": _RecordingCorrection("DeepTau2018v2p5VSjet"),
         "DeepTau2018v2p5VSe": _RecordingCorrection("DeepTau2018v2p5VSe"),
+        "DeepTau2018v2p5VSmu": _RecordingCorrection("DeepTau2018v2p5VSmu"),
     }
     monkeypatch.setattr(
         corrections.correctionlib,
