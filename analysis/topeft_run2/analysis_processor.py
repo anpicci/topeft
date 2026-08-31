@@ -121,6 +121,14 @@ def should_fill_jvm_eta_phi_diagnostic(is_run3, syst_var, wgt_fluct):
     return is_run3 and syst_var == "nominal" and wgt_fluct == "nominal"
 
 
+def apply_maintained_jet_systematic(year, cleaned_jets, syst_var, jet_systematics):
+    """Apply only variations advertised by the maintained jet authority."""
+
+    if syst_var != "nominal" and syst_var not in jet_systematics:
+        return cleaned_jets
+    return ApplyJetSystematics(year, cleaned_jets, syst_var)
+
+
 def validate_analysis_mode_flags(offz_3l_split, tau_h_analysis, fwd_analysis, all_analysis):
     mode_flags = {
         "offz_3l_split": bool(offz_3l_split),
@@ -968,9 +976,10 @@ class AnalysisProcessor(processor.ProcessorABC):
         )
 
         # Define the lists of systematics we include
-        obj_correction_syst_lst = get_supported_jet_systematics(
+        jet_correction_syst_lst = get_supported_jet_systematics(
             year, isData=isData, era=run_era
         )
+        obj_correction_syst_lst = list(jet_correction_syst_lst)
         obj_correction_syst_lst.extend(
             get_supported_met_systematics(year, isData=isData, era=run_era)
         )
@@ -1288,7 +1297,9 @@ class AnalysisProcessor(processor.ProcessorABC):
                 run=run,
                 suppress_forward_eta_stochastic_jer=effective_suppress_forward_eta_stochastic_jer,
             ).build(cleanedJets, lazy_cache=events_cache)  #Run3 ready
-            cleanedJets = ApplyJetSystematics(year,cleanedJets,syst_var)
+            cleanedJets = apply_maintained_jet_systematic(
+                year, cleanedJets, syst_var, jet_correction_syst_lst
+            )
 
             # Jet Veto Maps
             # Removes events that have ANY jet in a specific eta-phi space (not required for Run 2)
