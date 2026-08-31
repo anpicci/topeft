@@ -23,6 +23,12 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 PROCESSOR_SOURCE = REPO_ROOT / "analysis/topeft_run2/analysis_processor.py"
 
 SELECTED_DMS = (0, 1, 10, 11)
+RUN3_PAYLOAD_ERAS = ("2022", "2022EE", "2023", "2023BPix")
+RUN3_VSE_ETA_TOKENS = (
+    "abseta0to1p46",
+    "abseta1p46to1p56",
+    "abseta1p56to2p5",
+)
 
 
 def _expected_vsjet_names(tagger, year, run):
@@ -125,15 +131,58 @@ def test_eta_nuisance_names_have_exact_tokens_and_periods(
     year, tagger, period, vse_tokens, vsmu_tokens
 ):
     observed = get_tau_eta_variation_specs(year)
-    expected = {
-        f"CMS_fake_t_{tagger}_VSe_{token}_{period}" for token in vse_tokens
-    }
+    if year.startswith("201"):
+        expected = {
+            f"CMS_fake_t_{tagger}_VSe_{token}_{period}" for token in vse_tokens
+        }
+    else:
+        expected = {
+            f"CMS_fake_t_{tagger}_VSe_DM{dm}_{token}_{year}"
+            for token in vse_tokens
+            for dm in SELECTED_DMS
+        }
     expected.update(
         f"CMS_fake_t_{tagger}_VSmu_{token}_{period}" for token in vsmu_tokens
     )
     assert set(observed) == expected
     assert len(observed) == len(set(observed))
     assert all(not name.endswith(("Up", "Down")) for name in observed)
+
+
+@pytest.mark.parametrize("year", RUN3_PAYLOAD_ERAS)
+def test_run3_vse_exact_payload_era_eta_dm_identity_partition(year):
+    expected = {
+        f"CMS_fake_t_DeepTau2018v2p5_VSe_DM{dm}_{eta_token}_{year}"
+        for eta_token in RUN3_VSE_ETA_TOKENS
+        for dm in SELECTED_DMS
+    }
+    observed = {
+        name
+        for name, spec in get_tau_eta_variation_specs(year).items()
+        if spec["source"] == "VSe"
+    }
+    superseded = {
+        f"CMS_fake_t_DeepTau2018v2p5_VSe_{eta_token}_{year[:4]}"
+        for eta_token in RUN3_VSE_ETA_TOKENS
+    }
+
+    assert observed == expected
+    assert len(observed) == len(RUN3_VSE_ETA_TOKENS) * len(SELECTED_DMS)
+    assert observed.isdisjoint(superseded)
+
+
+def test_run3_vse_payload_era_identities_do_not_collapse_suberas():
+    identities_by_era = {
+        year: {
+            name
+            for name, spec in get_tau_eta_variation_specs(year).items()
+            if spec["source"] == "VSe"
+        }
+        for year in RUN3_PAYLOAD_ERAS
+    }
+
+    assert identities_by_era["2022"].isdisjoint(identities_by_era["2022EE"])
+    assert identities_by_era["2023"].isdisjoint(identities_by_era["2023BPix"])
 
 
 def test_eta_masks_keep_run2_vse_nuisance_bins_distinct_from_payload_edges():
@@ -178,7 +227,7 @@ def test_energy_nuisance_exact_source_dm_period_set(year, tagger, run, electron_
 
 def test_weight_nuisance_set_is_unique_and_has_only_independent_families():
     observed = get_tau_weight_variation_names("2022", include_jet_fake=True)
-    assert len(observed) == len(set(observed)) == 23
+    assert len(observed) == len(set(observed)) == 32
     assert observed[-1] == "lepSF_taus_fake_run3"
     assert "lepSF_taus_real" not in observed
     assert "lepSF_taus_fake" not in observed
@@ -188,6 +237,7 @@ def test_weight_nuisance_set_is_unique_and_has_only_independent_families():
     "base",
     [
         "CMS_eff_t_DeepTau2018v2p5_VSjet_dm_stat1_DM0_2022",
+        "CMS_fake_t_DeepTau2018v2p5_VSe_DM0_abseta0to1p46_2022",
         "CMS_fake_t_DeepTau2018v2p5_VSmu_abseta0to0p4_2022",
         "CMS_scale_t_DeepTau2018v2p5_DM10_genMuon_Run3",
         "lepSF_taus_fake_run3",
@@ -220,6 +270,7 @@ def _axes():
 def test_datacard_readback_preserves_exact_tau_shape_identities(tmp_path):
     bases = (
         "CMS_eff_t_DeepTau2018v2p5_VSjet_dm_syst_alleras_Run3",
+        "CMS_fake_t_DeepTau2018v2p5_VSe_DM0_abseta0to1p46_2022",
         "CMS_fake_t_DeepTau2018v2p5_VSmu_abseta0to0p4_2022",
         "CMS_scale_t_DeepTau2018v2p5_DM10_genMuon_Run3",
         "lepSF_taus_fake_run3",

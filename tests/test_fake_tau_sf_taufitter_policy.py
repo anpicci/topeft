@@ -61,9 +61,15 @@ def test_analysis_jet_fake_weight_is_the_only_tau_component_gated_by_mode():
     assert source.count('weights_dict[ch_name].add("lepSF_elec"') == 4
 
 
-def test_run3_vse_tau_sf_uses_tight_wp():
+def test_run3_vse_tau_sf_uses_selected_vvloose_wp():
     source = CORRECTIONS_SOURCE.read_text()
     assert 'ceval[f"{tagger}VSe"]' in source
-    assert '(flat_eta, flat_dm, flat_gen, "Tight")' in source
-    assert '(flat_eta, flat_dm, flat_gen, "VVLoose")' not in source
-    assert 'real_args = (flat_pt, flat_dm, flat_gen, vsJetWP, "VVLoose")' in source
+    assert 'TAU_VSE_WORKING_POINT = "VVLoose"' in source
+    assert source.count(
+        "(flat_eta, flat_dm, flat_gen, TAU_VSE_WORKING_POINT)"
+    ) == 3
+    assert '(flat_eta, flat_dm, flat_gen, "Tight")' not in source
+    assert (
+        "real_args = (flat_pt, flat_dm, flat_gen, vsJetWP, "
+        "TAU_VSE_WORKING_POINT)"
+    ) in source

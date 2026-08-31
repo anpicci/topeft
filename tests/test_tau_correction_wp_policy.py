@@ -9,6 +9,7 @@ import pytest
 from topcoffea.modules.paths import topcoffea_path
 
 import topeft.modules.corrections as corrections
+from topeft.modules.object_selection import run3TauSelection
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -100,7 +101,9 @@ def _tau_record(year, gen_part_flav):
     )
 
 
-def _run3_tau_records(etas, gen_part_flav):
+def _run3_tau_records(etas, gen_part_flav, decay_modes=None):
+    if decay_modes is None:
+        decay_modes = (0,) * len(etas)
     return ak.Array(
         [
             [
@@ -108,7 +111,7 @@ def _run3_tau_records(etas, gen_part_flav):
                 "pt": 35.0,
                 "mass": 1.2,
                 "eta": eta,
-                "decayMode": 0,
+                "decayMode": decay_mode,
                 "genPartFlav": gen_part_flav,
                 "isMedium": 1,
                 "iseTight": 1,
@@ -118,7 +121,7 @@ def _run3_tau_records(etas, gen_part_flav):
                 "idDeepTau2018v2p5VSmu": 4,
             }
             ]
-            for eta in etas
+            for eta, decay_mode in zip(etas, decay_modes)
         ]
     )
 
@@ -177,9 +180,15 @@ def test_run3_eta_nuisance_masks_are_source_specific_and_boundary_exact(
     )
 
     for index, expected_token in enumerate(expected_tokens):
-        expected_name = (
-            f"CMS_fake_t_DeepTau2018v2p5_{source}_{expected_token}_2022"
-        )
+        if source == "VSe":
+            expected_name = (
+                "CMS_fake_t_DeepTau2018v2p5_VSe_DM0_"
+                f"{expected_token}_2022"
+            )
+        else:
+            expected_name = (
+                f"CMS_fake_t_DeepTau2018v2p5_{source}_{expected_token}_2022"
+            )
         for name, directions in weights["variations"].items():
             if f"_{source}_" not in name:
                 continue
@@ -191,6 +200,80 @@ def test_run3_eta_nuisance_masks_are_source_specific_and_boundary_exact(
             for name, directions in weights["variations"].items()
             if f"_{other_source}_" in name
         )
+
+
+def test_run3_vse_selection_and_correction_both_use_vvloose(monkeypatch):
+    selection = run3TauSelection()
+    assert ak.to_list(selection.iseTightTau(ak.Array([1, 2]))) == [False, True]
+
+    recording_corrections = {
+        name: _RecordingCorrection(name)
+        for name in (
+            "DeepTau2018v2p5VSjet",
+            "DeepTau2018v2p5VSe",
+            "DeepTau2018v2p5VSmu",
+        )
+    }
+    monkeypatch.setattr(
+        corrections.correctionlib,
+        "CorrectionSet",
+        SimpleNamespace(from_file=lambda path: recording_corrections),
+    )
+    monkeypatch.setattr(corrections, "SFevaluator", _RecordingEvaluator())
+
+    corrections.AttachTauSF(
+        {},
+        _tau_record("2022", gen_part_flav=1),
+        "2022",
+        vsJetWP="Medium",
+    )
+
+    vse_calls = recording_corrections["DeepTau2018v2p5VSe"].calls
+    assert corrections.TAU_VSE_WORKING_POINT == "VVLoose"
+    assert vse_calls
+    assert all(call[3] == "VVLoose" for call in vse_calls)
+
+
+def test_run3_vse_nuisance_masks_are_decay_mode_specific(monkeypatch):
+    recording_corrections = {
+        name: _DirectionalCorrection(name)
+        for name in (
+            "DeepTau2018v2p5VSjet",
+            "DeepTau2018v2p5VSe",
+            "DeepTau2018v2p5VSmu",
+        )
+    }
+    monkeypatch.setattr(
+        corrections.correctionlib,
+        "CorrectionSet",
+        SimpleNamespace(from_file=lambda path: recording_corrections),
+    )
+    monkeypatch.setattr(corrections, "SFevaluator", _RecordingEvaluator())
+    selected_dms = (0, 1, 10, 11)
+    weights = corrections.AttachTauSF(
+        {},
+        _run3_tau_records(
+            (0.5,) * len(selected_dms),
+            gen_part_flav=1,
+            decay_modes=selected_dms,
+        ),
+        "2022",
+        vsJetWP="Medium",
+    )
+
+    vse_variations = {
+        name: directions
+        for name, directions in weights["variations"].items()
+        if "_VSe_" in name
+    }
+    for index, decay_mode in enumerate(selected_dms):
+        expected_name = (
+            "CMS_fake_t_DeepTau2018v2p5_VSe_"
+            f"DM{decay_mode}_abseta0to1p46_2022"
+        )
+        for name, directions in vse_variations.items():
+            expected_ratio = 2.0 if name == expected_name else 1.0
+            assert directions["up"][index] == pytest.approx(expected_ratio)
 
 
 @pytest.mark.parametrize(

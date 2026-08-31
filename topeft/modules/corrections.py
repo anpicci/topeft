@@ -51,6 +51,7 @@ MUON_MOMENTUM_PT_FIELDS = {
     },
 }
 TAU_SELECTED_DMS = (0, 1, 10, 11)
+TAU_VSE_WORKING_POINT = "VVLoose"
 TAU_TAGGER_BY_RUN = {
     "Run2": "DeepTau2017v2p1",
     "Run3": "DeepTau2018v2p5",
@@ -231,7 +232,7 @@ def get_tau_vsjet_variation_specs(year):
 
 
 def get_tau_eta_variation_specs(year):
-    """Return final VSe/VSmu nuisance names and their disjoint eta masks."""
+    """Return final VSe/VSmu nuisance names and their disjoint masks."""
     run = get_tau_run(year)
     tagger = get_tau_tagger(year)
     period = year if run == "Run2" else str(year)[:4]
@@ -241,13 +242,28 @@ def get_tau_eta_variation_specs(year):
         ("VSmu", TAU_VSMU_ETA_BINS[run]),
     ):
         for index, (low, high, token) in enumerate(bins):
-            name = f"CMS_fake_t_{tagger}_{source}_{token}_{period}"
-            specs[name] = {
-                "source": source,
-                "low": low,
-                "high": high,
-                "include_high": index == len(bins) - 1,
-            }
+            decay_modes = (
+                TAU_SELECTED_DMS
+                if run == "Run3" and source == "VSe"
+                else (None,)
+            )
+            for decay_mode in decay_modes:
+                if decay_mode is None:
+                    name = f"CMS_fake_t_{tagger}_{source}_{token}_{period}"
+                else:
+                    name = (
+                        f"CMS_fake_t_{tagger}_{source}_DM{decay_mode}_"
+                        f"{token}_{year}"
+                    )
+                spec = {
+                    "source": source,
+                    "low": low,
+                    "high": high,
+                    "include_high": index == len(bins) - 1,
+                }
+                if decay_mode is not None:
+                    spec["decay_mode"] = decay_mode
+                specs[name] = spec
     return specs
 
 
@@ -1054,7 +1070,7 @@ def AttachTauSF(
             values[selected] = correction.evaluate(*selected_args)
         return ak.unflatten(values, counts)
 
-    real_args = (flat_pt, flat_dm, flat_gen, vsJetWP, "VVLoose")
+    real_args = (flat_pt, flat_dm, flat_gen, vsJetWP, TAU_VSE_WORKING_POINT)
     real_sf = evaluate_selected(
         corr_jet, genuine_tau_mask, real_args, "nom", flag="dm"
     )
@@ -1138,19 +1154,19 @@ def AttachTauSF(
         fake_elec_sf = evaluate_selected(
             ceval[f"{tagger}VSe"],
             electron_flat_mask,
-            (flat_eta, flat_dm, flat_gen, "Tight"),
+            (flat_eta, flat_dm, flat_gen, TAU_VSE_WORKING_POINT),
             "nom",
         )
         fake_elec_sf_up = evaluate_selected(
             ceval[f"{tagger}VSe"],
             electron_flat_mask,
-            (flat_eta, flat_dm, flat_gen, "Tight"),
+            (flat_eta, flat_dm, flat_gen, TAU_VSE_WORKING_POINT),
             "up",
         )
         fake_elec_sf_down = evaluate_selected(
             ceval[f"{tagger}VSe"],
             electron_flat_mask,
-            (flat_eta, flat_dm, flat_gen, "Tight"),
+            (flat_eta, flat_dm, flat_gen, TAU_VSE_WORKING_POINT),
             "down",
         )
         fake_muon_sf = evaluate_selected(
@@ -1206,6 +1222,8 @@ def AttachTauSF(
             if spec["include_high"]
             else (abs_eta < spec["high"])
         )
+        if spec.get("decay_mode") is not None:
+            eta_mask = eta_mask & (dm == spec["decay_mode"])
         variation_ratios[name] = {
             "up": ak.where(eta_mask & (nominal != 0), up / nominal, 1.0),
             "down": ak.where(eta_mask & (nominal != 0), down / nominal, 1.0),
