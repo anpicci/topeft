@@ -6,6 +6,11 @@ import time
 
 WORKSPACE = Path("/users/apiccine/work/correction-lib")
 WRAPPER = WORKSPACE / "topeft/analysis/topeft_run2/run3_processing_recovery_campaign.sh"
+BLOCK1_MANIFEST = WORKSPACE / "reports/diagnostics/SRPLOT_010R2_reconcile_live_run3_processing_state_after_ambiguous_interruption/SRPLOT_010R2_processing_snapshot_2.tsv"
+BLOCK1_MANIFEST_HEADER = [
+    "snapshot_timestamp", "block", "path", "file_type", "size_bytes",
+    "mtime_ns", "sha256", "snapshot_read_state",
+]
 INPUT_ROOT = Path("/groups/klannon/apiccine/run3_full_260819_v2_corrected_np_260822")
 OUTPUT_ROOT = WORKSPACE / "topeft/histos/SR_preappr_Aug31_resilient_run3/merged_njets"
 EXPECTED_TASKS = [f"run3_block_{index}_processing" for index in range(2, 6)]
@@ -89,8 +94,25 @@ def test_all_success_and_existing_parent_are_valid(tmp_path):
         assert len(read_tsv(runtime / "processing_output_inventory.tsv")) == 4
         assert len(list(fixture.glob("block_*/*_processing.png"))) == 5
         assert (fixture / "block_1/run3_block_1_processing.png").read_text() == "accepted block1 processing output\n"
+        stub_manifest = read_tsv(fixture / "accepted_block1_manifest.tsv")
+        assert list(stub_manifest[0]) == BLOCK1_MANIFEST_HEADER
+        assert {row["snapshot_read_state"] for row in stub_manifest} == {"stable_during_read"}
         for path in runtime.glob("*.tsv"):
             assert_uniform_tsv(path)
+
+
+def test_exact_real_block1_manifest_is_accepted_nonproducing(tmp_path):
+    manifest_rows = read_tsv(BLOCK1_MANIFEST)
+    assert len(manifest_rows) == 111
+    assert list(manifest_rows[0]) == BLOCK1_MANIFEST_HEADER
+    assert {row["block"] for row in manifest_rows} == {"block_1"}
+    assert {row["snapshot_read_state"] for row in manifest_rows} == {"stable_during_read"}
+    runtime = tmp_path / "existing_runtime"
+    runtime.mkdir()
+    result = run_wrapper("--execute", "--runtime-root", runtime)
+    assert result.returncode == 3
+    assert result.stderr == f"Preflight error: runtime root already exists and requires recovery classification: {runtime}.\n"
+    assert not (runtime / "attempt_events.tsv").exists()
 
 
 def test_known_failure_stops_later_tasks_and_never_retries(tmp_path):
@@ -161,6 +183,7 @@ def test_prelaunch_integrity_and_collision_gates(tmp_path):
     cases = {
         "collision": "Processing-collision error",
         "block1_mutation": "Block1-acceptance error",
+        "wrong_block1_snapshot_state": "Block1-acceptance error",
         "fitting_mutation": "Fitting-manifest error",
         "dependency_mutation": "Dependency-integrity error",
         "same_size_changed_mtime": "mtime_ns mismatch",

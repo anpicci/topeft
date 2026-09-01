@@ -259,13 +259,13 @@ verify_static_source_contract() {
 
 verify_block1_acceptance() {
     local errors=0 rows=0
-    local snapshot_timestamp block path file_type size mtime_ns expected_sha read_state current_sha
+    local snapshot_timestamp block path file_type size mtime_ns expected_sha snapshot_read_state current_sha
     declare -A accepted_paths=()
-    while IFS=$'\t' read -r snapshot_timestamp block path file_type size mtime_ns expected_sha read_state; do
+    while IFS=$'\t' read -r snapshot_timestamp block path file_type size mtime_ns expected_sha snapshot_read_state; do
         [[ "${snapshot_timestamp}" == "snapshot_timestamp" ]] && continue
         ((rows += 1))
         accepted_paths["${path}"]=1
-        [[ "${block}" == "block_1" && "${file_type}" == "regular_file" && "${read_state}" == "readable" ]] || { echo "Block1-acceptance error: malformed accepted row ${path}." >&2; errors=1; continue; }
+        [[ "${block}" == "block_1" && "${file_type}" == "regular_file" && "${snapshot_read_state}" == "stable_during_read" ]] || { echo "Block1-acceptance error: malformed accepted row ${path}." >&2; errors=1; continue; }
         [[ -f "${path}" && ! -L "${path}" && "$(stat -c '%s' "${path}" 2>/dev/null)" == "${size}" ]] || { echo "Block1-acceptance error: type/size mismatch ${path}." >&2; errors=1; continue; }
         current_sha=$(sha256sum "${path}" 2>/dev/null | awk '{print $1}')
         [[ "${current_sha}" == "${expected_sha}" ]] || { echo "Block1-acceptance error: hash mismatch ${path}." >&2; errors=1; }
@@ -682,7 +682,7 @@ run_campaign() {
 }
 
 initialize_stub_fixture() {
-    local index block task_id output fitting expected fitting_sha accepted_output accepted_sha dependency_file dependency_sha input_path input_sidecar input_size input_mtime sidecar_size sidecar_mtime sidecar_sha
+    local index block task_id output fitting expected fitting_sha accepted_output accepted_sha dependency_file dependency_sha input_path input_sidecar input_size input_mtime sidecar_size sidecar_mtime sidecar_sha snapshot_read_state
     [[ -n "${fixture_root}" && "${fixture_root}" == /* ]] || { echo "Stub validation requires an absolute --fixture-root." >&2; return 3; }
     [[ ! -e "${fixture_root}" ]] || { echo "Stub fixture root already exists: ${fixture_root}." >&2; return 3; }
     mkdir -p "${fixture_root}"
@@ -693,7 +693,7 @@ initialize_stub_fixture() {
     printf 'block\tartifact_class\tpath\texpected_size_bytes\tobserved_size_bytes\texpected_mtime_ns\tobserved_mtime_ns\texpected_sha256\tobserved_sha256\tidentity_source\tsidecar_binding\tstatus\n' >"${accepted_input_inventory}"
     printf 'block\tpath\trelative_path\tsize_bytes\tmtime_ns\tsha256\taccepted_sha256\tstatus\n' >"${accepted_fitting_manifest}"
     printf 'block\tsource_fitting_path\texpected_processing_path\toutput_kind\tpreexisting\tstatus\n' >"${expected_processing_oracle}"
-    printf 'snapshot_timestamp\tblock\tpath\tfile_type\tsize_bytes\tmtime_ns\tsha256\tread_state\n' >"${accepted_block1_manifest}"
+    printf 'snapshot_timestamp\tblock\tpath\tfile_type\tsize_bytes\tmtime_ns\tsha256\tsnapshot_read_state\n' >"${accepted_block1_manifest}"
     for block_number in 1 2 3 4 5; do
         block="block_${block_number}"
         task_id="run3_block_${block_number}_processing"
@@ -720,7 +720,9 @@ initialize_stub_fixture() {
             accepted_output="${output}/${task_id}.png"
             printf 'accepted block1 processing output\n' >"${accepted_output}"
             accepted_sha=$(sha256sum "${accepted_output}" | awk '{print $1}')
-            printf 'stub\tblock_1\t%s\tregular_file\t%s\t%s\t%s\treadable\n' "${accepted_output}" "$(stat -c '%s' "${accepted_output}")" "$(( $(stat -c '%Y' "${accepted_output}") * 1000000000 ))" "${accepted_sha}" >>"${accepted_block1_manifest}"
+            snapshot_read_state="stable_during_read"
+            [[ "${stub_scenario}" == "wrong_block1_snapshot_state" ]] && snapshot_read_state="readable"
+            printf 'stub\tblock_1\t%s\tregular_file\t%s\t%s\t%s\t%s\n' "${accepted_output}" "$(stat -c '%s' "${accepted_output}")" "$(( $(stat -c '%Y' "${accepted_output}") * 1000000000 ))" "${accepted_sha}" "${snapshot_read_state}" >>"${accepted_block1_manifest}"
         else
             index=$((block_number - 2))
             expected="${output}/${task_id}_processing.png"
@@ -820,7 +822,7 @@ main() {
             finalize_campaign
             ;;
         --stub-scenario)
-            case "${stub_scenario}" in all_success|known_failure|ambiguous|process_identity_setup_failure|collision|block1_mutation|fitting_mutation|dependency_mutation|same_size_changed_mtime|unrelated_tracked_mutation|parent_exists) ;; *) echo "Unknown stub scenario: ${stub_scenario}." >&2; return 3 ;; esac
+            case "${stub_scenario}" in all_success|known_failure|ambiguous|process_identity_setup_failure|collision|block1_mutation|wrong_block1_snapshot_state|fitting_mutation|dependency_mutation|same_size_changed_mtime|unrelated_tracked_mutation|parent_exists) ;; *) echo "Unknown stub scenario: ${stub_scenario}." >&2; return 3 ;; esac
             initialize_stub_fixture || return $?
             if ! stub_preflight; then
                 return 3
