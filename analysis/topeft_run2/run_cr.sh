@@ -567,7 +567,7 @@ matrix_parse_args() {
   while (( index < ${#args[@]} )); do
     case "${args[index]}" in
       --production-profile)
-        if (( index + 1 >= ${#args[@]} )); then
+        if (( index + 1 >= ${#args[@]} )) || [[ "${args[index + 1]}" == -* ]]; then
           matrix_parse_errors+=("--production-profile requires a value")
           index=$((index + 1))
         else
@@ -577,7 +577,7 @@ matrix_parse_args() {
         ;;
       --dry-run) matrix_dry_run=true; index=$((index + 1)) ;;
       --output-dir)
-        if (( index + 1 >= ${#args[@]} )); then
+        if (( index + 1 >= ${#args[@]} )) || [[ "${args[index + 1]}" == -* ]]; then
           matrix_parse_errors+=("--output-dir requires a value")
           index=$((index + 1))
         else
@@ -586,7 +586,7 @@ matrix_parse_args() {
         fi
         ;;
       --campaign-tag)
-        if (( index + 1 >= ${#args[@]} )); then
+        if (( index + 1 >= ${#args[@]} )) || [[ "${args[index + 1]}" == -* ]]; then
           matrix_parse_errors+=("--campaign-tag requires a value")
           index=$((index + 1))
         else
@@ -595,7 +595,7 @@ matrix_parse_args() {
         fi
         ;;
       --env-file)
-        if (( index + 1 >= ${#args[@]} )); then
+        if (( index + 1 >= ${#args[@]} )) || [[ "${args[index + 1]}" == -* ]]; then
           matrix_parse_errors+=("--env-file requires a value")
           index=$((index + 1))
         else

@@ -309,3 +309,43 @@ def test_matrix_owned_missing_env_value_fails_before_side_effects(tmp_path):
     assert result.returncode != 0
     assert "--env-file requires a value" in result.stdout
     assert not output_root.exists()
+
+
+@pytest.mark.parametrize(
+    "value_option",
+    ("--production-profile", "--output-dir", "--campaign-tag", "--env-file"),
+)
+def test_matrix_value_options_reject_another_option_as_value_before_side_effects(
+    tmp_path, value_option
+):
+    output_root = tmp_path / value_option.removeprefix("--")
+    command = [
+        str(RUN_CR),
+        "--production-profile",
+        "run2_full",
+        "--output-dir",
+        str(output_root),
+        "--campaign-tag",
+        "malformed-value",
+        "--env-file",
+        str(FROZEN_ENV),
+    ]
+    if value_option == "--campaign-tag":
+        del command[5:7]
+    elif value_option == "--env-file":
+        del command[7:9]
+    command.extend((value_option, "--dry-run"))
+
+    result = subprocess.run(
+        command,
+        cwd=RUN_DIRECTORY,
+        env=_clean_environment(),
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert f"{value_option} requires a value" in result.stdout
+    assert not output_root.exists()
