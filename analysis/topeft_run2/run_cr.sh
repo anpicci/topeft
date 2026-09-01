@@ -29,14 +29,9 @@ srplot009_identity_field() {
 
 srplot009_require_fresh_paths() {
   local output_root="$1"
-  local environment_namespace="$2"
 
   if [[ -e "${output_root}" ]]; then
     echo "ERROR: SRPLOT-009 output root already exists; refusing overwrite, merge, or resume: ${output_root}" >&2
-    return 1
-  fi
-  if [[ -e "${environment_namespace}" ]]; then
-    echo "ERROR: SRPLOT-009 environment namespace already exists; it cannot prove a fresh campaign archive: ${environment_namespace}" >&2
     return 1
   fi
 }
@@ -64,62 +59,16 @@ srplot009_assert_committed_source() {
   fi
 }
 
-srplot009_run_environment_builder() {
+srplot009_validate_frozen_environment() {
   local validation_backend="$1"
   local validation_scenario="$2"
-  local environment_namespace="$3"
-  local wrap="$4"
-  local python_env="$5"
-  local run_analysis_path="$6"
-
-  if [[ -n "${validation_backend}" ]]; then
-    "${validation_backend}" build_environment "${validation_scenario}" "${environment_namespace}"
-    return
-  fi
-
-  "${wrap}" /bin/bash --noprofile --norc -c \
-    'cd -- "$1" && exec "$2" "$3" --prepare-env-only --rebuild-env' \
-    srplot009_environment_build \
-    "${environment_namespace}" \
-    "${python_env}" \
-    "${run_analysis_path}"
-}
-
-srplot009_run_environment_validator() {
-  local validation_backend="$1"
-  local validation_scenario="$2"
-  local environment_namespace="$3"
-  local environment_file="$4"
+  local environment_file="$3"
+  local expected_sha256="$4"
   local wrap="$5"
   local python_env="$6"
   local run_analysis_path="$7"
-
-  if [[ -n "${validation_backend}" ]]; then
-    "${validation_backend}" validate_environment "${validation_scenario}" "${environment_namespace}" "${environment_file}"
-    return
-  fi
-
-  "${wrap}" /bin/bash --noprofile --norc -c \
-    'cd -- "$1" && exec "$2" "$3" --validate-env-file --env-file "$4"' \
-    srplot009_environment_validation \
-    "${environment_namespace}" \
-    "${python_env}" \
-    "${run_analysis_path}" \
-    "${environment_file}"
-}
-
-srplot009_validate_environment_identity() {
-  local environment_namespace="$1"
-  local build_identity="$2"
-  local validation_identity="$3"
-  local -n identity_values_ref="$4"
-  local build_path
-  local build_sha256
-  local build_manifest
-  local build_fingerprint
-  local build_status
-  local build_topcoffea_commit
-  local build_topcoffea_source
+  local direct_sha256
+  local validation_identity
   local validation_path
   local validation_sha256
   local validation_manifest
@@ -127,17 +76,30 @@ srplot009_validate_environment_identity() {
   local validation_status
   local validation_topcoffea_commit
   local validation_topcoffea_source
-  local canonical_path
-  local actual_sha256
-  local archives=()
 
-  build_path=$(srplot009_identity_field env_file "${build_identity}")
-  build_sha256=$(srplot009_identity_field env_file_sha256 "${build_identity}")
-  build_manifest=$(srplot009_identity_field env_manifest "${build_identity}")
-  build_fingerprint=$(srplot009_identity_field environment_fingerprint "${build_identity}")
-  build_status=$(srplot009_identity_field environment_validation_status "${build_identity}")
-  build_topcoffea_commit=$(srplot009_identity_field topcoffea_git_commit "${build_identity}")
-  build_topcoffea_source=$(srplot009_identity_field topcoffea_relevant_source_fingerprint "${build_identity}")
+  if [[ ! -f "${environment_file}" || ! -r "${environment_file}" || ! -s "${environment_file}" ]]; then
+    echo "ERROR: frozen snapshot archive is not a readable nonempty regular file: ${environment_file}" >&2
+    return 1
+  fi
+  direct_sha256=$(sha256sum "${environment_file}")
+  direct_sha256="${direct_sha256%% *}"
+  if [[ "${direct_sha256}" != "${expected_sha256}" ]]; then
+    echo "ERROR: frozen snapshot archive SHA-256 mismatch." >&2
+    return 1
+  fi
+
+  if [[ -n "${validation_backend}" ]]; then
+    validation_identity=$("${validation_backend}" validate_environment "${validation_scenario}" "${environment_file}")
+  else
+    validation_identity=$("${wrap}" /bin/bash --noprofile --norc -c \
+      'cd -- "$1" && exec "$2" "$3" --validate-env-file --env-integrity-only --env-file "$4"' \
+      srplot009_environment_validation \
+      "$(dirname -- "${run_analysis_path}")" \
+      "${python_env}" \
+      "${run_analysis_path}" \
+      "${environment_file}")
+  fi
+  printf '%s\n' "${validation_identity}"
 
   validation_path=$(srplot009_identity_field env_file "${validation_identity}")
   validation_sha256=$(srplot009_identity_field env_file_sha256 "${validation_identity}")
@@ -147,70 +109,26 @@ srplot009_validate_environment_identity() {
   validation_topcoffea_commit=$(srplot009_identity_field topcoffea_git_commit "${validation_identity}")
   validation_topcoffea_source=$(srplot009_identity_field topcoffea_relevant_source_fingerprint "${validation_identity}")
 
-  canonical_path=$(readlink -f -- "${build_path}" 2>/dev/null || true)
-  case "${canonical_path}" in
-    "${environment_namespace}"/topeft-envs/env_spec_*.tar.gz) ;;
-    *)
-      echo "ERROR: environment builder did not return an archive inside the fresh campaign namespace." >&2
-      return 1
-      ;;
-  esac
-
-  shopt -s nullglob
-  archives=("${environment_namespace}"/topeft-envs/env_spec_*.tar.gz)
-  shopt -u nullglob
-  if (( ${#archives[@]} != 1 )); then
-    echo "ERROR: expected exactly one campaign environment archive, found ${#archives[@]}." >&2
-    return 1
-  fi
-
-  if [[ ! -f "${canonical_path}" || ! -r "${canonical_path}" || ! -s "${canonical_path}" ]]; then
-    echo "ERROR: campaign environment archive is not a readable nonempty regular file." >&2
-    return 1
-  fi
-  actual_sha256=$(sha256sum "${canonical_path}")
-  actual_sha256="${actual_sha256%% *}"
-
-  if [[ "${build_path}" != "${canonical_path}" \
-    || "${build_manifest}" != "${canonical_path}.manifest.json" \
-    || ! -f "${build_manifest}" \
-    || "${build_sha256}" != "${actual_sha256}" \
-    || -z "${build_fingerprint}" \
-    || "${build_status}" != "valid" \
-    || -z "${build_topcoffea_commit}" \
-    || -z "${build_topcoffea_source}" ]]; then
-    echo "ERROR: environment build identity is incomplete or inconsistent with the created archive." >&2
-    return 1
-  fi
-
-  if [[ "${validation_path}" != "${build_path}" \
-    || "${validation_sha256}" != "${build_sha256}" \
-    || "${validation_manifest}" != "${build_manifest}" \
-    || "${validation_fingerprint}" != "${build_fingerprint}" \
+  if [[ "${validation_path}" != "${environment_file}" \
+    || "${validation_sha256}" != "${expected_sha256}" \
+    || "${validation_manifest}" != "${environment_file}.manifest.json" \
+    || ! -f "${validation_manifest}" \
+    || -z "${validation_fingerprint}" \
     || "${validation_status}" != "valid" \
-    || "${validation_topcoffea_commit}" != "${build_topcoffea_commit}" \
-    || "${validation_topcoffea_source}" != "${build_topcoffea_source}" ]]; then
-    echo "ERROR: strict environment validation did not read back the exact built archive identity." >&2
+    || -z "${validation_topcoffea_commit}" \
+    || -z "${validation_topcoffea_source}" ]]; then
+    echo "ERROR: maintained integrity validation did not read back the exact frozen archive identity." >&2
     return 1
   fi
-
-  identity_values_ref=(
-    "${canonical_path}"
-    "${actual_sha256}"
-    "${build_manifest}"
-    "${build_fingerprint}"
-    "${validation_status}"
-    "${build_topcoffea_commit}"
-    "${build_topcoffea_source}"
-  )
 }
 
 srplot009_write_environment_identity() {
   local identity_path="$1"
-  local environment_namespace="$2"
-  local repository_root="$3"
-  local script_dir="$4"
-  local -n identity_values_ref="$5"
+  local repository_root="$2"
+  local script_dir="$3"
+  local environment_file="$4"
+  local environment_sha256="$5"
+  local block_count="$6"
   local temporary_path
   local topeft_commit
   local run_cr_sha256
@@ -232,18 +150,14 @@ srplot009_write_environment_identity() {
   background_cfg_sha256=$(sha256sum "${repository_root}/input_samples/cfgs/mc_background_samples_NDSkim.cfg"); background_cfg_sha256="${background_cfg_sha256%% *}"
   data_cfg_sha256=$(sha256sum "${repository_root}/input_samples/cfgs/data_samples_NDSkim.cfg"); data_cfg_sha256="${data_cfg_sha256%% *}"
 
-  temporary_path=$(mktemp "${environment_namespace}/.environment_identity.XXXXXX")
+  temporary_path=$(mktemp "$(dirname -- "${identity_path}")/.environment_identity.XXXXXX")
   {
     printf 'field\tvalue\n'
-    printf 'fresh_namespace_absent_before_build\ttrue\n'
-    printf 'fresh_archive_created_for_this_launch\ttrue\n'
-    printf 'archive_path\t%s\n' "${identity_values_ref[0]}"
-    printf 'archive_sha256\t%s\n' "${identity_values_ref[1]}"
-    printf 'manifest_path\t%s\n' "${identity_values_ref[2]}"
-    printf 'environment_fingerprint\t%s\n' "${identity_values_ref[3]}"
-    printf 'environment_validation_status\t%s\n' "${identity_values_ref[4]}"
-    printf 'topcoffea_git_commit\t%s\n' "${identity_values_ref[5]}"
-    printf 'topcoffea_relevant_source_fingerprint\t%s\n' "${identity_values_ref[6]}"
+    printf 'environment_use_mode\tmaintained_snapshot\n'
+    printf 'archive_path\t%s\n' "${environment_file}"
+    printf 'archive_sha256\t%s\n' "${environment_sha256}"
+    printf 'manifest_path\t%s.manifest.json\n' "${environment_file}"
+    printf 'environment_validation_status\tvalid_integrity_only\n'
     printf 'topeft_git_commit\t%s\n' "${topeft_commit}"
     printf 'run_cr_sha256\t%s\n' "${run_cr_sha256}"
     printf 'fullR3_run_sha256\t%s\n' "${fullr3_sha256}"
@@ -253,8 +167,9 @@ srplot009_write_environment_identity() {
     printf 'signal_cfg_sha256\t%s\n' "${signal_cfg_sha256}"
     printf 'background_cfg_sha256\t%s\n' "${background_cfg_sha256}"
     printf 'data_cfg_sha256\t%s\n' "${data_cfg_sha256}"
-    printf 'block_count\t5\n'
+    printf 'block_count\t%s\n' "${block_count}"
     printf 'same_explicit_archive_required_for_all_blocks\ttrue\n'
+    printf 'environment_build_or_resolution\tforbidden\n'
   } > "${temporary_path}"
   mv -- "${temporary_path}" "${identity_path}"
 }
@@ -305,29 +220,22 @@ srplot009_run_block() {
 }
 
 run_srplot009_campaign() {
-  local dry_run=false
-  if (( $# == 1 )) && [[ "$1" == "--dry-run" ]]; then
-    dry_run=true
-  elif (( $# != 0 )); then
-    echo "ERROR: the default SRPLOT-009 campaign accepts only --dry-run." >&2
-    return 1
-  fi
+  local dry_run="$1"
+  local output_root="$2"
+  local campaign_tag="$3"
 
   local script_dir
   local repository_root
   local wrap=/users/apiccine/work/correction-lib/codex-run.sh
   local python_env=/users/apiccine/work/miniconda3/envs/clib-env/bin/python
   local run_analysis_path
-  local output_root=/groups/klannon/apiccine/run2_srplot009_current_branch
-  local environment_namespace=/groups/klannon/apiccine/run2_srplot009_current_branch_environment
-  local environment_file=/groups/klannon/apiccine/run2_srplot009_current_branch_environment/topeft-envs/env_spec_FUTURE_LAUNCH.tar.gz
+  local environment_file=/users/apiccine/work/correction-lib/topeft/analysis/topeft_run2/topeft-envs/env_spec_9d72aad444117c28.tar.gz
+  local environment_sha256=8245afe4b3c28f4948039d383ad2176f1ee3ebb5e61bcdf1b49289452b025332
   local validation_backend="${SRPLOT009_VALIDATION_BACKEND:-}"
   local validation_root="${SRPLOT009_VALIDATION_ROOT:-}"
   local validation_scenario="${SRPLOT009_VALIDATION_SCENARIO:-success}"
-  local build_log
-  local validation_log
-  local build_identity
-  local validation_identity
+  local sumw2_options_path
+  local temporary_sumw2_options=""
   local identity_path
   local events_path
   local logs_dir
@@ -337,7 +245,6 @@ run_srplot009_campaign() {
   local categories=()
   local hist_vars=()
   local block_command=()
-  local environment_identity=()
   local category_sets=(
     "2l 2lss_1tau 2los_1tau 4l"
     "3l_m_offZ"
@@ -359,10 +266,6 @@ run_srplot009_campaign() {
   cd -- "${script_dir}"
 
   if [[ -n "${validation_backend}" ]]; then
-    if [[ "${dry_run}" == "true" ]]; then
-      echo "ERROR: validation backend and --dry-run are separate no-submit paths." >&2
-      return 1
-    fi
     case "${validation_root}" in
       /tmp/*) ;;
       *)
@@ -381,74 +284,73 @@ run_srplot009_campaign() {
       echo "ERROR: SRPLOT009_VALIDATION_BACKEND is not executable." >&2
       return 1
     fi
-    output_root="${validation_root}/output"
-    environment_namespace="${validation_root}/environment"
+    case "${output_root}" in
+      /tmp/*) ;;
+      *) output_root="${validation_root}/output" ;;
+    esac
   fi
 
-  srplot009_require_fresh_paths "${output_root}" "${environment_namespace}"
+  srplot009_require_fresh_paths "${output_root}"
+  if [[ "${output_root}" != /* ]]; then
+    echo "ERROR: Run-2 output root must be absolute: ${output_root}" >&2
+    return 1
+  fi
+  if [[ -z "${campaign_tag}" || "${campaign_tag}" == *$'\t'* || "${campaign_tag}" == *$'\n'* ]]; then
+    echo "ERROR: Run-2 campaign tag must be nonempty and contain no tabs/newlines." >&2
+    return 1
+  fi
 
   echo "SRPLOT-009 Run-2 SR campaign"
   echo "output_root: ${output_root}"
-  echo "environment_namespace: ${environment_namespace}"
+  echo "campaign_tag: ${campaign_tag}"
   echo "block_count: 5"
   echo "overwrite_or_resume_policy: fail_closed_no_overwrite_no_resume"
   echo "interruption_retry_policy: no_automatic_retry_inspect_first"
+  echo "environment_policy: exact_frozen_archive_integrity_plus_snapshot"
+  echo "sumw2_storage_mode: full_diagnostics"
+
+  if ! srplot009_validate_frozen_environment \
+    "${validation_backend}" "${validation_scenario}" \
+    "${environment_file}" "${environment_sha256}" \
+    "${wrap}" "${python_env}" "${run_analysis_path}"; then
+    echo "ERROR: frozen snapshot integrity validation failed; all five blocks remain not_started." >&2
+    return 1
+  fi
 
   if [[ "${dry_run}" == "true" ]]; then
-    echo "environment_policy: future_build_once_validate_once_freeze_one_explicit_archive"
+    temporary_sumw2_options=$(mktemp /tmp/run2_full_sumw2.XXXXXX.yml)
+    sumw2_options_path="${temporary_sumw2_options}"
+    trap 'rm -f -- "${temporary_sumw2_options}"' RETURN
   else
     if [[ -z "${validation_backend}" ]]; then
       srplot009_assert_committed_source "${repository_root}"
     fi
-    mkdir -- "${environment_namespace}"
-    srplot009_campaign_log_path="${environment_namespace}/campaign.log"
+    mkdir -- "${output_root}"
+    sumw2_options_path="${output_root}/sumw2_full_diagnostics.yml"
+    srplot009_campaign_log_path="${output_root}/campaign.log"
     srplot009_campaign_start_time=$(date -u +%Y-%m-%dT%H:%M:%SZ)
     exec > >(tee -a "${srplot009_campaign_log_path}") 2>&1
     trap 'srplot009_finalize_campaign_log "$?"' EXIT
-    printf 'campaign_command: ./run_cr.sh\n'
+    printf 'campaign_command: ./run_cr.sh --production-profile run2_full\n'
     printf 'campaign_start_time_utc: %s\n' "${srplot009_campaign_start_time}"
-    build_log="${environment_namespace}/environment_build.log"
-    validation_log="${environment_namespace}/environment_validation.log"
-
-    if ! srplot009_run_environment_builder \
-      "${validation_backend}" "${validation_scenario}" "${environment_namespace}" \
-      "${wrap}" "${python_env}" "${run_analysis_path}" 2>&1 | tee "${build_log}"; then
-      echo "ERROR: fresh environment build failed; all five blocks remain not_started." >&2
-      return 1
-    fi
-    build_identity=$(<"${build_log}")
-    environment_file=$(srplot009_identity_field env_file "${build_identity}")
-
-    if ! srplot009_run_environment_validator \
-      "${validation_backend}" "${validation_scenario}" "${environment_namespace}" \
-      "${environment_file}" "${wrap}" "${python_env}" "${run_analysis_path}" \
-      2>&1 | tee "${validation_log}"; then
-      echo "ERROR: strict environment validation failed; all five blocks remain not_started." >&2
-      return 1
-    fi
-    validation_identity=$(<"${validation_log}")
-    srplot009_validate_environment_identity \
-      "${environment_namespace}" "${build_identity}" "${validation_identity}" environment_identity
-    environment_file="${environment_identity[0]}"
-    identity_path="${environment_namespace}/environment_identity.tsv"
+    identity_path="${output_root}/environment_identity.tsv"
     srplot009_write_environment_identity \
-      "${identity_path}" "${environment_namespace}" "${repository_root}" "${script_dir}" environment_identity
-    echo "environment_identity_path: ${identity_path}"
-    echo "environment_file: ${environment_file}"
-    echo "environment_sha256: ${environment_identity[1]}"
-    echo "environment_fingerprint: ${environment_identity[3]}"
-    echo "environment_validation_status: ${environment_identity[4]}"
-
-    mkdir -- "${output_root}"
+      "${identity_path}" "${repository_root}" "${script_dir}" \
+      "${environment_file}" "${environment_sha256}" 5
     logs_dir="${output_root}/logs"
     mkdir -- "${logs_dir}"
     events_path="${output_root}/srplot009_campaign_events.tsv"
     printf 'timestamp_utc\tblock_id\tevent\texit_code\n' > "${events_path}"
   fi
 
+  printf 'sumw2_storage:\n  mode: full_diagnostics\n' > "${sumw2_options_path}"
+  echo "sumw2_options_path: ${sumw2_options_path}"
+  echo "environment_file: ${environment_file}"
+  echo "environment_sha256: ${environment_sha256}"
+
   for block_index in 0 1 2 3 4; do
     block_id="block$((block_index + 1))"
-    tag="current-branch-srplot009-${block_id}"
+    tag="${campaign_tag}-${block_id}"
     read -r -a categories <<< "${category_sets[block_index]}"
     read -r -a hist_vars <<< "${histogram_sets[block_index]}"
     block_command=(
@@ -468,9 +370,10 @@ run_srplot009_campaign() {
       --do-np
       --np-postprocess=inline
       -x work_queue
-      --nworkers 8
       -s 100000
       --env-file "${environment_file}"
+      --snapshot
+      --options "${sumw2_options_path}"
     )
 
     if [[ "${dry_run}" == "true" ]]; then
@@ -489,32 +392,287 @@ run_srplot009_campaign() {
   if [[ "${dry_run}" == "true" ]]; then
     echo "dry_run_complete: five commands resolved; no environment, output root, scheduler, or production action was created"
   else
-    echo "SRPLOT-009 campaign completed all five blocks with one frozen environment archive."
+    echo "Run-2 full campaign completed all five blocks with one frozen snapshot archive."
   fi
 }
 
-if (( $# == 0 )) || [[ "${1:-}" == "--dry-run" ]]; then
-  run_srplot009_campaign "$@"
+run_cr_matrix_campaign() {
+  local profile="$1"
+  local dry_run="$2"
+  local output_root="$3"
+  local campaign_tag="$4"
+  local script_dir
+  local repository_root
+  local wrap=/users/apiccine/work/correction-lib/codex-run.sh
+  local python_env=/users/apiccine/work/miniconda3/envs/clib-env/bin/python
+  local environment_file=/users/apiccine/work/correction-lib/topeft/analysis/topeft_run2/topeft-envs/env_spec_9d72aad444117c28.tar.gz
+  local environment_sha256=8245afe4b3c28f4948039d383ad2176f1ee3ebb5e61bcdf1b49289452b025332
+  local validation_backend="${SRPLOT009_VALIDATION_BACKEND:-}"
+  local validation_root="${SRPLOT009_VALIDATION_ROOT:-}"
+  local validation_scenario="${SRPLOT009_VALIDATION_SCENARIO:-success}"
+  local sumw2_options_path
+  local temporary_sumw2_options=""
+  local logs_dir=""
+  local events_path=""
+  local identity_path
+  local year_expr
+  local family_index
+  local var_set
+  local block_index=0
+  local block_id
+  local tag
+  local years=()
+  local categories=()
+  local hist_vars=()
+  local block_command=()
+  local year_sets=()
+  local category_sets=(
+    "2l_CR 2l_CRflip 2los_CRZ 2los_CRtt 3l_CR"
+    "1l_1tau_CRtt 1l_1tau_CRDY 2los_1tau"
+  )
+  local non_tau_var_sets=(
+    "fwd0pt fwd0eta j0pt j0eta lj0pt njets nbtagsm"
+    "lt met ptz l0conept l0eta l1conept l1eta"
+    "nbtagsl invmass ljptsum npvsGood"
+  )
+  local tau_var_sets=(
+    "fwd0pt fwd0eta j0pt j0eta lj0pt njets nbtagsm"
+    "lt met ptz l0conept l0eta l1conept l1eta"
+    "nbtagsl invmass ljptsum npvsGood ptz_wtau tau0Fpt tau0Tpt"
+  )
+
+  case "${profile}" in
+    run2_full_CR) year_sets=("2016APV 2016 2017 2018") ;;
+    run3_full_CR) year_sets=("2022 2022EE" "2023 2023BPix") ;;
+    *) echo "ERROR: internal unsupported CR profile ${profile}." >&2; return 1 ;;
+  esac
+
+  script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+  repository_root=$(git -C "${script_dir}" rev-parse --show-toplevel)
+  cd -- "${script_dir}"
+
+  if [[ -n "${validation_backend}" ]]; then
+    case "${validation_root}" in /tmp/*) ;; *) echo "ERROR: SRPLOT009_VALIDATION_ROOT must be below /tmp." >&2; return 1 ;; esac
+    case "${validation_backend}" in /tmp/*) ;; *) echo "ERROR: SRPLOT009_VALIDATION_BACKEND must be below /tmp." >&2; return 1 ;; esac
+    [[ -x "${validation_backend}" ]] || { echo "ERROR: validation backend is not executable." >&2; return 1; }
+    case "${output_root}" in
+      /tmp/*) ;;
+      *) output_root="${validation_root}/output" ;;
+    esac
+  fi
+
+  srplot009_require_fresh_paths "${output_root}"
+  [[ "${output_root}" == /* ]] || { echo "ERROR: CR output root must be absolute." >&2; return 1; }
+  [[ -n "${campaign_tag}" ]] || { echo "ERROR: CR campaign tag must be nonempty." >&2; return 1; }
+  srplot009_validate_frozen_environment \
+    "${validation_backend}" "${validation_scenario}" \
+    "${environment_file}" "${environment_sha256}" \
+    "${wrap}" "${python_env}" "${script_dir}/run_analysis.py"
+
+  if [[ "${dry_run}" == "true" ]]; then
+    temporary_sumw2_options=$(mktemp "/tmp/${profile}_sumw2.XXXXXX.yml")
+    sumw2_options_path="${temporary_sumw2_options}"
+    trap 'rm -f -- "${temporary_sumw2_options}"' RETURN
+  else
+    if [[ -z "${validation_backend}" ]]; then
+      srplot009_assert_committed_source "${repository_root}"
+    fi
+    mkdir -- "${output_root}"
+    sumw2_options_path="${output_root}/sumw2_full_diagnostics.yml"
+    logs_dir="${output_root}/logs"
+    mkdir -- "${logs_dir}"
+    events_path="${output_root}/${profile}_campaign_events.tsv"
+    printf 'timestamp_utc\tblock_id\tevent\texit_code\n' > "${events_path}"
+    identity_path="${output_root}/environment_identity.tsv"
+    srplot009_write_environment_identity \
+      "${identity_path}" "${repository_root}" "${script_dir}" \
+      "${environment_file}" "${environment_sha256}" "$(( ${#year_sets[@]} * 6 ))"
+  fi
+  printf 'sumw2_storage:\n  mode: full_diagnostics\n' > "${sumw2_options_path}"
+
+  echo "profile: ${profile}"
+  echo "output_root: ${output_root}"
+  echo "environment_file: ${environment_file}"
+  echo "environment_sha256: ${environment_sha256}"
+  echo "environment_policy: exact_frozen_archive_integrity_plus_snapshot"
+  echo "sumw2_storage_mode: full_diagnostics"
+  echo "overwrite_or_resume_policy: fail_closed_no_overwrite_no_resume"
+
+  for year_expr in "${year_sets[@]}"; do
+    read -r -a years <<< "${year_expr}"
+    for family_index in 0 1; do
+      read -r -a categories <<< "${category_sets[family_index]}"
+      if (( family_index == 0 )); then
+        local -n active_var_sets=non_tau_var_sets
+      else
+        local -n active_var_sets=tau_var_sets
+      fi
+      for var_set in "${active_var_sets[@]}"; do
+        block_index=$((block_index + 1))
+        block_id="block${block_index}"
+        tag="${campaign_tag}-${block_id}"
+        read -r -a hist_vars <<< "${var_set}"
+        block_command=(
+          "${wrap}" /bin/bash --noprofile --norc -c
+          'cd -- "$1" && shift && exec "$@"'
+          "${profile}_${block_id}"
+          "${script_dir}"
+          ./fullR3_run.sh
+          -y "${years[@]}"
+          -t "${tag}"
+          --cr
+          --hist-vars "${hist_vars[@]}"
+          -p "${output_root}"
+          --all-analysis
+          --category-groups "${categories[@]}"
+          --do-systs
+          --do-np
+          --np-postprocess=inline
+          -x work_queue
+          -s 100000
+          --env-file "${environment_file}"
+          --snapshot
+          --options "${sumw2_options_path}"
+        )
+        if [[ "${dry_run}" == "true" ]]; then
+          block_command+=(--dry-run)
+          printf 'PROFILE_BLOCK_COMMAND\t%s\t%s\t' "${profile}" "${block_id}"
+          srplot009_print_command "${block_command[@]}"
+          "${block_command[@]}"
+        else
+          srplot009_run_block \
+            "${validation_backend}" "${validation_scenario}" "${block_id}" \
+            "${logs_dir}/${block_id}.log" "${events_path}" "${environment_file}" \
+            "${block_command[@]}"
+        fi
+      done
+      unset -n active_var_sets
+    done
+  done
+
+  echo "${profile} completed ${block_index} resolved blocks."
+}
+
+matrix_profile=""
+matrix_dry_run=false
+matrix_output_dir=""
+matrix_campaign_tag=""
+matrix_env_file=""
+matrix_resume=false
+
+matrix_parse_args() {
+  local args=("$@")
+  local index=0
+  while (( index < ${#args[@]} )); do
+    case "${args[index]}" in
+      --production-profile) matrix_profile="${args[index + 1]:-}"; index=$((index + 2)) ;;
+      --dry-run) matrix_dry_run=true; index=$((index + 1)) ;;
+      --output-dir) matrix_output_dir="${args[index + 1]:-}"; index=$((index + 2)) ;;
+      --campaign-tag) matrix_campaign_tag="${args[index + 1]:-}"; index=$((index + 2)) ;;
+      --env-file) matrix_env_file="${args[index + 1]:-}"; index=$((index + 2)) ;;
+      --resume) matrix_resume=true; index=$((index + 1)) ;;
+      -h|--help) index=$((index + 1)) ;;
+      *) index=$((index + 1)) ;;
+    esac
+  done
+}
+
+if (( $# == 0 )) || { (( $# == 1 )) && [[ "$1" == "--dry-run" ]]; }; then
+  [[ "${1:-}" == "--dry-run" ]] && matrix_dry_run=true
+  run_srplot009_campaign \
+    "${matrix_dry_run}" \
+    /groups/klannon/apiccine/run2_srplot009_current_branch \
+    current-branch-srplot009
   exit $?
 fi
+
+matrix_parse_args "$@"
+case "${matrix_profile}" in
+  run2_full|run2_full_CR|run3_full_CR|run2_run3_full|run2_run3_full_CR)
+    if [[ -z "${matrix_output_dir}" || -z "${matrix_campaign_tag}" ]]; then
+      echo "ERROR: ${matrix_profile} requires --output-dir and --campaign-tag." >&2
+      exit 1
+    fi
+    if [[ -n "${matrix_env_file}" && "${matrix_env_file}" != "/users/apiccine/work/correction-lib/topeft/analysis/topeft_run2/topeft-envs/env_spec_9d72aad444117c28.tar.gz" ]]; then
+      echo "ERROR: requested profiles are pinned to the maintained frozen snapshot archive." >&2
+      exit 1
+    fi
+    if [[ "${matrix_resume}" == "true" ]]; then
+      echo "ERROR: ${matrix_profile} has no automatic resume; inspect interrupted state first." >&2
+      exit 1
+    fi
+    ;;
+esac
+
+case "${matrix_profile}" in
+  run2_full)
+    run_srplot009_campaign "${matrix_dry_run}" "${matrix_output_dir}" "${matrix_campaign_tag}"
+    exit $?
+    ;;
+  run2_full_CR|run3_full_CR)
+    run_cr_matrix_campaign "${matrix_profile}" "${matrix_dry_run}" "${matrix_output_dir}" "${matrix_campaign_tag}"
+    exit $?
+    ;;
+  run2_run3_full|run2_run3_full_CR)
+    if [[ -e "${matrix_output_dir}" ]]; then
+      echo "ERROR: combined output namespace already exists: ${matrix_output_dir}" >&2
+      exit 1
+    fi
+    combined_suffix=""
+    first_profile=run2_full
+    second_profile=run3_full
+    if [[ "${matrix_profile}" == "run2_run3_full_CR" ]]; then
+      combined_suffix=_CR
+      first_profile=run2_full_CR
+      second_profile=run3_full_CR
+    fi
+    if [[ "${matrix_dry_run}" == "false" ]]; then
+      mkdir -- "${matrix_output_dir}"
+      printf 'state\tprofile\nstarted\t%s\n' "${matrix_profile}" > "${matrix_output_dir}/combined_campaign_state.tsv"
+      trap 'printf "interrupted\t%s\n" "${matrix_profile}" >> "${matrix_output_dir}/combined_campaign_state.tsv"; exit 130' INT TERM HUP
+    fi
+    component_common=(--env-file /users/apiccine/work/correction-lib/topeft/analysis/topeft_run2/topeft-envs/env_spec_9d72aad444117c28.tar.gz)
+    [[ "${matrix_dry_run}" == "true" ]] && component_common+=(--dry-run)
+    "$0" --production-profile "${first_profile}" \
+      --output-dir "${matrix_output_dir}/run2${combined_suffix}" \
+      --campaign-tag "${matrix_campaign_tag}_run2" "${component_common[@]}"
+    if [[ "${matrix_dry_run}" == "false" ]]; then
+      printf 'run2_success\t%s\n' "${first_profile}" >> "${matrix_output_dir}/combined_campaign_state.tsv"
+    fi
+    "$0" --production-profile "${second_profile}" \
+      --output-dir "${matrix_output_dir}/run3${combined_suffix}" \
+      --campaign-tag "${matrix_campaign_tag}_run3" "${component_common[@]}"
+    if [[ "${matrix_dry_run}" == "false" ]]; then
+      printf 'complete\t%s\n' "${matrix_profile}" >> "${matrix_output_dir}/combined_campaign_state.tsv"
+    fi
+    exit 0
+    ;;
+esac
 
 print_usage() {
   cat <<'EOF'
 Usage: ./run_cr.sh [--dry-run]
-       ./run_cr.sh --production-profile run3_full|rebin_fine [--dry-run] \
+       ./run_cr.sh --production-profile PROFILE [--dry-run] \
   [--output-dir PATH] [--campaign-tag TAG] [--env-file PATH] [--resume]
 
-With no arguments, run_cr.sh launches the fixed five-block Run-2 SRPLOT-009
-manual campaign. --dry-run resolves those five commands without building an
-environment, creating the output root, or submitting work.
+Public PROFILE values:
+  run2_full, run3_full, run2_run3_full
+  run2_full_CR, run3_full_CR, run2_run3_full_CR
+
+With no arguments, run_cr.sh remains a backward-compatible alias for the fixed
+five-block run2_full campaign. Combined profiles run Run 2 then Run 3 in
+separate child namespaces and start Run 3 only after Run-2 success.
+
+All six public profiles use the exact maintained frozen archive in snapshot
+mode, Work Queue without a profile-level worker count, and explicit
+full_diagnostics sumw2 storage. Explicit component and combined profiles
+require a fresh absolute output directory and campaign tag.
 
 run3_full is the canonical complete Run-3 SR source-production profile.
 rebin_fine is the specialized six-block Run-2/Run-3 source-production profile
-for fitting families whose bins changed. Both profiles require an explicit
-fresh output directory and campaign tag. A fresh run3_full campaign resolves
-one current environment automatically; --env-file pins an exact current
-archive, and rebin_fine requires that pin. Resume uses only the environment
-frozen in matching campaign state.
+for fitting families whose bins changed and remains available as a legacy
+profile. Resume remains available only where already maintained by the legacy
+generic profile machinery.
 EOF
 }
 
@@ -625,6 +783,8 @@ production_env_file_sha256=""
 production_environment_fingerprint=""
 production_topcoffea_git_commit=""
 production_topcoffea_source_fingerprint=""
+production_sumw2_options_path=""
+production_sumw2_temporary_options=""
 production_state_path=""
 production_git_commit=""
 
@@ -1345,8 +1505,11 @@ PY
 
 resolve_production_environment() {
   local requested_env_file="${profile_env_file}"
+  local matrix_env_file=/users/apiccine/work/correction-lib/topeft/analysis/topeft_run2/topeft-envs/env_spec_9d72aad444117c28.tar.gz
+  local matrix_env_sha256=8245afe4b3c28f4948039d383ad2176f1ee3ebb5e61bcdf1b49289452b025332
   local frozen_env_file=""
   local canonical_requested_env_file=""
+  local direct_sha256=""
   local validation_status=""
   local validation_args=()
 
@@ -1371,26 +1534,50 @@ resolve_production_environment() {
       fi
     fi
     requested_env_file="${frozen_env_file}"
-    validation_args=(--validate-env-file --env-file "${requested_env_file}")
+    if [[ "${production_profile}" == "run3_full" && "${requested_env_file}" != "${matrix_env_file}" ]]; then
+      echo "ERROR: run3_full resume state does not use the required frozen snapshot archive." >&2
+      exit 1
+    fi
+    if [[ "${production_profile}" == "run3_full" ]]; then
+      validation_args=(--validate-env-file --env-integrity-only --env-file "${requested_env_file}")
+    else
+      validation_args=(--validate-env-file --env-file "${requested_env_file}")
+    fi
   elif [[ -n "${requested_env_file}" ]]; then
     if [[ "${requested_env_file}" != /* ]]; then
       echo "ERROR: ${production_profile} --env-file must be an absolute path: ${requested_env_file}" >&2
       exit 1
     fi
     canonical_requested_env_file=$(readlink -f -- "${requested_env_file}" || true)
-    validation_args=(--validate-env-file --env-file "${requested_env_file}")
+    if [[ "${production_profile}" == "run3_full" && "${canonical_requested_env_file}" != "${matrix_env_file}" ]]; then
+      echo "ERROR: run3_full is pinned to the required frozen snapshot archive." >&2
+      exit 1
+    fi
+    if [[ "${production_profile}" == "run3_full" ]]; then
+      validation_args=(--validate-env-file --env-integrity-only --env-file "${requested_env_file}")
+    else
+      validation_args=(--validate-env-file --env-file "${requested_env_file}")
+    fi
   elif [[ "${production_profile}" == "run3_full" ]]; then
-    # This is the single campaign-level cache/build decision. run_analysis.py
-    # owns request fingerprinting, cache selection, manifest publication, and
-    # strict compatibility validation.
-    validation_args=(--prepare-env-only)
+    requested_env_file="${matrix_env_file}"
+    canonical_requested_env_file="${matrix_env_file}"
+    validation_args=(--validate-env-file --env-integrity-only --env-file "${requested_env_file}")
   else
     echo "ERROR: rebin_fine requires an explicit --env-file; no environment was built." >&2
     exit 1
   fi
 
+  if [[ "${production_profile}" == "run3_full" ]]; then
+    direct_sha256=$(sha256sum "${matrix_env_file}")
+    direct_sha256="${direct_sha256%% *}"
+    if [[ "${direct_sha256}" != "${matrix_env_sha256}" ]]; then
+      echo "ERROR: run3_full frozen snapshot archive SHA-256 mismatch." >&2
+      exit 1
+    fi
+  fi
+
   if ! production_environment_validation=$(python ./run_analysis.py "${validation_args[@]}"); then
-    echo "ERROR: ${production_profile} could not resolve a strict current environment archive; no campaign state was changed." >&2
+    echo "ERROR: ${production_profile} could not validate its environment archive; no campaign state was changed." >&2
     exit 1
   fi
   printf '%s\n' "${production_environment_validation}"
@@ -1418,7 +1605,11 @@ resolve_production_environment() {
     exit 1
   fi
   if [[ -n "${canonical_requested_env_file}" && "${production_env_file}" != "${canonical_requested_env_file}" ]]; then
-    echo "ERROR: strict --env-file validation returned a different archive path." >&2
+    echo "ERROR: --env-file validation returned a different archive path." >&2
+    exit 1
+  fi
+  if [[ "${production_profile}" == "run3_full" && "${production_env_file_sha256}" != "${matrix_env_sha256}" ]]; then
+    echo "ERROR: maintained validator SHA-256 differs from the required frozen archive identity." >&2
     exit 1
   fi
 }
@@ -1586,9 +1777,33 @@ prepare_production_campaign() {
   fi
 }
 
+prepare_production_sumw2_options() {
+  if [[ "${production_profile}" != "run3_full" ]]; then
+    return
+  fi
+  if [[ "${dry_run}" == "true" ]]; then
+    production_sumw2_temporary_options=$(mktemp /tmp/run3_full_sumw2.XXXXXX.yml)
+    production_sumw2_options_path="${production_sumw2_temporary_options}"
+    printf 'sumw2_storage:\n  mode: full_diagnostics\n' > "${production_sumw2_options_path}"
+  else
+    production_sumw2_options_path="${output_dir}/sumw2_full_diagnostics.yml"
+    if [[ "${profile_resume}" == "false" ]]; then
+      printf 'sumw2_storage:\n  mode: full_diagnostics\n' > "${production_sumw2_options_path}"
+    fi
+  fi
+  if [[ ! -f "${production_sumw2_options_path}" ]] \
+    || [[ "$(<"${production_sumw2_options_path}")" != $'sumw2_storage:\n  mode: full_diagnostics' ]]; then
+    echo "ERROR: run3_full sumw2 options do not match full_diagnostics." >&2
+    exit 1
+  fi
+}
+
 cleanup_production_plan() {
   if [[ -n "${production_plan_file:-}" && -f "${production_plan_file}" ]]; then
     rm -f -- "${production_plan_file}"
+  fi
+  if [[ -n "${production_sumw2_temporary_options:-}" && -f "${production_sumw2_temporary_options}" ]]; then
+    rm -f -- "${production_sumw2_temporary_options}"
   fi
 }
 
@@ -1774,6 +1989,14 @@ build_common_command_options() {
   )
 
   cmd_ref+=(--env-file "${production_env_file}")
+
+  if [[ "${production_profile}" == "run3_full" ]]; then
+    cmd_ref+=(
+      --snapshot
+      --options "${production_sumw2_options_path}"
+      -x work_queue
+    )
+  fi
 
   if [[ "${split_lep_flavor}" == "true" ]]; then
     cmd_ref+=(--split-lep-flavor)
@@ -2187,11 +2410,20 @@ echo "resume: ${profile_resume}"
 echo "env_file: ${production_env_file}"
 echo "env_file_sha256: ${production_env_file_sha256}"
 if [[ "${profile_resume}" == "true" ]]; then
-  echo "environment_policy: state_frozen_strict_single_archive"
+  if [[ "${production_profile}" == "run3_full" ]]; then
+    echo "environment_policy: state_frozen_exact_archive_integrity_plus_snapshot"
+  else
+    echo "environment_policy: state_frozen_strict_single_archive"
+  fi
+elif [[ "${production_profile}" == "run3_full" ]]; then
+  echo "environment_policy: exact_frozen_archive_integrity_plus_snapshot"
 elif [[ -n "${profile_env_file}" ]]; then
   echo "environment_policy: explicit_single_archive"
 else
-  echo "environment_policy: auto_current_once_then_frozen"
+  echo "environment_policy: legacy_profile_policy"
+fi
+if [[ "${production_profile}" == "run3_full" ]]; then
+  echo "sumw2_storage_mode: full_diagnostics"
 fi
 echo "campaign_state: ${output_dir}/${production_state_filename}"
 print_var_sets "CR non-tau" "${cr_non_tau_var_sets[@]}"
@@ -2230,6 +2462,7 @@ esac
 
 trap cleanup_production_plan EXIT
 prepare_production_campaign
+prepare_production_sumw2_options
 
 ###############################################################################
 # Main CR production
