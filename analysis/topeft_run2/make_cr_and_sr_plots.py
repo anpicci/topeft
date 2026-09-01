@@ -59,6 +59,18 @@ _ORIGINAL_SPARSEHIST_READ_FROM_REDUCE = tc_sparseHist.SparseHist._read_from_redu
 _VALUES_METHOD_CAPS = {}
 _SYSTEMATICS_SUMMARY_EMITTED = set()
 RATIO_Y_RANGE = (0.0, 2.0)
+BINNING_OUTPUT_MODES = frozenset(("processing", "fitting"))
+
+
+def _mode_bearing_output_path(path, binning_mode):
+    """Return *path* with the resolved binning mode before its extension."""
+
+    if binning_mode not in BINNING_OUTPUT_MODES:
+        raise ValueError(
+            f"Unsupported binning mode {binning_mode!r}; expected processing or fitting."
+        )
+    path_root, path_extension = os.path.splitext(os.fspath(path))
+    return f"{path_root}_{binning_mode}{path_extension}"
 
 
 def _fast_sparsehist_from_reduce(cls, cat_axes, dense_axes, init_args, dense_hists):
@@ -3671,7 +3683,10 @@ def _render_variable_category(
         if isinstance(fig, dict):
             combined_fig = fig["combined"]
             combined_fig.savefig(
-                os.path.join(save_dir_path_tmp, title),
+                _mode_bearing_output_path(
+                    os.path.join(save_dir_path_tmp, title),
+                    region_ctx.binning_mode,
+                ),
                 bbox_inches="tight",
                 pad_inches=0.05,
             )
@@ -3681,13 +3696,19 @@ def _render_variable_category(
                     continue
                 suffix = suffix_map.get(key, f"_{key}")
                 panel_fig.savefig(
-                    os.path.join(save_dir_path_tmp, f"{title}{suffix}"),
+                    _mode_bearing_output_path(
+                        os.path.join(save_dir_path_tmp, f"{title}{suffix}"),
+                        region_ctx.binning_mode,
+                    ),
                     bbox_inches="tight",
                     pad_inches=0.05,
                 )
         else:
             fig.savefig(
-                os.path.join(save_dir_path_tmp, title),
+                _mode_bearing_output_path(
+                    os.path.join(save_dir_path_tmp, title),
+                    region_ctx.binning_mode,
+                ),
                 bbox_inches="tight",
                 pad_inches=0.05,
             )
@@ -3931,7 +3952,10 @@ def _render_variable_category(
                 data_empty=data_empty,
             )
             return _empty_render_result()
-        save_path = os.path.join(save_dir_path_tmp, f"{title}.png")
+        save_path = _mode_bearing_output_path(
+            os.path.join(save_dir_path_tmp, f"{title}.png"),
+            region_ctx.binning_mode,
+        )
         fig.savefig(save_path, bbox_inches="tight", pad_inches=0.05)
         _close_figure_payload(fig)
         has_syst_inputs = any(
@@ -4650,12 +4674,24 @@ def _format_report_float(value):
     return "{:.12g}".format(numeric)
 
 
-def write_negative_weight_report(rows, output_dir, summary_limit=20):
+def write_negative_weight_report(
+    rows,
+    output_dir,
+    *,
+    binning_mode,
+    summary_limit=20,
+):
     """Write negative MC contribution CSV and Markdown summary."""
 
     os.makedirs(output_dir, exist_ok=True)
-    csv_path = os.path.join(output_dir, "negative_weight_contribution_report.csv")
-    md_path = os.path.join(output_dir, "negative_weight_contribution_summary.md")
+    csv_path = _mode_bearing_output_path(
+        os.path.join(output_dir, "negative_weight_contribution_report.csv"),
+        binning_mode,
+    )
+    md_path = _mode_bearing_output_path(
+        os.path.join(output_dir, "negative_weight_contribution_summary.md"),
+        binning_mode,
+    )
 
     normalized_rows = list(rows or [])
     with open(csv_path, "w", newline="") as csv_file:
@@ -9017,6 +9053,7 @@ def run_plots_for_region(
         report_paths = write_negative_weight_report(
             all_negative_rows,
             save_dir_path,
+            binning_mode=binning_mode,
         )
         print(
             "Wrote negative MC contribution report: {csv}; summary: {markdown}".format(
