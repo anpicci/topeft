@@ -134,12 +134,36 @@ def test_ambiguous_attempt_has_durable_identity_and_is_not_retried(tmp_path):
     assert len([row for row in read_tsv(runtime / "attempt_events.tsv") if row["logical_task"] == EXPECTED_TASKS[1]]) == 2
 
 
+def test_process_identity_setup_failure_fails_closed(tmp_path):
+    result, runtime, fixture = run_stub(tmp_path, "process_identity_setup_failure")
+    assert result.returncode == 75
+    time.sleep(0.5)
+    events = read_tsv(runtime / "attempt_events.tsv")
+    block_two = [row for row in events if row["logical_task"] == EXPECTED_TASKS[0]]
+    assert [row["event"] for row in block_two] == ["started", "identity_binding_failed"]
+    failed_identity = block_two[-1]
+    assert failed_identity["terminal_state"] == "ambiguous_interruption"
+    assert failed_identity["exit_code"] == ""
+    assert failed_identity["pid"]
+    assert failed_identity["command_sha256"]
+    assert not any(row["logical_task"] in EXPECTED_TASKS[1:] for row in events)
+    assert len(list(fixture.glob("block_*/*_processing.png"))) == 1
+    status = run_wrapper("--status", "--runtime-root", runtime)
+    assert status.returncode == 0
+    rows = list(csv.DictReader(status.stdout.splitlines(), delimiter="\t"))
+    assert [row["status"] for row in rows] == [
+        "externally_accepted_existing_success", "ambiguous_interruption",
+        "not_started", "not_started", "not_started",
+    ]
+
+
 def test_prelaunch_integrity_and_collision_gates(tmp_path):
     cases = {
         "collision": "Processing-collision error",
         "block1_mutation": "Block1-acceptance error",
         "fitting_mutation": "Fitting-manifest error",
         "dependency_mutation": "Dependency-integrity error",
+        "same_size_changed_mtime": "mtime_ns mismatch",
     }
     for scenario, message in cases.items():
         result, runtime, _ = run_stub(tmp_path, scenario)
@@ -162,4 +186,5 @@ def test_status_and_finalize_do_not_launch_tasks(tmp_path):
     finalized = run_wrapper("--finalize", "--runtime-root", runtime)
     assert finalized.returncode == 3
     assert not (runtime / "attempt_events.tsv").exists()
-    assert (runtime / "campaign_summary.tsv").is_file()
+    assert not runtime.exists()
+    assert "finalization_state\tno_runtime_state" in finalized.stdout

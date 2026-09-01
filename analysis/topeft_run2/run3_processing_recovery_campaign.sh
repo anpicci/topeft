@@ -187,6 +187,12 @@ shell_join() {
     printf '%s' "${quoted[*]}"
 }
 
+stat_mtime_ns() {
+    local timestamp
+    timestamp=$(stat -c '%y' -- "$1") || return 1
+    date --date="${timestamp}" +'%s%N'
+}
+
 build_attempt_command() {
     local index=$1
     local block_number=${task_blocks[$index]#block_}
@@ -207,7 +213,9 @@ build_attempt_command() {
     fi
 
     local stub_output="${task_output_dirs[$index]}/${task_ids[$index]}_processing.png"
-    if [[ "${stub_scenario}" == "known_failure" && ${index} -eq 1 ]]; then
+    if [[ "${stub_scenario}" == "process_identity_setup_failure" && ${index} -eq 0 ]]; then
+        attempt_command=(/bin/bash --noprofile --norc -c 'echo identity_failure_stub_started; sleep 0.1')
+    elif [[ "${stub_scenario}" == "known_failure" && ${index} -eq 1 ]]; then
         attempt_command=(/bin/bash --noprofile --norc -c 'echo deterministic_stub_failure; exit 7')
     elif [[ "${stub_scenario}" == "ambiguous" && ${index} -eq 1 ]]; then
         attempt_command=(/bin/bash --noprofile --norc -c 'echo ambiguous_stub_started; sleep 0.3')
@@ -274,8 +282,8 @@ verify_block1_acceptance() {
 verify_input_identities() {
     local errors=0
     local rows=0
-    local block artifact_class path expected_size observed_size expected_mtime observed_mtime expected_sha observed_sha identity_source sidecar_binding status
-    while IFS=$'\t' read -r block artifact_class path expected_size observed_size expected_mtime observed_mtime expected_sha observed_sha identity_source sidecar_binding status; do
+    local block artifact_class path expected_size observed_size expected_mtime observed_mtime expected_sha observed_sha identity_source sidecar_binding status current_mtime
+    while IFS=$'\x1f' read -r block artifact_class path expected_size observed_size expected_mtime observed_mtime expected_sha observed_sha identity_source sidecar_binding status; do
         [[ "${block}" == "block" ]] && continue
         ((rows += 1))
         [[ -r "${path}" ]] || { echo "Preflight error: unreadable accepted input ${path}." >&2; errors=1; continue; }
@@ -283,12 +291,14 @@ verify_input_identities() {
         if [[ "${identity_source}" == "direct_sha256" ]]; then
             [[ "$(sha256sum "${path}" | awk '{print $1}')" == "${expected_sha}" ]] || { echo "Preflight error: direct hash mismatch for ${path}." >&2; errors=1; }
         elif [[ "${identity_source}" == "maintained_sidecar" ]]; then
+            current_mtime=$(stat_mtime_ns "${path}" 2>/dev/null)
+            [[ -n "${current_mtime}" && "${current_mtime}" == "${expected_mtime}" ]] || { echo "Preflight error: mtime_ns mismatch for ${path}." >&2; errors=1; }
             [[ "${sidecar_binding}" == "maintained_sidecar_bound" && "${status}" == "passed" ]] || { echo "Preflight error: maintained-sidecar binding is invalid for ${path}." >&2; errors=1; }
         else
             echo "Preflight error: unsupported identity authority ${identity_source} for ${path}." >&2
             errors=1
         fi
-    done <"${accepted_input_inventory}"
+    done < <(tr '\t' '\037' <"${accepted_input_inventory}")
     [[ ${rows} -eq 10 ]] || { echo "Preflight error: expected ten input identity rows, found ${rows}." >&2; errors=1; }
     [[ ${errors} -eq 0 ]]
 }
@@ -444,15 +454,19 @@ run_attempt() {
     attempt_log_path="${logs_dir}/${attempt_id}.log"
     attempt_time_report_path="${time_dir}/${attempt_id}.txt"
     attempt_memory_summary_path="${time_dir}/${attempt_id}_memory_summary.tsv"
-    build_attempt_command "${index}" || return 1
-    attempt_command_text=$(shell_join "${attempt_command[@]}")
-    attempt_command_sha256=$(printf '%s' "${attempt_command_text}" | sha256sum | awk '{print $1}')
+    last_logical_status=""
+    attempt_exit_code=""
+    attempt_command_text=""
+    attempt_command_sha256=""
     attempt_pid=""
     attempt_ppid=""
     attempt_process_group_id=""
     attempt_session_id=""
     attempt_process_start_ticks=""
     attempt_process_start_time=""
+    build_attempt_command "${index}" || return 1
+    attempt_command_text=$(shell_join "${attempt_command[@]}")
+    attempt_command_sha256=$(printf '%s' "${attempt_command_text}" | sha256sum | awk '{print $1}')
     : >"${attempt_log_path}"
     : >"${attempt_time_report_path}"
     : >"${attempt_memory_summary_path}"
@@ -479,8 +493,20 @@ run_attempt() {
     attempt_session_id=$(ps -o sid= -p "${attempt_pid}" 2>/dev/null | tr -d ' ')
     attempt_process_start_ticks=$(sed 's/.*) //' "/proc/${attempt_pid}/stat" 2>/dev/null | awk '{print $20}')
     attempt_process_start_time=$(ps -o lstart= -p "${attempt_pid}" 2>/dev/null | sed 's/^ *//')
+    if [[ "${attempt_backend}" == "stub" && "${stub_scenario}" == "process_identity_setup_failure" && ${index} -eq 0 ]]; then
+        attempt_ppid=""
+        attempt_process_group_id=""
+        attempt_session_id=""
+        attempt_process_start_ticks=""
+        attempt_process_start_time=""
+    fi
     [[ -n "${attempt_ppid}" && -n "${attempt_process_group_id}" && -n "${attempt_session_id}" && -n "${attempt_process_start_ticks}" && -n "${attempt_process_start_time}" ]] || {
         echo "Process-identity error: could not bind durable identity for ${task_id}." >&2
+        last_logical_status="ambiguous_interruption"
+        append_attempt_event "${task_id}" "identity_binding_failed" "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" "" "" "${last_logical_status}" "not_evaluated" "precheck_passed"
+        if [[ "${attempt_backend}" == "stub" ]]; then
+            kill -CONT "${attempt_pid}" 2>/dev/null || true
+        fi
         return 75
     }
     append_attempt_event "${task_id}" "process_started" "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" "" "" "running" "not_evaluated" "precheck_passed"
@@ -574,7 +600,11 @@ status_campaign() {
 finalize_campaign() {
     local index state success=0 failure=0 ambiguous=0 not_started=0 final_exit=0
     reconstruct_statuses
-    mkdir -p "${runtime_root}" || return 3
+    if [[ ! -d "${runtime_root}" ]]; then
+        printf 'finalization_state\tno_runtime_state\n'
+        printf 'runtime_root\t%s\n' "${runtime_root}"
+        return 3
+    fi
     {
         printf 'metric\tvalue\n'
         printf 'logical_tasks\t5\n'
@@ -608,11 +638,33 @@ finalize_campaign() {
 }
 
 run_campaign() {
-    local index final_exit=0
+    local index final_exit=0 attempt_rc=0
     logical_statuses=()
     for index in "${!task_ids[@]}"; do
         echo "Continuation task $((index + 1))/4: ${task_ids[$index]}."
-        if run_attempt "${index}"; then :; else final_exit=$?; fi
+        last_logical_status=""
+        attempt_rc=0
+        if run_attempt "${index}"; then :; else attempt_rc=$?; fi
+        if [[ ${attempt_rc} -ne 0 ]]; then
+            if [[ "${last_logical_status}" == failed_* ]]; then
+                logical_statuses+=("${last_logical_status}")
+                echo "Campaign stopped on known failure; no later task will run." >&2
+                finalize_campaign >/dev/null || true
+                return 1
+            fi
+            if [[ "${last_logical_status}" != "ambiguous_interruption" ]]; then
+                last_logical_status="ambiguous_interruption"
+                append_attempt_event "${task_ids[$index]}" "unclassified_nonzero" "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" "" "" "${last_logical_status}" "not_evaluated" "not_evaluated"
+            fi
+            logical_statuses+=("${last_logical_status}")
+            echo "Campaign stopped on unclassified or ambiguous nonzero attempt; no later task will run." >&2
+            finalize_campaign >/dev/null || true
+            return 75
+        fi
+        if [[ -z "${last_logical_status}" ]]; then
+            last_logical_status="ambiguous_interruption"
+            append_attempt_event "${task_ids[$index]}" "missing_current_classification" "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" "" "" "${last_logical_status}" "not_evaluated" "not_evaluated"
+        fi
         logical_statuses+=("${last_logical_status}")
         if [[ "${last_logical_status}" == "ambiguous_interruption" ]]; then
             echo "Campaign stopped on ambiguous interruption; no later task will run." >&2
@@ -630,7 +682,7 @@ run_campaign() {
 }
 
 initialize_stub_fixture() {
-    local index block task_id output fitting expected fitting_sha accepted_output accepted_sha dependency_file dependency_sha
+    local index block task_id output fitting expected fitting_sha accepted_output accepted_sha dependency_file dependency_sha input_path input_sidecar input_size input_mtime sidecar_size sidecar_mtime sidecar_sha
     [[ -n "${fixture_root}" && "${fixture_root}" == /* ]] || { echo "Stub validation requires an absolute --fixture-root." >&2; return 3; }
     [[ ! -e "${fixture_root}" ]] || { echo "Stub fixture root already exists: ${fixture_root}." >&2; return 3; }
     mkdir -p "${fixture_root}"
@@ -638,7 +690,7 @@ initialize_stub_fixture() {
     accepted_fitting_manifest="${fixture_root}/accepted_fitting_manifest.tsv"
     expected_processing_oracle="${fixture_root}/expected_processing_paths.tsv"
     accepted_block1_manifest="${fixture_root}/accepted_block1_manifest.tsv"
-    printf 'block\tartifact_class\tpath\trelative_path\tsize_bytes\tmtime_ns\tsha256\tidentity_source\tdisposition\n' >"${accepted_input_inventory}"
+    printf 'block\tartifact_class\tpath\texpected_size_bytes\tobserved_size_bytes\texpected_mtime_ns\tobserved_mtime_ns\texpected_sha256\tobserved_sha256\tidentity_source\tsidecar_binding\tstatus\n' >"${accepted_input_inventory}"
     printf 'block\tpath\trelative_path\tsize_bytes\tmtime_ns\tsha256\taccepted_sha256\tstatus\n' >"${accepted_fitting_manifest}"
     printf 'block\tsource_fitting_path\texpected_processing_path\toutput_kind\tpreexisting\tstatus\n' >"${expected_processing_oracle}"
     printf 'snapshot_timestamp\tblock\tpath\tfile_type\tsize_bytes\tmtime_ns\tsha256\tread_state\n' >"${accepted_block1_manifest}"
@@ -647,6 +699,19 @@ initialize_stub_fixture() {
         task_id="run3_block_${block_number}_processing"
         output="${fixture_root}/${block}"
         mkdir -p "${output}"
+        input_path="${fixture_root}/${task_id}.pkl.gz"
+        input_sidecar="${input_path}.metadata.json"
+        printf 'stub input %s\n' "${task_id}" >"${input_path}"
+        printf '{"stub": "%s"}\n' "${task_id}" >"${input_sidecar}"
+        input_size=$(stat -c '%s' "${input_path}")
+        input_mtime=$(stat_mtime_ns "${input_path}")
+        sidecar_size=$(stat -c '%s' "${input_sidecar}")
+        sidecar_mtime=$(stat_mtime_ns "${input_sidecar}")
+        sidecar_sha=$(sha256sum "${input_sidecar}" | awk '{print $1}')
+        printf '%s\taccepted_run3_input_pkl\t%s\t%s\t%s\t%s\t%s\tstub_maintained_hash\t\tmaintained_sidecar\tmaintained_sidecar_bound\tpassed\n' \
+            "${block}" "${input_path}" "${input_size}" "${input_size}" "${input_mtime}" "${input_mtime}" >>"${accepted_input_inventory}"
+        printf '%s\taccepted_run3_input_sidecar\t%s\t%s\t%s\t%s\t%s\t%s\t%s\tdirect_sha256\tsidecar_direct_hash_checked\tpassed\n' \
+            "${block}" "${input_sidecar}" "${sidecar_size}" "${sidecar_size}" "${sidecar_mtime}" "${sidecar_mtime}" "${sidecar_sha}" "${sidecar_sha}" >>"${accepted_input_inventory}"
         fitting="${output}/${task_id}_fitting_control.txt"
         printf 'immutable fitting control %s\n' "${task_id}" >"${fitting}"
         fitting_sha=$(sha256sum "${fitting}" | awk '{print $1}')
@@ -659,8 +724,7 @@ initialize_stub_fixture() {
         else
             index=$((block_number - 2))
             expected="${output}/${task_id}_processing.png"
-            task_pkls[$index]="${fixture_root}/${task_id}.pkl.gz"
-            printf 'stub input\n' >"${task_pkls[$index]}"
+            task_pkls[$index]="${input_path}"
             task_output_dirs[$index]="${output}"
             printf '%s\t%s\t%s\tpng\tno\tabsent\n' "${block}" "${fitting}" "${expected}" >>"${expected_processing_oracle}"
         fi
@@ -679,6 +743,8 @@ initialize_stub_fixture() {
         printf 'mutated after manifest\n' >>"${fixture_root}/block_1/run3_block_1_processing_fitting_control.txt"
     elif [[ "${stub_scenario}" == "dependency_mutation" ]]; then
         printf 'mutated dependency\n' >>"${dependency_file}"
+    elif [[ "${stub_scenario}" == "same_size_changed_mtime" ]]; then
+        touch -d '2030-01-01 00:00:00.123456789 UTC' "${fixture_root}/run3_block_2_processing.pkl.gz"
     elif [[ "${stub_scenario}" == "unrelated_tracked_mutation" ]]; then
         printf 'unrelated tracked-like change outside dependency set\n' >"${fixture_root}/unrelated_tracked_file.txt"
     fi
@@ -688,6 +754,7 @@ stub_preflight() {
     local errors=0 output_dir
     verify_static_source_contract || errors=1
     for output_dir in "${task_output_dirs[@]}"; do [[ -d "${output_dir}" ]] || errors=1; done
+    verify_input_identities || errors=1
     verify_block1_acceptance || errors=1
     verify_fitting_manifest || errors=1
     validate_processing_collisions || errors=1
@@ -753,7 +820,7 @@ main() {
             finalize_campaign
             ;;
         --stub-scenario)
-            case "${stub_scenario}" in all_success|known_failure|ambiguous|collision|block1_mutation|fitting_mutation|dependency_mutation|unrelated_tracked_mutation|parent_exists) ;; *) echo "Unknown stub scenario: ${stub_scenario}." >&2; return 3 ;; esac
+            case "${stub_scenario}" in all_success|known_failure|ambiguous|process_identity_setup_failure|collision|block1_mutation|fitting_mutation|dependency_mutation|same_size_changed_mtime|unrelated_tracked_mutation|parent_exists) ;; *) echo "Unknown stub scenario: ${stub_scenario}." >&2; return 3 ;; esac
             initialize_stub_fixture || return $?
             if ! stub_preflight; then
                 return 3
