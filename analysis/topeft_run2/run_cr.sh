@@ -559,20 +559,56 @@ matrix_output_dir=""
 matrix_campaign_tag=""
 matrix_env_file=""
 matrix_resume=false
+matrix_parse_errors=()
 
 matrix_parse_args() {
   local args=("$@")
   local index=0
   while (( index < ${#args[@]} )); do
     case "${args[index]}" in
-      --production-profile) matrix_profile="${args[index + 1]:-}"; index=$((index + 2)) ;;
+      --production-profile)
+        if (( index + 1 >= ${#args[@]} )); then
+          matrix_parse_errors+=("--production-profile requires a value")
+          index=$((index + 1))
+        else
+          matrix_profile="${args[index + 1]}"
+          index=$((index + 2))
+        fi
+        ;;
       --dry-run) matrix_dry_run=true; index=$((index + 1)) ;;
-      --output-dir) matrix_output_dir="${args[index + 1]:-}"; index=$((index + 2)) ;;
-      --campaign-tag) matrix_campaign_tag="${args[index + 1]:-}"; index=$((index + 2)) ;;
-      --env-file) matrix_env_file="${args[index + 1]:-}"; index=$((index + 2)) ;;
+      --output-dir)
+        if (( index + 1 >= ${#args[@]} )); then
+          matrix_parse_errors+=("--output-dir requires a value")
+          index=$((index + 1))
+        else
+          matrix_output_dir="${args[index + 1]}"
+          index=$((index + 2))
+        fi
+        ;;
+      --campaign-tag)
+        if (( index + 1 >= ${#args[@]} )); then
+          matrix_parse_errors+=("--campaign-tag requires a value")
+          index=$((index + 1))
+        else
+          matrix_campaign_tag="${args[index + 1]}"
+          index=$((index + 2))
+        fi
+        ;;
+      --env-file)
+        if (( index + 1 >= ${#args[@]} )); then
+          matrix_parse_errors+=("--env-file requires a value")
+          index=$((index + 1))
+        else
+          matrix_env_file="${args[index + 1]}"
+          index=$((index + 2))
+        fi
+        ;;
       --resume) matrix_resume=true; index=$((index + 1)) ;;
       -h|--help) index=$((index + 1)) ;;
-      *) index=$((index + 1)) ;;
+      *)
+        matrix_parse_errors+=("unsupported run_cr.sh option '${args[index]}'")
+        index=$((index + 1))
+        ;;
     esac
   done
 }
@@ -589,6 +625,10 @@ fi
 matrix_parse_args "$@"
 case "${matrix_profile}" in
   run2_full|run2_full_CR|run3_full_CR|run2_run3_full|run2_run3_full_CR)
+    if (( ${#matrix_parse_errors[@]} > 0 )); then
+      printf 'ERROR: %s.\n' "${matrix_parse_errors[@]}" >&2
+      exit 1
+    fi
     if [[ -z "${matrix_output_dir}" || -z "${matrix_campaign_tag}" ]]; then
       echo "ERROR: ${matrix_profile} requires --output-dir and --campaign-tag." >&2
       exit 1

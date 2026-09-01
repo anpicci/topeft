@@ -4,6 +4,8 @@ import shlex
 import subprocess
 from pathlib import Path
 
+import pytest
+
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 RUN_DIRECTORY = REPOSITORY_ROOT / "analysis" / "topeft_run2"
@@ -14,6 +16,13 @@ PUBLIC_PROFILES = {
     "run2_full", "run3_full", "run2_run3_full",
     "run2_full_CR", "run3_full_CR", "run2_run3_full_CR",
 }
+MATRIX_EARLY_PROFILES = (
+    "run2_full",
+    "run2_full_CR",
+    "run3_full_CR",
+    "run2_run3_full",
+    "run2_run3_full_CR",
+)
 RUN2_SR_BLOCKS = [
     (("UL16", "UL16APV", "UL17", "UL18"), ("2l", "2lss_1tau", "2los_1tau", "4l"), ("njets", "lj0pt", "ptz", "ptz_wtau", "lt")),
     (("UL16", "UL16APV", "UL17", "UL18"), ("3l_m_offZ",), ("njets", "lj0pt", "ptll", "lt")),
@@ -246,3 +255,57 @@ def test_collision_and_frozen_archive_override_fail_closed(tmp_path):
     )
     assert result.returncode != 0
     assert "pinned to the maintained frozen snapshot archive" in result.stdout
+
+
+@pytest.mark.parametrize("profile", MATRIX_EARLY_PROFILES)
+def test_every_matrix_owned_profile_rejects_unknown_tokens_before_side_effects(
+    tmp_path, profile
+):
+    output_root = tmp_path / profile
+    result = subprocess.run(
+        [
+            str(RUN_CR),
+            "--production-profile",
+            profile,
+            "--dry-rnu",
+            "--output-dir",
+            str(output_root),
+            "--campaign-tag",
+            f"unknown-{profile}",
+        ],
+        cwd=RUN_DIRECTORY,
+        env=_clean_environment(),
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        check=False,
+    )
+    assert result.returncode != 0
+    assert "unsupported run_cr.sh option '--dry-rnu'" in result.stdout
+    assert not output_root.exists()
+
+
+def test_matrix_owned_missing_env_value_fails_before_side_effects(tmp_path):
+    output_root = tmp_path / "missing-env-value"
+    result = subprocess.run(
+        [
+            str(RUN_CR),
+            "--production-profile",
+            "run2_full",
+            "--dry-run",
+            "--output-dir",
+            str(output_root),
+            "--campaign-tag",
+            "missing-env-value",
+            "--env-file",
+        ],
+        cwd=RUN_DIRECTORY,
+        env=_clean_environment(),
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        check=False,
+    )
+    assert result.returncode != 0
+    assert "--env-file requires a value" in result.stdout
+    assert not output_root.exists()
