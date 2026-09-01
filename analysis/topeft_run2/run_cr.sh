@@ -1,558 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-srplot009_print_command() {
-  printf ' %q' "$@"
-  printf '\n'
-}
-
-srplot009_campaign_log_path=""
-srplot009_campaign_start_time=""
-
-srplot009_finalize_campaign_log() {
-  local exit_code="$1"
-  local end_time
-
-  if [[ -z "${srplot009_campaign_log_path}" ]]; then
-    return
-  fi
-  end_time=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-  printf 'campaign_end_time_utc: %s\n' "${end_time}"
-  printf 'campaign_exit_code: %s\n' "${exit_code}"
-}
-
-srplot009_identity_field() {
-  local field="$1"
-  local identity_text="$2"
-  awk -F': ' -v field="${field}" '$1 == field {print $2; exit}' <<< "${identity_text}"
-}
-
-srplot009_require_fresh_paths() {
-  local output_root="$1"
-
-  if [[ -e "${output_root}" ]]; then
-    echo "ERROR: SRPLOT-009 output root already exists; refusing overwrite, merge, or resume: ${output_root}" >&2
-    return 1
-  fi
-}
-
-srplot009_assert_committed_source() {
-  local repository_root="$1"
-  local production_paths=(
-    analysis/topeft_run2/run_cr.sh
-    analysis/topeft_run2/fullR3_run.sh
-    analysis/topeft_run2/run_analysis.py
-    analysis/topeft_run2/analysis_processor.py
-    input_samples/cfgs/mc_signal_samples_NDSkim.cfg
-    input_samples/cfgs/mc_background_samples_NDSkim.cfg
-    input_samples/cfgs/data_samples_NDSkim.cfg
-    topeft/channels/ch_lst.json
-    topeft/modules
-  )
-
-  if ! git -C "${repository_root}" diff --quiet -- "${production_paths[@]}" \
-    || ! git -C "${repository_root}" diff --cached --quiet -- "${production_paths[@]}" \
-    || [[ -n "$(git -C "${repository_root}" diff --name-only --diff-filter=U -- "${production_paths[@]}")" ]]; then
-    echo "ERROR: tracked production-semantic source/configuration is not frozen at the current commit." >&2
-    echo "Commit or separately reconcile those changes before launching; no environment or block was started." >&2
-    return 1
-  fi
-}
-
-srplot009_validate_frozen_environment() {
-  local validation_backend="$1"
-  local validation_scenario="$2"
-  local environment_file="$3"
-  local expected_sha256="$4"
-  local wrap="$5"
-  local python_env="$6"
-  local run_analysis_path="$7"
-  local direct_sha256
-  local validation_identity
-  local validation_path
-  local validation_sha256
-  local validation_manifest
-  local validation_fingerprint
-  local validation_status
-  local validation_topcoffea_commit
-  local validation_topcoffea_source
-
-  if [[ ! -f "${environment_file}" || ! -r "${environment_file}" || ! -s "${environment_file}" ]]; then
-    echo "ERROR: frozen snapshot archive is not a readable nonempty regular file: ${environment_file}" >&2
-    return 1
-  fi
-  direct_sha256=$(sha256sum "${environment_file}")
-  direct_sha256="${direct_sha256%% *}"
-  if [[ "${direct_sha256}" != "${expected_sha256}" ]]; then
-    echo "ERROR: frozen snapshot archive SHA-256 mismatch." >&2
-    return 1
-  fi
-
-  if [[ -n "${validation_backend}" ]]; then
-    validation_identity=$("${validation_backend}" validate_environment "${validation_scenario}" "${environment_file}")
-  else
-    validation_identity=$("${wrap}" /bin/bash --noprofile --norc -c \
-      'cd -- "$1" && exec "$2" "$3" --validate-env-file --env-integrity-only --env-file "$4"' \
-      srplot009_environment_validation \
-      "$(dirname -- "${run_analysis_path}")" \
-      "${python_env}" \
-      "${run_analysis_path}" \
-      "${environment_file}")
-  fi
-  printf '%s\n' "${validation_identity}"
-
-  validation_path=$(srplot009_identity_field env_file "${validation_identity}")
-  validation_sha256=$(srplot009_identity_field env_file_sha256 "${validation_identity}")
-  validation_manifest=$(srplot009_identity_field env_manifest "${validation_identity}")
-  validation_fingerprint=$(srplot009_identity_field environment_fingerprint "${validation_identity}")
-  validation_status=$(srplot009_identity_field environment_validation_status "${validation_identity}")
-  validation_topcoffea_commit=$(srplot009_identity_field topcoffea_git_commit "${validation_identity}")
-  validation_topcoffea_source=$(srplot009_identity_field topcoffea_relevant_source_fingerprint "${validation_identity}")
-
-  if [[ "${validation_path}" != "${environment_file}" \
-    || "${validation_sha256}" != "${expected_sha256}" \
-    || "${validation_manifest}" != "${environment_file}.manifest.json" \
-    || ! -f "${validation_manifest}" \
-    || -z "${validation_fingerprint}" \
-    || "${validation_status}" != "valid" \
-    || -z "${validation_topcoffea_commit}" \
-    || -z "${validation_topcoffea_source}" ]]; then
-    echo "ERROR: maintained integrity validation did not read back the exact frozen archive identity." >&2
-    return 1
-  fi
-}
-
-srplot009_write_environment_identity() {
-  local identity_path="$1"
-  local repository_root="$2"
-  local script_dir="$3"
-  local environment_file="$4"
-  local environment_sha256="$5"
-  local block_count="$6"
-  local temporary_path
-  local topeft_commit
-  local run_cr_sha256
-  local fullr3_sha256
-  local run_analysis_sha256
-  local analysis_processor_sha256
-  local channel_registry_sha256
-  local signal_cfg_sha256
-  local background_cfg_sha256
-  local data_cfg_sha256
-
-  topeft_commit=$(git -C "${repository_root}" rev-parse HEAD)
-  run_cr_sha256=$(sha256sum "${script_dir}/run_cr.sh"); run_cr_sha256="${run_cr_sha256%% *}"
-  fullr3_sha256=$(sha256sum "${script_dir}/fullR3_run.sh"); fullr3_sha256="${fullr3_sha256%% *}"
-  run_analysis_sha256=$(sha256sum "${script_dir}/run_analysis.py"); run_analysis_sha256="${run_analysis_sha256%% *}"
-  analysis_processor_sha256=$(sha256sum "${script_dir}/analysis_processor.py"); analysis_processor_sha256="${analysis_processor_sha256%% *}"
-  channel_registry_sha256=$(sha256sum "${repository_root}/topeft/channels/ch_lst.json"); channel_registry_sha256="${channel_registry_sha256%% *}"
-  signal_cfg_sha256=$(sha256sum "${repository_root}/input_samples/cfgs/mc_signal_samples_NDSkim.cfg"); signal_cfg_sha256="${signal_cfg_sha256%% *}"
-  background_cfg_sha256=$(sha256sum "${repository_root}/input_samples/cfgs/mc_background_samples_NDSkim.cfg"); background_cfg_sha256="${background_cfg_sha256%% *}"
-  data_cfg_sha256=$(sha256sum "${repository_root}/input_samples/cfgs/data_samples_NDSkim.cfg"); data_cfg_sha256="${data_cfg_sha256%% *}"
-
-  temporary_path=$(mktemp "$(dirname -- "${identity_path}")/.environment_identity.XXXXXX")
-  {
-    printf 'field\tvalue\n'
-    printf 'environment_use_mode\tmaintained_snapshot\n'
-    printf 'archive_path\t%s\n' "${environment_file}"
-    printf 'archive_sha256\t%s\n' "${environment_sha256}"
-    printf 'manifest_path\t%s.manifest.json\n' "${environment_file}"
-    printf 'environment_validation_status\tvalid_integrity_only\n'
-    printf 'topeft_git_commit\t%s\n' "${topeft_commit}"
-    printf 'run_cr_sha256\t%s\n' "${run_cr_sha256}"
-    printf 'fullR3_run_sha256\t%s\n' "${fullr3_sha256}"
-    printf 'run_analysis_sha256\t%s\n' "${run_analysis_sha256}"
-    printf 'analysis_processor_sha256\t%s\n' "${analysis_processor_sha256}"
-    printf 'channel_registry_sha256\t%s\n' "${channel_registry_sha256}"
-    printf 'signal_cfg_sha256\t%s\n' "${signal_cfg_sha256}"
-    printf 'background_cfg_sha256\t%s\n' "${background_cfg_sha256}"
-    printf 'data_cfg_sha256\t%s\n' "${data_cfg_sha256}"
-    printf 'block_count\t%s\n' "${block_count}"
-    printf 'same_explicit_archive_required_for_all_blocks\ttrue\n'
-    printf 'environment_build_or_resolution\tforbidden\n'
-  } > "${temporary_path}"
-  mv -- "${temporary_path}" "${identity_path}"
-}
-
-srplot009_run_block() {
-  local validation_backend="$1"
-  local validation_scenario="$2"
-  local block_id="$3"
-  local log_path="$4"
-  local events_path="$5"
-  local environment_file="$6"
-  shift 6
-  local command=("$@")
-  local start_time
-  local end_time
-  local exit_code
-
-  start_time=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-  printf '%s\t%s\tstarted\t\n' "${start_time}" "${block_id}" >> "${events_path}"
-  {
-    printf 'block_id: %s\n' "${block_id}"
-    printf 'start_time_utc: %s\n' "${start_time}"
-    printf 'environment_file: %s\n' "${environment_file}"
-    printf 'command:'
-    srplot009_print_command "${command[@]}"
-  } | tee -a "${log_path}"
-
-  set +e
-  if [[ -n "${validation_backend}" ]]; then
-    "${validation_backend}" run_block "${validation_scenario}" "${block_id}" "${environment_file}" "${command[@]}" 2>&1 | tee -a "${log_path}"
-  else
-    "${command[@]}" 2>&1 | tee -a "${log_path}"
-  fi
-  exit_code=${PIPESTATUS[0]}
-  set -e
-
-  end_time=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-  {
-    printf 'end_time_utc: %s\n' "${end_time}"
-    printf 'exit_code: %s\n' "${exit_code}"
-  } | tee -a "${log_path}"
-  printf '%s\t%s\tfinished\t%s\n' "${end_time}" "${block_id}" "${exit_code}" >> "${events_path}"
-
-  if (( exit_code != 0 )); then
-    echo "ERROR: ${block_id} failed with exit code ${exit_code}; later blocks were not started." >&2
-    return "${exit_code}"
-  fi
-}
-
-run_srplot009_campaign() {
-  local dry_run="$1"
-  local output_root="$2"
-  local campaign_tag="$3"
-
-  local script_dir
-  local repository_root
-  local wrap=/users/apiccine/work/correction-lib/codex-run.sh
-  local python_env=/users/apiccine/work/miniconda3/envs/clib-env/bin/python
-  local run_analysis_path
-  local environment_file=/users/apiccine/work/correction-lib/topeft/analysis/topeft_run2/topeft-envs/env_spec_9d72aad444117c28.tar.gz
-  local environment_sha256=8245afe4b3c28f4948039d383ad2176f1ee3ebb5e61bcdf1b49289452b025332
-  local validation_backend="${SRPLOT009_VALIDATION_BACKEND:-}"
-  local validation_root="${SRPLOT009_VALIDATION_ROOT:-}"
-  local validation_scenario="${SRPLOT009_VALIDATION_SCENARIO:-success}"
-  local sumw2_options_path
-  local temporary_sumw2_options=""
-  local identity_path
-  local events_path
-  local logs_dir
-  local block_index
-  local block_id
-  local tag
-  local categories=()
-  local hist_vars=()
-  local block_command=()
-  local category_sets=(
-    "2l 2lss_1tau 2los_1tau 4l"
-    "3l_m_offZ"
-    "3l_p_offZ"
-    "3l_onZ_tau"
-    "3l_fwd"
-  )
-  local histogram_sets=(
-    "njets lj0pt ptz ptz_wtau lt"
-    "njets lj0pt ptll lt"
-    "njets lj0pt ptll lt"
-    "njets lj0pt ptz lt"
-    "njets lj0pt ptz lt"
-  )
-
-  script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
-  repository_root=$(git -C "${script_dir}" rev-parse --show-toplevel)
-  run_analysis_path="${script_dir}/run_analysis.py"
-  cd -- "${script_dir}"
-
-  if [[ -n "${validation_backend}" ]]; then
-    case "${validation_root}" in
-      /tmp/*) ;;
-      *)
-        echo "ERROR: SRPLOT009_VALIDATION_ROOT must be an absolute path below /tmp." >&2
-        return 1
-        ;;
-    esac
-    case "${validation_backend}" in
-      /tmp/*) ;;
-      *)
-        echo "ERROR: SRPLOT009_VALIDATION_BACKEND must be an executable below /tmp." >&2
-        return 1
-        ;;
-    esac
-    if [[ ! -x "${validation_backend}" ]]; then
-      echo "ERROR: SRPLOT009_VALIDATION_BACKEND is not executable." >&2
-      return 1
-    fi
-    case "${output_root}" in
-      /tmp/*) ;;
-      *) output_root="${validation_root}/output" ;;
-    esac
-  fi
-
-  srplot009_require_fresh_paths "${output_root}"
-  if [[ "${output_root}" != /* ]]; then
-    echo "ERROR: Run-2 output root must be absolute: ${output_root}" >&2
-    return 1
-  fi
-  if [[ -z "${campaign_tag}" || "${campaign_tag}" == *$'\t'* || "${campaign_tag}" == *$'\n'* ]]; then
-    echo "ERROR: Run-2 campaign tag must be nonempty and contain no tabs/newlines." >&2
-    return 1
-  fi
-
-  echo "SRPLOT-009 Run-2 SR campaign"
-  echo "output_root: ${output_root}"
-  echo "campaign_tag: ${campaign_tag}"
-  echo "block_count: 5"
-  echo "overwrite_or_resume_policy: fail_closed_no_overwrite_no_resume"
-  echo "interruption_retry_policy: no_automatic_retry_inspect_first"
-  echo "environment_policy: exact_frozen_archive_integrity_plus_snapshot"
-  echo "sumw2_storage_mode: full_diagnostics"
-
-  if ! srplot009_validate_frozen_environment \
-    "${validation_backend}" "${validation_scenario}" \
-    "${environment_file}" "${environment_sha256}" \
-    "${wrap}" "${python_env}" "${run_analysis_path}"; then
-    echo "ERROR: frozen snapshot integrity validation failed; all five blocks remain not_started." >&2
-    return 1
-  fi
-
-  if [[ "${dry_run}" == "true" ]]; then
-    temporary_sumw2_options=$(mktemp /tmp/run2_full_sumw2.XXXXXX.yml)
-    sumw2_options_path="${temporary_sumw2_options}"
-    trap 'rm -f -- "${temporary_sumw2_options}"' RETURN
-  else
-    if [[ -z "${validation_backend}" ]]; then
-      srplot009_assert_committed_source "${repository_root}"
-    fi
-    mkdir -- "${output_root}"
-    sumw2_options_path="${output_root}/sumw2_full_diagnostics.yml"
-    srplot009_campaign_log_path="${output_root}/campaign.log"
-    srplot009_campaign_start_time=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-    exec > >(tee -a "${srplot009_campaign_log_path}") 2>&1
-    trap 'srplot009_finalize_campaign_log "$?"' EXIT
-    printf 'campaign_command: ./run_cr.sh --production-profile run2_full\n'
-    printf 'campaign_start_time_utc: %s\n' "${srplot009_campaign_start_time}"
-    identity_path="${output_root}/environment_identity.tsv"
-    srplot009_write_environment_identity \
-      "${identity_path}" "${repository_root}" "${script_dir}" \
-      "${environment_file}" "${environment_sha256}" 5
-    logs_dir="${output_root}/logs"
-    mkdir -- "${logs_dir}"
-    events_path="${output_root}/srplot009_campaign_events.tsv"
-    printf 'timestamp_utc\tblock_id\tevent\texit_code\n' > "${events_path}"
-  fi
-
-  printf 'sumw2_storage:\n  mode: full_diagnostics\n' > "${sumw2_options_path}"
-  echo "sumw2_options_path: ${sumw2_options_path}"
-  echo "environment_file: ${environment_file}"
-  echo "environment_sha256: ${environment_sha256}"
-
-  for block_index in 0 1 2 3 4; do
-    block_id="block$((block_index + 1))"
-    tag="${campaign_tag}-${block_id}"
-    read -r -a categories <<< "${category_sets[block_index]}"
-    read -r -a hist_vars <<< "${histogram_sets[block_index]}"
-    block_command=(
-      "${wrap}" /bin/bash --noprofile --norc -c
-      'cd -- "$1" && shift && exec "$@"'
-      "srplot009_${block_id}"
-      "${script_dir}"
-      ./fullR3_run.sh
-      -y run2
-      -t "${tag}"
-      --sr
-      --hist-vars "${hist_vars[@]}"
-      -p "${output_root}"
-      --all-analysis
-      --category-groups "${categories[@]}"
-      --do-systs
-      --do-np
-      --np-postprocess=inline
-      -x work_queue
-      -s 100000
-      --env-file "${environment_file}"
-      --snapshot
-      --options "${sumw2_options_path}"
-    )
-
-    if [[ "${dry_run}" == "true" ]]; then
-      block_command+=(--dry-run)
-      printf 'SRPLOT009_BLOCK_COMMAND\t%s\t' "${block_id}"
-      srplot009_print_command "${block_command[@]}"
-      "${block_command[@]}"
-    else
-      srplot009_run_block \
-        "${validation_backend}" "${validation_scenario}" "${block_id}" \
-        "${logs_dir}/${block_id}.log" "${events_path}" "${environment_file}" \
-        "${block_command[@]}"
-    fi
-  done
-
-  if [[ "${dry_run}" == "true" ]]; then
-    echo "dry_run_complete: five commands resolved; no environment, output root, scheduler, or production action was created"
-  else
-    echo "Run-2 full campaign completed all five blocks with one frozen snapshot archive."
-  fi
-}
-
-run_cr_matrix_campaign() {
-  local profile="$1"
-  local dry_run="$2"
-  local output_root="$3"
-  local campaign_tag="$4"
-  local script_dir
-  local repository_root
-  local wrap=/users/apiccine/work/correction-lib/codex-run.sh
-  local python_env=/users/apiccine/work/miniconda3/envs/clib-env/bin/python
-  local environment_file=/users/apiccine/work/correction-lib/topeft/analysis/topeft_run2/topeft-envs/env_spec_9d72aad444117c28.tar.gz
-  local environment_sha256=8245afe4b3c28f4948039d383ad2176f1ee3ebb5e61bcdf1b49289452b025332
-  local validation_backend="${SRPLOT009_VALIDATION_BACKEND:-}"
-  local validation_root="${SRPLOT009_VALIDATION_ROOT:-}"
-  local validation_scenario="${SRPLOT009_VALIDATION_SCENARIO:-success}"
-  local sumw2_options_path
-  local temporary_sumw2_options=""
-  local logs_dir=""
-  local events_path=""
-  local identity_path
-  local year_expr
-  local family_index
-  local var_set
-  local block_index=0
-  local block_id
-  local tag
-  local years=()
-  local categories=()
-  local hist_vars=()
-  local block_command=()
-  local year_sets=()
-  local category_sets=(
-    "2l_CR 2l_CRflip 2los_CRZ 2los_CRtt 3l_CR"
-    "1l_1tau_CRtt 1l_1tau_CRDY 2los_1tau"
-  )
-  local non_tau_var_sets=(
-    "fwd0pt fwd0eta j0pt j0eta lj0pt njets nbtagsm"
-    "lt met ptz l0conept l0eta l1conept l1eta"
-    "nbtagsl invmass ljptsum npvsGood"
-  )
-  local tau_var_sets=(
-    "fwd0pt fwd0eta j0pt j0eta lj0pt njets nbtagsm"
-    "lt met ptz l0conept l0eta l1conept l1eta"
-    "nbtagsl invmass ljptsum npvsGood ptz_wtau tau0Fpt tau0Tpt"
-  )
-
-  case "${profile}" in
-    run2_full_CR) year_sets=("2016APV 2016 2017 2018") ;;
-    run3_full_CR) year_sets=("2022 2022EE" "2023 2023BPix") ;;
-    *) echo "ERROR: internal unsupported CR profile ${profile}." >&2; return 1 ;;
-  esac
-
-  script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
-  repository_root=$(git -C "${script_dir}" rev-parse --show-toplevel)
-  cd -- "${script_dir}"
-
-  if [[ -n "${validation_backend}" ]]; then
-    case "${validation_root}" in /tmp/*) ;; *) echo "ERROR: SRPLOT009_VALIDATION_ROOT must be below /tmp." >&2; return 1 ;; esac
-    case "${validation_backend}" in /tmp/*) ;; *) echo "ERROR: SRPLOT009_VALIDATION_BACKEND must be below /tmp." >&2; return 1 ;; esac
-    [[ -x "${validation_backend}" ]] || { echo "ERROR: validation backend is not executable." >&2; return 1; }
-    case "${output_root}" in
-      /tmp/*) ;;
-      *) output_root="${validation_root}/output" ;;
-    esac
-  fi
-
-  srplot009_require_fresh_paths "${output_root}"
-  [[ "${output_root}" == /* ]] || { echo "ERROR: CR output root must be absolute." >&2; return 1; }
-  [[ -n "${campaign_tag}" ]] || { echo "ERROR: CR campaign tag must be nonempty." >&2; return 1; }
-  srplot009_validate_frozen_environment \
-    "${validation_backend}" "${validation_scenario}" \
-    "${environment_file}" "${environment_sha256}" \
-    "${wrap}" "${python_env}" "${script_dir}/run_analysis.py"
-
-  if [[ "${dry_run}" == "true" ]]; then
-    temporary_sumw2_options=$(mktemp "/tmp/${profile}_sumw2.XXXXXX.yml")
-    sumw2_options_path="${temporary_sumw2_options}"
-    trap 'rm -f -- "${temporary_sumw2_options}"' RETURN
-  else
-    if [[ -z "${validation_backend}" ]]; then
-      srplot009_assert_committed_source "${repository_root}"
-    fi
-    mkdir -- "${output_root}"
-    sumw2_options_path="${output_root}/sumw2_full_diagnostics.yml"
-    logs_dir="${output_root}/logs"
-    mkdir -- "${logs_dir}"
-    events_path="${output_root}/${profile}_campaign_events.tsv"
-    printf 'timestamp_utc\tblock_id\tevent\texit_code\n' > "${events_path}"
-    identity_path="${output_root}/environment_identity.tsv"
-    srplot009_write_environment_identity \
-      "${identity_path}" "${repository_root}" "${script_dir}" \
-      "${environment_file}" "${environment_sha256}" "$(( ${#year_sets[@]} * 6 ))"
-  fi
-  printf 'sumw2_storage:\n  mode: full_diagnostics\n' > "${sumw2_options_path}"
-
-  echo "profile: ${profile}"
-  echo "output_root: ${output_root}"
-  echo "environment_file: ${environment_file}"
-  echo "environment_sha256: ${environment_sha256}"
-  echo "environment_policy: exact_frozen_archive_integrity_plus_snapshot"
-  echo "sumw2_storage_mode: full_diagnostics"
-  echo "overwrite_or_resume_policy: fail_closed_no_overwrite_no_resume"
-
-  for year_expr in "${year_sets[@]}"; do
-    read -r -a years <<< "${year_expr}"
-    for family_index in 0 1; do
-      read -r -a categories <<< "${category_sets[family_index]}"
-      if (( family_index == 0 )); then
-        local -n active_var_sets=non_tau_var_sets
-      else
-        local -n active_var_sets=tau_var_sets
-      fi
-      for var_set in "${active_var_sets[@]}"; do
-        block_index=$((block_index + 1))
-        block_id="block${block_index}"
-        tag="${campaign_tag}-${block_id}"
-        read -r -a hist_vars <<< "${var_set}"
-        block_command=(
-          "${wrap}" /bin/bash --noprofile --norc -c
-          'cd -- "$1" && shift && exec "$@"'
-          "${profile}_${block_id}"
-          "${script_dir}"
-          ./fullR3_run.sh
-          -y "${years[@]}"
-          -t "${tag}"
-          --cr
-          --hist-vars "${hist_vars[@]}"
-          -p "${output_root}"
-          --all-analysis
-          --category-groups "${categories[@]}"
-          --do-systs
-          --do-np
-          --np-postprocess=inline
-          -x work_queue
-          -s 100000
-          --env-file "${environment_file}"
-          --snapshot
-          --options "${sumw2_options_path}"
-        )
-        if [[ "${dry_run}" == "true" ]]; then
-          block_command+=(--dry-run)
-          printf 'PROFILE_BLOCK_COMMAND\t%s\t%s\t' "${profile}" "${block_id}"
-          srplot009_print_command "${block_command[@]}"
-          "${block_command[@]}"
-        else
-          srplot009_run_block \
-            "${validation_backend}" "${validation_scenario}" "${block_id}" \
-            "${logs_dir}/${block_id}.log" "${events_path}" "${environment_file}" \
-            "${block_command[@]}"
-        fi
-      done
-      unset -n active_var_sets
-    done
-  done
-
-  echo "${profile} completed ${block_index} resolved blocks."
-}
-
 matrix_profile=""
 matrix_dry_run=false
 matrix_output_dir=""
@@ -613,31 +61,172 @@ matrix_parse_args() {
   done
 }
 
+srplot009_component_classification() {
+  local state_path="$1"
+  python - "${state_path}" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+if not path.is_file():
+    print("blocked_global")
+    raise SystemExit(0)
+try:
+    state = json.loads(path.read_text(encoding="utf-8"))
+except (OSError, json.JSONDecodeError):
+    print("blocked_state_contradiction")
+    raise SystemExit(0)
+statuses = [block.get("status") for block in state.get("blocks", [])]
+if any(status in {"source_running", "nonprompt_running"} for status in statuses):
+    print("blocked_ambiguous")
+elif any(status in {"planned", "source_ready"} for status in statuses):
+    print("blocked_incomplete")
+elif any(status in {"source_failed", "nonprompt_failed"} for status in statuses):
+    print("complete_with_known_failures")
+elif statuses and all(status == "success" for status in statuses):
+    print("success")
+else:
+    print("blocked_state_contradiction")
+PY
+}
+
+srplot009_write_combined_summary() {
+  local combined_profile="$1"
+  local combined_tag="$2"
+  local output_root="$3"
+  local run2_state="$4"
+  local run3_state="$5"
+  local run2_classification="$6"
+  local run3_classification="$7"
+  local final_exit_code="$8"
+  python - "${combined_profile}" "${combined_tag}" "${output_root}" \
+    "${run2_state}" "${run3_state}" "${run2_classification}" \
+    "${run3_classification}" "${final_exit_code}" <<'PY'
+import json
+import os
+import sys
+from pathlib import Path
+
+profile, tag, root_text, run2_text, run3_text, run2_class, run3_class, exit_text = sys.argv[1:]
+root = Path(root_text)
+
+def load_component(label, text, observed_classification):
+    path = Path(text)
+    if not path.is_file():
+        return {"label": label, "classification": observed_classification, "state": None}
+    try:
+        state = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {"label": label, "classification": "blocked_state_contradiction", "state": None}
+    statuses = [block.get("status") for block in state.get("blocks", [])]
+    if any(status in {"source_running", "nonprompt_running"} for status in statuses):
+        classification = "blocked_ambiguous"
+    elif any(status in {"planned", "source_ready"} for status in statuses):
+        classification = "blocked_incomplete"
+    elif any(status in {"source_failed", "nonprompt_failed"} for status in statuses):
+        classification = "complete_with_known_failures"
+    elif statuses and all(status == "success" for status in statuses):
+        classification = "success"
+    else:
+        classification = "blocked_state_contradiction"
+    return {"label": label, "classification": classification, "state": state}
+
+components = [load_component("run2", run2_text, run2_class), load_component("run3", run3_text, run3_class)]
+classifications = [component["classification"] for component in components]
+if any(value.startswith("blocked_") for value in classifications):
+    final_classification = "blocked_global_or_ambiguous"
+elif "not_attempted" in classifications:
+    final_classification = "blocked_incomplete"
+elif "complete_with_known_failures" in classifications:
+    final_classification = "complete_with_known_failures"
+else:
+    final_classification = "success"
+
+headers = [
+    "component", "component_status", "profile", "campaign_tag", "era", "block_id",
+    "categories", "variables", "source_status", "source_exit", "nonprompt_status",
+    "nonprompt_exit", "final_block_status", "expected_nominal_path", "expected_np_path",
+]
+rows = []
+configured = attempted = successful = failed = not_attempted = 0
+for component in components:
+    state = component["state"]
+    if state is None:
+        continue
+    for block in state.get("blocks", []):
+        configured += 1
+        status = block.get("status")
+        attempted += status not in {"planned", "source_ready"}
+        successful += status == "success"
+        failed += status in {"source_failed", "nonprompt_failed"}
+        not_attempted += status in {"planned", "source_ready"}
+        rows.append([
+            component["label"], component["classification"], state.get("production_profile"),
+            state.get("campaign_tag"), " ".join(block.get("years", [])), block.get("id"),
+            " ".join(block.get("category_groups", [])), " ".join(block.get("histograms", [])),
+            block.get("source_status"), block.get("source_exit_code"), block.get("nonprompt_status"),
+            block.get("nonprompt_exit_code"), status, block.get("expected_nominal_path"), block.get("expected_np_path"),
+        ])
+
+def clean(value):
+    return "" if value is None else str(value).replace("\t", " ").replace("\n", " ")
+
+def atomic_text(path, text):
+    temporary = path.with_name(f".{path.name}.tmp.{os.getpid()}")
+    with temporary.open("w", encoding="utf-8") as handle:
+        handle.write(text)
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.replace(temporary, path)
+
+tsv = "\t".join(headers) + "\n" + "".join("\t".join(clean(value) for value in row) + "\n" for row in rows)
+atomic_text(root / "campaign_summary.tsv", tsv)
+markdown = [
+    f"# Combined campaign summary: {profile}", "", f"- campaign_tag: `{tag}`",
+    f"- run2_component_status: `{components[0]['classification']}`",
+    f"- run3_component_status: `{components[1]['classification']}`",
+    f"- configured: {configured}", f"- attempted: {attempted}",
+    f"- successful: {successful}", f"- known_failed: {failed}",
+    f"- not_attempted: {not_attempted}", f"- final_classification: `{final_classification}`",
+    f"- final_process_exit_code: {exit_text}", "", "Per-block details are serialized in `campaign_summary.tsv`.", "",
+]
+atomic_text(root / "campaign_summary.md", "\n".join(markdown))
+print(final_classification)
+PY
+}
+
 if (( $# == 0 )) || { (( $# == 1 )) && [[ "$1" == "--dry-run" ]]; }; then
-  [[ "${1:-}" == "--dry-run" ]] && matrix_dry_run=true
-  run_srplot009_campaign \
-    "${matrix_dry_run}" \
-    /groups/klannon/apiccine/run2_srplot009_current_branch \
-    current-branch-srplot009
-  exit $?
+  default_dry_run=()
+  [[ "${1:-}" == "--dry-run" ]] && default_dry_run=(--dry-run)
+  set -- \
+    --production-profile run2_full \
+    --output-dir /groups/klannon/apiccine/run2_srplot009_current_branch \
+    --campaign-tag current-branch-srplot009 \
+    --env-file /users/apiccine/work/correction-lib/topeft/analysis/topeft_run2/topeft-envs/env_spec_9d72aad444117c28.tar.gz \
+    "${default_dry_run[@]}"
 fi
 
 matrix_parse_args "$@"
 case "${matrix_profile}" in
-  run2_full|run2_full_CR|run3_full_CR|run2_run3_full|run2_run3_full_CR)
+  run2_full|run3_full|run2_full_CR|run3_full_CR|run2_run3_full|run2_run3_full_CR)
     if (( ${#matrix_parse_errors[@]} > 0 )); then
       printf 'ERROR: %s.\n' "${matrix_parse_errors[@]}" >&2
       exit 1
     fi
     if [[ -z "${matrix_output_dir}" || -z "${matrix_campaign_tag}" ]]; then
-      echo "ERROR: ${matrix_profile} requires --output-dir and --campaign-tag." >&2
+      echo "ERROR: ${matrix_profile} requires explicit --output-dir and --campaign-tag." >&2
+      exit 1
+    fi
+    if [[ -n "${matrix_env_file}" && "${matrix_env_file}" != /* ]]; then
+      echo "ERROR: ${matrix_profile} --env-file must be an absolute path: ${matrix_env_file}" >&2
       exit 1
     fi
     if [[ -n "${matrix_env_file}" && "${matrix_env_file}" != "/users/apiccine/work/correction-lib/topeft/analysis/topeft_run2/topeft-envs/env_spec_9d72aad444117c28.tar.gz" ]]; then
-      echo "ERROR: requested profiles are pinned to the maintained frozen snapshot archive." >&2
+      echo "ERROR: requested profiles are pinned to the required frozen snapshot archive." >&2
       exit 1
     fi
-    if [[ "${matrix_resume}" == "true" ]]; then
+    if [[ "${matrix_resume}" == "true" && "${matrix_profile}" != "run3_full" ]]; then
       echo "ERROR: ${matrix_profile} has no automatic resume; inspect interrupted state first." >&2
       exit 1
     fi
@@ -645,14 +234,6 @@ case "${matrix_profile}" in
 esac
 
 case "${matrix_profile}" in
-  run2_full)
-    run_srplot009_campaign "${matrix_dry_run}" "${matrix_output_dir}" "${matrix_campaign_tag}"
-    exit $?
-    ;;
-  run2_full_CR|run3_full_CR)
-    run_cr_matrix_campaign "${matrix_profile}" "${matrix_dry_run}" "${matrix_output_dir}" "${matrix_campaign_tag}"
-    exit $?
-    ;;
   run2_run3_full|run2_run3_full_CR)
     if [[ -e "${matrix_output_dir}" ]]; then
       echo "ERROR: combined output namespace already exists: ${matrix_output_dir}" >&2
@@ -668,24 +249,54 @@ case "${matrix_profile}" in
     fi
     if [[ "${matrix_dry_run}" == "false" ]]; then
       mkdir -- "${matrix_output_dir}"
-      printf 'state\tprofile\nstarted\t%s\n' "${matrix_profile}" > "${matrix_output_dir}/combined_campaign_state.tsv"
-      trap 'printf "interrupted\t%s\n" "${matrix_profile}" >> "${matrix_output_dir}/combined_campaign_state.tsv"; exit 130' INT TERM HUP
     fi
     component_common=(--env-file /users/apiccine/work/correction-lib/topeft/analysis/topeft_run2/topeft-envs/env_spec_9d72aad444117c28.tar.gz)
     [[ "${matrix_dry_run}" == "true" ]] && component_common+=(--dry-run)
-    "$0" --production-profile "${first_profile}" \
+    if "$0" --production-profile "${first_profile}" \
       --output-dir "${matrix_output_dir}/run2${combined_suffix}" \
-      --campaign-tag "${matrix_campaign_tag}_run2" "${component_common[@]}"
-    if [[ "${matrix_dry_run}" == "false" ]]; then
-      printf 'run2_success\t%s\n' "${first_profile}" >> "${matrix_output_dir}/combined_campaign_state.tsv"
+      --campaign-tag "${matrix_campaign_tag}_run2" "${component_common[@]}"; then
+      first_exit_code=0
+    else
+      first_exit_code=$?
     fi
-    "$0" --production-profile "${second_profile}" \
+    if [[ "${matrix_dry_run}" == "true" ]]; then
+      (( first_exit_code == 0 )) || exit "${first_exit_code}"
+    else
+      first_state="${matrix_output_dir}/run2${combined_suffix}/.${first_profile}_campaign_state.json"
+      first_classification=$(srplot009_component_classification "${first_state}")
+      case "${first_classification}" in
+        success|complete_with_known_failures) ;;
+        *)
+          second_state="${matrix_output_dir}/run3${combined_suffix}/.${second_profile}_campaign_state.json"
+          srplot009_write_combined_summary \
+            "${matrix_profile}" "${matrix_campaign_tag}" "${matrix_output_dir}" \
+            "${first_state}" "${second_state}" "${first_classification}" not_attempted 1
+          echo "ERROR: Run-2 component stopped at a global or ambiguous safety boundary; Run 3 was not started." >&2
+          exit 1
+          ;;
+      esac
+    fi
+    if "$0" --production-profile "${second_profile}" \
       --output-dir "${matrix_output_dir}/run3${combined_suffix}" \
-      --campaign-tag "${matrix_campaign_tag}_run3" "${component_common[@]}"
-    if [[ "${matrix_dry_run}" == "false" ]]; then
-      printf 'complete\t%s\n' "${matrix_profile}" >> "${matrix_output_dir}/combined_campaign_state.tsv"
+      --campaign-tag "${matrix_campaign_tag}_run3" "${component_common[@]}"; then
+      second_exit_code=0
+    else
+      second_exit_code=$?
     fi
-    exit 0
+    if [[ "${matrix_dry_run}" == "true" ]]; then
+      exit "${second_exit_code}"
+    fi
+    second_state="${matrix_output_dir}/run3${combined_suffix}/.${second_profile}_campaign_state.json"
+    second_classification=$(srplot009_component_classification "${second_state}")
+    combined_exit_code=0
+    if [[ "${first_classification}" != "success" || "${second_classification}" != "success" ]]; then
+      combined_exit_code=1
+    fi
+    srplot009_write_combined_summary \
+      "${matrix_profile}" "${matrix_campaign_tag}" "${matrix_output_dir}" \
+      "${first_state}" "${second_state}" "${first_classification}" \
+      "${second_classification}" "${combined_exit_code}"
+    exit "${combined_exit_code}"
     ;;
 esac
 
@@ -701,7 +312,8 @@ Public PROFILE values:
 
 With no arguments, run_cr.sh remains a backward-compatible alias for the fixed
 five-block run2_full campaign. Combined profiles run Run 2 then Run 3 in
-separate child namespaces and start Run 3 only after Run-2 success.
+separate child namespaces. A Run-2 component that completes with known block
+failures does not suppress the independent Run-3 component.
 
 All six public profiles use the exact maintained frozen archive in snapshot
 mode, Work Queue without a profile-level worker count, and explicit
@@ -784,7 +396,7 @@ if [[ -z "${production_profile}" ]]; then
 fi
 
 case "${production_profile}" in
-  run3_full|rebin_fine) ;;
+  run2_full|run3_full|run2_full_CR|run3_full_CR|rebin_fine) ;;
   *)
     echo "ERROR: unsupported production profile '${production_profile}'." >&2
     exit 1
@@ -794,6 +406,18 @@ esac
 script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 repository_root=$(git -C "${script_dir}" rev-parse --show-toplevel)
 cd -- "${script_dir}"
+
+validation_backend="${SRPLOT009_VALIDATION_BACKEND:-}"
+validation_root="${SRPLOT009_VALIDATION_ROOT:-}"
+validation_scenario="${SRPLOT009_VALIDATION_SCENARIO:-success}"
+native_wq_log_dir="${script_dir}"
+if [[ -n "${validation_backend}" ]]; then
+  case "${validation_root}" in /tmp/*) ;; *) echo "ERROR: SRPLOT009_VALIDATION_ROOT must be below /tmp." >&2; exit 1 ;; esac
+  case "${validation_backend}" in /tmp/*) ;; *) echo "ERROR: SRPLOT009_VALIDATION_BACKEND must be below /tmp." >&2; exit 1 ;; esac
+  [[ -x "${validation_backend}" ]] || { echo "ERROR: validation backend is not executable." >&2; exit 1; }
+  native_wq_log_dir="${validation_root}/native_logs"
+  mkdir -p -- "${native_wq_log_dir}"
+fi
 
 ###############################################################################
 # Global configuration
@@ -831,6 +455,9 @@ production_git_commit=""
 run_cr=false
 run_sr=true
 dry_run="${profile_dry_run}"
+production_region="SR"
+production_np_mode="separate"
+production_component="run3"
 
 if [[ -z "${profile_output_dir}" || -z "${profile_campaign_tag}" ]]; then
   cat >&2 <<EOF
@@ -865,7 +492,7 @@ if [[ "${production_profile}" == "run3_full" ]] \
 fi
 
 if [[ "${profile_resume}" == "false" && -e "${output_dir}" ]]; then
-  echo "ERROR: ${production_profile} output directory already exists: ${output_dir}" >&2
+  echo "ERROR: ${production_profile} output directory already exists; refusing overwrite: ${output_dir}" >&2
   exit 1
 fi
 
@@ -877,12 +504,38 @@ fi
 cr_pkl_base_tag="${campaign_tag}"
 sr_pkl_base_tag="${campaign_tag}"
 
-# Select which production regions to run.
-#
-# Completed regions should normally remain disabled to prevent accidental
-# reruns.
-run_cr=false
-run_sr=true
+# Select the one region owned by the public component profile. The legacy
+# rebin_fine profile retains its maintained two-stage SR behavior.
+case "${production_profile}" in
+  run2_full)
+    run_cr=false
+    run_sr=true
+    production_region="SR"
+    production_np_mode="inline"
+    production_component="run2"
+    ;;
+  run3_full|rebin_fine)
+    run_cr=false
+    run_sr=true
+    production_region="SR"
+    production_np_mode="separate"
+    production_component="run3"
+    ;;
+  run2_full_CR)
+    run_cr=true
+    run_sr=false
+    production_region="CR"
+    production_np_mode="inline"
+    production_component="run2"
+    ;;
+  run3_full_CR)
+    run_cr=true
+    run_sr=false
+    production_region="CR"
+    production_np_mode="inline"
+    production_component="run3"
+    ;;
+esac
 
 # Resolve and print commands without launching production.
 dry_run="${profile_dry_run}"
@@ -1005,6 +658,9 @@ rebin_fine_category_var_set_names=(
   "rebin_fine_3l_fwd_var_sets"
 )
 
+sr_year_sets=()
+sr_year_category_set_names=()
+sr_year_category_var_set_names=()
 if [[ "${production_profile}" == "rebin_fine" ]]; then
   sr_year_sets=(
     "2016APV 2016 2017 2018"
@@ -1018,7 +674,11 @@ if [[ "${production_profile}" == "rebin_fine" ]]; then
     "rebin_fine_category_var_set_names"
     "rebin_fine_category_var_set_names"
   )
-else
+elif [[ "${production_profile}" == "run2_full" ]]; then
+  sr_year_sets=("run2")
+  sr_year_category_set_names=("run3_full_category_sets")
+  sr_year_category_var_set_names=("run3_full_category_var_set_names")
+elif [[ "${production_profile}" == "run3_full" ]]; then
   sr_year_sets=(
     "2022 2022EE 2023 2023BPix"
   )
@@ -1030,75 +690,79 @@ else
   )
 fi
 
+case "${production_profile}" in
+  run2_full_CR) cr_year_sets=("2016APV 2016 2017 2018") ;;
+  run3_full_CR) cr_year_sets=("2022 2022EE" "2023 2023BPix") ;;
+esac
+
 production_state_filename=".${production_profile}_campaign_state.json"
 production_block_ids=()
 production_plan_year_exprs=()
 production_plan_category_sets=()
 production_plan_var_sets=()
 
-if [[ "${production_profile}" == "rebin_fine" ]]; then
-  production_block_ids=(
-    "run2_a"
-    "run2_b"
-    "run2_c"
-    "run3_a"
-    "run3_b"
-    "run3_c"
-  )
-  production_plan_year_exprs=(
-    "2016APV 2016 2017 2018"
-    "2016APV 2016 2017 2018"
-    "2016APV 2016 2017 2018"
-    "2022 2022EE 2023 2023BPix"
-    "2022 2022EE 2023 2023BPix"
-    "2022 2022EE 2023 2023BPix"
-  )
-  production_plan_category_sets=(
-    "2lss_1tau 3l_m_offZ"
-    "3l_p_offZ 3l_onZ_tau"
-    "3l_fwd"
-    "2lss_1tau 3l_m_offZ"
-    "3l_p_offZ 3l_onZ_tau"
-    "3l_fwd"
-  )
-  production_plan_var_sets=(
-    "lj0pt ptll ptz_wtau"
-    "lj0pt ptz ptll"
-    "lt"
-    "lj0pt ptll ptz_wtau"
-    "lj0pt ptz ptll"
-    "lt"
-  )
-else
-  production_block_ids=(
-    "run3_full_a"
-    "run3_full_b"
-    "run3_full_c"
-    "run3_full_d"
-    "run3_full_e"
-  )
-  production_plan_year_exprs=(
-    "2022 2022EE 2023 2023BPix"
-    "2022 2022EE 2023 2023BPix"
-    "2022 2022EE 2023 2023BPix"
-    "2022 2022EE 2023 2023BPix"
-    "2022 2022EE 2023 2023BPix"
-  )
-  production_plan_category_sets=(
-    "2l 2lss_1tau 2los_1tau 4l"
-    "3l_m_offZ"
-    "3l_p_offZ"
-    "3l_onZ_tau"
-    "3l_fwd"
-  )
-  production_plan_var_sets=(
-    "njets lj0pt ptz ptz_wtau lt"
-    "njets lj0pt ptll lt"
-    "njets lj0pt ptll lt"
-    "njets lj0pt ptz lt"
-    "njets lj0pt ptz lt"
-  )
-fi
+case "${production_profile}" in
+  rebin_fine)
+    production_block_ids=(run2_a run2_b run2_c run3_a run3_b run3_c)
+    production_plan_year_exprs=(
+      "2016APV 2016 2017 2018" "2016APV 2016 2017 2018" "2016APV 2016 2017 2018"
+      "2022 2022EE 2023 2023BPix" "2022 2022EE 2023 2023BPix" "2022 2022EE 2023 2023BPix"
+    )
+    production_plan_category_sets=(
+      "2lss_1tau 3l_m_offZ" "3l_p_offZ 3l_onZ_tau" "3l_fwd"
+      "2lss_1tau 3l_m_offZ" "3l_p_offZ 3l_onZ_tau" "3l_fwd"
+    )
+    production_plan_var_sets=(
+      "lj0pt ptll ptz_wtau" "lj0pt ptz ptll" "lt"
+      "lj0pt ptll ptz_wtau" "lj0pt ptz ptll" "lt"
+    )
+    ;;
+  run2_full|run3_full)
+    profile_block_suffixes=(a b c d e)
+    if [[ "${production_profile}" == "run2_full" ]]; then
+      profile_year_expr="run2"
+      profile_block_prefix="run2_full"
+    else
+      profile_year_expr="2022 2022EE 2023 2023BPix"
+      profile_block_prefix="run3_full"
+    fi
+    for profile_index in "${!run3_full_category_sets[@]}"; do
+      profile_var_set_name="${run3_full_category_var_set_names[profile_index]}"
+      declare -n profile_var_set_ref="${profile_var_set_name}"
+      production_block_ids+=("${profile_block_prefix}_${profile_block_suffixes[profile_index]}")
+      production_plan_year_exprs+=("${profile_year_expr}")
+      production_plan_category_sets+=("${run3_full_category_sets[profile_index]}")
+      production_plan_var_sets+=("${profile_var_set_ref[0]}")
+      unset -n profile_var_set_ref
+    done
+    ;;
+  run2_full_CR|run3_full_CR)
+    if [[ "${production_profile}" == "run2_full_CR" ]]; then
+      profile_cr_year_sets=("2016APV 2016 2017 2018")
+    else
+      profile_cr_year_sets=("2022 2022EE" "2023 2023BPix")
+    fi
+    profile_block_index=0
+    for profile_year_expr in "${profile_cr_year_sets[@]}"; do
+      for profile_category_index in "${!cr_category_sets[@]}"; do
+        if (( profile_category_index == 0 )); then
+          profile_var_set_name=cr_non_tau_var_sets
+        else
+          profile_var_set_name=cr_tau_var_sets
+        fi
+        declare -n profile_var_set_ref="${profile_var_set_name}"
+        for profile_var_set in "${profile_var_set_ref[@]}"; do
+          profile_block_index=$((profile_block_index + 1))
+          production_block_ids+=("${production_profile}_block${profile_block_index}")
+          production_plan_year_exprs+=("${profile_year_expr}")
+          production_plan_category_sets+=("${cr_category_sets[profile_category_index]}")
+          production_plan_var_sets+=("${profile_var_set}")
+        done
+        unset -n profile_var_set_ref
+      done
+    done
+    ;;
+esac
 
 ###############################################################################
 # Execution accounting
@@ -1176,9 +840,13 @@ production_output_name() {
   local years=()
   local year_label
 
-  read -r -a years <<< "${year_expr}"
-  year_label=$(join_by - "${years[@]}")
-  printf '%sSRs_%s' "${year_label}" "${pkl_tag}"
+  if [[ "${year_expr}" == "run2" ]]; then
+    year_label="UL16-UL16APV-UL17-UL18"
+  else
+    read -r -a years <<< "${year_expr}"
+    year_label=$(join_by - "${years[@]}")
+  fi
+  printf '%s%ss_%s' "${year_label}" "${production_region}" "${pkl_tag}"
 }
 
 write_production_plan() {
@@ -1203,7 +871,11 @@ write_production_plan() {
     read -r -a vars <<< "${var_set}"
     cat_tag=$(join_by - "${cats[@]}")
     var_tag=$(join_by - "${vars[@]}")
-    pkl_tag="${sr_pkl_base_tag}_${cat_tag}_${var_tag}"
+    if [[ "${production_profile}" == "run2_full" || "${production_profile}" == *_CR ]]; then
+      pkl_tag="${campaign_tag}-block$((index + 1))"
+    else
+      pkl_tag="${campaign_tag}_${cat_tag}_${var_tag}"
+    fi
     output_name=$(production_output_name "${year_expr}" "${pkl_tag}")
     printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
       "${production_block_ids[index]}" \
@@ -1305,7 +977,7 @@ def read_plan(path, production_profile):
 
 def desired_state(arguments):
     plan_path = Path(arguments[0])
-    production_profile, schema_version, tag, output_dir, commit, env_file, env_sha256, env_fingerprint, topcoffea_commit, topcoffea_source, ttgamma, do_systs, do_np = arguments[1:]
+    production_profile, schema_version, tag, output_dir, commit, env_file, env_sha256, env_fingerprint, topcoffea_commit, topcoffea_source, ttgamma, do_systs, do_np, region, nonprompt_mode = arguments[1:]
     return {
         "schema_version": int(schema_version),
         "production_profile": production_profile,
@@ -1320,6 +992,8 @@ def desired_state(arguments):
         "ttgamma_sample_role_policy": ttgamma,
         "do_systs": do_systs == "true",
         "do_np": do_np == "true",
+        "region": region,
+        "nonprompt_mode": nonprompt_mode,
         "blocks": read_plan(plan_path, production_profile),
     }
 
@@ -1339,6 +1013,8 @@ def validate_state(state, desired):
         "ttgamma_sample_role_policy",
         "do_systs",
         "do_np",
+        "region",
+        "nonprompt_mode",
     ):
         if state.get(key) != desired[key]:
             fail(f"campaign state mismatch for {key}: recorded={state.get(key)!r} requested={desired[key]!r}")
@@ -1374,8 +1050,8 @@ mode = sys.argv[1]
 state_path = Path(sys.argv[2])
 
 if mode in {"initialize", "validate"}:
-    desired = desired_state(sys.argv[3:17])
-    readonly = len(sys.argv) > 17 and sys.argv[17] == "true"
+    desired = desired_state(sys.argv[3:19])
+    readonly = len(sys.argv) > 19 and sys.argv[19] == "true"
     if mode == "initialize":
         if state_path.exists():
             fail(f"refusing to overwrite existing {desired['production_profile']} campaign state: {state_path}")
@@ -1391,8 +1067,19 @@ if mode in {"initialize", "validate"}:
                 "exit_code": None,
                 "source_status": "planned",
                 "source_exit_code": None,
+                "source_signal": None,
+                "source_command_argv": None,
+                "source_started_at_utc": None,
+                "source_ended_at_utc": None,
+                "source_duration_seconds": None,
                 "nonprompt_status": "blocked",
                 "nonprompt_exit_code": None,
+                "nonprompt_signal": None,
+                "nonprompt_command_argv": None,
+                "nonprompt_started_at_utc": None,
+                "nonprompt_ended_at_utc": None,
+                "nonprompt_duration_seconds": None,
+                "native_work_queue_logs": {},
                 "last_transition_utc": timestamp,
                 "last_transition_detail": "campaign_initialized",
                 "transitions": [
@@ -1410,45 +1097,11 @@ if mode in {"initialize", "validate"}:
     else:
         state = load(state_path)
         validate_state(state, desired)
-        changed = False
         for block in state["blocks"]:
-            if readonly:
-                continue
             if block["source_status"] == "running":
-                timestamp = now_utc()
-                block["status"] = "source_failed"
-                block["source_status"] = "failed"
-                block["last_transition_utc"] = timestamp
-                block["last_transition_detail"] = "resume_observed_interrupted_source_stage"
-                block["transitions"].append(
-                    {
-                        "timestamp_utc": timestamp,
-                        "stage": "source",
-                        "status": "failed",
-                        "exit_code": block.get("source_exit_code"),
-                        "detail": block["last_transition_detail"],
-                    }
-                )
-                changed = True
+                fail(f"block {block['id']} has an ambiguous interrupted source stage; state was not rewritten")
             elif block["nonprompt_status"] == "running":
-                timestamp = now_utc()
-                block["status"] = "nonprompt_failed"
-                block["nonprompt_status"] = "failed"
-                block["last_transition_utc"] = timestamp
-                block["last_transition_detail"] = "resume_observed_interrupted_nonprompt_stage"
-                block["transitions"].append(
-                    {
-                        "timestamp_utc": timestamp,
-                        "stage": "nonprompt",
-                        "status": "failed",
-                        "exit_code": block.get("nonprompt_exit_code"),
-                        "detail": block["last_transition_detail"],
-                    }
-                )
-                changed = True
-        if changed:
-            state["updated_at_utc"] = now_utc()
-            atomic_write(state_path, state)
+                fail(f"block {block['id']} has an ambiguous interrupted nonprompt stage; state was not rewritten")
     raise SystemExit(0)
 
 state = load(state_path)
@@ -1488,6 +1141,7 @@ if mode == "status":
 
 if mode == "mark":
     block_id, stage, stage_status, exit_code, detail = sys.argv[3:8]
+    extra = sys.argv[8:]
     if stage == "source" and stage_status not in VALID_SOURCE_STATUSES:
         fail(f"invalid requested source status {stage_status!r}")
     if stage == "nonprompt" and stage_status not in VALID_NONPROMPT_STATUSES:
@@ -1497,6 +1151,7 @@ if mode == "mark":
     for block in state.get("blocks", []):
         if block.get("id") == block_id:
             parsed_exit_code = None if exit_code == "none" else int(exit_code)
+            timestamp = now_utc()
             if stage == "source":
                 block["source_status"] = stage_status
                 block["source_exit_code"] = parsed_exit_code
@@ -1523,7 +1178,31 @@ if mode == "mark":
                     "success": "success",
                 }[stage_status]
             block["exit_code"] = parsed_exit_code
-            block["last_transition_utc"] = now_utc()
+            block[f"{stage}_signal"] = (
+                parsed_exit_code - 128
+                if parsed_exit_code is not None and parsed_exit_code > 128
+                else None
+            )
+            if stage_status == "running":
+                block[f"{stage}_command_argv"] = extra
+                block[f"{stage}_started_at_utc"] = timestamp
+                block[f"{stage}_ended_at_utc"] = None
+                block[f"{stage}_duration_seconds"] = None
+            else:
+                block[f"{stage}_ended_at_utc"] = timestamp
+                if extra:
+                    block[f"{stage}_duration_seconds"] = int(extra[0])
+            output_readback = []
+            for output in block.get("expected_outputs", []):
+                output_path = Path(output)
+                exists = output_path.exists()
+                regular = output_path.is_file()
+                size = output_path.stat().st_size if regular else None
+                output_readback.append(
+                    {"path": output, "exists": exists, "regular_file": regular, "size_bytes": size, "nonempty": bool(regular and size)}
+                )
+            block["expected_output_readback"] = output_readback
+            block["last_transition_utc"] = timestamp
             block["last_transition_detail"] = detail
             block.setdefault("transitions", []).append(
                 {
@@ -1531,12 +1210,145 @@ if mode == "mark":
                     "stage": stage,
                     "status": stage_status,
                     "exit_code": parsed_exit_code,
+                    "signal": block[f"{stage}_signal"],
+                    "duration_seconds": block.get(f"{stage}_duration_seconds"),
                     "detail": detail,
                 }
             )
             state["updated_at_utc"] = now_utc()
             atomic_write(state_path, state)
             raise SystemExit(0)
+    fail(f"campaign state does not contain block {block_id}")
+
+if mode == "archive":
+    block_id, stage, archive_dir = sys.argv[3:6]
+    log_names = {
+        "wq_debug_log": "debug.log",
+        "wq_transactions_log": "tr.log",
+        "wq_stats_log": "stats.log",
+        "wq_tasks_accum_log": "tasks.log",
+    }
+    for block in state.get("blocks", []):
+        if block.get("id") != block_id:
+            continue
+        archive = Path(archive_dir)
+        metadata = {}
+        for key, name in log_names.items():
+            path = archive / name
+            exists = path.exists()
+            regular = path.is_file()
+            stat = path.stat() if regular else None
+            metadata[key] = {
+                "path": str(path),
+                "exists": exists,
+                "regular_file": regular,
+                "nonempty": bool(regular and stat.st_size),
+                "size_bytes": stat.st_size if stat else None,
+                "mtime_ns": stat.st_mtime_ns if stat else None,
+            }
+        block.setdefault("native_work_queue_logs", {})[stage] = metadata
+        block["last_transition_utc"] = now_utc()
+        block["last_transition_detail"] = f"{stage}_native_work_queue_logs_archived"
+        state["updated_at_utc"] = now_utc()
+        atomic_write(state_path, state)
+        raise SystemExit(0)
+    fail(f"campaign state does not contain block {block_id}")
+
+def campaign_classification(payload):
+    statuses = [block.get("status") for block in payload.get("blocks", [])]
+    if any(status in {"source_running", "nonprompt_running"} for status in statuses):
+        return "blocked_ambiguous"
+    if any(status in {"planned", "source_ready"} for status in statuses):
+        return "blocked_incomplete"
+    if any(status in {"source_failed", "nonprompt_failed"} for status in statuses):
+        return "complete_with_known_failures"
+    if statuses and all(status == "success" for status in statuses):
+        return "success"
+    return "blocked_state_contradiction"
+
+if mode == "classification":
+    print(campaign_classification(state))
+    raise SystemExit(0)
+
+if mode == "finalize":
+    classification = campaign_classification(state)
+    final_exit_code = 0 if classification == "success" else 1
+    statuses = [block.get("status") for block in state.get("blocks", [])]
+    state["campaign_status"] = classification
+    state["configured_block_count"] = len(statuses)
+    state["attempted_block_count"] = sum(status not in {"planned", "source_ready"} for status in statuses)
+    state["successful_block_count"] = statuses.count("success")
+    state["known_failed_block_count"] = sum(status in {"source_failed", "nonprompt_failed"} for status in statuses)
+    state["not_attempted_block_count"] = sum(status in {"planned", "source_ready"} for status in statuses)
+    state["final_process_exit_code"] = final_exit_code
+    state["completed_at_utc"] = now_utc()
+    state["updated_at_utc"] = state["completed_at_utc"]
+    atomic_write(state_path, state)
+    print(f"{classification}\t{final_exit_code}")
+    raise SystemExit(0)
+
+if mode == "report":
+    tsv_path, markdown_path = map(Path, sys.argv[3:5])
+    classification = campaign_classification(state)
+    if state.get("campaign_status") != classification:
+        fail("campaign state must be finalized before deriving reports")
+    headers = [
+        "profile", "campaign_tag", "era", "block_id", "categories", "variables",
+        "source_status", "source_exit", "nonprompt_status", "nonprompt_exit",
+        "final_block_status", "expected_nominal_path", "expected_np_path",
+    ]
+    rows = []
+    for block in state["blocks"]:
+        rows.append([
+            state["production_profile"], state["campaign_tag"], " ".join(block["years"]), block["id"],
+            " ".join(block["category_groups"]), " ".join(block["histograms"]),
+            block["source_status"], block.get("source_exit_code"), block["nonprompt_status"],
+            block.get("nonprompt_exit_code"), block["status"], block["expected_nominal_path"], block["expected_np_path"],
+        ])
+    def atomic_text(path, text):
+        temporary = path.with_name(f".{path.name}.tmp.{os.getpid()}")
+        with temporary.open("w", encoding="utf-8") as handle:
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    def clean(value):
+        return "" if value is None else str(value).replace("\t", " ").replace("\n", " ")
+    tsv = "\t".join(headers) + "\n" + "".join("\t".join(clean(item) for item in row) + "\n" for row in rows)
+    atomic_text(tsv_path, tsv)
+    summary = [
+        f"# Campaign summary: {state['production_profile']}", "",
+        f"- campaign_tag: `{state['campaign_tag']}`",
+        f"- source_commit: `{state['topeft_git_commit']}`",
+        f"- environment_sha256: `{state['env_file_sha256']}`",
+        f"- configured: {state['configured_block_count']}",
+        f"- attempted: {state['attempted_block_count']}",
+        f"- successful: {state['successful_block_count']}",
+        f"- known_failed: {state['known_failed_block_count']}",
+        f"- not_attempted: {state['not_attempted_block_count']}",
+        f"- final_classification: `{classification}`",
+        f"- final_process_exit_code: {state['final_process_exit_code']}", "",
+        "Per-block details are serialized in `campaign_summary.tsv`.", "",
+    ]
+    atomic_text(markdown_path, "\n".join(summary))
+    raise SystemExit(0)
+
+if mode == "failure_snapshot":
+    block_id, stage, snapshot_path = sys.argv[3:6]
+    for block in state.get("blocks", []):
+        if block.get("id") != block_id:
+            continue
+        lines = ["field\tvalue", f"block_id\t{block_id}", f"stage\t{stage}", f"exit_code\t{block.get(stage + '_exit_code')}", f"signal\t{block.get(stage + '_signal')}", f"start_time_utc\t{block.get(stage + '_started_at_utc')}", f"end_time_utc\t{block.get(stage + '_ended_at_utc')}", f"duration_seconds\t{block.get(stage + '_duration_seconds')}", f"campaign_updated_at_utc\t{state.get('updated_at_utc')}"]
+        for index, item in enumerate(block.get("expected_output_readback", []), 1):
+            for key in ("path", "exists", "regular_file", "size_bytes", "nonempty"):
+                lines.append(f"expected_output_{index}_{key}\t{item.get(key)}")
+        for key, item in block.get("native_work_queue_logs", {}).get("source", {}).items():
+            lines.append(f"{key}\t{item.get('path')}")
+        path = Path(snapshot_path)
+        temporary = path.with_name(f".{path.name}.tmp.{os.getpid()}")
+        temporary.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        os.replace(temporary, path)
+        raise SystemExit(0)
     fail(f"campaign state does not contain block {block_id}")
 
 fail(f"unsupported production state operation {mode!r}")
@@ -1574,11 +1386,11 @@ resolve_production_environment() {
       fi
     fi
     requested_env_file="${frozen_env_file}"
-    if [[ "${production_profile}" == "run3_full" && "${requested_env_file}" != "${matrix_env_file}" ]]; then
-      echo "ERROR: run3_full resume state does not use the required frozen snapshot archive." >&2
+    if [[ "${production_profile}" != "rebin_fine" && "${requested_env_file}" != "${matrix_env_file}" ]]; then
+      echo "ERROR: ${production_profile} resume state does not use the required frozen snapshot archive." >&2
       exit 1
     fi
-    if [[ "${production_profile}" == "run3_full" ]]; then
+    if [[ "${production_profile}" != "rebin_fine" ]]; then
       validation_args=(--validate-env-file --env-integrity-only --env-file "${requested_env_file}")
     else
       validation_args=(--validate-env-file --env-file "${requested_env_file}")
@@ -1589,16 +1401,16 @@ resolve_production_environment() {
       exit 1
     fi
     canonical_requested_env_file=$(readlink -f -- "${requested_env_file}" || true)
-    if [[ "${production_profile}" == "run3_full" && "${canonical_requested_env_file}" != "${matrix_env_file}" ]]; then
-      echo "ERROR: run3_full is pinned to the required frozen snapshot archive." >&2
+    if [[ "${production_profile}" != "rebin_fine" && "${canonical_requested_env_file}" != "${matrix_env_file}" ]]; then
+      echo "ERROR: ${production_profile} is pinned to the required frozen snapshot archive." >&2
       exit 1
     fi
-    if [[ "${production_profile}" == "run3_full" ]]; then
+    if [[ "${production_profile}" != "rebin_fine" ]]; then
       validation_args=(--validate-env-file --env-integrity-only --env-file "${requested_env_file}")
     else
       validation_args=(--validate-env-file --env-file "${requested_env_file}")
     fi
-  elif [[ "${production_profile}" == "run3_full" ]]; then
+  elif [[ "${production_profile}" != "rebin_fine" ]]; then
     requested_env_file="${matrix_env_file}"
     canonical_requested_env_file="${matrix_env_file}"
     validation_args=(--validate-env-file --env-integrity-only --env-file "${requested_env_file}")
@@ -1607,16 +1419,25 @@ resolve_production_environment() {
     exit 1
   fi
 
-  if [[ "${production_profile}" == "run3_full" ]]; then
-    direct_sha256=$(sha256sum "${matrix_env_file}")
-    direct_sha256="${direct_sha256%% *}"
+  if [[ "${production_profile}" != "rebin_fine" ]]; then
+    if [[ -n "${validation_backend}" ]]; then
+      direct_sha256="${matrix_env_sha256}"
+    else
+      direct_sha256=$(sha256sum "${matrix_env_file}")
+      direct_sha256="${direct_sha256%% *}"
+    fi
     if [[ "${direct_sha256}" != "${matrix_env_sha256}" ]]; then
-      echo "ERROR: run3_full frozen snapshot archive SHA-256 mismatch." >&2
+      echo "ERROR: ${production_profile} frozen snapshot archive SHA-256 mismatch." >&2
       exit 1
     fi
   fi
 
-  if ! production_environment_validation=$(python ./run_analysis.py "${validation_args[@]}"); then
+  if [[ -n "${validation_backend}" ]]; then
+    if ! production_environment_validation=$("${validation_backend}" validate_environment "${validation_scenario}" "${requested_env_file}"); then
+      echo "ERROR: ${production_profile} validation backend rejected the environment; no campaign state was changed." >&2
+      exit 1
+    fi
+  elif ! production_environment_validation=$(python ./run_analysis.py "${validation_args[@]}"); then
     echo "ERROR: ${production_profile} could not validate its environment archive; no campaign state was changed." >&2
     exit 1
   fi
@@ -1648,7 +1469,7 @@ resolve_production_environment() {
     echo "ERROR: --env-file validation returned a different archive path." >&2
     exit 1
   fi
-  if [[ "${production_profile}" == "run3_full" && "${production_env_file_sha256}" != "${matrix_env_sha256}" ]]; then
+  if [[ "${production_profile}" != "rebin_fine" && "${production_env_file_sha256}" != "${matrix_env_sha256}" ]]; then
     echo "ERROR: maintained validator SHA-256 differs from the required frozen archive identity." >&2
     exit 1
   fi
@@ -1657,11 +1478,13 @@ resolve_production_environment() {
 production_block_id() {
   local year_expr="$1"
   local category_set="$2"
+  local var_set="$3"
   local index
 
   for index in "${!production_block_ids[@]}"; do
     if [[ "${year_expr}" == "${production_plan_year_exprs[index]}" ]] \
-      && [[ "${category_set}" == "${production_plan_category_sets[index]}" ]]; then
+      && [[ "${category_set}" == "${production_plan_category_sets[index]}" ]] \
+      && [[ "${var_set}" == "${production_plan_var_sets[index]}" ]]; then
       printf '%s' "${production_block_ids[index]}"
       return 0
     fi
@@ -1696,70 +1519,25 @@ production_any_output_exists() {
 }
 
 production_assert_live_plan() {
-  local index
-  local var_set_name
-
-  if [[ "${production_profile}" == "rebin_fine" ]]; then
-    if (( ${#production_block_ids[@]} != 6 )) \
-      || (( ${#sr_year_sets[@]} != 2 )) \
-      || [[ "${sr_year_sets[0]}" != "2016APV 2016 2017 2018" ]] \
-      || [[ "${sr_year_sets[1]}" != "2022 2022EE 2023 2023BPix" ]]; then
-      echo "ERROR: live rebin_fine packing no longer matches the frozen six-block contract." >&2
-      exit 1
-    fi
-
-    for index in 0 1 2; do
-      if [[ "${rebin_fine_category_sets[index]}" != "${production_plan_category_sets[index]}" ]] \
-        || [[ "${production_plan_category_sets[index]}" != "${production_plan_category_sets[index + 3]}" ]]; then
-        echo "ERROR: live rebin_fine category packing no longer matches the frozen plan." >&2
-        exit 1
-      fi
-      var_set_name="${rebin_fine_category_var_set_names[index]}"
-      declare -n profile_var_set_ref="${var_set_name}"
-      if (( ${#profile_var_set_ref[@]} != 1 )) \
-        || [[ "${profile_var_set_ref[0]}" != "${production_plan_var_sets[index]}" ]] \
-        || [[ "${production_plan_var_sets[index]}" != "${production_plan_var_sets[index + 3]}" ]]; then
-        echo "ERROR: live rebin_fine histogram packing no longer matches the frozen plan." >&2
-        unset -n profile_var_set_ref
-        exit 1
-      fi
-      unset -n profile_var_set_ref
-    done
-
-    for index in "${!production_plan_var_sets[@]}"; do
-      if [[ " ${production_plan_var_sets[index]} " == *" njets "* ]]; then
-        echo "ERROR: rebin_fine must not request njets." >&2
-        exit 1
-      fi
-    done
-  else
-    if (( ${#production_block_ids[@]} != 5 )) \
-      || (( ${#sr_year_sets[@]} != 1 )) \
-      || [[ "${sr_year_sets[0]}" != "2022 2022EE 2023 2023BPix" ]]; then
-      echo "ERROR: live run3_full packing no longer matches the five-block Run-3 contract." >&2
-      exit 1
-    fi
-    for index in "${!production_block_ids[@]}"; do
-      if [[ "${run3_full_category_sets[index]}" != "${production_plan_category_sets[index]}" ]]; then
-        echo "ERROR: live run3_full category packing no longer matches the frozen plan." >&2
-        exit 1
-      fi
-      var_set_name="${run3_full_category_var_set_names[index]}"
-      declare -n profile_var_set_ref="${var_set_name}"
-      if (( ${#profile_var_set_ref[@]} != 1 )) \
-        || [[ "${profile_var_set_ref[0]}" != "${production_plan_var_sets[index]}" ]]; then
-        echo "ERROR: live run3_full histogram packing no longer matches the frozen plan." >&2
-        unset -n profile_var_set_ref
-        exit 1
-      fi
-      unset -n profile_var_set_ref
-    done
+  local expected_count
+  case "${production_profile}" in
+    run2_full|run3_full) expected_count=5 ;;
+    run2_full_CR) expected_count=6 ;;
+    run3_full_CR) expected_count=12 ;;
+    rebin_fine) expected_count=6 ;;
+  esac
+  if (( ${#production_block_ids[@]} != expected_count )) \
+    || (( ${#production_plan_year_exprs[@]} != expected_count )) \
+    || (( ${#production_plan_category_sets[@]} != expected_count )) \
+    || (( ${#production_plan_var_sets[@]} != expected_count )); then
+    echo "ERROR: live ${production_profile} packing no longer matches its configured block contract." >&2
+    exit 1
   fi
 }
 
 prepare_production_campaign() {
   local plan_directory
-  local schema_version=3
+  local schema_version=4
 
   production_assert_live_plan
   production_git_commit=$(git -C "${repository_root}" rev-parse HEAD)
@@ -1796,6 +1574,8 @@ prepare_production_campaign() {
       "${ttgamma_sample_role_policy}" \
       "${do_systs}" \
       "${do_np}" \
+      "${production_region}" \
+      "${production_np_mode}" \
       "${dry_run}"
   elif [[ "${dry_run}" == "false" ]]; then
     production_state_tool initialize \
@@ -1813,12 +1593,14 @@ prepare_production_campaign() {
       "${production_topcoffea_source_fingerprint}" \
       "${ttgamma_sample_role_policy}" \
       "${do_systs}" \
-      "${do_np}"
+      "${do_np}" \
+      "${production_region}" \
+      "${production_np_mode}"
   fi
 }
 
 prepare_production_sumw2_options() {
-  if [[ "${production_profile}" != "run3_full" ]]; then
+  if [[ "${production_profile}" == "rebin_fine" ]]; then
     return
   fi
   if [[ "${dry_run}" == "true" ]]; then
@@ -1861,13 +1643,13 @@ assert_supported_year_expr() {
 
   for year in "${years_in_expr[@]}"; do
     case "${year}" in
-      2016APV|2016|2017|2018|2022|2022EE|2023|2023BPix) ;;
+      run2|2016APV|2016|2017|2018|2022|2022EE|2023|2023BPix) ;;
       *)
         cat >&2 <<EOF
 ERROR: unsupported year token '${year}' in year expression '${year_expr}'.
 
 Allowed year tokens:
-  2016APV 2016 2017 2018 2022 2022EE 2023 2023BPix
+  run2 2016APV 2016 2017 2018 2022 2022EE 2023 2023BPix
 EOF
         exit 1
         ;;
@@ -2020,7 +1802,11 @@ build_common_command_options() {
     # --defer-np prevents run_analysis.py from materializing the _np artifact
     # in the processor process. run_sr_block launches run_data_driven.py only
     # after that child exits and the source artifact is verified.
-    cmd_ref+=(--do-np --defer-np)
+    if [[ "${production_np_mode}" == "separate" ]]; then
+      cmd_ref+=(--do-np --defer-np)
+    else
+      cmd_ref+=(--do-np --np-postprocess=inline)
+    fi
   fi
 
   cmd_ref+=(
@@ -2030,7 +1816,7 @@ build_common_command_options() {
 
   cmd_ref+=(--env-file "${production_env_file}")
 
-  if [[ "${production_profile}" == "run3_full" ]]; then
+  if [[ "${production_profile}" != "rebin_fine" ]]; then
     cmd_ref+=(
       --snapshot
       --options "${production_sumw2_options_path}"
@@ -2045,6 +1831,107 @@ build_common_command_options() {
   if [[ "${dry_run}" == "true" ]]; then
     cmd_ref+=(--dry-run)
   fi
+}
+
+native_wq_log_names=(debug.log tr.log stats.log tasks.log)
+
+assert_native_wq_logs_clean() {
+  local name
+  for name in "${native_wq_log_names[@]}"; do
+    if [[ -e "${native_wq_log_dir}/${name}" ]]; then
+      echo "ERROR: unexpected generic Work Queue log requires ownership reconciliation before a new invocation: ${native_wq_log_dir}/${name}" >&2
+      return 1
+    fi
+  done
+}
+
+run_production_source_child() {
+  local block_id="$1"
+  local source_path="$2"
+  local nonprompt_path="$3"
+  shift 3
+  local command=("$@")
+
+  if [[ -n "${validation_backend}" ]]; then
+    "${validation_backend}" run_block "${validation_scenario}" \
+      "${block_id}" "${production_env_file}" source \
+      "${source_path}" "${nonprompt_path}" "${native_wq_log_dir}" \
+      "${command[@]}"
+  else
+    "${command[@]}"
+  fi
+}
+
+run_production_nonprompt_child() {
+  local block_id="$1"
+  local source_path="$2"
+  local nonprompt_path="$3"
+  shift 3
+  local command=("$@")
+
+  if [[ -n "${validation_backend}" ]]; then
+    "${validation_backend}" run_nonprompt "${validation_scenario}" \
+      "${block_id}" "${source_path}" "${nonprompt_path}" "${command[@]}"
+  else
+    "${command[@]}"
+  fi
+}
+
+archive_native_wq_logs() {
+  local block_id="$1"
+  local stage="$2"
+  local archive_dir="${output_dir}/work_queue_logs/${production_component}/${block_id}/${stage}"
+  local name source_path destination_path source_size destination_size
+
+  if [[ -e "${archive_dir}" ]]; then
+    echo "ERROR: native Work Queue archive destination already exists: ${archive_dir}" >&2
+    return 1
+  fi
+  mkdir -p -- "$(dirname -- "${archive_dir}")"
+  mkdir -- "${archive_dir}"
+
+  for name in "${native_wq_log_names[@]}"; do
+    source_path="${native_wq_log_dir}/${name}"
+    destination_path="${archive_dir}/${name}"
+    if [[ ! -e "${source_path}" ]]; then
+      continue
+    fi
+    if [[ ! -f "${source_path}" ]]; then
+      echo "ERROR: native Work Queue source is not a regular file: ${source_path}" >&2
+      return 1
+    fi
+    if ! cp -- "${source_path}" "${destination_path}"; then
+      echo "ERROR: failed to copy native Work Queue log; originals were preserved: ${source_path}" >&2
+      return 1
+    fi
+    source_size=$(stat -c %s -- "${source_path}")
+    destination_size=$(stat -c %s -- "${destination_path}")
+    if [[ ! -f "${destination_path}" || "${source_size}" != "${destination_size}" ]]; then
+      echo "ERROR: native Work Queue log copy verification failed; originals were preserved: ${source_path}" >&2
+      return 1
+    fi
+  done
+
+  if [[ -n "${validation_backend}" && "${validation_scenario}" == "archive_copy_failure" ]]; then
+    echo "ERROR: simulated native Work Queue archive verification failure; originals were preserved." >&2
+    return 1
+  fi
+
+  production_state_tool archive "${production_state_path}" "${block_id}" "${stage}" "${archive_dir}"
+  for name in "${native_wq_log_names[@]}"; do
+    source_path="${native_wq_log_dir}/${name}"
+    [[ ! -e "${source_path}" ]] || rm -- "${source_path}"
+  done
+}
+
+write_failure_snapshot() {
+  local block_id="$1"
+  local stage="$2"
+  local snapshot_dir="${output_dir}/failure_diagnostics"
+  mkdir -p -- "${snapshot_dir}"
+  production_state_tool failure_snapshot \
+    "${production_state_path}" "${block_id}" "${stage}" \
+    "${snapshot_dir}/${block_id}_${stage}.tsv"
 }
 
 run_cr_block() {
@@ -2064,6 +1951,10 @@ run_cr_block() {
   local end_epoch
   local duration_seconds
   local exit_code
+  local production_block
+  local source_path
+  local nonprompt_path
+  local plan_output_tag
 
   read -r -a years <<< "${year_expr}"
   read -r -a vars <<< "${var_set}"
@@ -2071,6 +1962,11 @@ run_cr_block() {
   cat_tag=$(join_by - "${cats[@]}")
   var_tag=$(join_by - "${vars[@]}")
   pkl_tag="${cr_pkl_base_tag}_${cat_tag}_${var_tag}"
+  production_block=$(production_block_id "${year_expr}" "${cats[*]}" "${var_set}")
+  IFS=$'\t' read -r _ _ _ _ plan_output_tag _ source_path nonprompt_path < <(
+    awk -F '\t' -v block_id="${production_block}" '$1 == block_id {print; exit}' "${production_plan_file}"
+  )
+  pkl_tag="${plan_output_tag}"
 
   echo "----------------------------------------"
   echo "Mode: CR"
@@ -2099,10 +1995,30 @@ run_cr_block() {
   print_command "${cmd[@]}"
   start_epoch=$(date +%s)
 
+  if [[ "${dry_run}" == "true" ]]; then
+    "${cmd[@]}"
+    end_epoch=$(date +%s)
+    duration_seconds=$((end_epoch - start_epoch))
+    record_block_result \
+      "DRY_RUN" "CR" "${year_expr}" "${cats[*]}" "${vars[*]}" \
+      "${pkl_tag}" "0" "${duration_seconds}"
+    echo
+    return 0
+  fi
+
+  if production_any_output_exists "${production_block}" "${production_plan_file}"; then
+    echo "ERROR: ${production_block} expected output path already exists; refusing ambiguous overwrite." >&2
+    exit 1
+  fi
+  assert_native_wq_logs_clean
+  production_state_tool mark \
+    "${production_state_path}" "${production_block}" \
+    source running none source_child_started "${cmd[@]}"
+
   # Keep child stdout/stderr attached directly to the caller. The conditional
   # invocation only captures the exit status so set -e does not terminate the
   # campaign when one production block fails or its Python child is killed.
-  if "${cmd[@]}"; then
+  if run_production_source_child "${production_block}" "${source_path}" "${nonprompt_path}" "${cmd[@]}"; then
     exit_code=0
   else
     exit_code=$?
@@ -2111,18 +2027,40 @@ run_cr_block() {
   end_epoch=$(date +%s)
   duration_seconds=$((end_epoch - start_epoch))
 
-  if (( exit_code == 0 )); then
-    record_block_result \
-      "SUCCESS" "CR" "${year_expr}" "${cats[*]}" "${vars[*]}" \
-      "${pkl_tag}" "${exit_code}" "${duration_seconds}"
-    echo "${year_expr} CR done for ${cat_tag} / ${var_tag}"
-  else
+  if (( exit_code != 0 )); then
+    production_state_tool mark \
+      "${production_state_path}" "${production_block}" \
+      source failed "${exit_code}" source_child_exit_nonzero "${duration_seconds}"
+    archive_native_wq_logs "${production_block}" source
+    write_failure_snapshot "${production_block}" source
     record_block_result \
       "FAILED" "CR" "${year_expr}" "${cats[*]}" "${vars[*]}" \
       "${pkl_tag}" "${exit_code}" "${duration_seconds}"
     echo \
       "ERROR: ${year_expr} CR failed for ${cat_tag} / ${var_tag} with exit code ${exit_code}; continuing with the next block." \
       >&2
+  elif [[ ! -s "${source_path}" || ! -s "${nonprompt_path}" ]]; then
+    production_state_tool mark \
+      "${production_state_path}" "${production_block}" \
+      source failed "${exit_code}" source_exit_zero_invalid_stage_outputs "${duration_seconds}"
+    archive_native_wq_logs "${production_block}" source
+    write_failure_snapshot "${production_block}" source
+    record_block_result \
+      "FAILED" "CR" "${year_expr}" "${cats[*]}" "${vars[*]}" \
+      "${pkl_tag}" "${exit_code}" "${duration_seconds}"
+    echo "ERROR: ${production_block} returned zero without both expected outputs; continuing with the next block." >&2
+  else
+    production_state_tool mark \
+      "${production_state_path}" "${production_block}" \
+      source ready "${exit_code}" source_child_exit_zero_expected_source_present "${duration_seconds}"
+    production_state_tool mark \
+      "${production_state_path}" "${production_block}" \
+      nonprompt success "${exit_code}" inline_nonprompt_exit_zero_expected_output_present "${duration_seconds}"
+    archive_native_wq_logs "${production_block}" source
+    record_block_result \
+      "SUCCESS" "CR" "${year_expr}" "${cats[*]}" "${vars[*]}" \
+      "${pkl_tag}" "${exit_code}" "${duration_seconds}"
+    echo "${year_expr} CR done for ${cat_tag} / ${var_tag}"
   fi
 
   echo "----------------------------------------"
@@ -2144,6 +2082,7 @@ run_sr_block() {
   local pkl_tag
   local source_path
   local nonprompt_path
+  local plan_output_tag
   local start_epoch
   local end_epoch
   local duration_seconds
@@ -2162,10 +2101,11 @@ run_sr_block() {
   var_tag=$(join_by - "${vars[@]}")
   pkl_tag="${sr_pkl_base_tag}_${cat_tag}_${var_tag}"
 
-  production_block=$(production_block_id "${year_expr}" "${cats[*]}")
-  IFS=$'\t' read -r _ _ _ _ _ _ source_path nonprompt_path < <(
+  production_block=$(production_block_id "${year_expr}" "${cats[*]}" "${var_set}")
+  IFS=$'\t' read -r _ _ _ _ plan_output_tag _ source_path nonprompt_path < <(
     awk -F '\t' -v block_id="${production_block}" '$1 == block_id {print; exit}' "${production_plan_file}"
   )
+  pkl_tag="${plan_output_tag}"
   if [[ -z "${source_path}" || -z "${nonprompt_path}" ]]; then
     echo "ERROR: unable to resolve expected output paths for ${production_block}." >&2
     exit 1
@@ -2272,14 +2212,27 @@ run_sr_block() {
 
   if [[ "${source_reusable}" == "false" ]]; then
     if [[ "${dry_run}" == "false" ]]; then
+      assert_native_wq_logs_clean
       production_state_tool mark \
         "${production_state_path}" "${production_block}" \
-        "source" "running" "none" "source_child_started"
+        "source" "running" "none" "source_child_started" "${source_cmd[@]}"
+    fi
+    if [[ "${dry_run}" == "true" && "${production_profile}" == "run2_full" ]]; then
+      printf 'SRPLOT009_BLOCK_COMMAND\t%s\t' "${production_block}"
+      printf ' %q' "${source_cmd[@]}"
+      printf '\n'
     fi
     print_command "${source_cmd[@]}"
     # This conditional waits for the heavy processor child to exit completely.
     # The separate data-driven process is not created until after this returns.
-    if "${source_cmd[@]}"; then
+    if [[ "${dry_run}" == "true" ]]; then
+      if "${source_cmd[@]}"; then
+        source_exit_code=0
+      else
+        source_exit_code=$?
+      fi
+    elif run_production_source_child \
+      "${production_block}" "${source_path}" "${nonprompt_path}" "${source_cmd[@]}"; then
       source_exit_code=0
     else
       source_exit_code=$?
@@ -2287,11 +2240,11 @@ run_sr_block() {
   else
     echo "Reusing validated completed source for ${production_block}: ${source_path}"
   fi
+  end_epoch=$(date +%s)
+  duration_seconds=$((end_epoch - start_epoch))
 
   if [[ "${dry_run}" == "true" ]]; then
     if (( source_exit_code != 0 )); then
-      end_epoch=$(date +%s)
-      duration_seconds=$((end_epoch - start_epoch))
       record_block_result \
         "FAILED" "SR" "${year_expr}" "${cats[*]}" "${vars[*]}" \
         "${pkl_tag}" "${source_exit_code}" "${duration_seconds}"
@@ -2301,8 +2254,6 @@ run_sr_block() {
     echo "Separate nonprompt command (not executed by dry-run):"
     printf ' %q' "${nonprompt_cmd[@]}"
     echo
-    end_epoch=$(date +%s)
-    duration_seconds=$((end_epoch - start_epoch))
     record_block_result \
       "DRY_RUN" "SR" "${year_expr}" "${cats[*]}" "${vars[*]}" \
       "${pkl_tag}" "0" "${duration_seconds}"
@@ -2316,21 +2267,23 @@ run_sr_block() {
     if (( source_exit_code != 0 )); then
       production_state_tool mark \
         "${production_state_path}" "${production_block}" \
-        "source" "failed" "${source_exit_code}" "source_child_exit_nonzero"
-      end_epoch=$(date +%s)
-      duration_seconds=$((end_epoch - start_epoch))
+        "source" "failed" "${source_exit_code}" "source_child_exit_nonzero" "${duration_seconds}"
+      archive_native_wq_logs "${production_block}" source
+      write_failure_snapshot "${production_block}" source
       record_block_result \
         "FAILED" "SR" "${year_expr}" "${cats[*]}" "${vars[*]}" \
         "${pkl_tag}" "${source_exit_code}" "${duration_seconds}"
       echo "ERROR: ${production_block} source production failed with exit code ${source_exit_code}; continuing." >&2
       return 0
     fi
-    if [[ ! -s "${source_path}" || -e "${nonprompt_path}" ]]; then
+    if [[ ! -s "${source_path}" ]] \
+      || { [[ "${production_np_mode}" == "separate" ]] && [[ -e "${nonprompt_path}" ]]; } \
+      || { [[ "${production_np_mode}" == "inline" ]] && [[ ! -s "${nonprompt_path}" ]]; }; then
       production_state_tool mark \
         "${production_state_path}" "${production_block}" \
-        "source" "failed" "${source_exit_code}" "source_exit_zero_invalid_stage_outputs"
-      end_epoch=$(date +%s)
-      duration_seconds=$((end_epoch - start_epoch))
+        "source" "failed" "${source_exit_code}" "source_exit_zero_invalid_stage_outputs" "${duration_seconds}"
+      archive_native_wq_logs "${production_block}" source
+      write_failure_snapshot "${production_block}" source
       record_block_result \
         "FAILED" "SR" "${year_expr}" "${cats[*]}" "${vars[*]}" \
         "${pkl_tag}" "${source_exit_code}" "${duration_seconds}"
@@ -2339,14 +2292,29 @@ run_sr_block() {
     fi
     production_state_tool mark \
       "${production_state_path}" "${production_block}" \
-      "source" "ready" "${source_exit_code}" "source_child_exit_zero_expected_source_present"
+      "source" "ready" "${source_exit_code}" "source_child_exit_zero_expected_source_present" "${duration_seconds}"
+    archive_native_wq_logs "${production_block}" source
+  fi
+
+  if [[ "${production_np_mode}" == "inline" ]]; then
+    production_state_tool mark \
+      "${production_state_path}" "${production_block}" \
+      "nonprompt" "success" "${source_exit_code}" "inline_nonprompt_exit_zero_expected_output_present" "${duration_seconds}"
+    record_block_result \
+      "SUCCESS" "SR" "${year_expr}" "${cats[*]}" "${vars[*]}" \
+      "${pkl_tag}" "${source_exit_code}" "${duration_seconds}"
+    echo "${year_expr} SR source and inline nonprompt stages done for ${cat_tag} / ${var_tag}"
+    echo "----------------------------------------"
+    echo
+    return 0
   fi
 
   production_state_tool mark \
     "${production_state_path}" "${production_block}" \
-    "nonprompt" "running" "none" "separate_nonprompt_child_started_after_source_exit"
+    "nonprompt" "running" "none" "separate_nonprompt_child_started_after_source_exit" "${nonprompt_cmd[@]}"
   print_command "${nonprompt_cmd[@]}"
-  if "${nonprompt_cmd[@]}"; then
+  if run_production_nonprompt_child \
+    "${production_block}" "${source_path}" "${nonprompt_path}" "${nonprompt_cmd[@]}"; then
     nonprompt_exit_code=0
   else
     nonprompt_exit_code=$?
@@ -2358,7 +2326,7 @@ run_sr_block() {
   if (( nonprompt_exit_code == 0 )) && [[ -s "${nonprompt_path}" ]]; then
     production_state_tool mark \
       "${production_state_path}" "${production_block}" \
-      "nonprompt" "success" "${nonprompt_exit_code}" "separate_nonprompt_exit_zero_expected_output_present"
+      "nonprompt" "success" "${nonprompt_exit_code}" "separate_nonprompt_exit_zero_expected_output_present" "${duration_seconds}"
     record_block_result \
       "SUCCESS" "SR" "${year_expr}" "${cats[*]}" "${vars[*]}" \
       "${pkl_tag}" "${nonprompt_exit_code}" "${duration_seconds}"
@@ -2366,7 +2334,8 @@ run_sr_block() {
   else
     production_state_tool mark \
       "${production_state_path}" "${production_block}" \
-      "nonprompt" "failed" "${nonprompt_exit_code}" "separate_nonprompt_failed_or_missing_output"
+      "nonprompt" "failed" "${nonprompt_exit_code}" "separate_nonprompt_failed_or_missing_output" "${duration_seconds}"
+    write_failure_snapshot "${production_block}" nonprompt
     record_block_result \
       "FAILED" "SR" "${year_expr}" "${cats[*]}" "${vars[*]}" \
       "${pkl_tag}" "${nonprompt_exit_code}" "${duration_seconds}"
@@ -2450,19 +2419,19 @@ echo "resume: ${profile_resume}"
 echo "env_file: ${production_env_file}"
 echo "env_file_sha256: ${production_env_file_sha256}"
 if [[ "${profile_resume}" == "true" ]]; then
-  if [[ "${production_profile}" == "run3_full" ]]; then
+  if [[ "${production_profile}" != "rebin_fine" ]]; then
     echo "environment_policy: state_frozen_exact_archive_integrity_plus_snapshot"
   else
     echo "environment_policy: state_frozen_strict_single_archive"
   fi
-elif [[ "${production_profile}" == "run3_full" ]]; then
+elif [[ "${production_profile}" != "rebin_fine" ]]; then
   echo "environment_policy: exact_frozen_archive_integrity_plus_snapshot"
 elif [[ -n "${profile_env_file}" ]]; then
   echo "environment_policy: explicit_single_archive"
 else
   echo "environment_policy: legacy_profile_policy"
 fi
-if [[ "${production_profile}" == "run3_full" ]]; then
+if [[ "${production_profile}" != "rebin_fine" ]]; then
   echo "sumw2_storage_mode: full_diagnostics"
 fi
 echo "campaign_state: ${output_dir}/${production_state_filename}"
@@ -2580,10 +2549,29 @@ echo "campaign_tag: ${campaign_tag}"
 echo "ttgamma sample-role policy: ${ttgamma_sample_role_policy}"
 echo "output_dir: ${output_dir}"
 
-if (( run_failure_count > 0 )); then
-  echo "run_cr.sh finished with ${run_failure_count} failed production block(s)." >&2
-  exit 1
+if [[ "${dry_run}" == "true" && "${production_profile}" == "run2_full" ]]; then
+  echo "dry_run_complete: five commands resolved; no environment, output root, scheduler, or production action was created"
 fi
 
+final_process_exit_code=0
+if [[ "${dry_run}" == "false" ]]; then
+  IFS=$'\t' read -r final_campaign_classification final_process_exit_code < <(
+    production_state_tool finalize "${production_state_path}"
+  )
+  production_state_tool report \
+    "${production_state_path}" \
+    "${output_dir}/campaign_summary.tsv" \
+    "${output_dir}/campaign_summary.md"
+  echo "final_campaign_classification: ${final_campaign_classification}"
+  echo "campaign_summary_tsv: ${output_dir}/campaign_summary.tsv"
+  echo "campaign_summary_md: ${output_dir}/campaign_summary.md"
+elif (( run_failure_count > 0 )); then
+  final_process_exit_code=1
+fi
+
+if (( final_process_exit_code != 0 )); then
+  echo "run_cr.sh finished with ${run_failure_count} failed production block(s)." >&2
+  exit "${final_process_exit_code}"
+fi
 echo "run_cr.sh completed successfully"
 exit 0
