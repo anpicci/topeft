@@ -486,7 +486,7 @@ following the operating links below.
 - To understand why responsibilities are separated, use the
   [explanation map](../README.md#explanation).
 - For the published predecessor rather than the current workflow, use the
-explicitly [historical TOP-22-006 guide](../how_to/historical/top_22_006.md).
+  explicitly [historical TOP-22-006 guide](../how_to/historical/top_22_006.md).
 
 ## Current production example
 
