@@ -3,6 +3,7 @@ import os
 import re
 import shlex
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -130,7 +131,24 @@ printf '%s\\t%s\\n' "$action" "$scenario" >> "${{SRPLOT009_VALIDATION_ROOT}}/bac
 case "$action" in
   validate_environment)
     archive="$1"
-    [[ "$scenario" != validation_failure ]] || exit 18
+    if [[ "$scenario" == run2_validation_failure ]]; then
+      if [[ ! -e "${{SRPLOT009_VALIDATION_ROOT}}/.run2_validation_seen" ]]; then
+        : > "${{SRPLOT009_VALIDATION_ROOT}}/.run2_validation_seen"
+        exit 18
+      fi
+    elif [[ "$scenario" == run3_validation_failure ]]; then
+      if [[ ! -e "${{SRPLOT009_VALIDATION_ROOT}}/.run2_validation_seen" ]]; then
+        : > "${{SRPLOT009_VALIDATION_ROOT}}/.run2_validation_seen"
+      else
+        exit 18
+      fi
+    elif [[ "$scenario" == run2_output_collision ]]; then
+      if [[ ! -e "${{SRPLOT009_VALIDATION_ROOT}}/.run2_validation_seen" ]]; then
+        : > "${{SRPLOT009_VALIDATION_ROOT}}/.run2_validation_seen"
+        mkdir -p -- "${{SRPLOT009_VALIDATION_ROOT}}/output/run2" \
+          "${{SRPLOT009_VALIDATION_ROOT}}/output/run2_CR"
+      fi
+    fi
     printf 'env_file: %s\\n' "$archive"
     printf 'env_file_sha256: {FROZEN_SHA256}\\n'
     printf 'env_manifest: %s.manifest.json\\n' "$archive"
@@ -153,7 +171,7 @@ case "$action" in
     for native_log in debug.log tr.log stats.log tasks.log; do
       printf '%s\\t%s\\n' "$block_id" "$native_log" > "$native_log_dir/$native_log"
     done
-    if [[ "$scenario" == block_failure_3 && ( "$block_id" == *_c || "$block_id" == *_block3 ) ]]; then
+    if [[ "$scenario" == block_failure_3 && ( "$block_id" == run2_full_c || "$block_id" == run2_full_CR_block3 ) ]]; then
       exit 23
     fi
     if [[ "$scenario" == block_failure_2 && ( "$block_id" == *_b || "$block_id" == *_block2 ) ]]; then
@@ -166,6 +184,12 @@ case "$action" in
     printf 'synthetic source\\n' > "$source_path"
     if [[ " $* " != *" --defer-np "* ]]; then
       printf 'synthetic nonprompt\\n' > "$nonprompt_path"
+    fi
+    if [[ "$scenario" == run2_state_contradiction && "$block_id" == run2_full_a ]]; then
+      rm -f -- "$native_log_dir/debug.log" "$native_log_dir/tr.log" \
+        "$native_log_dir/stats.log" "$native_log_dir/tasks.log"
+      printf '{{malformed\\n' > "${{SRPLOT009_VALIDATION_ROOT}}/output/run2/.run2_full_campaign_state.json"
+      exit 0
     fi
     : > "${{SRPLOT009_VALIDATION_ROOT}}/${{block_id}}.finished"
     ;;
@@ -217,6 +241,59 @@ def _campaign_state(output_root, profile):
             encoding="utf-8"
         )
     )
+
+
+def _combined_summary_tool(tmp_path):
+    source = RUN_CR.read_text(encoding="utf-8")
+    match = re.search(
+        r"srplot009_write_combined_summary\(\) \{.*?<<'PY'\n(.*?)\nPY\n\}",
+        source,
+        re.DOTALL,
+    )
+    assert match
+    tool = tmp_path / "combined_summary_tool.py"
+    tool.write_text(match.group(1), encoding="utf-8")
+    return tool
+
+
+def _derive_combined_summary(
+    tmp_path,
+    profile,
+    run2_state,
+    run3_state,
+    run2_classification,
+    run3_classification,
+    *,
+    shared_component="none",
+):
+    output_root = tmp_path / "derived-summary"
+    output_root.mkdir()
+    tool = _combined_summary_tool(tmp_path)
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(tool),
+            profile,
+            "synthetic-combined",
+            str(output_root),
+            str(run2_state),
+            str(run3_state),
+            run2_classification,
+            run3_classification,
+            "1",
+            shared_component,
+        ],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        check=False,
+    )
+    assert result.returncode == 0, result.stdout
+    summary = (output_root / "campaign_summary.md").read_text(encoding="utf-8")
+    lines = (output_root / "campaign_summary.tsv").read_text(encoding="utf-8").splitlines()
+    header = lines[0].split("\t")
+    rows = [dict(zip(header, line.split("\t"))) for line in lines[1:]]
+    return summary, rows
 
 
 def test_public_profile_inventory_and_default_alias():
@@ -304,7 +381,36 @@ def test_stubbed_known_run2_failure_continues_later_blocks_and_combined_run3(tmp
     assert run2_state["blocks"][2]["source_exit_code"] == 23
     assert run2_state["campaign_status"] == "complete_with_known_failures"
     assert (output_root / "campaign_summary.tsv").is_file()
-    assert (output_root / "campaign_summary.md").is_file()
+    summary = (output_root / "campaign_summary.md").read_text()
+    assert "configured_count: 10" in summary
+    assert "attempted_count: 10" in summary
+    assert "successful_count: 9" in summary
+    assert "known_failed_count: 1" in summary
+    assert "final_classification: `complete_with_known_failures`" in summary
+    calls = [line.split("\t", 1)[0] for line in (tmp_path / "block_calls.tsv").read_text().splitlines()]
+    assert calls.count("run2_full_c") == 1
+    assert calls.count("run3_full_a") == 1
+
+
+@pytest.mark.parametrize(
+    ("profile", "configured_count"),
+    (("run2_run3_full", 10), ("run2_run3_full_CR", 18)),
+)
+def test_stubbed_combined_all_success_has_exact_configured_denominator(
+    tmp_path, profile, configured_count
+):
+    result, output_root, _ = _stubbed_run(tmp_path, profile, "success")
+    assert result.returncode == 0, result.stdout
+    summary = (output_root / "campaign_summary.md").read_text()
+    assert f"configured_count: {configured_count}" in summary
+    assert f"attempted_count: {configured_count}" in summary
+    assert f"successful_count: {configured_count}" in summary
+    assert "known_failed_count: 0" in summary
+    assert "attempted_incomplete_count: 0" in summary
+    assert "not_attempted_count: 0" in summary
+    assert "final_classification: `success`" in summary
+    lines = (output_root / "campaign_summary.tsv").read_text().splitlines()
+    assert len(lines) == configured_count + 1
 
 
 def test_stubbed_run2_all_success_attempts_every_block_and_returns_zero(tmp_path):
@@ -388,16 +494,210 @@ def test_stubbed_two_known_failures_are_retained_in_exact_aggregate(tmp_path):
     assert sum("source_failed" in row for row in summary_rows[1:]) == 2
 
 
-def test_stubbed_global_preflight_failure_suppresses_combined_run3(tmp_path):
+@pytest.mark.parametrize(
+    ("profile", "suffix", "configured_count", "run3_block_count"),
+    (
+        ("run2_run3_full", "", 10, 5),
+        ("run2_run3_full_CR", "_CR", 18, 12),
+    ),
+)
+def test_stubbed_run2_local_preflight_failure_still_enters_combined_run3(
+    tmp_path, profile, suffix, configured_count, run3_block_count
+):
     result, output_root, validation_root = _stubbed_run(
-        tmp_path, "run2_run3_full", "validation_failure"
+        tmp_path, profile, "run2_validation_failure"
+    )
+    assert result.returncode != 0
+    assert not (output_root / f"run2{suffix}" / f".run2_full{suffix}_campaign_state.json").exists()
+    assert (output_root / f"run3{suffix}").is_dir()
+    assert len(list(validation_root.glob(f"run3_full{suffix}_*.started"))) == run3_block_count
+    summary = (output_root / "campaign_summary.md").read_text()
+    assert f"configured_count: {configured_count}" in summary
+    assert f"attempted_count: {run3_block_count}" in summary
+    assert f"successful_count: {run3_block_count}" in summary
+    assert f"not_attempted_count: {configured_count - run3_block_count}" in summary
+    assert "final_classification: `completed_with_component_blockers`" in summary
+    lines = (output_root / "campaign_summary.tsv").read_text().splitlines()
+    assert len(lines) == configured_count + 1
+    assert sum("not_attempted_component_blocked" in line for line in lines[1:]) == configured_count - run3_block_count
+
+
+def test_stubbed_run2_local_output_collision_still_enters_combined_run3(tmp_path):
+    result, output_root, validation_root = _stubbed_run(
+        tmp_path, "run2_run3_full", "run2_output_collision"
+    )
+    assert result.returncode != 0
+    assert (output_root / "run3").is_dir()
+    assert len(list(validation_root.glob("run3_full_*.started"))) == 5
+    summary = (output_root / "campaign_summary.md").read_text()
+    assert "configured_count: 10" in summary
+    assert "attempted_count: 5" in summary
+    assert "not_attempted_count: 5" in summary
+
+
+def test_stubbed_run2_local_state_contradiction_still_enters_combined_run3(tmp_path):
+    result, output_root, validation_root = _stubbed_run(
+        tmp_path, "run2_run3_full", "run2_state_contradiction"
+    )
+    assert result.returncode != 0
+    assert (output_root / "run3").is_dir()
+    assert len(list(validation_root.glob("run3_full_*.started"))) == 5
+    assert not any(
+        (validation_root / "native_logs" / name).exists()
+        for name in ("debug.log", "tr.log", "stats.log", "tasks.log")
+    )
+    summary = (output_root / "campaign_summary.md").read_text()
+    assert "run2_component_status: `blocked_state_contradiction`" in summary
+    assert "configured_count: 10" in summary
+    assert "successful_count: 5" in summary
+    assert "not_attempted_count: 5" in summary
+    assert "final_classification: `completed_with_component_blockers`" in summary
+
+
+def test_stubbed_run2_native_log_archive_failure_blocks_combined_run3(tmp_path):
+    result, output_root, validation_root = _stubbed_run(
+        tmp_path, "run2_run3_full", "archive_copy_failure"
     )
     assert result.returncode != 0
     assert not (output_root / "run3").exists()
     assert not list(validation_root.glob("run3_full_*.started"))
+    assert (validation_root / "native_logs" / "debug.log").is_file()
     summary = (output_root / "campaign_summary.md").read_text()
-    assert "blocked_global_or_ambiguous" in summary
-    assert "run3_component_status: `not_attempted`" in summary
+    assert "configured_count: 10" in summary
+    assert "attempted_count: 1" in summary
+    assert "attempted_incomplete_count: 1" in summary
+    assert "not_attempted_count: 9" in summary
+    assert "final_classification: `shared_campaign_blocked`" in summary
+    lines = (output_root / "campaign_summary.tsv").read_text().splitlines()
+    assert sum("not_attempted_shared_campaign_blocked" in line for line in lines[1:]) == 9
+
+
+def test_stubbed_shared_blocker_after_first_run3_block_keeps_full_roster(tmp_path):
+    result, output_root, validation_root = _stubbed_run(
+        tmp_path, "run2_run3_full", "run3_archive_copy_failure"
+    )
+    assert result.returncode != 0
+    assert len(list(validation_root.glob("run2_full_*.started"))) == 5
+    assert (validation_root / "run3_full_a.started").is_file()
+    assert not (validation_root / "run3_full_b.started").exists()
+    assert (validation_root / "native_logs" / "debug.log").is_file()
+    summary = (output_root / "campaign_summary.md").read_text()
+    assert "configured_count: 10" in summary
+    assert "attempted_count: 6" in summary
+    assert "successful_count: 5" in summary
+    assert "attempted_incomplete_count: 1" in summary
+    assert "not_attempted_count: 4" in summary
+    assert "final_classification: `shared_campaign_blocked`" in summary
+    lines = (output_root / "campaign_summary.tsv").read_text().splitlines()
+    assert len(lines) == 11
+    assert sum("not_attempted_shared_campaign_blocked" in line for line in lines[1:]) == 4
+
+
+def test_stubbed_run3_local_preflight_failure_is_fully_accounted(tmp_path):
+    result, output_root, validation_root = _stubbed_run(
+        tmp_path, "run2_run3_full", "run3_validation_failure"
+    )
+    assert result.returncode != 0
+    assert len(list(validation_root.glob("run2_full_*.started"))) == 5
+    assert not list(validation_root.glob("run3_full_*.started"))
+    summary = (output_root / "campaign_summary.md").read_text()
+    assert "configured_count: 10" in summary
+    assert "attempted_count: 5" in summary
+    assert "successful_count: 5" in summary
+    assert "not_attempted_count: 5" in summary
+    assert "final_classification: `completed_with_component_blockers`" in summary
+
+
+def test_combined_summary_uses_plan_roster_and_stage_aware_attempted_semantics(tmp_path):
+    run2_state = tmp_path / "run2_state.json"
+    run2_state.write_text(
+        json.dumps(
+            {
+                "production_profile": "run2_full",
+                "campaign_tag": "synthetic-run2",
+                "blocks": [
+                    {"id": "run2_full_a", "status": "source_ready"},
+                    *(
+                        {"id": f"run2_full_{suffix}", "status": "planned"}
+                        for suffix in "bcde"
+                    ),
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    summary, rows = _derive_combined_summary(
+        tmp_path,
+        "run2_run3_full",
+        run2_state,
+        tmp_path / "absent_run3_state.json",
+        "blocked_incomplete",
+        "not_attempted",
+    )
+    assert "configured_count: 10" in summary
+    assert "attempted_count: 1" in summary
+    assert "successful_count: 0" in summary
+    assert "known_failed_count: 0" in summary
+    assert "attempted_incomplete_count: 1" in summary
+    assert "not_attempted_count: 9" in summary
+    assert len(rows) == 10
+    assert len({(row["component"], row["block_id"]) for row in rows}) == 10
+    source_ready = next(row for row in rows if row["block_id"] == "run2_full_a")
+    assert source_ready["aggregate_classification"] == "attempted_incomplete"
+    assert source_ready["aggregate_reason"] == "attempted_incomplete"
+
+
+def test_combined_cr_summary_keeps_all_eighteen_configured_rows_without_state(tmp_path):
+    summary, rows = _derive_combined_summary(
+        tmp_path,
+        "run2_run3_full_CR",
+        tmp_path / "absent_run2_state.json",
+        tmp_path / "absent_run3_state.json",
+        "blocked_global",
+        "not_attempted",
+    )
+    assert "configured_count: 18" in summary
+    assert "attempted_count: 0" in summary
+    assert "not_attempted_count: 18" in summary
+    assert len(rows) == 18
+    assert len({(row["component"], row["block_id"]) for row in rows}) == 18
+
+
+def test_combined_running_state_is_shared_blocked_and_never_reclassified_failed(tmp_path):
+    run2_state = tmp_path / "run2_running_state.json"
+    run2_state.write_text(
+        json.dumps(
+            {
+                "production_profile": "run2_full",
+                "campaign_tag": "synthetic-running",
+                "blocks": [
+                    {"id": "run2_full_a", "status": "source_running"},
+                    *(
+                        {"id": f"run2_full_{suffix}", "status": "planned"}
+                        for suffix in "bcde"
+                    ),
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    summary, rows = _derive_combined_summary(
+        tmp_path,
+        "run2_run3_full",
+        run2_state,
+        tmp_path / "absent_run3_state.json",
+        "blocked_ambiguous",
+        "not_attempted",
+        shared_component="run2",
+    )
+    assert "attempted_count: 1" in summary
+    assert "attempted_incomplete_count: 1" in summary
+    assert "known_failed_count: 0" in summary
+    assert "not_attempted_count: 9" in summary
+    assert "final_classification: `shared_campaign_blocked`" in summary
+    assert sum(row["aggregate_reason"] == "not_attempted_shared_campaign_blocked" for row in rows) == 9
+    source = RUN_CR.read_text(encoding="utf-8")
+    assert 'if [[ "${component_classification}" == "blocked_ambiguous" ]]' in source
 
 
 def test_stubbed_run3_source_failure_skips_its_nonprompt_and_continues(tmp_path):

@@ -91,6 +91,30 @@ else:
 PY
 }
 
+srplot009_shared_campaign_blocker() {
+  local component_classification="$1"
+  local native_log_dir
+  local native_log_name
+
+  if [[ "${component_classification}" == "blocked_ambiguous" ]]; then
+    echo "possible running child remains unresolved"
+    return 0
+  fi
+
+  native_log_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+  if [[ -n "${SRPLOT009_VALIDATION_BACKEND:-}" ]]; then
+    native_log_dir="${SRPLOT009_VALIDATION_ROOT}/native_logs"
+  fi
+  for native_log_name in debug.log tr.log stats.log tasks.log; do
+    if [[ -e "${native_log_dir}/${native_log_name}" ]]; then
+      echo "generic Work Queue logs remain unsafe for another invocation"
+      return 0
+    fi
+  done
+
+  return 1
+}
+
 srplot009_write_combined_summary() {
   local combined_profile="$1"
   local combined_tag="$2"
@@ -100,16 +124,31 @@ srplot009_write_combined_summary() {
   local run2_classification="$6"
   local run3_classification="$7"
   local final_exit_code="$8"
+  local shared_blocker_component="${9:-none}"
   python - "${combined_profile}" "${combined_tag}" "${output_root}" \
     "${run2_state}" "${run3_state}" "${run2_classification}" \
-    "${run3_classification}" "${final_exit_code}" <<'PY'
+    "${run3_classification}" "${final_exit_code}" \
+    "${shared_blocker_component}" <<'PY'
 import json
 import os
 import sys
 from pathlib import Path
 
-profile, tag, root_text, run2_text, run3_text, run2_class, run3_class, exit_text = sys.argv[1:]
+profile, tag, root_text, run2_text, run3_text, run2_class, run3_class, exit_text, shared_component = sys.argv[1:]
 root = Path(root_text)
+
+if profile == "run2_run3_full":
+    configured_components = [
+        ("run2", "run2_full", [f"run2_full_{suffix}" for suffix in "abcde"]),
+        ("run3", "run3_full", [f"run3_full_{suffix}" for suffix in "abcde"]),
+    ]
+elif profile == "run2_run3_full_CR":
+    configured_components = [
+        ("run2", "run2_full_CR", [f"run2_full_CR_block{index}" for index in range(1, 7)]),
+        ("run3", "run3_full_CR", [f"run3_full_CR_block{index}" for index in range(1, 13)]),
+    ]
+else:
+    raise SystemExit(f"unsupported combined profile {profile!r}")
 
 def load_component(label, text, observed_classification):
     path = Path(text)
@@ -134,40 +173,76 @@ def load_component(label, text, observed_classification):
 
 components = [load_component("run2", run2_text, run2_class), load_component("run3", run3_text, run3_class)]
 classifications = [component["classification"] for component in components]
-if any(value.startswith("blocked_") for value in classifications):
-    final_classification = "blocked_global_or_ambiguous"
-elif "not_attempted" in classifications:
-    final_classification = "blocked_incomplete"
-elif "complete_with_known_failures" in classifications:
-    final_classification = "complete_with_known_failures"
-else:
-    final_classification = "success"
 
 headers = [
     "component", "component_status", "profile", "campaign_tag", "era", "block_id",
     "categories", "variables", "source_status", "source_exit", "nonprompt_status",
     "nonprompt_exit", "final_block_status", "expected_nominal_path", "expected_np_path",
+    "aggregate_classification", "aggregate_reason",
 ]
 rows = []
-configured = attempted = successful = failed = not_attempted = 0
-for component in components:
+configured = attempted = successful = failed = attempted_incomplete = not_attempted = 0
+shared_index = {"run2": 0, "run3": 1}.get(shared_component)
+for component_index, (component_label, expected_profile, expected_block_ids) in enumerate(configured_components):
+    component = components[component_index]
     state = component["state"]
-    if state is None:
-        continue
-    for block in state.get("blocks", []):
+    observed_blocks = {} if state is None else {
+        block.get("id"): block for block in state.get("blocks", [])
+    }
+    for block_id in expected_block_ids:
         configured += 1
-        status = block.get("status")
-        attempted += status not in {"planned", "source_ready"}
-        successful += status == "success"
-        failed += status in {"source_failed", "nonprompt_failed"}
-        not_attempted += status in {"planned", "source_ready"}
+        block = observed_blocks.get(block_id)
+        status = None if block is None else block.get("status")
+        if status == "success":
+            aggregate_classification = "success"
+            aggregate_reason = "success"
+            attempted += 1
+            successful += 1
+        elif status in {"source_failed", "nonprompt_failed"}:
+            aggregate_classification = "known_failure"
+            aggregate_reason = "known_failure"
+            attempted += 1
+            failed += 1
+        elif status in {"source_running", "source_ready", "nonprompt_running"}:
+            aggregate_classification = "attempted_incomplete"
+            aggregate_reason = "attempted_incomplete"
+            attempted += 1
+            attempted_incomplete += 1
+        else:
+            aggregate_classification = "not_attempted"
+            if shared_index is not None and component_index >= shared_index:
+                aggregate_reason = "not_attempted_shared_campaign_blocked"
+            else:
+                aggregate_reason = "not_attempted_component_blocked"
+            not_attempted += 1
+        block = block or {}
         rows.append([
-            component["label"], component["classification"], state.get("production_profile"),
-            state.get("campaign_tag"), " ".join(block.get("years", [])), block.get("id"),
+            component_label, component["classification"],
+            state.get("production_profile") if state else expected_profile,
+            state.get("campaign_tag") if state else f"{tag}_{component_label}",
+            " ".join(block.get("years", [])), block_id,
             " ".join(block.get("category_groups", [])), " ".join(block.get("histograms", [])),
             block.get("source_status"), block.get("source_exit_code"), block.get("nonprompt_status"),
             block.get("nonprompt_exit_code"), status, block.get("expected_nominal_path"), block.get("expected_np_path"),
+            aggregate_classification, aggregate_reason,
         ])
+
+if shared_index is not None:
+    final_classification = "shared_campaign_blocked"
+elif attempted_incomplete or not_attempted or any(
+    value.startswith("blocked_") or value == "not_attempted"
+    for value in classifications
+):
+    final_classification = "completed_with_component_blockers"
+elif failed:
+    final_classification = "complete_with_known_failures"
+else:
+    final_classification = "success"
+
+if successful + failed + attempted_incomplete + not_attempted != configured:
+    raise SystemExit("combined campaign accounting invariant failed")
+if attempted != successful + failed + attempted_incomplete:
+    raise SystemExit("combined campaign attempted-count invariant failed")
 
 def clean(value):
     return "" if value is None else str(value).replace("\t", " ").replace("\n", " ")
@@ -186,9 +261,10 @@ markdown = [
     f"# Combined campaign summary: {profile}", "", f"- campaign_tag: `{tag}`",
     f"- run2_component_status: `{components[0]['classification']}`",
     f"- run3_component_status: `{components[1]['classification']}`",
-    f"- configured: {configured}", f"- attempted: {attempted}",
-    f"- successful: {successful}", f"- known_failed: {failed}",
-    f"- not_attempted: {not_attempted}", f"- final_classification: `{final_classification}`",
+    f"- configured_count: {configured}", f"- attempted_count: {attempted}",
+    f"- successful_count: {successful}", f"- known_failed_count: {failed}",
+    f"- attempted_incomplete_count: {attempted_incomplete}",
+    f"- not_attempted_count: {not_attempted}", f"- final_classification: `{final_classification}`",
     f"- final_process_exit_code: {exit_text}", "", "Per-block details are serialized in `campaign_summary.tsv`.", "",
 ]
 atomic_text(root / "campaign_summary.md", "\n".join(markdown))
@@ -264,17 +340,18 @@ case "${matrix_profile}" in
     else
       first_state="${matrix_output_dir}/run2${combined_suffix}/.${first_profile}_campaign_state.json"
       first_classification=$(srplot009_component_classification "${first_state}")
-      case "${first_classification}" in
-        success|complete_with_known_failures) ;;
-        *)
-          second_state="${matrix_output_dir}/run3${combined_suffix}/.${second_profile}_campaign_state.json"
-          srplot009_write_combined_summary \
-            "${matrix_profile}" "${matrix_campaign_tag}" "${matrix_output_dir}" \
-            "${first_state}" "${second_state}" "${first_classification}" not_attempted 1
-          echo "ERROR: Run-2 component stopped at a global or ambiguous safety boundary; Run 3 was not started." >&2
-          exit 1
-          ;;
-      esac
+      if first_shared_blocker=$(srplot009_shared_campaign_blocker "${first_classification}"); then
+        second_state="${matrix_output_dir}/run3${combined_suffix}/.${second_profile}_campaign_state.json"
+        srplot009_write_combined_summary \
+          "${matrix_profile}" "${matrix_campaign_tag}" "${matrix_output_dir}" \
+          "${first_state}" "${second_state}" "${first_classification}" \
+          not_attempted 1 run2
+        echo "ERROR: shared campaign safety blocker after Run 2 (${first_shared_blocker}); Run 3 was not started." >&2
+        exit 1
+      fi
+      if [[ "${first_classification}" != "success" ]]; then
+        echo "Run-2 component ended with local status ${first_classification}; entering independent Run 3." >&2
+      fi
     fi
     if "$0" --production-profile "${second_profile}" \
       --output-dir "${matrix_output_dir}/run3${combined_suffix}" \
@@ -288,6 +365,11 @@ case "${matrix_profile}" in
     fi
     second_state="${matrix_output_dir}/run3${combined_suffix}/.${second_profile}_campaign_state.json"
     second_classification=$(srplot009_component_classification "${second_state}")
+    shared_blocker_component=none
+    if second_shared_blocker=$(srplot009_shared_campaign_blocker "${second_classification}"); then
+      shared_blocker_component=run3
+      echo "ERROR: shared campaign safety blocker in Run 3 (${second_shared_blocker})." >&2
+    fi
     combined_exit_code=0
     if [[ "${first_classification}" != "success" || "${second_classification}" != "success" ]]; then
       combined_exit_code=1
@@ -295,7 +377,8 @@ case "${matrix_profile}" in
     srplot009_write_combined_summary \
       "${matrix_profile}" "${matrix_campaign_tag}" "${matrix_output_dir}" \
       "${first_state}" "${second_state}" "${first_classification}" \
-      "${second_classification}" "${combined_exit_code}"
+      "${second_classification}" "${combined_exit_code}" \
+      "${shared_blocker_component}"
     exit "${combined_exit_code}"
     ;;
 esac
@@ -312,8 +395,8 @@ Public PROFILE values:
 
 With no arguments, run_cr.sh remains a backward-compatible alias for the fixed
 five-block run2_full campaign. Combined profiles run Run 2 then Run 3 in
-separate child namespaces. A Run-2 component that completes with known block
-failures does not suppress the independent Run-3 component.
+separate child namespaces. A safely classified Run-2-local failure or blocker
+does not suppress the independent Run-3 component; a shared unsafe state does.
 
 All six public profiles use the exact maintained frozen archive in snapshot
 mode, Work Queue without a profile-level worker count, and explicit
@@ -1912,7 +1995,10 @@ archive_native_wq_logs() {
     fi
   done
 
-  if [[ -n "${validation_backend}" && "${validation_scenario}" == "archive_copy_failure" ]]; then
+  if [[ -n "${validation_backend}" ]] \
+    && { [[ "${validation_scenario}" == "archive_copy_failure" ]] \
+      || { [[ "${validation_scenario}" == "run3_archive_copy_failure" ]] \
+        && [[ "${production_component}" == "run3" ]]; }; }; then
     echo "ERROR: simulated native Work Queue archive verification failure; originals were preserved." >&2
     return 1
   fi
