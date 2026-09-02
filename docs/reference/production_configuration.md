@@ -11,10 +11,11 @@
 | Direct options | `run_analysis.py` argparse | Own executor, resources, analysis toggles, output, policy, and provenance inputs |
 | YAML option overlay | `run_analysis.py --options FILE` | Supplies recognized runtime values through one top-level YAML mapping |
 
-`run_cr.sh` currently accepts `run3_full` and `rebin_fine`. `run3_full` is the
-complete maintained Run 3 SR production profile. `rebin_fine` is a specialized
-profile for its declared changed-binning family blocks; it is not a synonym for
-the canonical profile.
+The maintained public production interface is the six-profile `run_cr.sh`
+matrix described below. `run3_full` is the complete maintained Run 3 SR
+production profile. `rebin_fine` is a specialized legacy profile for its
+declared changed-binning family blocks; it is not a synonym for the public
+profile matrix.
 
 ## Current NDSkim cfg reachability
 
@@ -28,6 +29,15 @@ default selection for one invocation.
 
 Historical sample configs may remain in the repository for reproduction. Their
 presence does not make them reachable from the maintained wrappers.
+
+The six maintained public `run_cr.sh` profiles map to the exact 24-cfg Run 2
+and Run 3 SR+CR production surface. That surface is the validated Project01
+production contract: canonical sample-JSON entries remain `/store/...` paths,
+which resolve through `file:///project01/ndcms/apiccine` onto the accepted
+migrated input universe. Cfgs outside this maintained production surface are
+outside the validated Project01 production contract; this does not make a
+claim about the physical availability of individual inputs associated with
+other cfgs.
 
 ## Direct defaults
 
