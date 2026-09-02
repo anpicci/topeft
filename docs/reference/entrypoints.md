@@ -243,3 +243,18 @@ This is a semantic example, not a production authorization. Executor, input,
 and output details belong to [the production guide](../how_to/production.md).
 If `--options` is supplied, recognized YAML values replace corresponding CLI-
 derived values in the implemented path.
+
+## `run_cr.sh` production interface
+
+The public production profiles are `run2_full`, `run3_full`, `run2_full_CR`,
+`run3_full_CR`, `run2_run3_full`, and `run2_run3_full_CR`; no arguments retain
+the legacy `run2_full` alias. `rebin_fine` is a specialist legacy profile and
+requires an explicit environment archive. Public profiles require fresh output
+namespaces, an absolute output directory, and a campaign tag.
+
+For the maintained profiles, `run_cr.sh` validates the exact pinned archive and
+records the resolved archive identity rather than constructing an archive on
+behalf of the campaign. Resume is profile-specific: it is not a generic retry
+operation, and an interrupted state must be inspected before a resume is
+requested. Worker provisioning remains an external Work Queue concern; this
+wrapper does not forward a worker-count option.
