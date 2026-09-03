@@ -1,3 +1,4 @@
+import json
 import runpy
 import sys
 import types
@@ -56,7 +57,15 @@ def _mock_topcoffea_utils(monkeypatch):
     monkeypatch.setitem(sys.modules, "topcoffea.modules.utils", fake_utils)
 
 
-def _run_run_analysis_cli(monkeypatch, tmp_path, extra_cli_args, *, outname):
+def _run_run_analysis_cli(
+    monkeypatch,
+    tmp_path,
+    extra_cli_args,
+    *,
+    outname,
+    return_output_dir=False,
+    runner_result_factory=None,
+):
     output_dir = tmp_path / f"hist-output-{outname}"
     output_dir.mkdir()
 
@@ -75,6 +84,8 @@ def _run_run_analysis_cli(monkeypatch, tmp_path, extra_cli_args, *, outname):
 
         def __call__(self, fileset, treename, processor_instance):
             captured["processor_instance"] = processor_instance
+            if runner_result_factory is not None:
+                return runner_result_factory(processor_instance)
             return processor_instance.accumulator
 
     monkeypatch.setattr(processor, "futures_executor", dummy_futures_executor, raising=False)
@@ -101,7 +112,52 @@ def _run_run_analysis_cli(monkeypatch, tmp_path, extra_cli_args, *, outname):
     finally:
         sys.path = original_sys_path
 
-    return captured.get("processor_instance")
+    processor_instance = captured.get("processor_instance")
+    if return_output_dir:
+        return processor_instance, output_dir
+    return processor_instance
+
+
+def test_post_runner_failure_persists_manager_diagnostic_and_reraises(
+    monkeypatch, tmp_path
+):
+    with pytest.raises(RuntimeError, match="no results were returned"):
+        _run_run_analysis_cli(
+            monkeypatch,
+            tmp_path,
+            ["--skip-cr"],
+            outname="manager-diagnostic-controlled-failure",
+            runner_result_factory=lambda processor_instance: None,
+        )
+
+    output_dir = tmp_path / "hist-output-manager-diagnostic-controlled-failure"
+    diagnostics = list(output_dir.glob("*.manager_failure.*.json"))
+    assert len(diagnostics) == 1
+    payload = json.loads(diagnostics[0].read_text(encoding="utf-8"))
+    assert payload["phase"] == "runner_result_inspection"
+    assert payload["exception"]["type"] == "RuntimeError"
+    assert "no results were returned" in payload["exception"]["message"]
+    assert "Processing failed because no results were returned" in payload["exception"]["traceback"]
+    assert payload["run"]["executor"] == "futures"
+    assert payload["manager_resources"]["pid"] > 0
+    assert "max_rss_kib" in payload["manager_resources"]
+
+
+def test_successful_run_keeps_nominal_artifact_contract_without_diagnostic(
+    monkeypatch, tmp_path
+):
+    outname = "manager-diagnostic-success"
+    _, output_dir = _run_run_analysis_cli(
+        monkeypatch,
+        tmp_path,
+        ["--skip-cr"],
+        outname=outname,
+        return_output_dir=True,
+    )
+
+    assert (output_dir / f"{outname}.pkl.gz").is_file()
+    assert (output_dir / f"{outname}.pkl.gz.metadata.json").is_file()
+    assert not list(output_dir.glob("*.manager_failure.*.json"))
 
 
 def test_category_groups_accepts_multiple_valid_groups_in_resolved_block(
