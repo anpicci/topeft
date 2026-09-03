@@ -156,10 +156,11 @@ def test_get_veto_map_input_jets_preserves_non_run3_inputs():
 def test_processor_applies_run3_veto_maps_after_jet_corrections_and_systematics():
     source = _processor_source()
 
-    cleaning = source.index("cleanedJets = jets[~ak.any(tmp.slot0 == tmp.slot1, axis=-1)]")
-    raw_attachment = source.index('cleanedJets["pt_raw"] =')
-    corrections = source.index("cleanedJets = ApplyJetCorrections(")
-    systematics = source.index("cleanedJets = apply_maintained_jet_systematic(")
+    cleaning = source.index("jets_to_correct = get_analysis_cleaned_jets(")
+    raw_attachment = source.index('jets_to_correct["pt_raw"] =')
+    corrections = source.index("corrected_jets = ApplyJetCorrections(")
+    systematics = source.index("corrected_jets = apply_maintained_jet_systematic(")
+    cleaned_assignment = source.index("cleanedJets = corrected_jets")
     veto_inputs = source.index(
         "veto_map_input_jets = get_veto_map_input_jets(cleanedJets, year, is_run3)"
     )
@@ -173,6 +174,7 @@ def test_processor_applies_run3_veto_maps_after_jet_corrections_and_systematics(
         < raw_attachment
         < corrections
         < systematics
+        < cleaned_assignment
         < veto_inputs
         < veto_eval
         < analysis_jet_selection

@@ -85,6 +85,11 @@ JVM_ETA_PHI_DIAGNOSTIC_HISTOGRAMS = frozenset(
     }
 )
 
+hem2018_affected_lumi_fraction = 0.647871555639
+hem2018_affected_hash_threshold = int(
+    hem2018_affected_lumi_fraction * (1 << 64)
+)
+
 
 def flatten_jagged_jet_eta_phi_weights(jets, event_mask, event_weights):
     """Return aligned flattened eta, phi, and per-jet event weights."""
@@ -326,6 +331,98 @@ def get_veto_map_input_jets(cleaned_jets, year, is_run3):
         & jet_id_mask
         & em_fraction_mask
     ]
+
+
+def get_analysis_cleaned_jets(full_jets, leptons, cleaning_taus=None):
+    """Apply the established TOP-26-006 lepton and optional tau jet cleaning."""
+
+    jet_lepton_indices = ak.cartesian(
+        [ak.local_index(full_jets.pt), leptons.jetIdx], nested=True
+    )
+    cleaned_jets = full_jets[
+        ~ak.any(jet_lepton_indices.slot0 == jet_lepton_indices.slot1, axis=-1)
+    ]
+    if cleaning_taus is not None:
+        cleaned_jets["isTauClean"] = te_os.isClean(
+            cleaned_jets, cleaning_taus, drmin=0.5
+        )
+        cleaned_jets = cleaned_jets[cleaned_jets.isTauClean]
+    return cleaned_jets
+
+
+def is_in_hem2018_region(jets):
+    """Return the strict HEM15/16 eta-phi predicate for each jet."""
+
+    return (
+        (jets.eta > -3.0)
+        & (jets.eta < -1.3)
+        & (jets.phi > -1.57)
+        & (jets.phi < -0.87)
+    )
+
+
+def has_no_pf_muon_overlap(jets, pf_muons):
+    """Return whether each jet has no PF muon strictly within delta-R 0.2."""
+
+    jet_muon_pairs = ak.cartesian([jets, pf_muons], axis=1, nested=True)
+    delta_eta = jet_muon_pairs.slot0.eta - jet_muon_pairs.slot1.eta
+    delta_phi = abs(jet_muon_pairs.slot0.phi - jet_muon_pairs.slot1.phi)
+    delta_phi = np.pi - abs(np.pi - delta_phi)
+    has_overlap = ak.any(
+        (delta_eta * delta_eta + delta_phi * delta_phi) < (0.2 * 0.2),
+        axis=-1,
+    )
+    return ~has_overlap
+
+
+def get_hem2018_qualifying_jet_mask(jets, pf_muons):
+    """Return the frozen 2018 HEM-cleaning quality decision for each jet."""
+
+    tight_lepton_veto_id = (jets.jetId & 4) != 0
+    tight_id = (jets.jetId & 2) != 0
+    alternate_tight_id = (
+        tight_id
+        & ((jets.chEmEF + jets.neEmEF) < 0.9)
+        & has_no_pf_muon_overlap(jets, pf_muons)
+    )
+    loose_pu_id = (jets.puId & 4) != 0
+    return (
+        (jets.pt > 15.0)
+        & (tight_lepton_veto_id | alternate_tight_id)
+        & ((jets.pt >= 50.0) | loose_pu_id)
+    )
+
+
+def get_hem2018_affected_mc_mask(event_numbers):
+    """Assign event identities reproducibly to the affected 2018 luminosity."""
+
+    mixed = np.asarray(event_numbers, dtype=np.uint64)
+    mixed = mixed + np.uint64(0x9E3779B97F4A7C15)
+    mixed = (mixed ^ (mixed >> np.uint64(30))) * np.uint64(
+        0xBF58476D1CE4E5B9
+    )
+    mixed = (mixed ^ (mixed >> np.uint64(27))) * np.uint64(
+        0x94D049BB133111EB
+    )
+    mixed = mixed ^ (mixed >> np.uint64(31))
+    return mixed < np.uint64(hem2018_affected_hash_threshold)
+
+
+def get_hem2018_event_mask(jets, pf_muons, event_numbers, runs, year, is_data):
+    """Return the event-passing mask for the mandatory 2018 HEM cleaning."""
+
+    if year != "2018":
+        return ak.ones_like(event_numbers, dtype=np.bool_)
+
+    qualifying_hem_jet = get_hem2018_qualifying_jet_mask(
+        jets, pf_muons
+    ) & is_in_hem2018_region(jets)
+    has_qualifying_hem_jet = ak.any(qualifying_hem_jet, axis=1)
+    if is_data:
+        affected_period = runs >= 319077
+    else:
+        affected_period = get_hem2018_affected_mc_mask(event_numbers)
+    return ~(affected_period & has_qualifying_hem_jet)
 
 
 def resolve_category_dict_names(offz_3l_split, tau_h_analysis, fwd_analysis, all_analysis):
@@ -1269,37 +1366,69 @@ class AnalysisProcessor(processor.ProcessorABC):
 
             #################### Jets ####################
 
-            # Jet cleaning, before any jet selection
             vetos_tocleanjets = ak.with_name(l_fo, "PtEtaPhiMCandidate")
-            tmp = ak.cartesian([ak.local_index(jets.pt), vetos_tocleanjets.jetIdx], nested=True)
-            cleanedJets = jets[~ak.any(tmp.slot0 == tmp.slot1, axis=-1)] # this line should go before *any selection*, otherwise lep.jetIdx is not aligned with the jet index
-            
-            if self.enable_tau_blocks:
-                cleanedJets["isTauClean"] = te_os.isClean(cleanedJets, cleaning_taus, drmin=0.5)
-                cleanedJets = cleanedJets[cleanedJets.isTauClean]
+            analysis_cleaning_taus = (
+                cleaning_taus if self.enable_tau_blocks else None
+            )
+            if year == "2018":
+                # HEM owns the full NanoAOD jet view before analysis cleaning.
+                jets_to_correct = jets
+            else:
+                # Preserve the established clean-then-correct path elsewhere.
+                jets_to_correct = get_analysis_cleaned_jets(
+                    jets, vetos_tocleanjets, analysis_cleaning_taus
+                )
 
-            # Selecting jets and cleaning them
-            jetptname = "pt_nom" if hasattr(cleanedJets, "pt_nom") else "pt"
-
-            cleanedJets["pt_raw"] = (1 - cleanedJets.rawFactor)*cleanedJets.pt
-            cleanedJets["mass_raw"] = (1 - cleanedJets.rawFactor)*cleanedJets.mass
-            cleanedJets["rho"] = ak.broadcast_arrays(jetsRho, cleanedJets.pt)[0]
+            jetptname = "pt_nom" if hasattr(jets_to_correct, "pt_nom") else "pt"
+            jets_to_correct["pt_raw"] = (
+                1 - jets_to_correct.rawFactor
+            ) * jets_to_correct.pt
+            jets_to_correct["mass_raw"] = (
+                1 - jets_to_correct.rawFactor
+            ) * jets_to_correct.mass
+            jets_to_correct["rho"] = ak.broadcast_arrays(
+                jetsRho, jets_to_correct.pt
+            )[0]
 
             # Jet energy corrections
             if not isData:
-                cleanedJets["pt_gen"] = ak.values_astype(ak.fill_none(cleanedJets.matched_gen.pt, 0), np.float32)
+                jets_to_correct["pt_gen"] = ak.values_astype(
+                    ak.fill_none(jets_to_correct.matched_gen.pt, 0), np.float32
+                )
 
-            cleanedJets = ApplyJetCorrections(
+            corrected_jets = ApplyJetCorrections(
                 year,
                 corr_type='jets',
                 isData=isData,
                 era=run_era,
                 run=run,
                 suppress_forward_eta_stochastic_jer=effective_suppress_forward_eta_stochastic_jer,
-            ).build(cleanedJets, lazy_cache=events_cache)  #Run3 ready
-            cleanedJets = apply_maintained_jet_systematic(
-                year, cleanedJets, syst_var, jet_correction_syst_lst
+            ).build(jets_to_correct, lazy_cache=events_cache)  #Run3 ready
+            corrected_jets = apply_maintained_jet_systematic(
+                year, corrected_jets, syst_var, jet_correction_syst_lst
             )
+
+            # Mandatory 2018 HEM15/16 event cleaning follows the active full
+            # corrected/smeared jet view for every JES/JER variation.
+            hem2018_mask = get_hem2018_event_mask(
+                corrected_jets,
+                mu[mu.isPFcand],
+                events.event,
+                run,
+                year,
+                isData,
+            )
+
+            # Keep ordinary TOP-26-006 jet ownership on the established
+            # analysis-specific FO-lepton and optional tau-cleaned collection.
+            if year == "2018":
+                cleanedJets = get_analysis_cleaned_jets(
+                    corrected_jets,
+                    vetos_tocleanjets,
+                    analysis_cleaning_taus,
+                )
+            else:
+                cleanedJets = corrected_jets
 
             # Jet Veto Maps
             # Removes events that have ANY jet in a specific eta-phi space (not required for Run 2)
@@ -1635,6 +1764,9 @@ class AnalysisProcessor(processor.ProcessorABC):
             # Jet veto mask (for Run 3)
             selections.add("jet_veto", veto_map_mask)
             preselections.add("jet_veto", veto_map_mask)
+
+            # Separate from the Run-2/Run-3 jet-veto-map policy.
+            selections.add("hem2018", hem2018_mask)
 
             # 2lss selection
             preselections.add("chargedl0", (chargel0_p | chargel0_m))
@@ -2194,6 +2326,7 @@ class AnalysisProcessor(processor.ProcessorABC):
                                             dense_axis_name
                                         ):
                                             cuts_lst.append("jet_veto")
+                                        cuts_lst.append("hem2018")
 
                                         if self._split_by_lepton_flavor:
                                             flav_ch = lep_flav
