@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 
 import argparse
+from datetime import datetime, timezone
 import json
 import time
 import os
@@ -196,6 +197,7 @@ def _write_post_runner_failure_diagnostic(
     payload = {
         "schema_version": 1,
         "invocation_id": invocation_id,
+        "timestamp_utc": datetime.now(timezone.utc).isoformat(),
         "phase": phase,
         "phase_vocabulary": _POST_RUNNER_PHASES,
         "run": {
@@ -2333,7 +2335,7 @@ if __name__ == "__main__":
             run_succeeded = True
         else:
             run_succeeded = True
-    except BaseException as error:
+    except Exception as error:
         try:
             diagnostic_path = _write_post_runner_failure_diagnostic(
                 outpath=outpath,
