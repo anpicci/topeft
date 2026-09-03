@@ -4,7 +4,9 @@ import awkward as ak
 import numpy as np
 from coffea.nanoevents.methods import candidate
 
+import analysis.topeft_run2.analysis_processor as analysis_processor
 from analysis.topeft_run2.analysis_processor import (
+    build_analysis_and_hem_jet_views,
     get_analysis_cleaned_jets,
     get_hem2018_affected_mc_mask,
     get_hem2018_event_mask,
@@ -41,6 +43,7 @@ def _jet(
     ch_em_ef=0.1,
     ne_em_ef=0.1,
     btag=0.0,
+    raw_index=0,
 ):
     return {
         "pt": pt,
@@ -52,6 +55,9 @@ def _jet(
         "chEmEF": ch_em_ef,
         "neEmEF": ne_em_ef,
         "btagDeepFlavB": btag,
+        "rawFactor": 0.0,
+        "area": 0.5,
+        "raw_index": raw_index,
     }
 
 
@@ -278,36 +284,133 @@ def test_analysis_jet_cleaning_still_owns_downstream_jet_membership():
     assert ak.to_list(analysis_jets.btagDeepFlavB) == [[0.2]]
 
 
-def test_processor_routes_full_active_jet_view_before_analysis_cleaning():
+def test_two_correction_views_preserve_analysis_order_and_full_hem_owner(
+    monkeypatch,
+):
+    full_jets = _candidate_array(
+        [[
+            _jet(pt=30.0, raw_index=0),
+            _jet(pt=40.0, eta=0.0, phi=0.0, raw_index=1),
+            _jet(pt=50.0, eta=2.0, phi=2.0, raw_index=2),
+        ]]
+    )
+    fo_leptons = ak.Array([[{"jetIdx": 0}]])
+    cleaning_taus = _candidate_array(
+        [[{"pt": 25.0, "eta": 0.0, "phi": 0.0, "mass": 1.777}]]
+    )
+    analysis_cache = {"owner": "analysis"}
+    build_calls = []
+    systematic_calls = []
+
+    class MembershipDependentFactory:
+        def build(self, jets, lazy_cache):
+            build_calls.append(
+                {
+                    "raw_indices": ak.to_list(jets.raw_index),
+                    "cache": lazy_cache,
+                }
+            )
+            position = ak.local_index(jets.pt, axis=1)
+            return ak.with_field(jets, jets.pt + 100.0 * position, "pt")
+
+    factory = MembershipDependentFactory()
+    monkeypatch.setattr(
+        analysis_processor,
+        "ApplyJetCorrections",
+        lambda *args, **kwargs: factory,
+    )
+
+    def apply_test_systematic(year, jets, syst_var, jet_systematics):
+        systematic_calls.append(
+            (year, syst_var, tuple(jet_systematics), ak.to_list(jets.raw_index))
+        )
+        return ak.with_field(jets, jets.pt + 7.0, "pt")
+
+    monkeypatch.setattr(
+        analysis_processor,
+        "apply_maintained_jet_systematic",
+        apply_test_systematic,
+    )
+
+    analysis_jets, hem_jets, jet_pt_name = build_analysis_and_hem_jet_views(
+        full_jets,
+        fo_leptons,
+        cleaning_taus,
+        np.array([20.0]),
+        year="2018",
+        is_data=True,
+        run_era="A",
+        run=np.array([319077]),
+        suppress_forward_eta_stochastic_jer=False,
+        syst_var="JER_2018Up",
+        jet_systematics=["JER_2018Up"],
+        analysis_lazy_cache=analysis_cache,
+    )
+
+    assert jet_pt_name == "pt"
+    assert [call["raw_indices"] for call in build_calls] == [[[2]], [[0, 1, 2]]]
+    assert build_calls[0]["cache"] is analysis_cache
+    assert build_calls[1]["cache"] is not analysis_cache
+    assert build_calls[1]["cache"] == {}
+    assert systematic_calls == [
+        ("2018", "JER_2018Up", ("JER_2018Up",), [[2]]),
+        ("2018", "JER_2018Up", ("JER_2018Up",), [[0, 1, 2]]),
+    ]
+    assert ak.to_list(analysis_jets.raw_index) == [[2]]
+    assert ak.to_list(analysis_jets.pt) == [[57.0]]
+    assert ak.to_list(hem_jets.raw_index) == [[0, 1, 2]]
+    assert ak.to_list(hem_jets.pt) == [[37.0, 147.0, 257.0]]
+
+    pf_muons = _candidate_array([[_pf_muon()]])
+    assert ak.to_list(_affected_data_mask(hem_jets, pf_muons)) == [False]
+    assert ak.to_list(_affected_data_mask(analysis_jets, pf_muons)) == [True]
+
+    build_calls.clear()
+    systematic_calls.clear()
+    non_2018_cache = {"owner": "non_2018_analysis"}
+    non_2018_analysis_jets, non_2018_hem_jets, _ = (
+        build_analysis_and_hem_jet_views(
+            full_jets,
+            fo_leptons,
+            cleaning_taus,
+            np.array([20.0]),
+            year="2022",
+            is_data=True,
+            run_era="C",
+            run=np.array([355862]),
+            suppress_forward_eta_stochastic_jer=False,
+            syst_var="JER_2022Up",
+            jet_systematics=["JER_2022Up"],
+            analysis_lazy_cache=non_2018_cache,
+        )
+    )
+
+    assert [call["raw_indices"] for call in build_calls] == [[[2]]]
+    assert build_calls[0]["cache"] is non_2018_cache
+    assert systematic_calls == [
+        ("2022", "JER_2022Up", ("JER_2022Up",), [[2]])
+    ]
+    assert non_2018_hem_jets is non_2018_analysis_jets
+
+
+def test_processor_routes_separate_active_analysis_and_hem_jet_views():
     source = _processor_source()
 
     jet_section = source.index("#################### Jets ####################")
-    year_2018_branch = source.index('if year == "2018":', jet_section)
-    full_collection = source.index("jets_to_correct = jets", year_2018_branch)
-    non_2018_cleaning = source.index(
-        "jets_to_correct = get_analysis_cleaned_jets(", full_collection
+    view_build = source.index(
+        "build_analysis_and_hem_jet_views(", jet_section
     )
-    corrections = source.index("corrected_jets = ApplyJetCorrections(")
-    systematic = source.index("corrected_jets = apply_maintained_jet_systematic(")
     hem_call = source.index("hem2018_mask = get_hem2018_event_mask(")
-    hem_input = source.index("                corrected_jets,", hem_call)
-    analysis_cleaning = source.index("cleanedJets = get_analysis_cleaned_jets(")
+    hem_input = source.index("                hem_corrected_jets,", hem_call)
     veto_map = source.index("veto_map_input_jets = get_veto_map_input_jets(")
     analysis_jet_selection = source.index('cleanedJets["isGood"]')
 
-    assert (
-        full_collection
-        < non_2018_cleaning
-        < corrections
-        < systematic
-        < hem_call
-        < hem_input
-        < analysis_cleaning
-        < veto_map
-        < analysis_jet_selection
-    )
+    assert view_build < hem_call < hem_input < veto_map < analysis_jet_selection
     assert "cleaning_taus if self.enable_tau_blocks else None" in source
-    assert "else:\n                cleanedJets = corrected_jets" in source
+    assert "analysis_raw_jets = get_analysis_cleaned_jets(" in source
+    assert "analysis_corrected_jets, jet_pt_name = build_corrected_jet_view(" in source
+    assert "hem_corrected_jets, _ = build_corrected_jet_view(" in source
+    assert "hem_corrected_jets = analysis_corrected_jets" in source
     assert 'selections.add("hem2018", hem2018_mask)' in source
     assert 'cuts_lst.append("hem2018")' in source
 
@@ -320,6 +423,28 @@ def test_downstream_counts_and_btags_remain_analysis_cleaned():
     assert "njets = ak.num(goodJets)" in source
     assert "isBtagJetsLoose = (goodJets[btagAlgo] > btagwpl)" in source
     assert "isBtagJetsMedium = (goodJets[btagAlgo] > btagwpm)" in source
+
+
+def test_hem2018_mask_propagates_to_standard_and_companion_fills():
+    source = _processor_source()
+
+    cuts_start = source.index("cuts_lst = [appl,lep_chan]")
+    hem_cut = source.index('cuts_lst.append("hem2018")', cuts_start)
+    final_selection = source.index("all_cuts_mask = selections.all(", hem_cut)
+    standard_weights = source.index(
+        "weights_flat = weight[all_cuts_mask]", final_selection
+    )
+    standard_fill = source.index(
+        "hout[nominal_histogram_key].fill(**axes_fill_info_dict)",
+        standard_weights,
+    )
+    companion_fill = source.index(
+        'hout[dense_axis_name+"_sumw2"].fill(**sumw2_fill_info)',
+        standard_fill,
+    )
+
+    assert hem_cut < final_selection < standard_weights < standard_fill
+    assert standard_fill < companion_fill
 
 
 def test_hem2018_remains_separate_from_jvm_weights_and_met_policy():

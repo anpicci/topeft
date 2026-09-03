@@ -156,11 +156,28 @@ def test_get_veto_map_input_jets_preserves_non_run3_inputs():
 def test_processor_applies_run3_veto_maps_after_jet_corrections_and_systematics():
     source = _processor_source()
 
-    cleaning = source.index("jets_to_correct = get_analysis_cleaned_jets(")
-    raw_attachment = source.index('jets_to_correct["pt_raw"] =')
-    corrections = source.index("corrected_jets = ApplyJetCorrections(")
-    systematics = source.index("corrected_jets = apply_maintained_jet_systematic(")
-    cleaned_assignment = source.index("cleanedJets = corrected_jets")
+    corrected_view_start = source.index("def build_corrected_jet_view(")
+    corrected_view_end = source.index(
+        "\ndef build_analysis_and_hem_jet_views(", corrected_view_start
+    )
+    corrected_view = source[corrected_view_start:corrected_view_end]
+    raw_attachment = corrected_view.index('jets["pt_raw"] =')
+    corrections = corrected_view.index("correction_factory.build(")
+    systematics = corrected_view.index("apply_maintained_jet_systematic(")
+
+    analysis_view_start = source.index("def build_analysis_and_hem_jet_views(")
+    analysis_view_end = source.index("\ndef is_in_hem2018_region", analysis_view_start)
+    analysis_view = source[analysis_view_start:analysis_view_end]
+    cleaning = analysis_view.index("analysis_raw_jets = get_analysis_cleaned_jets(")
+    analysis_correction = analysis_view.index(
+        "analysis_corrected_jets, jet_pt_name = build_corrected_jet_view("
+    )
+    non_2018_assignment = analysis_view.index(
+        "hem_corrected_jets = analysis_corrected_jets"
+    )
+
+    jet_section = source.index("#################### Jets ####################")
+    view_build = source.index("build_analysis_and_hem_jet_views(", jet_section)
     veto_inputs = source.index(
         "veto_map_input_jets = get_veto_map_input_jets(cleanedJets, year, is_run3)"
     )
@@ -169,16 +186,9 @@ def test_processor_applies_run3_veto_maps_after_jet_corrections_and_systematics(
     )
     analysis_jet_selection = source.index('cleanedJets["isGood"]')
 
-    assert (
-        cleaning
-        < raw_attachment
-        < corrections
-        < systematics
-        < cleaned_assignment
-        < veto_inputs
-        < veto_eval
-        < analysis_jet_selection
-    )
+    assert raw_attachment < corrections < systematics
+    assert cleaning < analysis_correction < non_2018_assignment
+    assert view_build < veto_inputs < veto_eval < analysis_jet_selection
 
 
 def test_processor_keeps_run2_veto_maps_disabled():

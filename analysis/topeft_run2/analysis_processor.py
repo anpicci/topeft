@@ -350,6 +350,94 @@ def get_analysis_cleaned_jets(full_jets, leptons, cleaning_taus=None):
     return cleaned_jets
 
 
+def build_corrected_jet_view(
+    jets,
+    jets_rho,
+    *,
+    year,
+    is_data,
+    correction_factory,
+    syst_var,
+    jet_systematics,
+    lazy_cache,
+):
+    """Build one corrected jet view from its own explicit input collection."""
+
+    jet_pt_name = "pt_nom" if hasattr(jets, "pt_nom") else "pt"
+    jets["pt_raw"] = (1 - jets.rawFactor) * jets.pt
+    jets["mass_raw"] = (1 - jets.rawFactor) * jets.mass
+    jets["rho"] = ak.broadcast_arrays(jets_rho, jets.pt)[0]
+    if not is_data:
+        jets["pt_gen"] = ak.values_astype(
+            ak.fill_none(jets.matched_gen.pt, 0), np.float32
+        )
+
+    corrected_jets = correction_factory.build(jets, lazy_cache=lazy_cache)
+    corrected_jets = apply_maintained_jet_systematic(
+        year, corrected_jets, syst_var, jet_systematics
+    )
+    return corrected_jets, jet_pt_name
+
+
+def build_analysis_and_hem_jet_views(
+    full_jets,
+    leptons,
+    cleaning_taus,
+    jets_rho,
+    *,
+    year,
+    is_data,
+    run_era,
+    run,
+    suppress_forward_eta_stochastic_jer,
+    syst_var,
+    jet_systematics,
+    analysis_lazy_cache,
+):
+    """Build analysis-cleaned and independent full-jet HEM correction views."""
+
+    analysis_raw_jets = get_analysis_cleaned_jets(
+        full_jets, leptons, cleaning_taus
+    )
+    correction_factory = ApplyJetCorrections(
+        year,
+        corr_type="jets",
+        isData=is_data,
+        era=run_era,
+        run=run,
+        suppress_forward_eta_stochastic_jer=(
+            suppress_forward_eta_stochastic_jer
+        ),
+    )
+    analysis_corrected_jets, jet_pt_name = build_corrected_jet_view(
+        analysis_raw_jets,
+        jets_rho,
+        year=year,
+        is_data=is_data,
+        correction_factory=correction_factory,
+        syst_var=syst_var,
+        jet_systematics=jet_systematics,
+        lazy_cache=analysis_lazy_cache,
+    )
+
+    if year == "2018":
+        # Keep HEM lazy products isolated from the historical analysis cache.
+        hem_corrected_jets, _ = build_corrected_jet_view(
+            full_jets,
+            jets_rho,
+            year=year,
+            is_data=is_data,
+            correction_factory=correction_factory,
+            syst_var=syst_var,
+            jet_systematics=jet_systematics,
+            lazy_cache={},
+        )
+    else:
+        hem_corrected_jets = analysis_corrected_jets
+
+    return analysis_corrected_jets, hem_corrected_jets, jet_pt_name
+
+
 def is_in_hem2018_region(jets):
     """Return the strict HEM15/16 eta-phi predicate for each jet."""
 
@@ -1370,65 +1458,35 @@ class AnalysisProcessor(processor.ProcessorABC):
             analysis_cleaning_taus = (
                 cleaning_taus if self.enable_tau_blocks else None
             )
-            if year == "2018":
-                # HEM owns the full NanoAOD jet view before analysis cleaning.
-                jets_to_correct = jets
-            else:
-                # Preserve the established clean-then-correct path elsewhere.
-                jets_to_correct = get_analysis_cleaned_jets(
-                    jets, vetos_tocleanjets, analysis_cleaning_taus
+            cleanedJets, hem_corrected_jets, jetptname = (
+                build_analysis_and_hem_jet_views(
+                    jets,
+                    vetos_tocleanjets,
+                    analysis_cleaning_taus,
+                    jetsRho,
+                    year=year,
+                    is_data=isData,
+                    run_era=run_era,
+                    run=run,
+                    suppress_forward_eta_stochastic_jer=(
+                        effective_suppress_forward_eta_stochastic_jer
+                    ),
+                    syst_var=syst_var,
+                    jet_systematics=jet_correction_syst_lst,
+                    analysis_lazy_cache=events_cache,
                 )
-
-            jetptname = "pt_nom" if hasattr(jets_to_correct, "pt_nom") else "pt"
-            jets_to_correct["pt_raw"] = (
-                1 - jets_to_correct.rawFactor
-            ) * jets_to_correct.pt
-            jets_to_correct["mass_raw"] = (
-                1 - jets_to_correct.rawFactor
-            ) * jets_to_correct.mass
-            jets_to_correct["rho"] = ak.broadcast_arrays(
-                jetsRho, jets_to_correct.pt
-            )[0]
-
-            # Jet energy corrections
-            if not isData:
-                jets_to_correct["pt_gen"] = ak.values_astype(
-                    ak.fill_none(jets_to_correct.matched_gen.pt, 0), np.float32
-                )
-
-            corrected_jets = ApplyJetCorrections(
-                year,
-                corr_type='jets',
-                isData=isData,
-                era=run_era,
-                run=run,
-                suppress_forward_eta_stochastic_jer=effective_suppress_forward_eta_stochastic_jer,
-            ).build(jets_to_correct, lazy_cache=events_cache)  #Run3 ready
-            corrected_jets = apply_maintained_jet_systematic(
-                year, corrected_jets, syst_var, jet_correction_syst_lst
             )
 
             # Mandatory 2018 HEM15/16 event cleaning follows the active full
             # corrected/smeared jet view for every JES/JER variation.
             hem2018_mask = get_hem2018_event_mask(
-                corrected_jets,
+                hem_corrected_jets,
                 mu[mu.isPFcand],
                 events.event,
                 run,
                 year,
                 isData,
             )
-
-            # Keep ordinary TOP-26-006 jet ownership on the established
-            # analysis-specific FO-lepton and optional tau-cleaned collection.
-            if year == "2018":
-                cleanedJets = get_analysis_cleaned_jets(
-                    corrected_jets,
-                    vetos_tocleanjets,
-                    analysis_cleaning_taus,
-                )
-            else:
-                cleanedJets = corrected_jets
 
             # Jet Veto Maps
             # Removes events that have ANY jet in a specific eta-phi space (not required for Run 2)
