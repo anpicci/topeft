@@ -782,7 +782,9 @@ extLepSF.add_weight_sets(["TauFakeSF_2023_up TauSF/pt_up %s"%topcoffea_path('dat
 extLepSF.add_weight_sets(["TauFakeSF_2023_down TauSF/pt_down %s"%topcoffea_path('data/TauSF/TauFakeSF_2023.json')])
 
 # Jet Veto Maps
-def ApplyJetVetoMaps(jets, year):
+def _get_jet_veto_map_scores(jets, year, category):
+    """Evaluate one veto-map category and preserve the input jet structure."""
+
     jme_year = clib_year_map[year]
     key = jet_veto_dict[year]
     json_path = topcoffea_path(f"data/POG/JME/{jme_year}/jetvetomaps.json.gz")
@@ -800,11 +802,23 @@ def ApplyJetVetoMaps(jets, year):
 
     #Get pass/fail values for each jet (0 is pass and >0 is fail)
     jet_vetomap_flat = _evaluate_correctionlib(
-        ceval[key], 'jetvetomap', eta_flat_bound, phi_flat_bound
+        ceval[key], category, eta_flat_bound, phi_flat_bound
     )
-    
+
     #Unflatten the array
-    jet_vetomap_score = ak.unflatten(jet_vetomap_flat,ak.num(jets.phi))
+    return ak.unflatten(jet_vetomap_flat, ak.num(jets.phi))
+
+
+def get_run2_jet_veto_map_scores(jets, year):
+    """Return aligned Run-2 ``jetvetomap_all`` scores for analysis jets."""
+
+    if year not in jet_veto_dict or year.startswith("202"):
+        raise ValueError(f"Run-2 jet veto maps are not defined for year {year!r}")
+    return _get_jet_veto_map_scores(jets, year, "jetvetomap_all")
+
+
+def ApplyJetVetoMaps(jets, year):
+    jet_vetomap_score = _get_jet_veto_map_scores(jets, year, "jetvetomap")
 
     #Sum the outputs for each event (if the sum is >0, the event will fail)
     veto_map_event = ak.sum(jet_vetomap_score, axis=-1)

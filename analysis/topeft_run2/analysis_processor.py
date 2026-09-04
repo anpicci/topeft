@@ -33,7 +33,7 @@ from topeft.modules.nominal_schema import (
 )
 from topeft.modules.paths import topeft_path
 from topeft.modules.sumw2_policy import resolve_nominal_component_availability
-from topeft.modules.corrections import ApplyJetCorrections, ApplyMETSystematics, GetBtagEff, AttachMuonSF, AttachElectronSF, AttachElectronCorrections, AttachTauSF, AttachTauEnergyCorrections, ApplyTauEnergySystematics, AttachPerLeptonFR, AttachMuonMomentumCorrections, ApplyMuonMomentumSystematics, get_supported_muon_momentum_systematics, get_supported_tau_energy_systematics, get_tau_weight_variation_names, ApplyJetSystematics, GetTriggerSF, ApplyJetVetoMaps, get_selected_met, get_selected_raw_met, get_corr_t1_met_jets, get_supported_jet_systematics, get_supported_met_systematics, is_met_unclustered_systematic, resolve_forward_eta_stochastic_jer_suppression, use_type1_met
+from topeft.modules.corrections import ApplyJetCorrections, ApplyMETSystematics, GetBtagEff, AttachMuonSF, AttachElectronSF, AttachElectronCorrections, AttachTauSF, AttachTauEnergyCorrections, ApplyTauEnergySystematics, AttachPerLeptonFR, AttachMuonMomentumCorrections, ApplyMuonMomentumSystematics, get_supported_muon_momentum_systematics, get_supported_tau_energy_systematics, get_tau_weight_variation_names, ApplyJetSystematics, GetTriggerSF, ApplyJetVetoMaps, get_run2_jet_veto_map_scores, get_selected_met, get_selected_raw_met, get_corr_t1_met_jets, get_supported_jet_systematics, get_supported_met_systematics, is_met_unclustered_systematic, resolve_forward_eta_stochastic_jer_suppression, use_type1_met
 import topeft.modules.event_selection as te_es
 import topeft.modules.object_selection as te_os
 from topeft.modules.ttgamma_photon_history import (
@@ -89,6 +89,13 @@ hem2018_affected_lumi_fraction = 0.647871555639
 hem2018_affected_hash_threshold = int(
     hem2018_affected_lumi_fraction * (1 << 64)
 )
+
+run2_jvm_loose_pu_id_bits = {
+    "2016APV": 1,
+    "2016": 1,
+    "2017": 4,
+    "2018": 4,
+}
 
 
 def flatten_jagged_jet_eta_phi_weights(jets, event_mask, event_weights):
@@ -461,6 +468,56 @@ def has_no_pf_muon_overlap(jets, pf_muons):
         axis=-1,
     )
     return ~has_overlap
+
+
+def is_run2_jvm_year(year):
+    """Return whether the runtime year has an approved Run-2 veto map."""
+
+    return year in run2_jvm_loose_pu_id_bits
+
+
+def get_run2_jvm_qualifying_jet_mask(jets, pf_muons, year):
+    """Return the approved Run-2 per-jet veto-map eligibility mask."""
+
+    try:
+        loose_pu_id_bit = run2_jvm_loose_pu_id_bits[year]
+    except KeyError as exc:
+        raise ValueError(f"Run-2 JVM is not defined for year {year!r}") from exc
+
+    tight_id = (jets.jetId & 2) != 0
+    em_fraction = (jets.chEmEF + jets.neEmEF) < 0.9
+    loose_pu_id = (jets.puId & loose_pu_id_bit) != 0
+    return (
+        (jets.pt > 15.0)
+        & tight_id
+        & em_fraction
+        & has_no_pf_muon_overlap(jets, pf_muons)
+        & loose_pu_id
+    )
+
+
+def get_run2_jvm_keep_mask(
+    jets,
+    pf_muons,
+    year,
+    map_evaluator=get_run2_jet_veto_map_scores,
+):
+    """Return an aligned mask that removes only qualifying map-vetoed jets."""
+
+    qualifying_jets = get_run2_jvm_qualifying_jet_mask(jets, pf_muons, year)
+    map_vetoed_jets = map_evaluator(jets, year) > 0
+    return ~(qualifying_jets & map_vetoed_jets)
+
+
+def apply_run2_jvm_to_analysis_jets(
+    jets,
+    pf_muons,
+    year,
+    map_evaluator=get_run2_jet_veto_map_scores,
+):
+    """Remove qualifying Run-2 veto-map jets without rejecting their events."""
+
+    return jets[get_run2_jvm_keep_mask(jets, pf_muons, year, map_evaluator)]
 
 
 def get_hem2018_qualifying_jet_mask(jets, pf_muons):
@@ -1501,6 +1558,13 @@ class AnalysisProcessor(processor.ProcessorABC):
                 met = ApplyJetCorrections(year, corr_type='met', isData=isData, era=run_era, run=run).build(met_raw, cleanedJets, lazy_cache=events_cache)
                 if is_met_unclustered_systematic(syst_var):
                     met = ApplyMETSystematics(met, syst_var)
+
+            if is_run2_jvm_year(year):
+                cleanedJets = apply_run2_jvm_to_analysis_jets(
+                    cleanedJets,
+                    mu[mu.isPFcand],
+                    year,
+                )
 
             if is_run3:
                 jet_id_mask = tc_os.run3_nanoV12_ak4puppi_jet_id(cleanedJets, year, working_point="tight")

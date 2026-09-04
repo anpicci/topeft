@@ -191,10 +191,12 @@ def test_processor_applies_run3_veto_maps_after_jet_corrections_and_systematics(
     assert view_build < veto_inputs < veto_eval < analysis_jet_selection
 
 
-def test_processor_keeps_run2_veto_maps_disabled():
+def test_processor_keeps_run2_out_of_run3_event_veto_route():
     source = _processor_source()
 
     assert (
         "veto_map_array = ApplyJetVetoMaps(veto_map_input_jets, year) if is_run3 else ak.zeros_like(met.pt)"
         in source
     )
+    assert "if is_run2_jvm_year(year):" in source
+    assert "cleanedJets = apply_run2_jvm_to_analysis_jets(" in source
