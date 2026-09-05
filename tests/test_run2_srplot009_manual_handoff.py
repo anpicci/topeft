@@ -19,6 +19,12 @@ PUBLIC_PROFILES = {
     "run2_full", "run3_full", "run2_run3_full",
     "run2_full_CR", "run3_full_CR", "run2_run3_full_CR",
 }
+PROFILE_BLOCK_IDS = {
+    "run2_full": [f"run2_full_{suffix}" for suffix in "abcde"],
+    "run3_full": [f"run3_full_{suffix}" for suffix in "abcde"],
+    "run2_full_CR": [f"run2_full_CR_block{index}" for index in range(1, 7)],
+    "run3_full_CR": [f"run3_full_CR_block{index}" for index in range(1, 13)],
+}
 MATRIX_EARLY_PROFILES = (
     "run2_full",
     "run2_full_CR",
@@ -243,6 +249,26 @@ def _campaign_state(output_root, profile):
             encoding="utf-8"
         )
     )
+
+
+def _resume_components(profile):
+    if profile == "run2_run3_full":
+        return ("run2_full", "run3_full")
+    if profile == "run2_run3_full_CR":
+        return ("run2_full_CR", "run3_full_CR")
+    return (profile,)
+
+
+def _resume_environment(validation_root, scenario="success"):
+    environment = _clean_environment()
+    environment.update(
+        {
+            "SRPLOT009_VALIDATION_BACKEND": str(validation_root / "backend.sh"),
+            "SRPLOT009_VALIDATION_ROOT": str(validation_root),
+            "SRPLOT009_VALIDATION_SCENARIO": scenario,
+        }
+    )
+    return environment
 
 
 def _combined_summary_tool(tmp_path):
@@ -944,29 +970,154 @@ def test_matrix_value_options_reject_another_option_as_value_before_side_effects
 def test_all_public_profiles_resume_validated_campaign_state(tmp_path, profile):
     initial, output_root, validation_root = _stubbed_run(tmp_path, profile, "success")
     assert initial.returncode == 0, initial.stdout
+    block_calls = validation_root / "block_calls.tsv"
+    calls_before_resume = block_calls.read_text(encoding="utf-8")
 
-    environment = _clean_environment()
-    environment.update(
-        {
-            "SRPLOT009_VALIDATION_BACKEND": str(validation_root / "backend.sh"),
-            "SRPLOT009_VALIDATION_ROOT": str(validation_root),
-            "SRPLOT009_VALIDATION_SCENARIO": "success",
-        }
-    )
     resumed = _run(
         profile,
         output_root,
         f"stub-{profile}",
         dry_run=True,
         resume=True,
-        environment=environment,
+        environment=_resume_environment(validation_root),
     )
 
     assert resumed.returncode == 0, resumed.stdout
     assert "has no automatic resume" not in resumed.stdout
     if profile.startswith("run2_run3"):
         assert "combined output namespace already exists" not in resumed.stdout
-        assert "Skipping validated run2_full" in resumed.stdout
-        assert "Skipping validated run3_full" in resumed.stdout
+    for component in _resume_components(profile):
+        for block_id in PROFILE_BLOCK_IDS[component]:
+            assert f"Skipping validated {component} block: {block_id}" in resumed.stdout
+    assert "Running the following command:" not in resumed.stdout
+    assert block_calls.read_text(encoding="utf-8") == calls_before_resume
+
+
+@pytest.mark.parametrize(
+    "profile",
+    ("run2_full_CR", "run3_full_CR", "run2_run3_full_CR"),
+)
+def test_cr_non_resume_still_rejects_existing_namespace(tmp_path, profile):
+    _, output_root, _ = _stubbed_run(tmp_path, profile, "success")
+
+    result = _run(profile, output_root, f"stub-{profile}")
+
+    assert result.returncode != 0
+    if profile == "run2_run3_full_CR":
+        assert "combined output namespace already exists" in result.stdout
     else:
-        assert f"Skipping validated {profile} block" in resumed.stdout
+        assert "output directory already exists" in result.stdout
+
+
+def test_cr_resume_recovers_only_the_existing_inline_completion_transition(tmp_path):
+    _, output_root, validation_root = _stubbed_run(tmp_path, "run2_full_CR", "success")
+    state_path = output_root / ".run2_full_CR_campaign_state.json"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    block = state["blocks"][0]
+    block["status"] = "source_ready"
+    block["source_status"] = "ready"
+    block["nonprompt_status"] = "planned"
+    block["nonprompt_exit_code"] = None
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+    calls_before_resume = (validation_root / "block_calls.tsv").read_text(encoding="utf-8")
+
+    resumed = _run(
+        "run2_full_CR", output_root, "stub-run2_full_CR", dry_run=True,
+        resume=True, environment=_resume_environment(validation_root),
+    )
+
+    assert resumed.returncode == 0, resumed.stdout
+    assert "Skipping recovered run2_full_CR block: run2_full_CR_block1" in resumed.stdout
+    assert "Running the following command:" not in resumed.stdout
+    assert (validation_root / "block_calls.tsv").read_text(encoding="utf-8") == calls_before_resume
+    assert _campaign_state(output_root, "run2_full_CR")["blocks"][0]["status"] == "success"
+
+
+def test_cr_resume_fails_closed_for_invalid_or_ambiguous_state(tmp_path):
+    _, output_root, validation_root = _stubbed_run(tmp_path, "run2_full_CR", "success")
+    state_path = output_root / ".run2_full_CR_campaign_state.json"
+    original_state = state_path.read_text(encoding="utf-8")
+    original = json.loads(original_state)
+    source_path, nonprompt_path = original["blocks"][0]["expected_outputs"]
+    calls_before_resume = (validation_root / "block_calls.tsv").read_text(encoding="utf-8")
+
+    Path(nonprompt_path).unlink()
+    missing_output = _run(
+        "run2_full_CR", output_root, "stub-run2_full_CR", dry_run=True,
+        resume=True, environment=_resume_environment(validation_root),
+    )
+    assert missing_output.returncode != 0
+    assert "marks run2_full_CR_block1 successful" in missing_output.stdout
+    assert (validation_root / "block_calls.tsv").read_text(encoding="utf-8") == calls_before_resume
+    Path(nonprompt_path).write_text("synthetic nonprompt\n", encoding="utf-8")
+
+    for status, source_status, nonprompt_status, expected in (
+        ("source_running", "running", "blocked", "ambiguous interrupted source stage"),
+        ("nonprompt_running", "ready", "running", "ambiguous interrupted nonprompt stage"),
+        ("nonprompt_failed", "ready", "failed", "unrecoverable inline nonprompt state"),
+    ):
+        state = json.loads(original_state)
+        block = state["blocks"][0]
+        block["status"] = status
+        block["source_status"] = source_status
+        block["nonprompt_status"] = nonprompt_status
+        state_path.write_text(json.dumps(state), encoding="utf-8")
+        result = _run(
+            "run2_full_CR", output_root, "stub-run2_full_CR", dry_run=True,
+            resume=True, environment=_resume_environment(validation_root),
+        )
+        assert result.returncode != 0
+        assert expected in result.stdout
+        assert (validation_root / "block_calls.tsv").read_text(encoding="utf-8") == calls_before_resume
+
+    state = json.loads(original_state)
+    state["campaign_tag"] = "incompatible-plan"
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+    plan_mismatch = _run(
+        "run2_full_CR", output_root, "stub-run2_full_CR", dry_run=True,
+        resume=True, environment=_resume_environment(validation_root),
+    )
+    assert plan_mismatch.returncode != 0
+    assert "mismatch for campaign_tag" in plan_mismatch.stdout
+
+    state_path.write_text("{malformed\n", encoding="utf-8")
+    malformed = _run(
+        "run2_full_CR", output_root, "stub-run2_full_CR", dry_run=True,
+        resume=True, environment=_resume_environment(validation_root),
+    )
+    assert malformed.returncode != 0
+
+    state_path.unlink()
+    missing_state = _run(
+        "run2_full_CR", output_root, "stub-run2_full_CR", dry_run=True,
+        resume=True, environment=_resume_environment(validation_root),
+    )
+    assert missing_state.returncode != 0
+    assert "requires campaign state" in missing_state.stdout
+
+
+@pytest.mark.parametrize("status", ("planned", "source_failed"))
+def test_cr_resume_runs_only_a_planned_or_failed_block(tmp_path, status):
+    _, output_root, validation_root = _stubbed_run(tmp_path, "run2_full_CR", "success")
+    state_path = output_root / ".run2_full_CR_campaign_state.json"
+    state = _campaign_state(output_root, "run2_full_CR")
+    block = state["blocks"][0]
+    block["status"] = status
+    block["source_status"] = "planned" if status == "planned" else "failed"
+    block["nonprompt_status"] = "blocked"
+    block["source_exit_code"] = None
+    block["nonprompt_exit_code"] = None
+    for output in block["expected_outputs"]:
+        Path(output).unlink()
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+    calls_before_resume = (validation_root / "block_calls.tsv").read_text(encoding="utf-8")
+
+    resumed = _run(
+        "run2_full_CR", output_root, "stub-run2_full_CR", dry_run=False,
+        resume=True, environment=_resume_environment(validation_root),
+    )
+
+    assert resumed.returncode == 0, resumed.stdout
+    calls_after_resume = (validation_root / "block_calls.tsv").read_text(encoding="utf-8")
+    assert calls_after_resume.count("run2_full_CR_block1\t") == calls_before_resume.count("run2_full_CR_block1\t") + 1
+    assert _campaign_state(output_root, "run2_full_CR")["blocks"][0]["status"] == "success"

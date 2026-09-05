@@ -1964,13 +1964,15 @@ run_production_nonprompt_child() {
 archive_native_wq_logs() {
   local block_id="$1"
   local stage="$2"
-  local archive_dir="${output_dir}/work_queue_logs/${production_component}/${block_id}/${stage}"
+  local archive_base="${output_dir}/work_queue_logs/${production_component}/${block_id}/${stage}"
+  local archive_dir="${archive_base}"
+  local retry_index=1
   local name source_path destination_path source_size destination_size
 
-  if [[ -e "${archive_dir}" ]]; then
-    echo "ERROR: native Work Queue archive destination already exists: ${archive_dir}" >&2
-    return 1
-  fi
+  while [[ -e "${archive_dir}" ]]; do
+    archive_dir="${archive_base}_resume_${retry_index}"
+    retry_index=$((retry_index + 1))
+  done
   mkdir -p -- "$(dirname -- "${archive_dir}")"
   mkdir -- "${archive_dir}"
 
@@ -2042,6 +2044,9 @@ run_cr_block() {
   local source_path
   local nonprompt_path
   local plan_output_tag
+  local production_status=""
+  local source_status=""
+  local nonprompt_status=""
 
   read -r -a years <<< "${year_expr}"
   read -r -a vars <<< "${var_set}"
@@ -2054,6 +2059,95 @@ run_cr_block() {
     awk -F '\t' -v block_id="${production_block}" '$1 == block_id {print; exit}' "${production_plan_file}"
   )
   pkl_tag="${plan_output_tag}"
+  if [[ -z "${source_path}" || -z "${nonprompt_path}" ]]; then
+    echo "ERROR: unable to resolve expected output paths for ${production_block}." >&2
+    exit 1
+  fi
+
+  if [[ "${dry_run}" == "true" && "${profile_resume}" == "false" ]]; then
+    production_status="planned"
+    source_status="planned"
+    nonprompt_status="blocked"
+  else
+    IFS=$'\t' read -r production_status source_status nonprompt_status < <(
+      production_state_tool status "${production_state_path}" "${production_block}"
+    )
+  fi
+
+  if [[ "${production_status}" == "success" ]]; then
+    if production_outputs_present "${production_block}" "${production_plan_file}"; then
+      echo "----------------------------------------"
+      echo "Skipping validated ${production_profile} block: ${production_block}"
+      echo "Campaign state and inline nonprompt artifacts are complete."
+      echo "----------------------------------------"
+      record_block_result \
+        "SKIPPED" "CR" "${year_expr}" "${cats[*]}" "${vars[*]}" \
+        "${pkl_tag}" "0" "0"
+      return 0
+    fi
+    if [[ ! -s "${source_path}" ]]; then
+      production_state_tool mark \
+        "${production_state_path}" "${production_block}" \
+        "source" "failed" "none" "success_state_missing_expected_source"
+    else
+      production_state_tool mark \
+        "${production_state_path}" "${production_block}" \
+        "nonprompt" "failed" "none" "success_state_missing_expected_nonprompt"
+    fi
+    echo "ERROR: ${production_profile} state marks ${production_block} successful, but an expected artifact is missing or empty." >&2
+    exit 1
+  fi
+
+  case "${source_status}" in
+    ready)
+      if [[ "${production_status}" == "source_ready" \
+        && "${nonprompt_status}" == "planned" \
+        && -s "${source_path}" \
+        && -s "${nonprompt_path}" ]]; then
+        production_state_tool mark \
+          "${production_state_path}" "${production_block}" \
+          "nonprompt" "success" "none" "resume_inline_outputs_complete"
+        echo "----------------------------------------"
+        echo "Skipping recovered ${production_profile} block: ${production_block}"
+        echo "Campaign state source stage and inline nonprompt artifacts are complete."
+        echo "----------------------------------------"
+        record_block_result \
+          "SKIPPED" "CR" "${year_expr}" "${cats[*]}" "${vars[*]}" \
+          "${pkl_tag}" "0" "0"
+        return 0
+      fi
+      if [[ "${production_status}" != "source_ready" ]] \
+        || [[ "${nonprompt_status}" != "planned" ]]; then
+        echo "ERROR: ${production_block} has an unrecoverable inline nonprompt state; state was not resumed." >&2
+        exit 1
+      fi
+      if [[ ! -s "${source_path}" ]]; then
+        production_state_tool mark \
+          "${production_state_path}" "${production_block}" \
+          "source" "failed" "none" "source_ready_state_missing_expected_source"
+      else
+        production_state_tool mark \
+          "${production_state_path}" "${production_block}" \
+          "nonprompt" "failed" "none" "source_ready_state_missing_expected_inline_nonprompt"
+      fi
+      echo "ERROR: ${production_block} records an incomplete inline CR stage; state was not resumed." >&2
+      exit 1
+      ;;
+    planned|failed)
+      if production_any_output_exists "${production_block}" "${production_plan_file}"; then
+        echo "ERROR: ${production_profile} block ${production_block} is ${production_status}, but an expected output path already exists. Refusing ambiguous overwrite." >&2
+        exit 1
+      fi
+      ;;
+    running)
+      echo "ERROR: ${production_block} has an ambiguous interrupted source stage; state was not resumed." >&2
+      exit 1
+      ;;
+    *)
+      echo "ERROR: ${production_block} has invalid source status '${source_status}'." >&2
+      exit 1
+      ;;
+  esac
 
   echo "----------------------------------------"
   echo "Mode: CR"
