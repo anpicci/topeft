@@ -128,9 +128,27 @@ def should_include_jet_veto_in_histogram_selection(histogram_name):
 
 
 def should_fill_jvm_eta_phi_diagnostic(is_run3, syst_var, wgt_fluct):
-    """Keep reviewer diagnostics to the Run 3 nominal object/weight state."""
+    """Keep reviewer diagnostics to a supported nominal object/weight state."""
 
     return is_run3 and syst_var == "nominal" and wgt_fluct == "nominal"
+
+
+def get_run2_jvm_eta_phi_jets(
+    jets,
+    pf_muons,
+    year,
+    histogram_name,
+    map_evaluator=get_run2_jet_veto_map_scores,
+):
+    """Return qualifying Run-2 jets before or after per-jet JVM removal."""
+
+    qualifying = get_run2_jvm_qualifying_jet_mask(jets, pf_muons, year)
+    if histogram_name == "jet_eta_phi_before_veto":
+        return jets[qualifying]
+    if histogram_name == "jet_eta_phi_after_veto":
+        keep = get_run2_jvm_keep_mask(jets, pf_muons, year, map_evaluator)
+        return jets[qualifying & keep]
+    raise ValueError(f"Unknown JVM eta-phi diagnostic '{histogram_name}'")
 
 
 def apply_maintained_jet_systematic(year, cleaned_jets, syst_var, jet_systematics):
@@ -1559,7 +1577,40 @@ class AnalysisProcessor(processor.ProcessorABC):
                 if is_met_unclustered_systematic(syst_var):
                     met = ApplyMETSystematics(met, syst_var)
 
+            run2_jvm_diagnostic_jets = None
+            run2_jvm_pre_njets = None
+            run2_jvm_pre_nbtagsm = None
             if is_run2_jvm_year(year):
+                run2_jvm_input_jets = cleanedJets
+                run2_jvm_diagnostic_jets = {
+                    histogram_name: get_run2_jvm_eta_phi_jets(
+                        run2_jvm_input_jets,
+                        mu[mu.isPFcand],
+                        year,
+                        histogram_name,
+                    )
+                    for histogram_name in JVM_ETA_PHI_DIAGNOSTIC_HISTOGRAMS
+                }
+                run2_jvm_pre_good_jets = run2_jvm_input_jets[
+                    tc_os.is_tight_jet(
+                        getattr(run2_jvm_input_jets, jetptname),
+                        run2_jvm_input_jets.eta,
+                        run2_jvm_input_jets.jetId,
+                        pt_cut=30.,
+                        eta_cut=get_te_param("eta_j_cut"),
+                        id_cut=get_te_param("jet_id_cut"),
+                    )
+                ]
+                run2_jvm_pre_njets = ak.num(run2_jvm_pre_good_jets)
+                run2_medium_tag = (
+                    "btag_wp_medium_" + year.replace("201", "UL1")
+                )
+                run2_medium_wp = get_tc_param(run2_medium_tag)
+                run2_jvm_pre_nbtagsm = ak.num(
+                    run2_jvm_pre_good_jets[
+                        run2_jvm_pre_good_jets[btagAlgo] > run2_medium_wp
+                    ]
+                )
                 cleanedJets = apply_run2_jvm_to_analysis_jets(
                     cleanedJets,
                     mu[mu.isPFcand],
@@ -1875,6 +1926,17 @@ class AnalysisProcessor(processor.ProcessorABC):
             charge3l_p = ak.fill_none(((l0.charge+l1.charge+l2.charge)>0),False)
             charge3l_m = ak.fill_none(((l0.charge+l1.charge+l2.charge)<0),False)
 
+            run2_jvm_frozen_cr_mask = None
+            if is_run2_jvm_year(year):
+                run2_jvm_frozen_cr_mask = (
+                    events.is2l_nozeeveto
+                    & pass_trg
+                    & charge2l_0
+                    & events.is_em
+                    & (run2_jvm_pre_njets == 2)
+                    & (run2_jvm_pre_nbtagsm == 2)
+                )
+
             ######### Store boolean masks with PackedSelection ##########
 
             selections = PackedSelection(dtype='uint64')
@@ -2148,6 +2210,8 @@ class AnalysisProcessor(processor.ProcessorABC):
             if is_run3:
                 varnames["jet_eta_phi_before_veto"] = veto_map_input_jets
                 varnames["jet_eta_phi_after_veto"] = veto_map_input_jets
+            elif run2_jvm_diagnostic_jets is not None:
+                varnames.update(run2_jvm_diagnostic_jets)
             lepton0_pt_raw = l0.pt_raw 
             lepton0_abseta = abs(l0.eta) 
 
@@ -2463,6 +2527,21 @@ class AnalysisProcessor(processor.ProcessorABC):
                                             all_cuts_mask = (selections.all(*cuts_lst) & njets_any_mask)
                                         else:
                                             all_cuts_mask = selections.all(*cuts_lst)
+                                        if is_jvm_eta_phi_diagnostic and not is_run3:
+                                            if (
+                                                ch_name != "2los_CRtt_2j"
+                                                or appl != "isSR_2lOS"
+                                            ):
+                                                continue
+                                            all_cuts_mask = (
+                                                run2_jvm_frozen_cr_mask
+                                                & selections.all("isSR_2lOS")
+                                            )
+                                            if isData:
+                                                all_cuts_mask = (
+                                                    all_cuts_mask
+                                                    & selections.all("is_good_lumi")
+                                                )
                                         all_cuts_mask = (
                                             all_cuts_mask
                                             & events[
@@ -2476,19 +2555,22 @@ class AnalysisProcessor(processor.ProcessorABC):
 
                                         if is_jvm_eta_phi_diagnostic:
                                             if not should_fill_jvm_eta_phi_diagnostic(
-                                                is_run3,
+                                                is_run3 or is_run2_jvm_year(year),
                                                 syst_var,
                                                 wgt_fluct,
                                             ):
                                                 continue
-                                            diagnostic_event_mask = get_jvm_eta_phi_event_mask(
-                                                all_cuts_mask,
-                                                veto_map_mask,
-                                                dense_axis_name,
-                                            )
+                                            if is_run3:
+                                                diagnostic_event_mask = get_jvm_eta_phi_event_mask(
+                                                    all_cuts_mask,
+                                                    veto_map_mask,
+                                                    dense_axis_name,
+                                                )
+                                            else:
+                                                diagnostic_event_mask = all_cuts_mask
                                             eta_flat, phi_flat, weights_flat = (
                                                 flatten_jagged_jet_eta_phi_weights(
-                                                    veto_map_input_jets,
+                                                    varnames[dense_axis_name],
                                                     diagnostic_event_mask,
                                                     weight,
                                                 )

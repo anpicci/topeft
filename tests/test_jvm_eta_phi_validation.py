@@ -17,7 +17,7 @@ specification.loader.exec_module(jvm_eta_phi_validation)
 
 class SyntheticJetVetoMap:
     def evaluate(self, category, eta, phi):
-        assert category == "jetvetomap"
+        assert category in {"jetvetomap", "jetvetomap_all"}
         return 100.0 if 0.5 <= eta < 1.5 else 0.0
 
 
@@ -60,3 +60,20 @@ def test_summary_uses_absolute_residuals_for_signed_mc():
         "nonzero_bins": 2,
         "max_absolute_bin": 2.0,
     }
+
+
+def test_run2_classification_uses_all_map_category():
+    labels, _ = jvm_eta_phi_validation.classify_analysis_bins(
+        SyntheticJetVetoMap(),
+        np.asarray([0.0, 0.5, 1.5, 2.0]),
+        np.asarray([0.0, 1.0]),
+        np.asarray([0.0, 0.5, 1.5, 2.0]),
+        np.asarray([0.0, 1.0]),
+        "jetvetomap_all",
+    )
+
+    assert labels[:, 0].tolist() == [
+        "fully_nonvetoed",
+        "fully_vetoed",
+        "fully_nonvetoed",
+    ]

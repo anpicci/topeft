@@ -87,7 +87,7 @@ def _clean_environment():
     return environment
 
 
-def _run(profile, output_dir, campaign_tag, *, dry_run=True, environment=None):
+def _run(profile, output_dir, campaign_tag, *, dry_run=True, resume=False, environment=None):
     command = [
         str(RUN_CR), "--production-profile", profile,
         "--output-dir", str(output_dir),
@@ -96,6 +96,8 @@ def _run(profile, output_dir, campaign_tag, *, dry_run=True, environment=None):
     ]
     if dry_run:
         command.append("--dry-run")
+    if resume:
+        command.append("--resume")
     return subprocess.run(
         command,
         cwd=RUN_DIRECTORY,
@@ -936,3 +938,35 @@ def test_matrix_value_options_reject_another_option_as_value_before_side_effects
     assert result.returncode != 0
     assert f"{value_option} requires a value" in result.stdout
     assert not output_root.exists()
+
+
+@pytest.mark.parametrize("profile", sorted(PUBLIC_PROFILES))
+def test_all_public_profiles_resume_validated_campaign_state(tmp_path, profile):
+    initial, output_root, validation_root = _stubbed_run(tmp_path, profile, "success")
+    assert initial.returncode == 0, initial.stdout
+
+    environment = _clean_environment()
+    environment.update(
+        {
+            "SRPLOT009_VALIDATION_BACKEND": str(validation_root / "backend.sh"),
+            "SRPLOT009_VALIDATION_ROOT": str(validation_root),
+            "SRPLOT009_VALIDATION_SCENARIO": "success",
+        }
+    )
+    resumed = _run(
+        profile,
+        output_root,
+        f"stub-{profile}",
+        dry_run=True,
+        resume=True,
+        environment=environment,
+    )
+
+    assert resumed.returncode == 0, resumed.stdout
+    assert "has no automatic resume" not in resumed.stdout
+    if profile.startswith("run2_run3"):
+        assert "combined output namespace already exists" not in resumed.stdout
+        assert "Skipping validated run2_full" in resumed.stdout
+        assert "Skipping validated run3_full" in resumed.stdout
+    else:
+        assert f"Skipping validated {profile} block" in resumed.stdout

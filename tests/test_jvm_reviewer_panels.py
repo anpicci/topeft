@@ -62,3 +62,18 @@ def test_boundary_segments_draws_only_exposed_edges():
     )
 
     assert len(segments) == 6
+
+
+def test_run2_periods_use_official_all_map_payloads():
+    assert tuple(jvm_reviewer_panels.run2_period_config) == (
+        "2016APV",
+        "2016",
+        "2017",
+        "2018",
+    )
+    assert {
+        item["payload_category"]
+        for item in jvm_reviewer_panels.run2_period_config.values()
+    } == {"jetvetomap_all"}
+    assert jvm_reviewer_panels.run2_period_config["2016APV"]["payload_directory"] == "2016preVFP_UL"
+    assert jvm_reviewer_panels.run2_period_config["2016"]["payload_directory"] == "2016postVFP_UL"

@@ -302,17 +302,17 @@ case "${matrix_profile}" in
       echo "ERROR: requested profiles are pinned to the required frozen snapshot archive." >&2
       exit 1
     fi
-    if [[ "${matrix_resume}" == "true" && "${matrix_profile}" != "run3_full" ]]; then
-      echo "ERROR: ${matrix_profile} has no automatic resume; inspect interrupted state first." >&2
-      exit 1
-    fi
     ;;
 esac
 
 case "${matrix_profile}" in
   run2_run3_full|run2_run3_full_CR)
-    if [[ -e "${matrix_output_dir}" ]]; then
+    if [[ "${matrix_resume}" == "false" && -e "${matrix_output_dir}" ]]; then
       echo "ERROR: combined output namespace already exists: ${matrix_output_dir}" >&2
+      exit 1
+    fi
+    if [[ "${matrix_resume}" == "true" && ! -d "${matrix_output_dir}" ]]; then
+      echo "ERROR: ${matrix_profile} --resume requires an existing combined output namespace: ${matrix_output_dir}" >&2
       exit 1
     fi
     combined_suffix=""
@@ -323,11 +323,12 @@ case "${matrix_profile}" in
       first_profile=run2_full_CR
       second_profile=run3_full_CR
     fi
-    if [[ "${matrix_dry_run}" == "false" ]]; then
+    if [[ "${matrix_dry_run}" == "false" && "${matrix_resume}" == "false" ]]; then
       mkdir -- "${matrix_output_dir}"
     fi
     component_common=(--env-file /users/apiccine/work/correction-lib/topeft/analysis/topeft_run2/topeft-envs/env_spec_9d72aad444117c28.tar.gz)
     [[ "${matrix_dry_run}" == "true" ]] && component_common+=(--dry-run)
+    [[ "${matrix_resume}" == "true" ]] && component_common+=(--resume)
     if "$0" --production-profile "${first_profile}" \
       --output-dir "${matrix_output_dir}/run2${combined_suffix}" \
       --campaign-tag "${matrix_campaign_tag}_run2" "${component_common[@]}"; then
