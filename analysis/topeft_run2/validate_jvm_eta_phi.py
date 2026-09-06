@@ -34,6 +34,12 @@ run2_period_config = {
     "2017": ("Summer19UL17_V1", "2017_UL"),
     "2018": ("Summer19UL18_V1", "2018_UL"),
 }
+run2_process_period_tokens = {
+    "2016APV": "UL16APV",
+    "2016": "UL16",
+    "2017": "UL17",
+    "2018": "UL18",
+}
 run_configs = {"run3": period_config, "run2": run2_period_config}
 histogram_keys = ("jet_eta_phi_before_veto", "jet_eta_phi_after_veto")
 selected_coordinates = {
@@ -72,6 +78,25 @@ def project_histogram(histogram, processes):
     for axis_name, value in selected_coordinates.items():
         selected = selected.integrate(axis_name, value)
     return dense_values(selected)
+
+
+def process_period_token(period):
+    """Resolve a display period to its serialized process-label token."""
+
+    return run2_process_period_tokens.get(period, period)
+
+
+def period_processes(processes, period):
+    """Return exact data and MC process labels for one display period."""
+
+    process_token = process_period_token(period)
+    data_process = f"data{process_token}"
+    mc_processes = tuple(
+        process
+        for process in processes
+        if process.endswith(process_token) and not process.startswith("data")
+    )
+    return data_process, mc_processes
 
 
 def load_histograms(input_pkl):
@@ -192,10 +217,7 @@ def period_metrics(
         payload_category,
     )
     processes = tuple(str(value) for value in before_histogram.axes["process"])
-    data_process = f"data{period}"
-    mc_processes = tuple(
-        process for process in processes if process.endswith(period) and not process.startswith("data")
-    )
+    data_process, mc_processes = period_processes(processes, period)
     if sample_kind in ("both", "data") and data_process not in processes:
         raise KeyError(f"Missing data process for {period}")
     if sample_kind in ("both", "mc") and not mc_processes:

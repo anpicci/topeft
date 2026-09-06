@@ -2,6 +2,7 @@ import importlib.util
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 
 script_path = (
@@ -19,6 +20,39 @@ class SyntheticJetVetoMap:
     def evaluate(self, category, eta, phi):
         assert category in {"jetvetomap", "jetvetomap_all"}
         return 100.0 if 0.5 <= eta < 1.5 else 0.0
+
+
+def test_run3_period_process_token_is_unchanged():
+    processes = ("data2022", "ttbar2022", "data2022EE", "ttbar2022EE")
+
+    assert jvm_eta_phi_validation.process_period_token("2022") == "2022"
+    assert jvm_eta_phi_validation.period_processes(processes, "2022") == (
+        "data2022",
+        ("ttbar2022",),
+    )
+
+
+@pytest.mark.parametrize(
+    ("display_period", "serialized_token"),
+    (
+        ("2016APV", "UL16APV"),
+        ("2016", "UL16"),
+        ("2017", "UL17"),
+        ("2018", "UL18"),
+    ),
+)
+def test_run2_period_processes_use_serialized_ul_tokens(display_period, serialized_token):
+    processes = (
+        f"data{serialized_token}",
+        f"ttbar{serialized_token}",
+        f"diboson{serialized_token}",
+    )
+
+    assert jvm_eta_phi_validation.process_period_token(display_period) == serialized_token
+    assert jvm_eta_phi_validation.period_processes(processes, display_period) == (
+        f"data{serialized_token}",
+        (f"ttbar{serialized_token}", f"diboson{serialized_token}"),
+    )
 
 
 def test_classification_identifies_fully_vetoed_and_nonvetoed_bins():

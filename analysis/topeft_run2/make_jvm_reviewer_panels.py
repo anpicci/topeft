@@ -75,6 +75,12 @@ run2_period_config = {
         "display": "2018",
     },
 }
+run2_process_period_tokens = {
+    "2016APV": "UL16APV",
+    "2016": "UL16",
+    "2017": "UL17",
+    "2018": "UL18",
+}
 for configuration in period_config.values():
     configuration.setdefault("payload_category", "jetvetomap")
     configuration.setdefault("display", None)
@@ -147,13 +153,20 @@ def project_histogram(histogram, processes):
     return dense_values(selected)
 
 
+def process_period_token(period):
+    """Resolve a display period to its serialized process-label token."""
+
+    return run2_process_period_tokens.get(period, period)
+
+
 def period_processes(processes, period):
     """Return exact data and MC process labels for one period token."""
-    data_process = f"data{period}"
+    process_token = process_period_token(period)
+    data_process = f"data{process_token}"
     mc_processes = tuple(
         process
         for process in processes
-        if process.endswith(period) and not process.startswith("data")
+        if process.endswith(process_token) and not process.startswith("data")
     )
     if data_process not in processes:
         raise KeyError(f"Missing data process {data_process}")
@@ -199,12 +212,7 @@ def select_period_arrays(before_histogram, after_histogram, periods, sample_kind
     processes = tuple(str(value) for value in before_histogram.axes["process"])
     selected = {}
     for period in periods:
-        data_process = f"data{period}"
-        mc_processes = tuple(
-            process
-            for process in processes
-            if process.endswith(period) and not process.startswith("data")
-        )
+        data_process, mc_processes = period_processes(processes, period)
         processes_to_sum = data_process if sample_kind == "data" else mc_processes
         if sample_kind == "data" and data_process not in processes:
             raise KeyError(f"Missing data process {data_process}")
