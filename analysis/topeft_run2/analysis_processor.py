@@ -669,11 +669,22 @@ class AnalysisProcessor(processor.ProcessorABC):
 
         return bool(fill_sumw2_hist) and wgt_fluct == "nominal"
 
-    def __init__(self, samples, wc_names_lst=[], hist_lst=None, ecut_threshold=None, fill_sumw2_hist=True, do_systematics=False, split_by_lepton_flavor=False, skip_signal_regions=False, skip_control_regions=False, muonSyst='nominal', dtype=np.float32, offZ_split=False, tau_h_analysis=False, fwd_analysis=False, all_analysis=False, useRun3MVA=True, tau_run_mode="standard", sr_category_dict=None, cr_category_dict=None, suppress_forward_eta_stochastic_jer=False, fwd_eta_band_pt_apply="auto", ttgamma_sample_role_policy="split", sumw2_policy=None):
+    @staticmethod
+    def _raw_count_fill_classification(histogram, *, is_data, wgt_fluct):
+        """Classify every fill of a raw-count-enabled nominal container."""
+
+        if not histogram.track_raw_counts:
+            return None
+        return (not is_data) and wgt_fluct == "nominal"
+
+    def __init__(self, samples, wc_names_lst=[], hist_lst=None, ecut_threshold=None, fill_sumw2_hist=True, do_systematics=False, split_by_lepton_flavor=False, skip_signal_regions=False, skip_control_regions=False, muonSyst='nominal', dtype=np.float32, offZ_split=False, tau_h_analysis=False, fwd_analysis=False, all_analysis=False, useRun3MVA=True, tau_run_mode="standard", sr_category_dict=None, cr_category_dict=None, suppress_forward_eta_stochastic_jer=False, fwd_eta_band_pt_apply="auto", ttgamma_sample_role_policy="split", sumw2_policy=None, record_raw_count=False):
 
         self._samples = samples
         self._wc_names_lst = wc_names_lst
         self._dtype = dtype
+        if not isinstance(record_raw_count, (bool, np.bool_)):
+            raise TypeError("record_raw_count must be a boolean.")
+        self._record_raw_count = bool(record_raw_count)
         validated_mode_flags = validate_analysis_mode_flags(
             offZ_split,
             tau_h_analysis,
@@ -825,6 +836,9 @@ class AnalysisProcessor(processor.ProcessorABC):
                     appl_axis,
                     dense_axis,
                     storage="Double",
+                    track_raw_counts=(
+                        self._record_raw_count and "fitting" in info
+                    ),
                 )
                 self._hist_axis_map[scalar_key] = [dense_axis.name]
                 self._hist_requires_eft[scalar_key] = False
@@ -838,6 +852,9 @@ class AnalysisProcessor(processor.ProcessorABC):
                     dense_axis,
                     wc_names=wc_names_lst,
                     label=r"Events",
+                    track_raw_counts=(
+                        self._record_raw_count and "fitting" in info
+                    ),
                 )
                 self._hist_axis_map[eft_key] = [dense_axis.name]
                 self._hist_requires_eft[eft_key] = True
@@ -2686,7 +2703,19 @@ class AnalysisProcessor(processor.ProcessorABC):
                                             }
                                             if self._hist_requires_eft.get(nominal_histogram_key, False):
                                                 axes_fill_info_dict["eft_coeff"] = eft_coeffs_cut
-                                            hout[nominal_histogram_key].fill(**axes_fill_info_dict)
+                                            nominal_histogram = hout[nominal_histogram_key]
+                                            raw_count_classification = (
+                                                self._raw_count_fill_classification(
+                                                    nominal_histogram,
+                                                    is_data=isData,
+                                                    wgt_fluct=wgt_fluct,
+                                                )
+                                            )
+                                            if raw_count_classification is not None:
+                                                axes_fill_info_dict["record_raw_count"] = (
+                                                    raw_count_classification
+                                                )
+                                            nominal_histogram.fill(**axes_fill_info_dict)
                                                                                     
                                         if fill_nominal_sumw2_hist:
                                             # The companion is an SM-only statistical moment.

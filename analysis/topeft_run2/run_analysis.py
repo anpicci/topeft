@@ -961,6 +961,14 @@ if __name__ == "__main__":
         help="Skip filling sum of weight-squared histograms",
     )
     parser.add_argument(
+        "--record-raw-count",
+        action="store_true",
+        help=(
+            "Record per-bin selected nominal-MC event counts for fitting-family "
+            "histograms."
+        ),
+    )
+    parser.add_argument(
         "--do-systs",
         action="store_true",
         help="Compute systematic variations",
@@ -1256,6 +1264,7 @@ if __name__ == "__main__":
     pretend = args.pretend
     treename = args.treename
     fill_sumw2 = not args.no_sumw2
+    record_raw_count = args.record_raw_count
     legacy_no_sumw2_present = bool(args.no_sumw2)
     legacy_no_sumw2_value = bool(args.no_sumw2)
     sumw2_storage_present = False
@@ -1332,6 +1341,9 @@ if __name__ == "__main__":
             legacy_no_sumw2_present = True
             legacy_no_sumw2_value = not legacy_do_errors
         fill_sumw2 = not legacy_no_sumw2_value
+        record_raw_count = ops.pop("record_raw_count", record_raw_count)
+        if not isinstance(record_raw_count, bool):
+            raise ValueError("record_raw_count must be a boolean.")
         do_systs = ops.pop("do_systs", do_systs)
         suppress_forward_eta_stochastic_jer = ops.pop(
             "suppress_forward_eta_stochastic_jer",
@@ -2106,6 +2118,7 @@ if __name__ == "__main__":
         fwd_eta_band_pt_apply=fwd_eta_band_pt_apply,
         ttgamma_sample_role_policy=ttgamma_sample_role_policy,
         sumw2_policy=sumw2_policy,
+        record_raw_count=record_raw_count,
     )
 
     if executor_name in ["work_queue", "taskvine"]:
