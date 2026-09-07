@@ -15,13 +15,20 @@ RUN_CR = RUN_DIRECTORY / "run_cr.sh"
 RUN_ANALYSIS = RUN_DIRECTORY / "run_analysis.py"
 FROZEN_ENV = RUN_DIRECTORY / "topeft-envs" / "env_spec_9d72aad444117c28.tar.gz"
 FROZEN_SHA256 = "8245afe4b3c28f4948039d383ad2176f1ee3ebb5e61bcdf1b49289452b025332"
+T0_FROZEN_ENV = RUN_DIRECTORY / "topeft-envs" / "env_spec_d2b557628143725b.tar.gz"
+T0_FROZEN_SHA256 = "c9c2cf2a8697c722291a5e5bfc492afafd367e1a2274289d5d37f9b8cfa8a292"
 PUBLIC_PROFILES = {
     "run2_full", "run3_full", "run2_run3_full",
-    "run2_full_CR", "run3_full_CR", "run2_run3_full_CR",
+    "run2_full_CR", "run3_full_CR", "run2_run3_full_CR", "t0_sr_statonly",
 }
 PROFILE_BLOCK_IDS = {
     "run2_full": [f"run2_full_{suffix}" for suffix in "abcde"],
     "run3_full": [f"run3_full_{suffix}" for suffix in "abcde"],
+    "t0_sr_statonly": [
+        f"t0_sr_statonly_{era}_{suffix}"
+        for era in ("run2", "run3")
+        for suffix in "abcde"
+    ],
     "run2_full_CR": [f"run2_full_CR_block{index}" for index in range(1, 7)],
     "run3_full_CR": [f"run3_full_CR_block{index}" for index in range(1, 13)],
 }
@@ -31,6 +38,7 @@ MATRIX_EARLY_PROFILES = (
     "run3_full_CR",
     "run2_run3_full",
     "run2_run3_full_CR",
+    "t0_sr_statonly",
 )
 RUN2_SR_BLOCKS = [
     (("UL16", "UL16APV", "UL17", "UL18"), ("2l", "2lss_1tau", "2los_1tau", "4l"), ("njets", "lj0pt", "ptz", "ptz_wtau", "lt")),
@@ -41,6 +49,10 @@ RUN2_SR_BLOCKS = [
 ]
 RUN3_SR_BLOCKS = [
     (("2022", "2022EE", "2023", "2023BPix"), categories, histograms)
+    for _, categories, histograms in RUN2_SR_BLOCKS
+]
+T0_RUN2_SR_BLOCKS = [
+    (("2016APV", "2016", "2017", "2018"), categories, histograms)
     for _, categories, histograms in RUN2_SR_BLOCKS
 ]
 
@@ -94,11 +106,12 @@ def _clean_environment():
 
 
 def _run(profile, output_dir, campaign_tag, *, dry_run=True, resume=False, environment=None):
+    env_file = T0_FROZEN_ENV if profile == "t0_sr_statonly" else FROZEN_ENV
     command = [
         str(RUN_CR), "--production-profile", profile,
         "--output-dir", str(output_dir),
         "--campaign-tag", campaign_tag,
-        "--env-file", str(FROZEN_ENV),
+        "--env-file", str(env_file),
     ]
     if dry_run:
         command.append("--dry-run")
@@ -157,8 +170,12 @@ case "$action" in
           "${{SRPLOT009_VALIDATION_ROOT}}/output/run2_CR"
       fi
     fi
+    archive_sha256="{FROZEN_SHA256}"
+    if [[ "$archive" == "{T0_FROZEN_ENV}" ]]; then
+      archive_sha256="{T0_FROZEN_SHA256}"
+    fi
     printf 'env_file: %s\\n' "$archive"
-    printf 'env_file_sha256: {FROZEN_SHA256}\\n'
+    printf 'env_file_sha256: %s\\n' "$archive_sha256"
     printf 'env_manifest: %s.manifest.json\\n' "$archive"
     printf 'environment_fingerprint: %064d\\n' 9
     printf 'environment_validation_status: valid\\n'
@@ -363,6 +380,74 @@ def test_four_component_profiles_resolve_authoritative_contracts(tmp_path):
     assert {tuple(_option_values(a, "--years")) for a in observed["run3_full_CR"]} == {("2022", "2022EE"), ("2023", "2023BPix")}
     assert all("--skip-cr" in a for a in observed["run2_full"] + observed["run3_full"])
     assert all("--skip-sr" in a for a in observed["run2_full_CR"] + observed["run3_full_CR"])
+
+
+def test_t0_sr_statonly_resolves_exact_nominal_raw_count_contract(tmp_path):
+    output_dir = tmp_path / "t0_sr_statonly"
+    result = subprocess.run(
+        [
+            str(RUN_CR),
+            "--production-profile", "t0_sr_statonly",
+            "--dry-run",
+            "--output-dir", str(output_dir),
+            "--campaign-tag", "t0_sr_statonly_test",
+            "--env-file", str(T0_FROZEN_ENV),
+        ],
+        cwd=RUN_DIRECTORY,
+        env=_clean_environment(),
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stdout
+    commands = _commands(result.stdout)
+    assert [signature[:3] for signature in map(_scientific_signature, commands)] == (
+        T0_RUN2_SR_BLOCKS + RUN3_SR_BLOCKS
+    )
+    assert len(commands) == 10
+    for argv in commands:
+        assert argv[:2] == ["python", "run_analysis.py"]
+        assert "--snapshot" in argv
+        assert _option_values(argv, "--env-file", 1) == [str(T0_FROZEN_ENV)]
+        assert _option_values(argv, "-s", 1) == ["100000"]
+        assert _option_values(argv, "-x", 1) == ["work_queue"]
+        assert "--workers" not in argv
+        assert "--nworkers" not in argv
+        assert "--do-systs" not in argv
+        assert "--record-raw-count" in argv
+        assert "--do-np" in argv
+        assert "--np-postprocess=defer" in argv
+        assert "--options" in argv
+        assert "--rebuild-env" not in argv
+        assert "--prepare-env-only" not in argv
+    assert result.stdout.count("sumw2_storage_mode: full_diagnostics") == 1
+    assert f"env_file_sha256: {T0_FROZEN_SHA256}" in result.stdout
+    assert "environment_policy: exact_frozen_archive_integrity_plus_snapshot" in result.stdout
+    assert "dry_run_complete: ten commands resolved" in result.stdout
+    assert "2024" not in result.stdout
+    assert not output_dir.exists()
+
+    wrong_archive = subprocess.run(
+        [
+            str(RUN_CR),
+            "--production-profile", "t0_sr_statonly",
+            "--dry-run",
+            "--output-dir", str(tmp_path / "wrong_archive"),
+            "--campaign-tag", "t0_sr_statonly_wrong_archive",
+            "--env-file", str(FROZEN_ENV),
+        ],
+        cwd=RUN_DIRECTORY,
+        env=_clean_environment(),
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        check=False,
+    )
+    assert wrong_archive.returncode != 0
+    assert "pinned to the required frozen snapshot archive" in wrong_archive.stdout
+    assert not (tmp_path / "wrong_archive").exists()
 
 
 def test_combined_profiles_reuse_components_and_separate_namespaces(tmp_path):

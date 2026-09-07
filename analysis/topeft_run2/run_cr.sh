@@ -285,7 +285,7 @@ fi
 
 matrix_parse_args "$@"
 case "${matrix_profile}" in
-  run2_full|run3_full|run2_full_CR|run3_full_CR|run2_run3_full|run2_run3_full_CR)
+  run2_full|run3_full|run2_full_CR|run3_full_CR|run2_run3_full|run2_run3_full_CR|t0_sr_statonly)
     if (( ${#matrix_parse_errors[@]} > 0 )); then
       printf 'ERROR: %s.\n' "${matrix_parse_errors[@]}" >&2
       exit 1
@@ -298,7 +298,11 @@ case "${matrix_profile}" in
       echo "ERROR: ${matrix_profile} --env-file must be an absolute path: ${matrix_env_file}" >&2
       exit 1
     fi
-    if [[ -n "${matrix_env_file}" && "${matrix_env_file}" != "/users/apiccine/work/correction-lib/topeft/analysis/topeft_run2/topeft-envs/env_spec_9d72aad444117c28.tar.gz" ]]; then
+    matrix_required_env_file=/users/apiccine/work/correction-lib/topeft/analysis/topeft_run2/topeft-envs/env_spec_9d72aad444117c28.tar.gz
+    if [[ "${matrix_profile}" == "t0_sr_statonly" ]]; then
+      matrix_required_env_file=/users/apiccine/work/correction-lib/topeft/analysis/topeft_run2/topeft-envs/env_spec_d2b557628143725b.tar.gz
+    fi
+    if [[ -n "${matrix_env_file}" && "${matrix_env_file}" != "${matrix_required_env_file}" ]]; then
       echo "ERROR: requested profiles are pinned to the required frozen snapshot archive." >&2
       exit 1
     fi
@@ -393,16 +397,18 @@ Usage: ./run_cr.sh [--dry-run]
 Public PROFILE values:
   run2_full, run3_full, run2_run3_full
   run2_full_CR, run3_full_CR, run2_run3_full_CR
+  t0_sr_statonly
 
 With no arguments, run_cr.sh remains a backward-compatible alias for the fixed
 five-block run2_full campaign. Combined profiles run Run 2 then Run 3 in
 separate child namespaces. A safely classified Run-2-local failure or blocker
 does not suppress the independent Run-3 component; a shared unsafe state does.
 
-All six public profiles use the exact maintained frozen archive in snapshot
-mode, Work Queue without a profile-level worker count, and explicit
-full_diagnostics sumw2 storage. Explicit component and combined profiles
-require a fresh absolute output directory and campaign tag.
+All public profiles use a profile-pinned exact maintained frozen archive in
+snapshot mode, Work Queue without a profile-level worker count, and explicit
+full_diagnostics sumw2 storage. Explicit component and combined profiles require
+a fresh absolute output directory and campaign tag. t0_sr_statonly covers the
+maintained Run-2 and early-Run-3 SR mapping with nominal weights and raw counts.
 
 run3_full is the canonical complete Run-3 SR source-production profile.
 rebin_fine is the specialized six-block Run-2/Run-3 source-production profile
@@ -480,7 +486,7 @@ if [[ -z "${production_profile}" ]]; then
 fi
 
 case "${production_profile}" in
-  run2_full|run3_full|run2_full_CR|run3_full_CR|rebin_fine) ;;
+  run2_full|run3_full|run2_full_CR|run3_full_CR|rebin_fine|t0_sr_statonly) ;;
   *)
     echo "ERROR: unsupported production profile '${production_profile}'." >&2
     exit 1
@@ -605,6 +611,13 @@ case "${production_profile}" in
     production_np_mode="separate"
     production_component="run3"
     ;;
+  t0_sr_statonly)
+    run_cr=false
+    run_sr=true
+    production_region="SR"
+    production_np_mode="separate"
+    production_component="t0_sr_statonly"
+    ;;
   run2_full_CR)
     run_cr=true
     run_sr=false
@@ -627,6 +640,9 @@ dry_run="${profile_dry_run}"
 # Shared CR/SR production switches.
 do_systs=true
 do_np=true
+if [[ "${production_profile}" == "t0_sr_statonly" ]]; then
+  do_systs=false
+fi
 
 # Enable only when lepton-flavour-split outputs are explicitly required.
 split_lep_flavor=false
@@ -772,6 +788,19 @@ elif [[ "${production_profile}" == "run3_full" ]]; then
   sr_year_category_var_set_names=(
     "run3_full_category_var_set_names"
   )
+elif [[ "${production_profile}" == "t0_sr_statonly" ]]; then
+  sr_year_sets=(
+    "2016APV 2016 2017 2018"
+    "2022 2022EE 2023 2023BPix"
+  )
+  sr_year_category_set_names=(
+    "run3_full_category_sets"
+    "run3_full_category_sets"
+  )
+  sr_year_category_var_set_names=(
+    "run3_full_category_var_set_names"
+    "run3_full_category_var_set_names"
+  )
 fi
 
 case "${production_profile}" in
@@ -818,6 +847,23 @@ case "${production_profile}" in
       production_plan_category_sets+=("${run3_full_category_sets[profile_index]}")
       production_plan_var_sets+=("${profile_var_set_ref[0]}")
       unset -n profile_var_set_ref
+    done
+    ;;
+  t0_sr_statonly)
+    profile_block_suffixes=(a b c d e)
+    profile_era_labels=(run2 run3)
+    for profile_era_index in "${!sr_year_sets[@]}"; do
+      profile_year_expr="${sr_year_sets[profile_era_index]}"
+      profile_era_label="${profile_era_labels[profile_era_index]}"
+      for profile_index in "${!run3_full_category_sets[@]}"; do
+        profile_var_set_name="${run3_full_category_var_set_names[profile_index]}"
+        declare -n profile_var_set_ref="${profile_var_set_name}"
+        production_block_ids+=("t0_sr_statonly_${profile_era_label}_${profile_block_suffixes[profile_index]}")
+        production_plan_year_exprs+=("${profile_year_expr}")
+        production_plan_category_sets+=("${run3_full_category_sets[profile_index]}")
+        production_plan_var_sets+=("${profile_var_set_ref[0]}")
+        unset -n profile_var_set_ref
+      done
     done
     ;;
   run2_full_CR|run3_full_CR)
@@ -1449,6 +1495,11 @@ resolve_production_environment() {
   local validation_status=""
   local validation_args=()
 
+  if [[ "${production_profile}" == "t0_sr_statonly" ]]; then
+    matrix_env_file=/users/apiccine/work/correction-lib/topeft/analysis/topeft_run2/topeft-envs/env_spec_d2b557628143725b.tar.gz
+    matrix_env_sha256=c9c2cf2a8697c722291a5e5bfc492afafd367e1a2274289d5d37f9b8cfa8a292
+  fi
+
   production_state_path="${output_dir}/${production_state_filename}"
 
   if [[ "${profile_resume}" == "true" ]]; then
@@ -1606,6 +1657,7 @@ production_assert_live_plan() {
   local expected_count
   case "${production_profile}" in
     run2_full|run3_full) expected_count=5 ;;
+    t0_sr_statonly) expected_count=10 ;;
     run2_full_CR) expected_count=6 ;;
     run3_full_CR) expected_count=12 ;;
     rebin_fine) expected_count=6 ;;
@@ -1879,6 +1931,10 @@ build_common_command_options() {
 
   if [[ "${do_systs}" == "true" ]]; then
     cmd_ref+=(--do-systs)
+  fi
+
+  if [[ "${production_profile}" == "t0_sr_statonly" ]]; then
+    cmd_ref+=(--record-raw-count)
   fi
 
   if [[ "${do_np}" == "true" ]]; then
@@ -2732,6 +2788,8 @@ echo "output_dir: ${output_dir}"
 
 if [[ "${dry_run}" == "true" && "${production_profile}" == "run2_full" ]]; then
   echo "dry_run_complete: five commands resolved; no environment, output root, scheduler, or production action was created"
+elif [[ "${dry_run}" == "true" && "${production_profile}" == "t0_sr_statonly" ]]; then
+  echo "dry_run_complete: ten commands resolved; no environment, output root, scheduler, or production action was created"
 fi
 
 final_process_exit_code=0
