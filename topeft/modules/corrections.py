@@ -1690,7 +1690,7 @@ def AttachMuonSF(muons, year, useRun3MVA=True):
     muons['sf_nom_2l_muon'] = new_sf * reco_loose_sf * iso_sf
     muons['sf_hi_2l_muon']  = new_up * reco_loose_up * iso_up
     muons['sf_lo_2l_muon']  = new_do * reco_loose_do * iso_do
-    muons['sf_nom_3l_muon'] = new_sf * reco_loose_sf
+    muons['sf_nom_3l_muon'] = new_sf * reco_loose_sf * iso_sf
     muons['sf_hi_3l_muon']  = new_up * reco_loose_up * iso_up
     muons['sf_lo_3l_muon']  = new_do * reco_loose_do * iso_do
     muons['sf_nom_2l_elec'] = ak.ones_like(new_sf)
@@ -1933,7 +1933,7 @@ def AttachElectronSF(electrons, year, looseWP=None, useRun3MVA=True):
     electrons['sf_nom_2l_elec'] = reco_sf * new_sf_2l * loose_sf * iso_sf
     electrons['sf_hi_2l_elec']  = (reco_up) * new_up_2l * loose_up * iso_up
     electrons['sf_lo_2l_elec']  = (reco_do) * new_do_2l * loose_do * iso_do
-    electrons['sf_nom_3l_elec'] = reco_sf * new_sf_3l * loose_sf
+    electrons['sf_nom_3l_elec'] = reco_sf * new_sf_3l * loose_sf * iso_sf
     electrons['sf_hi_3l_elec']  = (reco_up) * new_up_3l * loose_up * iso_up
     electrons['sf_lo_3l_elec']  = (reco_do) * new_do_3l * loose_do * iso_do
     electrons['sf_nom_2l_muon'] = ak.ones_like(reco_sf)

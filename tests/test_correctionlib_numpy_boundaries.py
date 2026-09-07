@@ -1,7 +1,7 @@
 import awkward as ak
 import numpy as np
 
-from topeft.modules import corrections
+from topeft.modules import corrections, event_selection
 
 
 class _RecordingCorrection:
@@ -42,6 +42,42 @@ class _RecordingCompoundSet:
         correction = _RecordingCorrection(self.compound_set[key])
         self.calls.append((key, correction))
         return correction
+
+
+class _ConstantCorrection:
+    def __init__(self, values):
+        self.values = values
+
+    def evaluate(self, *args):
+        variation = next(
+            (arg for arg in args if isinstance(arg, str) and arg in self.values),
+            None,
+        )
+        if variation is None:
+            raise AssertionError(f"No configured variation found in {args!r}")
+        numeric = next(arg for arg in args if isinstance(arg, np.ndarray))
+        return np.full(numeric.shape, self.values[variation], dtype=float)
+
+
+def _install_constant_correction_set(monkeypatch, values):
+    correction_set = {"constant": _ConstantCorrection(values)}
+
+    class ConstantCorrectionSet:
+        @staticmethod
+        def from_file(path):
+            return correction_set
+
+    monkeypatch.setattr(
+        corrections.correctionlib, "CorrectionSet", ConstantCorrectionSet
+    )
+    return correction_set
+
+
+def _constant_lookup(value):
+    def lookup(*args):
+        return ak.ones_like(args[-1], dtype=np.float64) * value
+
+    return lookup
 
 
 def _recording_factory(monkeypatch):
@@ -189,6 +225,216 @@ def test_muon_sf_run2_and_run3_use_numpy_and_preserve_structure(monkeypatch):
     corrections.AttachMuonSF(muons, "2022", useRun3MVA=False)
     _assert_recorded_numpy_only(recorded)
     assert ak.to_list(ak.num(muons.sf_hi_3l_muon)) == counts
+
+
+def test_run2_electron_3l_sf_uses_same_components_for_nominal_and_variations(
+    monkeypatch,
+):
+    correction_set = _install_constant_correction_set(
+        monkeypatch,
+        {"sf": 1.10, "sfup": 1.11, "sfdown": 1.09},
+    )
+    correction_set["UL-Electron-ID-SF"] = correction_set.pop("constant")
+    monkeypatch.setattr(
+        corrections,
+        "SFevaluator",
+        {
+            "ElecLooseSF_2018": _constant_lookup(1.20),
+            "ElecLooseSF_2018_er": _constant_lookup(0.02),
+            "ElecSF_2018_2lss": _constant_lookup(1.30),
+            "ElecSF_2018_2lss_er": _constant_lookup(0.03),
+            "ElecSF_2018_3l": _constant_lookup(1.40),
+            "ElecSF_2018_3l_er": _constant_lookup(0.04),
+            "ElecIsoSF_2018": _constant_lookup(1.50),
+            "ElecIsoSF_2018_er": _constant_lookup(0.05),
+        },
+    )
+    electrons = ak.Array(
+        [[{"pt": 25.0, "eta": 0.2, "phi": 0.1, "pdgId": 11}]]
+    )
+
+    corrections.AttachElectronSF(
+        electrons, "2018", looseWP="none", useRun3MVA=False
+    )
+
+    expected_3l = {
+        "sf_nom_3l_elec": 1.10 * 1.40 * 1.20 * 1.50,
+        "sf_hi_3l_elec": 1.11 * 1.44 * 1.22 * 1.55,
+        "sf_lo_3l_elec": 1.09 * 1.36 * 1.18 * 1.45,
+    }
+    for field, expected in expected_3l.items():
+        np.testing.assert_allclose(
+            ak.to_numpy(ak.flatten(electrons[field])), [expected]
+        )
+    assert not np.isclose(expected_3l["sf_nom_3l_elec"], 1.10 * 1.40 * 1.20)
+
+    np.testing.assert_allclose(
+        ak.to_numpy(ak.flatten(electrons.sf_nom_2l_elec)),
+        [1.10 * 1.30 * 1.20 * 1.50],
+    )
+    np.testing.assert_allclose(
+        ak.to_numpy(ak.flatten(electrons.sf_hi_2l_elec)),
+        [1.11 * 1.33 * 1.22 * 1.55],
+    )
+    np.testing.assert_allclose(
+        ak.to_numpy(ak.flatten(electrons.sf_lo_2l_elec)),
+        [1.09 * 1.27 * 1.18 * 1.45],
+    )
+
+
+def test_run2_muon_3l_sf_uses_same_components_for_nominal_and_variations(
+    monkeypatch,
+):
+    correction_set = _install_constant_correction_set(
+        monkeypatch,
+        {"nominal": 1.40, "syst": 0.04, "stat": 0.03},
+    )
+    correction_set["NUM_LooseID_DEN_TrackerMuons"] = correction_set.pop(
+        "constant"
+    )
+    monkeypatch.setattr(
+        corrections,
+        "SFevaluator",
+        {
+            "MuonRecoSF_2018": _constant_lookup(1.10),
+            "MuonRecoSF_2018_er": _constant_lookup(0.01),
+            "MuonIsoSF_2018": _constant_lookup(1.20),
+            "MuonIsoSF_2018_er": _constant_lookup(0.02),
+            "MuonSF_2018": _constant_lookup(1.30),
+            "MuonSF_2018_er": _constant_lookup(0.03),
+        },
+    )
+    muons = ak.Array([[{"pt": 18.0, "eta": 0.2, "pdgId": 13}]])
+
+    corrections.AttachMuonSF(muons, "2018", useRun3MVA=False)
+
+    expected_3l = {
+        "sf_nom_3l_muon": 1.30 * 1.10 * 1.40 * 1.20,
+        "sf_hi_3l_muon": 1.33 * 1.11 * 1.45 * 1.22,
+        "sf_lo_3l_muon": 1.27 * 1.09 * 1.35 * 1.18,
+    }
+    for field, expected in expected_3l.items():
+        np.testing.assert_allclose(
+            ak.to_numpy(ak.flatten(muons[field])), [expected]
+        )
+    assert not np.isclose(expected_3l["sf_nom_3l_muon"], 1.30 * 1.10 * 1.40)
+
+    np.testing.assert_allclose(
+        ak.to_numpy(ak.flatten(muons.sf_nom_2l_muon)),
+        [1.30 * 1.10 * 1.40 * 1.20],
+    )
+    np.testing.assert_allclose(
+        ak.to_numpy(ak.flatten(muons.sf_hi_2l_muon)),
+        [1.33 * 1.11 * 1.45 * 1.22],
+    )
+    np.testing.assert_allclose(
+        ak.to_numpy(ak.flatten(muons.sf_lo_2l_muon)),
+        [1.27 * 1.09 * 1.35 * 1.18],
+    )
+
+
+def test_run3_sf_paths_keep_iso_at_unity(monkeypatch):
+    correction_set = _install_constant_correction_set(
+        monkeypatch,
+        {
+            "sf": 1.10,
+            "sfup": 1.11,
+            "sfdown": 1.09,
+            "nominal": 1.40,
+            "syst": 0.04,
+            "stat": 0.03,
+        },
+    )
+    constant = correction_set.pop("constant")
+    correction_set["Electron-ID-SF"] = constant
+    correction_set["NUM_LooseID_DEN_TrackerMuons"] = constant
+
+    class FailingEvaluator:
+        def __getitem__(self, key):
+            raise AssertionError(f"Run 3 unexpectedly requested legacy SF {key}")
+
+    monkeypatch.setattr(corrections, "SFevaluator", FailingEvaluator())
+    electrons = ak.Array(
+        [[{"pt": 25.0, "eta": 0.2, "phi": 0.1, "pdgId": 11}]]
+    )
+    muons = ak.Array([[{"pt": 25.0, "eta": 0.2, "pdgId": 13}]])
+
+    corrections.AttachElectronSF(
+        electrons, "2022", looseWP="none", useRun3MVA=False
+    )
+    corrections.AttachMuonSF(muons, "2022", useRun3MVA=False)
+
+    for field, expected in (
+        ("sf_nom_2l_elec", 1.10),
+        ("sf_hi_2l_elec", 1.11),
+        ("sf_lo_2l_elec", 1.09),
+        ("sf_nom_3l_elec", 1.10),
+        ("sf_hi_3l_elec", 1.11),
+        ("sf_lo_3l_elec", 1.09),
+    ):
+        np.testing.assert_allclose(
+            ak.to_numpy(ak.flatten(electrons[field])), [expected]
+        )
+    for field in (
+        "sf_nom_2l_muon",
+        "sf_hi_2l_muon",
+        "sf_lo_2l_muon",
+        "sf_nom_3l_muon",
+        "sf_hi_3l_muon",
+        "sf_lo_3l_muon",
+    ):
+        np.testing.assert_allclose(ak.to_numpy(ak.flatten(muons[field])), [1.0])
+
+
+def test_four_lepton_weights_reuse_three_lepton_per_lepton_fields():
+    leptons = []
+    for index, pdg_id in enumerate((11, -11, 13, -13)):
+        leptons.append(
+            {
+                "conept": (30.0, 25.0, 20.0, 16.0)[index],
+                "isTightLep": True,
+                "pdgId": pdg_id,
+                "convVeto": 1,
+                "lostHits": 0,
+                "sf_nom_3l_elec": (1.10, 1.20, 1.0, 1.0)[index],
+                "sf_hi_3l_elec": (1.11, 1.21, 1.0, 1.0)[index],
+                "sf_lo_3l_elec": (1.09, 1.19, 1.0, 1.0)[index],
+                "sf_nom_3l_muon": (1.0, 1.0, 1.30, 1.40)[index],
+                "sf_hi_3l_muon": (1.0, 1.0, 1.31, 1.41)[index],
+                "sf_lo_3l_muon": (1.0, 1.0, 1.29, 1.39)[index],
+            }
+        )
+    events = ak.Array(
+        [
+            {
+                "l_fo_conept_sorted": leptons,
+                "minMllAFAS": 20.0,
+                "Flag": {
+                    "goodVertices": True,
+                    "globalSuperTightHalo2016Filter": True,
+                    "HBHENoiseFilter": True,
+                    "HBHENoiseIsoFilter": True,
+                    "EcalDeadCellTriggerPrimitiveFilter": True,
+                    "BadPFMuonFilter": True,
+                    "ecalBadCalibFilter": True,
+                    "eeBadScFilter": True,
+                },
+            }
+        ]
+    )
+
+    event_selection.add4lMaskAndSFs(events, "2018", isData=True)
+
+    expected = {
+        "sf_4l_elec": 1.10 * 1.20,
+        "sf_4l_hi_elec": 1.11 * 1.21,
+        "sf_4l_lo_elec": 1.09 * 1.19,
+        "sf_4l_muon": 1.30 * 1.40,
+        "sf_4l_hi_muon": 1.31 * 1.41,
+        "sf_4l_lo_muon": 1.29 * 1.39,
+    }
+    for field, value in expected.items():
+        np.testing.assert_allclose(ak.to_numpy(events[field]), [value])
 
 
 def test_run3_electron_sf_and_energy_corrections_use_numpy(monkeypatch):
