@@ -79,6 +79,21 @@ run2_luminosity_shape_factors = {
     },
 }
 
+run3_luminosity_shape_factors = {
+    "lumi_1": {
+        "2022": 1.0138,
+        "2022EE": 1.0138,
+        "2023": 1.0017,
+        "2023BPix": 1.0017,
+    },
+    "lumi_2": {
+        "2022": 1.0,
+        "2022EE": 1.0,
+        "2023": 1.0127,
+        "2023BPix": 1.0127,
+    },
+}
+
 run2_luminosity_excluded_processes = frozenset(
     {
         "data",
@@ -91,40 +106,71 @@ run2_luminosity_excluded_processes = frozenset(
 )
 
 
-def run2_luminosity_shape_factor(nuisance_name, year, direction):
-    """Return the accepted annual Run-2 luminosity shape anchor factor."""
+def _luminosity_shape_factor(
+    luminosity_shape_factors,
+    nuisance_name,
+    year,
+    direction,
+    run_label,
+):
     try:
-        kappa = run2_luminosity_shape_factors[nuisance_name][year]
+        kappa = luminosity_shape_factors[nuisance_name][year]
     except KeyError as exc:
         raise ValueError(
-            f"Unknown Run-2 luminosity nuisance/year pair: "
+            f"Unknown {run_label} luminosity nuisance/year pair: "
             f"{nuisance_name!r}, {year!r}."
         ) from exc
     if direction == "Up":
         return kappa
     if direction == "Down":
         return 1.0 / kappa
-    raise ValueError(f"Unknown Run-2 luminosity shape direction {direction!r}.")
+    raise ValueError(f"Unknown {run_label} luminosity shape direction {direction!r}.")
 
 
-def add_run2_luminosity_shape_nuisances(histogram):
+def run2_luminosity_shape_factor(nuisance_name, year, direction):
+    """Return the accepted annual Run-2 luminosity shape anchor factor."""
+    return _luminosity_shape_factor(
+        run2_luminosity_shape_factors,
+        nuisance_name,
+        year,
+        direction,
+        "Run-2",
+    )
+
+
+def run3_luminosity_shape_factor(nuisance_name, year, direction):
+    """Return the authoritative annual Run-3 luminosity shape anchor factor."""
+    return _luminosity_shape_factor(
+        run3_luminosity_shape_factors,
+        nuisance_name,
+        year,
+        direction,
+        "Run-3",
+    )
+
+
+def _add_luminosity_shape_nuisances(
+    histogram,
+    luminosity_shape_factors,
+    run_label,
+):
     """Derive transient luminosity templates from year-resolved nominal cells."""
     required_axes = {"process", "systematic"}
     if not required_axes.issubset(histogram.categorical_axes.name):
         raise ValueError(
-            "Run-2 luminosity template construction requires process and "
+            f"{run_label} luminosity template construction requires process and "
             "systematic categorical axes."
         )
     grouped_nominal_cells = defaultdict(list)
     existing_cells = set(tuple(key) for key in histogram.categorical_keys)
-    run2_years = next(iter(run2_luminosity_shape_factors.values()))
+    luminosity_years = next(iter(luminosity_shape_factors.values()))
     for sparse_key in tuple(histogram.categorical_keys):
         categories = sparse_key._asdict()
         if categories["systematic"] != "nominal":
             continue
         process = str(categories["process"])
         year = canonical_process_year(process)
-        if year not in run2_years:
+        if year not in luminosity_years:
             continue
         logical_process = year_independent_process(process)
         if logical_process in run2_luminosity_excluded_processes:
@@ -138,7 +184,7 @@ def add_run2_luminosity_shape_nuisances(histogram):
 
     for nominal_cells in grouped_nominal_cells.values():
         present_years = {year for _sparse_key, year in nominal_cells}
-        for nuisance_name, year_factors in run2_luminosity_shape_factors.items():
+        for nuisance_name, year_factors in luminosity_shape_factors.items():
             if all(year_factors[year] == 1.0 for year in present_years):
                 continue
             for sparse_key, year in nominal_cells:
@@ -149,7 +195,7 @@ def add_run2_luminosity_shape_nuisances(histogram):
                     )
                     if tuple(target_key) in existing_cells:
                         raise RuntimeError(
-                            "Run-2 luminosity shape template already exists for "
+                            f"{run_label} luminosity shape template already exists for "
                             f"{tuple(target_key)!r}; producer-side persistence is "
                             "not part of the card-side contract."
                         )
@@ -158,16 +204,38 @@ def add_run2_luminosity_shape_nuisances(histogram):
                         histogram._merge_raw_count_state(
                             target_index,
                             None,
-                            context="Run-2 luminosity shape template",
+                            context=f"{run_label} luminosity shape template",
                         )
-                    factor = run2_luminosity_shape_factor(
-                        nuisance_name, year, direction
+                    factor = _luminosity_shape_factor(
+                        luminosity_shape_factors,
+                        nuisance_name,
+                        year,
+                        direction,
+                        run_label,
                     )
                     histogram._dense_hists[target_index] += (
                         histogram._dense_hists[source_index] * factor
                     )
                     existing_cells.add(tuple(target_key))
     return histogram
+
+
+def add_run2_luminosity_shape_nuisances(histogram):
+    """Derive transient Run-2 luminosity templates before year merging."""
+    return _add_luminosity_shape_nuisances(
+        histogram,
+        run2_luminosity_shape_factors,
+        "Run-2",
+    )
+
+
+def add_run3_luminosity_shape_nuisances(histogram):
+    """Derive transient Run-3 luminosity templates before year merging."""
+    return _add_luminosity_shape_nuisances(
+        histogram,
+        run3_luminosity_shape_factors,
+        "Run-3",
+    )
 
 
 def resolve_shape_nuisance_identity(systematic, run_suffix, run_decorrelate):
@@ -1698,8 +1766,11 @@ class DatacardMaker():
                 grp_map[p].append(x)
             h = h.group("process", grp_map)
             return h
-        if add_luminosity_shapes and not self.use_run3_systs:
-            h = add_run2_luminosity_shape_nuisances(h)
+        if add_luminosity_shapes:
+            if self.use_run3_systs:
+                h = add_run3_luminosity_shape_nuisances(h)
+            else:
+                h = add_run2_luminosity_shape_nuisances(h)
         # This requires some fancy footwork to make work
         print("Correlating years")
 
