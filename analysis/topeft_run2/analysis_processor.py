@@ -341,6 +341,52 @@ def should_apply_fake_tau_sf(tau_run_mode, *, enable_tau_blocks, is_data):
     raise ValueError(f"Unknown tau_run_mode '{tau_run_mode}'")
 
 
+LEPTON_SF_WEIGHT_VARIATIONS = (
+    "lepSF_elec_mvaUp",
+    "lepSF_elec_mvaDown",
+    "lepSF_elec_non_mvaUp",
+    "lepSF_elec_non_mvaDown",
+    "lepSF_muon_mvaUp",
+    "lepSF_muon_mvaDown",
+    "lepSF_muon_non_mvaUp",
+    "lepSF_muon_non_mvaDown",
+)
+
+
+def add_lepton_sf_weights(weights, events, lepton_count):
+    """Register independently routable prompt-MVA and non-MVA SF factors."""
+    event_prefix = f"sf_{lepton_count}l"
+    for flavor in ("elec", "muon"):
+        for component in ("mva", "non_mva"):
+            weights.add(
+                f"lepSF_{flavor}_{component}",
+                getattr(events, f"{event_prefix}_{flavor}_{component}"),
+                copy.deepcopy(
+                    getattr(events, f"{event_prefix}_hi_{flavor}_{component}")
+                ),
+                copy.deepcopy(
+                    getattr(events, f"{event_prefix}_lo_{flavor}_{component}")
+                ),
+            )
+
+
+def select_histogram_weight_variations(
+    do_systematics,
+    is_data,
+    syst_var,
+    weight_correction_variations,
+    data_variations,
+):
+    """Resolve the weight labels that the primary histogram loop will fill."""
+    if not do_systematics:
+        return ["nominal"]
+    if is_data:
+        return ["nominal", *data_variations]
+    if syst_var != "nominal":
+        return [syst_var]
+    return ["nominal", *weight_correction_variations, *data_variations]
+
+
 def get_veto_map_input_jets(cleaned_jets, year, is_run3):
     if not is_run3:
         return cleaned_jets
@@ -1269,7 +1315,7 @@ class AnalysisProcessor(processor.ProcessorABC):
             )
 
         wgt_correction_syst_lst = [
-            "lepSF_muonUp","lepSF_muonDown","lepSF_elecUp","lepSF_elecDown",f"btagSFbc_{year}Up",f"btagSFbc_{year}Down","btagSFbc_corrUp","btagSFbc_corrDown",f"btagSFlight_{year}Up",f"btagSFlight_{year}Down","btagSFlight_corrUp","btagSFlight_corrDown","PUUp","PUDown","PreFiringUp","PreFiringDown",f"triggerSF_{year}Up",f"triggerSF_{year}Down", # Exp systs
+            *LEPTON_SF_WEIGHT_VARIATIONS,f"btagSFbc_{year}Up",f"btagSFbc_{year}Down","btagSFbc_corrUp","btagSFbc_corrDown",f"btagSFlight_{year}Up",f"btagSFlight_{year}Down","btagSFlight_corrUp","btagSFlight_corrDown","PUUp","PUDown","PreFiringUp","PreFiringDown",f"triggerSF_{year}Up",f"triggerSF_{year}Down", # Exp systs
             "FSRUp","FSRDown","ISRUp","ISRDown","renormUp","renormDown","factUp","factDown", # Theory systs
         ]
         tau_weight_variation_names = []
@@ -1880,17 +1926,13 @@ class AnalysisProcessor(processor.ProcessorABC):
                 # For MC only
                 if not isData:
                     if ch_name.startswith("1l"):
-                        weights_dict[ch_name].add("lepSF_muon", events.sf_1l_muon, copy.deepcopy(events.sf_1l_hi_muon), copy.deepcopy(events.sf_1l_lo_muon))
-                        weights_dict[ch_name].add("lepSF_elec", events.sf_1l_elec, copy.deepcopy(events.sf_1l_hi_elec), copy.deepcopy(events.sf_1l_lo_elec))
+                        add_lepton_sf_weights(weights_dict[ch_name], events, 1)
                     elif ch_name.startswith("2l"):
-                        weights_dict[ch_name].add("lepSF_muon", events.sf_2l_muon, copy.deepcopy(events.sf_2l_hi_muon), copy.deepcopy(events.sf_2l_lo_muon))
-                        weights_dict[ch_name].add("lepSF_elec", events.sf_2l_elec, copy.deepcopy(events.sf_2l_hi_elec), copy.deepcopy(events.sf_2l_lo_elec))
+                        add_lepton_sf_weights(weights_dict[ch_name], events, 2)
                     elif ch_name.startswith("3l"):
-                        weights_dict[ch_name].add("lepSF_muon", events.sf_3l_muon, copy.deepcopy(events.sf_3l_hi_muon), copy.deepcopy(events.sf_3l_lo_muon))
-                        weights_dict[ch_name].add("lepSF_elec", events.sf_3l_elec, copy.deepcopy(events.sf_3l_hi_elec), copy.deepcopy(events.sf_3l_lo_elec))
+                        add_lepton_sf_weights(weights_dict[ch_name], events, 3)
                     elif ch_name.startswith("4l"):
-                        weights_dict[ch_name].add("lepSF_muon", events.sf_4l_muon, copy.deepcopy(events.sf_4l_hi_muon), copy.deepcopy(events.sf_4l_lo_muon))
-                        weights_dict[ch_name].add("lepSF_elec", events.sf_4l_elec, copy.deepcopy(events.sf_4l_hi_elec), copy.deepcopy(events.sf_4l_lo_elec))
+                        add_lepton_sf_weights(weights_dict[ch_name], events, 4)
                     else:
                         raise Exception(f"Unknown channel name: {ch_name}")
                     if self.enable_tau_blocks and ch_name.startswith(("1l", "2l", "3l")):
@@ -2454,19 +2496,13 @@ class AnalysisProcessor(processor.ProcessorABC):
                     )
 
                 # Set up the list of syst wgt variations to loop over
-                wgt_var_lst = ["nominal"]
-                if self._do_systematics:
-                    if not isData:
-                        if (syst_var != "nominal"):
-                            # In this case, we are dealing with systs that change the kinematics of the objs (e.g. JES)
-                            # So we don't want to loop over up/down weight variations here
-                            wgt_var_lst = [syst_var]
-                        else:
-                            # Otherwise we want to loop over the up/down weight variations
-                            wgt_var_lst = wgt_var_lst + wgt_correction_syst_lst + data_syst_lst
-                    else:
-                        # This is data, so we want to loop over just up/down variations relevant for data (i.e. FF up and down)
-                        wgt_var_lst = wgt_var_lst + data_syst_lst
+                wgt_var_lst = select_histogram_weight_variations(
+                    self._do_systematics,
+                    isData,
+                    syst_var,
+                    wgt_correction_syst_lst,
+                    data_syst_lst,
+                )
 
                 # Loop over the systematics
 

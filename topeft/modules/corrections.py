@@ -1693,12 +1693,32 @@ def AttachMuonSF(muons, year, useRun3MVA=True):
     muons['sf_nom_3l_muon'] = new_sf * reco_loose_sf * iso_sf
     muons['sf_hi_3l_muon']  = new_up * reco_loose_up * iso_up
     muons['sf_lo_3l_muon']  = new_do * reco_loose_do * iso_do
+    muons['sf_nom_2l_muon_mva'] = new_sf
+    muons['sf_hi_2l_muon_mva'] = new_up
+    muons['sf_lo_2l_muon_mva'] = new_do
+    muons['sf_nom_3l_muon_mva'] = new_sf
+    muons['sf_hi_3l_muon_mva'] = new_up
+    muons['sf_lo_3l_muon_mva'] = new_do
+    muons['sf_nom_2l_muon_non_mva'] = reco_loose_sf * iso_sf
+    muons['sf_hi_2l_muon_non_mva'] = reco_loose_up * iso_up
+    muons['sf_lo_2l_muon_non_mva'] = reco_loose_do * iso_do
+    muons['sf_nom_3l_muon_non_mva'] = reco_loose_sf * iso_sf
+    muons['sf_hi_3l_muon_non_mva'] = reco_loose_up * iso_up
+    muons['sf_lo_3l_muon_non_mva'] = reco_loose_do * iso_do
     muons['sf_nom_2l_elec'] = ak.ones_like(new_sf)
     muons['sf_hi_2l_elec']  = ak.ones_like(new_sf)
     muons['sf_lo_2l_elec']  = ak.ones_like(new_sf)
     muons['sf_nom_3l_elec'] = ak.ones_like(new_sf)
     muons['sf_hi_3l_elec']  = ak.ones_like(new_sf)
     muons['sf_lo_3l_elec']  = ak.ones_like(new_sf)
+    for field in (
+        'sf_nom_2l_elec_mva', 'sf_hi_2l_elec_mva', 'sf_lo_2l_elec_mva',
+        'sf_nom_3l_elec_mva', 'sf_hi_3l_elec_mva', 'sf_lo_3l_elec_mva',
+        'sf_nom_2l_elec_non_mva', 'sf_hi_2l_elec_non_mva',
+        'sf_lo_2l_elec_non_mva', 'sf_nom_3l_elec_non_mva',
+        'sf_hi_3l_elec_non_mva', 'sf_lo_3l_elec_non_mva',
+    ):
+        muons[field] = ak.ones_like(new_sf)
 
 def AttachElectronSF(electrons, year, looseWP=None, useRun3MVA=True):
     '''
@@ -1936,12 +1956,32 @@ def AttachElectronSF(electrons, year, looseWP=None, useRun3MVA=True):
     electrons['sf_nom_3l_elec'] = reco_sf * new_sf_3l * loose_sf * iso_sf
     electrons['sf_hi_3l_elec']  = (reco_up) * new_up_3l * loose_up * iso_up
     electrons['sf_lo_3l_elec']  = (reco_do) * new_do_3l * loose_do * iso_do
+    electrons['sf_nom_2l_elec_mva'] = new_sf_2l
+    electrons['sf_hi_2l_elec_mva'] = new_up_2l
+    electrons['sf_lo_2l_elec_mva'] = new_do_2l
+    electrons['sf_nom_3l_elec_mva'] = new_sf_3l
+    electrons['sf_hi_3l_elec_mva'] = new_up_3l
+    electrons['sf_lo_3l_elec_mva'] = new_do_3l
+    electrons['sf_nom_2l_elec_non_mva'] = reco_sf * loose_sf * iso_sf
+    electrons['sf_hi_2l_elec_non_mva'] = reco_up * loose_up * iso_up
+    electrons['sf_lo_2l_elec_non_mva'] = reco_do * loose_do * iso_do
+    electrons['sf_nom_3l_elec_non_mva'] = reco_sf * loose_sf * iso_sf
+    electrons['sf_hi_3l_elec_non_mva'] = reco_up * loose_up * iso_up
+    electrons['sf_lo_3l_elec_non_mva'] = reco_do * loose_do * iso_do
     electrons['sf_nom_2l_muon'] = ak.ones_like(reco_sf)
     electrons['sf_hi_2l_muon']  = ak.ones_like(reco_sf)
     electrons['sf_lo_2l_muon']  = ak.ones_like(reco_sf)
     electrons['sf_nom_3l_muon'] = ak.ones_like(reco_sf)
     electrons['sf_hi_3l_muon']  = ak.ones_like(reco_sf)
     electrons['sf_lo_3l_muon']  = ak.ones_like(reco_sf)
+    for field in (
+        'sf_nom_2l_muon_mva', 'sf_hi_2l_muon_mva', 'sf_lo_2l_muon_mva',
+        'sf_nom_3l_muon_mva', 'sf_hi_3l_muon_mva', 'sf_lo_3l_muon_mva',
+        'sf_nom_2l_muon_non_mva', 'sf_hi_2l_muon_non_mva',
+        'sf_lo_2l_muon_non_mva', 'sf_nom_3l_muon_non_mva',
+        'sf_hi_3l_muon_non_mva', 'sf_lo_3l_muon_non_mva',
+    ):
+        electrons[field] = ak.ones_like(reco_sf)
 
 def AttachElectronCorrections(electrons, run, year, isData=False):
     """

@@ -174,6 +174,18 @@ def test_attach_electron_sf_run2_uses_numpy_and_preserves_structure(monkeypatch)
         "sf_nom_3l_elec",
         "sf_hi_3l_elec",
         "sf_lo_3l_elec",
+        "sf_nom_2l_elec_mva",
+        "sf_hi_2l_elec_mva",
+        "sf_lo_2l_elec_mva",
+        "sf_nom_3l_elec_mva",
+        "sf_hi_3l_elec_mva",
+        "sf_lo_3l_elec_mva",
+        "sf_nom_2l_elec_non_mva",
+        "sf_hi_2l_elec_non_mva",
+        "sf_lo_2l_elec_non_mva",
+        "sf_nom_3l_elec_non_mva",
+        "sf_hi_3l_elec_non_mva",
+        "sf_lo_3l_elec_non_mva",
     ):
         assert ak.to_list(ak.num(electrons[field])) == original_counts
         assert np.all(np.isfinite(ak.to_numpy(ak.flatten(electrons[field]))))
@@ -280,6 +292,34 @@ def test_run2_electron_3l_sf_uses_same_components_for_nominal_and_variations(
         ak.to_numpy(ak.flatten(electrons.sf_lo_2l_elec)),
         [1.09 * 1.27 * 1.18 * 1.45],
     )
+    expected_components = {
+        "sf_nom_2l_elec_mva": 1.30,
+        "sf_hi_2l_elec_mva": 1.33,
+        "sf_lo_2l_elec_mva": 1.27,
+        "sf_nom_3l_elec_mva": 1.40,
+        "sf_hi_3l_elec_mva": 1.44,
+        "sf_lo_3l_elec_mva": 1.36,
+        "sf_nom_2l_elec_non_mva": 1.10 * 1.20 * 1.50,
+        "sf_hi_2l_elec_non_mva": 1.11 * 1.22 * 1.55,
+        "sf_lo_2l_elec_non_mva": 1.09 * 1.18 * 1.45,
+        "sf_nom_3l_elec_non_mva": 1.10 * 1.20 * 1.50,
+        "sf_hi_3l_elec_non_mva": 1.11 * 1.22 * 1.55,
+        "sf_lo_3l_elec_non_mva": 1.09 * 1.18 * 1.45,
+    }
+    for field, expected in expected_components.items():
+        np.testing.assert_allclose(
+            ak.to_numpy(ak.flatten(electrons[field])), [expected]
+        )
+    np.testing.assert_allclose(
+        ak.to_numpy(ak.flatten(electrons.sf_nom_2l_elec)),
+        ak.to_numpy(ak.flatten(electrons.sf_nom_2l_elec_mva))
+        * ak.to_numpy(ak.flatten(electrons.sf_nom_2l_elec_non_mva)),
+    )
+    np.testing.assert_allclose(
+        ak.to_numpy(ak.flatten(electrons.sf_nom_3l_elec)),
+        ak.to_numpy(ak.flatten(electrons.sf_nom_3l_elec_mva))
+        * ak.to_numpy(ak.flatten(electrons.sf_nom_3l_elec_non_mva)),
+    )
 
 
 def test_run2_muon_3l_sf_uses_same_components_for_nominal_and_variations(
@@ -330,6 +370,34 @@ def test_run2_muon_3l_sf_uses_same_components_for_nominal_and_variations(
     np.testing.assert_allclose(
         ak.to_numpy(ak.flatten(muons.sf_lo_2l_muon)),
         [1.27 * 1.09 * 1.35 * 1.18],
+    )
+    expected_components = {
+        "sf_nom_2l_muon_mva": 1.30,
+        "sf_hi_2l_muon_mva": 1.33,
+        "sf_lo_2l_muon_mva": 1.27,
+        "sf_nom_3l_muon_mva": 1.30,
+        "sf_hi_3l_muon_mva": 1.33,
+        "sf_lo_3l_muon_mva": 1.27,
+        "sf_nom_2l_muon_non_mva": 1.10 * 1.40 * 1.20,
+        "sf_hi_2l_muon_non_mva": 1.11 * 1.45 * 1.22,
+        "sf_lo_2l_muon_non_mva": 1.09 * 1.35 * 1.18,
+        "sf_nom_3l_muon_non_mva": 1.10 * 1.40 * 1.20,
+        "sf_hi_3l_muon_non_mva": 1.11 * 1.45 * 1.22,
+        "sf_lo_3l_muon_non_mva": 1.09 * 1.35 * 1.18,
+    }
+    for field, expected in expected_components.items():
+        np.testing.assert_allclose(
+            ak.to_numpy(ak.flatten(muons[field])), [expected]
+        )
+    np.testing.assert_allclose(
+        ak.to_numpy(ak.flatten(muons.sf_nom_2l_muon)),
+        ak.to_numpy(ak.flatten(muons.sf_nom_2l_muon_mva))
+        * ak.to_numpy(ak.flatten(muons.sf_nom_2l_muon_non_mva)),
+    )
+    np.testing.assert_allclose(
+        ak.to_numpy(ak.flatten(muons.sf_nom_3l_muon)),
+        ak.to_numpy(ak.flatten(muons.sf_nom_3l_muon_mva))
+        * ak.to_numpy(ak.flatten(muons.sf_nom_3l_muon_non_mva)),
     )
 
 
@@ -386,6 +454,107 @@ def test_run3_sf_paths_keep_iso_at_unity(monkeypatch):
         np.testing.assert_allclose(ak.to_numpy(ak.flatten(muons[field])), [1.0])
 
 
+def test_run3_mva_and_non_mva_components_remain_independently_available(
+    monkeypatch,
+):
+    correction_sets = {
+        "electron.json.gz": {
+            "Electron-ID-SF": _ConstantCorrection(
+                {"sf": 1.10, "sfup": 1.11, "sfdown": 1.09}
+            )
+        },
+        "muon_Z.json.gz": {
+            "NUM_LooseID_DEN_TrackerMuons": _ConstantCorrection(
+                {"nominal": 1.40, "syst": 0.04, "stat": 0.03}
+            )
+        },
+        "leptonSF_2022.json.gz": {
+            "el_allflavor": _ConstantCorrection(
+                {"": 1.30, "_elup": 1.33, "_eldn": 1.27}
+            ),
+            "mu_allflavor": _ConstantCorrection(
+                {"": 1.50, "_muup": 1.55, "_mudn": 1.45}
+            ),
+        },
+    }
+
+    class ConstantCorrectionSet:
+        @staticmethod
+        def from_file(path):
+            return next(
+                correction_set
+                for suffix, correction_set in correction_sets.items()
+                if str(path).endswith(suffix)
+            )
+
+    monkeypatch.setattr(
+        corrections.correctionlib, "CorrectionSet", ConstantCorrectionSet
+    )
+    electrons = ak.Array(
+        [
+            [
+                {
+                    "pt": 25.0,
+                    "eta": 0.2,
+                    "phi": 0.1,
+                    "pdgId": 11,
+                    "mvaTTHrun3": 0.9,
+                }
+            ]
+        ]
+    )
+    muons = ak.Array(
+        [[{"pt": 25.0, "eta": 0.2, "pdgId": 13, "mvaTTHrun3": 0.9}]]
+    )
+
+    corrections.AttachElectronSF(
+        electrons, "2022", looseWP="none", useRun3MVA=True
+    )
+    corrections.AttachMuonSF(muons, "2022", useRun3MVA=True)
+
+    for category in ("2l", "3l"):
+        electron_expected = {
+            f"sf_nom_{category}_elec_mva": 1.30,
+            f"sf_hi_{category}_elec_mva": 1.33,
+            f"sf_lo_{category}_elec_mva": 1.27,
+            f"sf_nom_{category}_elec_non_mva": 1.10,
+            f"sf_hi_{category}_elec_non_mva": 1.11,
+            f"sf_lo_{category}_elec_non_mva": 1.09,
+        }
+        for field, expected in electron_expected.items():
+            np.testing.assert_allclose(
+                ak.to_numpy(ak.flatten(electrons[field])), [expected]
+            )
+        muon_expected = {
+            f"sf_nom_{category}_muon_mva": 1.50,
+            f"sf_hi_{category}_muon_mva": 1.55,
+            f"sf_lo_{category}_muon_mva": 1.45,
+            f"sf_nom_{category}_muon_non_mva": 1.0,
+            f"sf_hi_{category}_muon_non_mva": 1.0,
+            f"sf_lo_{category}_muon_non_mva": 1.0,
+        }
+        for field, expected in muon_expected.items():
+            np.testing.assert_allclose(
+                ak.to_numpy(ak.flatten(muons[field])), [expected]
+            )
+        np.testing.assert_allclose(
+            ak.to_numpy(ak.flatten(electrons[f"sf_nom_{category}_elec"])),
+            ak.to_numpy(
+                ak.flatten(electrons[f"sf_nom_{category}_elec_mva"])
+            )
+            * ak.to_numpy(
+                ak.flatten(electrons[f"sf_nom_{category}_elec_non_mva"])
+            ),
+        )
+        np.testing.assert_allclose(
+            ak.to_numpy(ak.flatten(muons[f"sf_nom_{category}_muon"])),
+            ak.to_numpy(ak.flatten(muons[f"sf_nom_{category}_muon_mva"]))
+            * ak.to_numpy(
+                ak.flatten(muons[f"sf_nom_{category}_muon_non_mva"])
+            ),
+        )
+
+
 def test_four_lepton_weights_reuse_three_lepton_per_lepton_fields():
     leptons = []
     for index, pdg_id in enumerate((11, -11, 13, -13)):
@@ -402,6 +571,18 @@ def test_four_lepton_weights_reuse_three_lepton_per_lepton_fields():
                 "sf_nom_3l_muon": (1.0, 1.0, 1.30, 1.40)[index],
                 "sf_hi_3l_muon": (1.0, 1.0, 1.31, 1.41)[index],
                 "sf_lo_3l_muon": (1.0, 1.0, 1.29, 1.39)[index],
+                "sf_nom_3l_elec_mva": (1.10, 1.20, 1.0, 1.0)[index],
+                "sf_hi_3l_elec_mva": (1.11, 1.21, 1.0, 1.0)[index],
+                "sf_lo_3l_elec_mva": (1.09, 1.19, 1.0, 1.0)[index],
+                "sf_nom_3l_elec_non_mva": 1.0,
+                "sf_hi_3l_elec_non_mva": 1.0,
+                "sf_lo_3l_elec_non_mva": 1.0,
+                "sf_nom_3l_muon_mva": (1.0, 1.0, 1.30, 1.40)[index],
+                "sf_hi_3l_muon_mva": (1.0, 1.0, 1.31, 1.41)[index],
+                "sf_lo_3l_muon_mva": (1.0, 1.0, 1.29, 1.39)[index],
+                "sf_nom_3l_muon_non_mva": 1.0,
+                "sf_hi_3l_muon_non_mva": 1.0,
+                "sf_lo_3l_muon_non_mva": 1.0,
             }
         )
     events = ak.Array(
@@ -432,9 +613,31 @@ def test_four_lepton_weights_reuse_three_lepton_per_lepton_fields():
         "sf_4l_muon": 1.30 * 1.40,
         "sf_4l_hi_muon": 1.31 * 1.41,
         "sf_4l_lo_muon": 1.29 * 1.39,
+        "sf_4l_elec_mva": 1.10 * 1.20,
+        "sf_4l_hi_elec_mva": 1.11 * 1.21,
+        "sf_4l_lo_elec_mva": 1.09 * 1.19,
+        "sf_4l_elec_non_mva": 1.0,
+        "sf_4l_hi_elec_non_mva": 1.0,
+        "sf_4l_lo_elec_non_mva": 1.0,
+        "sf_4l_muon_mva": 1.30 * 1.40,
+        "sf_4l_hi_muon_mva": 1.31 * 1.41,
+        "sf_4l_lo_muon_mva": 1.29 * 1.39,
+        "sf_4l_muon_non_mva": 1.0,
+        "sf_4l_hi_muon_non_mva": 1.0,
+        "sf_4l_lo_muon_non_mva": 1.0,
     }
     for field, value in expected.items():
         np.testing.assert_allclose(ak.to_numpy(events[field]), [value])
+    np.testing.assert_allclose(
+        ak.to_numpy(events.sf_4l_elec),
+        ak.to_numpy(events.sf_4l_elec_mva)
+        * ak.to_numpy(events.sf_4l_elec_non_mva),
+    )
+    np.testing.assert_allclose(
+        ak.to_numpy(events.sf_4l_muon),
+        ak.to_numpy(events.sf_4l_muon_mva)
+        * ak.to_numpy(events.sf_4l_muon_non_mva),
+    )
 
 
 def test_run3_electron_sf_and_energy_corrections_use_numpy(monkeypatch):
