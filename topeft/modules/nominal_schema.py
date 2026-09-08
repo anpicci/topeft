@@ -668,23 +668,11 @@ def evaluate_eft_histogram_at_wc(
         *list(eft_histogram.categorical_axes),
         eft_histogram.dense_axis,
         storage="Double",
-        track_raw_counts=eft_histogram.track_raw_counts,
-    )
-    raw_states = (
-        eft_histogram._validated_raw_count_states()
-        if eft_histogram.track_raw_counts
-        else None
     )
     for categories, values in eft_histogram.eval(wc_values).items():
-        output_index = output._fill_bookkeep(*categories)
-        output._dense_hists[output_index].view(flow=True)[...] = np.asarray(values)
-        if output.track_raw_counts:
-            source_index = eft_histogram.categories_to_index(categories)
-            output._merge_raw_count_state(
-                output_index,
-                raw_states[source_index],
-                context="EFT-to-scalar projection",
-            )
+        output[tuple(categories)] = np.asarray(values)
+    if eft_histogram.track_raw_counts:
+        output.copy_raw_counts_from(eft_histogram)
     return output
 
 
@@ -697,20 +685,7 @@ def mark_sparse_histogram_raw_counts_unrecorded(
         raise TypeError("Raw-count reclassification requires an exact SparseHist object.")
     if not histogram.track_raw_counts:
         return histogram
-
-    output = histogram.empty_from_axes()
-    for source_index, source_dense in histogram._dense_hists.items():
-        categories = histogram.index_to_categories(source_index)
-        output_index = output._fill_bookkeep(*categories)
-        output._dense_hists[output_index].view(flow=True)[...] = source_dense.view(
-            flow=True
-        )
-        output._merge_raw_count_state(
-            output_index,
-            None,
-            context="Generated data-driven raw-count classification",
-        )
-    return output
+    return histogram.with_raw_counts_unrecorded()
 
 
 def _constant_histeft_from_sparse(

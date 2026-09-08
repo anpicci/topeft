@@ -612,14 +612,14 @@ def test_tracked_private_eft_nonprompt_preserves_physics_and_raw_semantics():
 
     scalar = tracked[scalar_nominal_key("njets")]
     assert scalar.track_raw_counts is True
-    scalar_states = scalar._validated_raw_count_states()
-    generated_indices = [
-        index
-        for index in scalar_states
-        if str(scalar.index_to_categories(index).process).startswith("nonprompt")
+    generated_keys = [
+        categories
+        for categories in scalar.categorical_keys
+        if str(categories.process).startswith("nonprompt")
     ]
-    assert generated_indices
-    assert all(scalar_states[index] is None for index in generated_indices)
+    recorded_keys = set(scalar.raw_counts(flow=True))
+    assert generated_keys
+    assert all(categories not in recorded_keys for categories in generated_keys)
 
     retained_eft = tracked[eft_nominal_key("njets")]
     assert retained_eft.track_raw_counts is True

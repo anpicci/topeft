@@ -98,16 +98,15 @@ def test_generated_processes_are_unrecorded_while_retained_mc_stays_tracked(
     output = DataDrivenProducer({"met": histogram}, "").getDataDrivenHistogram()[
         "met"
     ]
-    states = output._validated_raw_count_states()
-    by_process = {
-        str(output.index_to_categories(index).process): state
-        for index, state in states.items()
+    raw_counts = output.raw_counts(flow=True)
+    recorded_by_process = {
+        str(categories.process): state for categories, state in raw_counts.items()
     }
 
-    assert by_process["nonpromptUL16"] is None
-    assert by_process["flips2023BPix"] is None
+    assert "nonpromptUL16" not in recorded_by_process
+    assert "flips2023BPix" not in recorded_by_process
     np.testing.assert_array_equal(
-        by_process["TTTo2L2Nu_centralUL16"],
+        recorded_by_process["TTTo2L2Nu_centralUL16"],
         np.asarray([0, 1, 0], dtype=np.uint64),
     )
 
