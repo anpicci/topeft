@@ -15,6 +15,7 @@ from topeft.modules.nominal_schema import (
     NOMINAL_CONTAINER_SCHEMA_VERSION,
     canonicalize_nominal_keys,
     eft_nominal_key,
+    evaluate_eft_histogram_at_wc,
     evaluate_nominal_at_wc,
     get_eft_nominal,
     get_nominal_components,
@@ -101,6 +102,45 @@ def test_scalar_eft_and_mixed_family_access_and_wc_evaluation():
     assert get_eft_nominal(mapping, "njets") is eft
     assert _total(evaluate_nominal_at_wc(mapping, "njets", {})) == pytest.approx(7.0)
     assert _total(evaluate_nominal_at_wc(mapping, "njets", {"ctG": 1.0})) == pytest.approx(17.0)
+
+
+def test_eft_projection_preserves_raw_source_event_counts_at_sm_point():
+    eft = HistEFT(
+        *_categorical_axes(),
+        hist.axis.Regular(2, 0.0, 2.0, name="njets"),
+        wc_names=["ctG"],
+        label="Events",
+        track_raw_counts=True,
+    )
+    eft.fill(
+        process="signal",
+        channel="3l_onZ_1b",
+        systematic="nominal",
+        appl="isAR_3l",
+        njets=np.asarray([0.5, 1.5]),
+        weight=np.asarray([-2.0, 0.5]),
+        eft_coeff=np.asarray([[1.5, 2.0, 3.0], [4.0, 5.0, 6.0]]),
+        record_raw_count=True,
+    )
+
+    projected = evaluate_eft_histogram_at_wc(eft, {})
+
+    assert type(projected) is SparseHist
+    assert projected.categorical_axes.name == eft.categorical_axes.name
+    assert projected.dense_axes.name == ("njets",)
+    assert projected.track_raw_counts is True
+    np.testing.assert_array_equal(
+        next(iter(projected.raw_counts(flow=True).values())),
+        next(iter(eft.raw_counts(flow=True).values())),
+    )
+    np.testing.assert_array_equal(
+        next(iter(projected.raw_counts(flow=True).values())),
+        np.asarray([0, 1, 1, 0], dtype=np.uint64),
+    )
+    np.testing.assert_allclose(
+        next(iter(projected.view(flow=True, as_dict=True).values())),
+        np.asarray([0.0, -3.0, 2.0, 0.0]),
+    )
 
 
 @pytest.mark.parametrize("present", ["scalar", "eft"])

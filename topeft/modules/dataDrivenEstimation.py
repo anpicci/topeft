@@ -37,6 +37,7 @@ from topeft.modules.nominal_schema import (
     SCALAR_NOMINAL_SUFFIX,
     SUMW2_SUFFIX,
     evaluate_eft_histogram_at_wc,
+    mark_sparse_histogram_raw_counts_unrecorded,
 )
 
 
@@ -1001,7 +1002,9 @@ class DataDrivenProducer:
                         if self.dataName == sampleName:
                             newNameDictData[flips_name].append(process_name)
                 generated_flips_processes.update(newNameDictData)
-                hFlips = hAR.group("process", newNameDictData)
+                hFlips = mark_sparse_histogram_raw_counts_unrecorded(
+                    hAR.group("process", newNameDictData)
+                )
                 hFlipsRaw = hFlips
 
                 # remove any up/down FF variations from the flip histo since we don't use that info
@@ -1106,9 +1109,13 @@ class DataDrivenProducer:
                     )
                 generated_nonprompt_processes.update(newNameDictData)
                 generated_nonprompt_processes.update(newNameDictNoData)
-                hFakes = hAR.group("process", newNameDictData)
+                hFakes = mark_sparse_histogram_raw_counts_unrecorded(
+                    hAR.group("process", newNameDictData)
+                )
                 # now we take all the stuff that is not data in the AR to make the prompt subtraction and assign them to nonprompt.
-                hPromptSub = hAR.group("process", newNameDictNoData)
+                hPromptSub = mark_sparse_histogram_raw_counts_unrecorded(
+                    hAR.group("process", newNameDictNoData)
+                )
                 prompt_source_hist = hAR
                 projection = self._eft_prompt_projections.get(family)
                 if projection is not None and not key.endswith("_sumw2"):
@@ -1138,8 +1145,8 @@ class DataDrivenProducer:
                             else None
                         ),
                     )
-                    projected_prompt = projected_ar.group(
-                        "process", projection_groups
+                    projected_prompt = mark_sparse_histogram_raw_counts_unrecorded(
+                        projected_ar.group("process", projection_groups)
                     )
                     try:
                         hPromptSub += projected_prompt

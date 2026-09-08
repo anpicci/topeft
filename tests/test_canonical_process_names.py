@@ -72,6 +72,46 @@ def test_data_driven_producer_canonicalizes_data_driven_outputs(sparse_hist_axes
     np.testing.assert_allclose(flips_yields, np.array([7.0]))
 
 
+def test_generated_processes_are_unrecorded_while_retained_mc_stays_tracked(
+    sparse_hist_axes,
+):
+    histogram = SparseHist(
+        *sparse_hist_axes,
+        storage="Double",
+        track_raw_counts=True,
+    )
+    for process, appl, weight, record_raw_count in (
+        ("data2023BPix", "isAR_2lSS_OS", 7.0, False),
+        ("dataUL16", "isAR_3l", 11.0, False),
+        ("TTTo2L2Nu_centralUL16", "isAR_3l", 3.0, True),
+        ("TTTo2L2Nu_centralUL16", "isSR_3l", 1.5, True),
+    ):
+        histogram.fill(
+            process=process,
+            appl=appl,
+            systematic="nominal",
+            pt=np.asarray([0.5]),
+            weight=np.asarray([weight]),
+            record_raw_count=record_raw_count,
+        )
+
+    output = DataDrivenProducer({"met": histogram}, "").getDataDrivenHistogram()[
+        "met"
+    ]
+    states = output._validated_raw_count_states()
+    by_process = {
+        str(output.index_to_categories(index).process): state
+        for index, state in states.items()
+    }
+
+    assert by_process["nonpromptUL16"] is None
+    assert by_process["flips2023BPix"] is None
+    np.testing.assert_array_equal(
+        by_process["TTTo2L2Nu_centralUL16"],
+        np.asarray([0, 1, 0], dtype=np.uint64),
+    )
+
+
 @pytest.mark.parametrize(
     "process_name,expected",
     [
