@@ -541,6 +541,8 @@ production_sumw2_options_path=""
 production_sumw2_temporary_options=""
 production_state_path=""
 production_git_commit=""
+production_postprocessor_topeft_git_commit=""
+production_postprocessor_topcoffea_git_commit=""
 
 run_cr=false
 run_sr=true
@@ -1025,6 +1027,7 @@ production_state_tool() {
 import datetime
 import json
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -1128,7 +1131,7 @@ def desired_state(arguments):
     }
 
 
-def validate_state(state, desired):
+def validate_state(state, desired, allow_historical_source_commit=False):
     for key in (
         "schema_version",
         "production_profile",
@@ -1146,6 +1149,13 @@ def validate_state(state, desired):
         "region",
         "nonprompt_mode",
     ):
+        if key == "topeft_git_commit" and allow_historical_source_commit:
+            recorded_source_commit = state.get(key)
+            if not isinstance(recorded_source_commit, str) or re.fullmatch(
+                r"[0-9a-f]{40}", recorded_source_commit
+            ) is None:
+                fail("campaign state does not contain a valid historical topeft source commit")
+            continue
         if state.get(key) != desired[key]:
             fail(f"campaign state mismatch for {key}: recorded={state.get(key)!r} requested={desired[key]!r}")
     recorded_blocks = state.get("blocks")
@@ -1182,6 +1192,7 @@ state_path = Path(sys.argv[2])
 if mode in {"initialize", "validate"}:
     desired = desired_state(sys.argv[3:19])
     readonly = len(sys.argv) > 19 and sys.argv[19] == "true"
+    allow_historical_source_commit = len(sys.argv) > 20 and sys.argv[20] == "true"
     if mode == "initialize":
         if state_path.exists():
             fail(f"refusing to overwrite existing {desired['production_profile']} campaign state: {state_path}")
@@ -1226,7 +1237,11 @@ if mode in {"initialize", "validate"}:
         atomic_write(state_path, state)
     else:
         state = load(state_path)
-        validate_state(state, desired)
+        validate_state(
+            state,
+            desired,
+            allow_historical_source_commit=allow_historical_source_commit,
+        )
         for block in state["blocks"]:
             if block["source_status"] == "running":
                 fail(f"block {block['id']} has an ambiguous interrupted source stage; state was not rewritten")
@@ -1253,6 +1268,26 @@ if mode == "env_file":
     print(env_file)
     raise SystemExit(0)
 
+if mode == "historical_source_commit":
+    expected_profile, expected_tag, expected_output_dir = sys.argv[3:6]
+    for key, expected in (
+        ("production_profile", expected_profile),
+        ("campaign_tag", expected_tag),
+        ("output_dir", expected_output_dir),
+    ):
+        if state.get(key) != expected:
+            fail(
+                f"campaign state mismatch for {key}: "
+                f"recorded={state.get(key)!r} requested={expected!r}"
+            )
+    source_commit = state.get("topeft_git_commit")
+    if not isinstance(source_commit, str) or re.fullmatch(
+        r"[0-9a-f]{40}", source_commit
+    ) is None:
+        fail("campaign state does not contain a valid historical topeft source commit")
+    print(source_commit)
+    raise SystemExit(0)
+
 if mode == "status":
     block_id = sys.argv[3]
     for block in state.get("blocks", []):
@@ -1272,12 +1307,38 @@ if mode == "status":
 if mode == "mark":
     block_id, stage, stage_status, exit_code, detail = sys.argv[3:8]
     extra = sys.argv[8:]
+    postprocessor_provenance = None
     if stage == "source" and stage_status not in VALID_SOURCE_STATUSES:
         fail(f"invalid requested source status {stage_status!r}")
     if stage == "nonprompt" and stage_status not in VALID_NONPROMPT_STATUSES:
         fail(f"invalid requested nonprompt status {stage_status!r}")
     if stage not in {"source", "nonprompt"}:
         fail(f"invalid requested stage {stage!r}")
+    if (
+        stage == "nonprompt"
+        and stage_status == "running"
+        and extra[:1] == ["--postprocessor-provenance"]
+    ):
+        if len(extra) < 5 or extra[3] != "--":
+            fail("invalid postprocessor provenance arguments")
+        postprocessor_topeft_commit, postprocessor_topcoffea_commit = extra[1:3]
+        for label, value in (
+            ("topeft", postprocessor_topeft_commit),
+            ("topcoffea", postprocessor_topcoffea_commit),
+        ):
+            if re.fullmatch(r"[0-9a-f]{40}", value) is None:
+                fail(f"invalid {label} postprocessor commit")
+        postprocessor_provenance = {
+            "topeft_git_commit": postprocessor_topeft_commit,
+            "topcoffea_git_commit": postprocessor_topcoffea_commit,
+        }
+        extra = extra[4:]
+    elif (
+        stage == "nonprompt"
+        and stage_status == "running"
+        and state.get("production_profile") == "t0_sr_statonly"
+    ):
+        fail("t0_sr_statonly nonprompt recovery requires postprocessor provenance")
     for block in state.get("blocks", []):
         if block.get("id") == block_id:
             parsed_exit_code = None if exit_code == "none" else int(exit_code)
@@ -1334,17 +1395,22 @@ if mode == "mark":
             block["expected_output_readback"] = output_readback
             block["last_transition_utc"] = timestamp
             block["last_transition_detail"] = detail
-            block.setdefault("transitions", []).append(
-                {
-                    "timestamp_utc": block["last_transition_utc"],
-                    "stage": stage,
-                    "status": stage_status,
-                    "exit_code": parsed_exit_code,
-                    "signal": block[f"{stage}_signal"],
-                    "duration_seconds": block.get(f"{stage}_duration_seconds"),
-                    "detail": detail,
-                }
-            )
+            if postprocessor_provenance is not None:
+                block["nonprompt_postprocessor_provenance"] = postprocessor_provenance
+            transition = {
+                "timestamp_utc": block["last_transition_utc"],
+                "stage": stage,
+                "status": stage_status,
+                "exit_code": parsed_exit_code,
+                "signal": block[f"{stage}_signal"],
+                "duration_seconds": block.get(f"{stage}_duration_seconds"),
+                "detail": detail,
+            }
+            if stage == "nonprompt" and block.get("nonprompt_postprocessor_provenance"):
+                transition["postprocessor_provenance"] = block[
+                    "nonprompt_postprocessor_provenance"
+                ]
+            block.setdefault("transitions", []).append(transition)
             state["updated_at_utc"] = now_utc()
             atomic_write(state_path, state)
             raise SystemExit(0)
@@ -1671,12 +1737,45 @@ production_assert_live_plan() {
   fi
 }
 
+resolve_t0_postprocessor_provenance() {
+  local topcoffea_repository_root="${repository_root}/../topcoffea"
+  local topeft_postprocessor_status
+  local topcoffea_postprocessor_status
+
+  [[ "${production_profile}" == "t0_sr_statonly" ]] || return 0
+
+  if [[ ! -d "${topcoffea_repository_root}/.git" ]]; then
+    echo "ERROR: t0_sr_statonly postprocessor provenance requires the sibling topcoffea repository." >&2
+    exit 1
+  fi
+  production_postprocessor_topeft_git_commit=$(git -C "${repository_root}" rev-parse HEAD)
+  production_postprocessor_topcoffea_git_commit=$(git -C "${topcoffea_repository_root}" rev-parse HEAD)
+
+  topeft_postprocessor_status=$(git -C "${repository_root}" status --porcelain --untracked-files=all -- \
+    analysis/topeft_run2/run_data_driven.py \
+    topeft/modules/dataDrivenEstimation.py \
+    topeft/modules/data_driven_products.py \
+    topeft/modules/histogram_artifact.py \
+    topeft/modules/nominal_schema.py \
+    topeft/modules/sumw2_policy.py)
+  topcoffea_postprocessor_status=$(git -C "${topcoffea_repository_root}" status --porcelain --untracked-files=all -- \
+    topcoffea/modules/sparseHist.py \
+    topcoffea/modules/utils.py)
+  if [[ -n "${topeft_postprocessor_status}" || -n "${topcoffea_postprocessor_status}" ]]; then
+    echo "ERROR: t0_sr_statonly postprocessor source surfaces are dirty; commit provenance would be ambiguous." >&2
+    exit 1
+  fi
+}
+
 prepare_production_campaign() {
   local plan_directory
   local schema_version=4
+  local allow_historical_source_commit=false
+  local historical_source_commit=""
 
   production_assert_live_plan
   production_git_commit=$(git -C "${repository_root}" rev-parse HEAD)
+  resolve_t0_postprocessor_provenance
   production_state_path="${output_dir}/${production_state_filename}"
   if [[ "${dry_run}" == "true" ]]; then
     production_plan_file=$(mktemp "/tmp/${production_profile}_plan.XXXXXX")
@@ -1693,6 +1792,15 @@ prepare_production_campaign() {
     if [[ ! -f "${production_state_path}" ]]; then
       echo "ERROR: ${production_profile} --resume requires campaign state: ${production_state_path}" >&2
       exit 1
+    fi
+    if [[ "${production_profile}" == "t0_sr_statonly" ]]; then
+      allow_historical_source_commit=true
+      historical_source_commit=$(production_state_tool historical_source_commit \
+        "${production_state_path}" "${production_profile}" "${campaign_tag}" "${output_dir}")
+      if ! git -C "${repository_root}" cat-file -e "${historical_source_commit}^{commit}"; then
+        echo "ERROR: t0_sr_statonly historical source commit is not reachable in the local topeft repository." >&2
+        exit 1
+      fi
     fi
     production_state_tool validate \
       "${production_state_path}" \
@@ -1712,7 +1820,8 @@ prepare_production_campaign() {
       "${do_np}" \
       "${production_region}" \
       "${production_np_mode}" \
-      "${dry_run}"
+      "${dry_run}" \
+      "${allow_historical_source_commit}"
   elif [[ "${dry_run}" == "false" ]]; then
     production_state_tool initialize \
       "${production_state_path}" \
@@ -2319,6 +2428,8 @@ run_sr_block() {
   local pkl_tag
   local source_path
   local nonprompt_path
+  local source_sidecar_path
+  local nonprompt_sidecar_path
   local plan_output_tag
   local start_epoch
   local end_epoch
@@ -2330,6 +2441,7 @@ run_sr_block() {
   local source_status=""
   local nonprompt_status=""
   local source_reusable=false
+  local nonprompt_mark_args=()
 
   read -r -a years <<< "${year_expr}"
   read -r -a vars <<< "${var_set}"
@@ -2347,6 +2459,8 @@ run_sr_block() {
     echo "ERROR: unable to resolve expected output paths for ${production_block}." >&2
     exit 1
   fi
+  source_sidecar_path="${source_path}.metadata.json"
+  nonprompt_sidecar_path="${nonprompt_path}.metadata.json"
 
   if [[ "${dry_run}" == "true" && "${profile_resume}" == "false" ]]; then
     production_status="planned"
@@ -2359,7 +2473,9 @@ run_sr_block() {
   fi
 
   if [[ "${production_status}" == "success" ]]; then
-    if [[ -s "${source_path}" && -s "${nonprompt_path}" ]]; then
+    if [[ -s "${source_path}" && -s "${nonprompt_path}" ]] \
+      && { [[ "${production_profile}" != "t0_sr_statonly" ]] \
+        || { [[ -s "${source_sidecar_path}" ]] && [[ -s "${nonprompt_sidecar_path}" ]]; }; }; then
       echo "----------------------------------------"
       echo "Skipping validated ${production_profile} block: ${production_block}"
       echo "Campaign state, source artifact, and separate nonprompt artifact are complete."
@@ -2369,7 +2485,8 @@ run_sr_block() {
         "${pkl_tag}" "0" "0"
       return 0
     fi
-    if [[ ! -s "${source_path}" ]]; then
+    if [[ ! -s "${source_path}" ]] \
+      || { [[ "${production_profile}" == "t0_sr_statonly" ]] && [[ ! -s "${source_sidecar_path}" ]]; }; then
       production_state_tool mark \
         "${production_state_path}" "${production_block}" \
         "source" "failed" "none" "success_state_missing_expected_source"
@@ -2384,7 +2501,8 @@ run_sr_block() {
 
   case "${source_status}" in
     ready)
-      if [[ ! -s "${source_path}" ]]; then
+      if [[ ! -s "${source_path}" ]] \
+        || { [[ "${production_profile}" == "t0_sr_statonly" ]] && [[ ! -s "${source_sidecar_path}" ]]; }; then
         production_state_tool mark \
           "${production_state_path}" "${production_block}" \
           "source" "failed" "none" "source_ready_state_missing_expected_source"
@@ -2394,7 +2512,9 @@ run_sr_block() {
       source_reusable=true
       ;;
     planned|failed)
-      if [[ -e "${source_path}" || -e "${nonprompt_path}" ]]; then
+      if [[ -e "${source_path}" || -e "${nonprompt_path}" ]] \
+        || { [[ "${production_profile}" == "t0_sr_statonly" ]] \
+          && { [[ -e "${source_sidecar_path}" ]] || [[ -e "${nonprompt_sidecar_path}" ]]; }; }; then
         echo "ERROR: ${production_profile} block ${production_block} is ${production_status}, but an expected output path already exists. Refusing ambiguous overwrite." >&2
         exit 1
       fi
@@ -2409,7 +2529,8 @@ run_sr_block() {
       ;;
   esac
 
-  if [[ -e "${nonprompt_path}" ]]; then
+  if [[ -e "${nonprompt_path}" ]] \
+    || { [[ "${production_profile}" == "t0_sr_statonly" ]] && [[ -e "${nonprompt_sidecar_path}" ]]; }; then
     echo "ERROR: ${production_block} is not successful, but its expected _np path already exists. Refusing ambiguous overwrite." >&2
     exit 1
   fi
@@ -2514,7 +2635,10 @@ run_sr_block() {
       return 0
     fi
     if [[ ! -s "${source_path}" ]] \
+      || { [[ "${production_profile}" == "t0_sr_statonly" ]] && [[ ! -s "${source_sidecar_path}" ]]; } \
       || { [[ "${production_np_mode}" == "separate" ]] && [[ -e "${nonprompt_path}" ]]; } \
+      || { [[ "${production_profile}" == "t0_sr_statonly" ]] \
+        && [[ "${production_np_mode}" == "separate" ]] && [[ -e "${nonprompt_sidecar_path}" ]]; } \
       || { [[ "${production_np_mode}" == "inline" ]] && [[ ! -s "${nonprompt_path}" ]]; }; then
       production_state_tool mark \
         "${production_state_path}" "${production_block}" \
@@ -2546,9 +2670,18 @@ run_sr_block() {
     return 0
   fi
 
+  if [[ "${production_profile}" == "t0_sr_statonly" ]]; then
+    nonprompt_mark_args=(
+      --postprocessor-provenance
+      "${production_postprocessor_topeft_git_commit}"
+      "${production_postprocessor_topcoffea_git_commit}"
+      --
+    )
+  fi
+  nonprompt_mark_args+=("${nonprompt_cmd[@]}")
   production_state_tool mark \
     "${production_state_path}" "${production_block}" \
-    "nonprompt" "running" "none" "separate_nonprompt_child_started_after_source_exit" "${nonprompt_cmd[@]}"
+    "nonprompt" "running" "none" "separate_nonprompt_child_started_after_source_exit" "${nonprompt_mark_args[@]}"
   print_command "${nonprompt_cmd[@]}"
   if run_production_nonprompt_child \
     "${production_block}" "${source_path}" "${nonprompt_path}" "${nonprompt_cmd[@]}"; then
@@ -2560,7 +2693,8 @@ run_sr_block() {
   end_epoch=$(date +%s)
   duration_seconds=$((end_epoch - start_epoch))
 
-  if (( nonprompt_exit_code == 0 )) && [[ -s "${nonprompt_path}" ]]; then
+  if (( nonprompt_exit_code == 0 )) && [[ -s "${nonprompt_path}" ]] \
+    && { [[ "${production_profile}" != "t0_sr_statonly" ]] || [[ -s "${nonprompt_sidecar_path}" ]]; }; then
     production_state_tool mark \
       "${production_state_path}" "${production_block}" \
       "nonprompt" "success" "${nonprompt_exit_code}" "separate_nonprompt_exit_zero_expected_output_present" "${duration_seconds}"

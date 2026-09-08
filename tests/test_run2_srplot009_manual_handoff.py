@@ -1,3 +1,4 @@
+import copy
 import json
 import os
 import re
@@ -17,6 +18,7 @@ FROZEN_ENV = RUN_DIRECTORY / "topeft-envs" / "env_spec_9d72aad444117c28.tar.gz"
 FROZEN_SHA256 = "8245afe4b3c28f4948039d383ad2176f1ee3ebb5e61bcdf1b49289452b025332"
 T0_FROZEN_ENV = RUN_DIRECTORY / "topeft-envs" / "env_spec_d2b557628143725b.tar.gz"
 T0_FROZEN_SHA256 = "c9c2cf2a8697c722291a5e5bfc492afafd367e1a2274289d5d37f9b8cfa8a292"
+T0_HISTORICAL_LAUNCHER_COMMIT = "5e7a7b4cdfa5babddab922650e5c35bb0a2c2ea2"
 PUBLIC_PROFILES = {
     "run2_full", "run3_full", "run2_run3_full",
     "run2_full_CR", "run3_full_CR", "run2_run3_full_CR", "t0_sr_statonly",
@@ -207,8 +209,10 @@ case "$action" in
     fi
     mkdir -p -- "$(dirname -- "$source_path")"
     printf 'synthetic source\\n' > "$source_path"
+    printf '{{"synthetic": true}}\\n' > "$source_path.metadata.json"
     if [[ " $* " != *" --defer-np "* ]]; then
       printf 'synthetic nonprompt\\n' > "$nonprompt_path"
+      printf '{{"synthetic": true}}\\n' > "$nonprompt_path.metadata.json"
     fi
     if [[ "$scenario" == run2_state_contradiction && "$block_id" == run2_full_a ]]; then
       rm -f -- "$native_log_dir/debug.log" "$native_log_dir/tr.log" \
@@ -227,6 +231,7 @@ case "$action" in
     [[ "$scenario" != nonprompt_failure_2 || "$block_id" != *_b ]] || exit 25
     [[ -s "$source_path" ]] || exit 26
     printf 'synthetic nonprompt\\n' > "$nonprompt_path"
+    printf '{{"synthetic": true}}\\n' > "$nonprompt_path.metadata.json"
     ;;
   *) exit 90 ;;
 esac
@@ -266,6 +271,70 @@ def _campaign_state(output_root, profile):
             encoding="utf-8"
         )
     )
+
+
+def _prepare_t0_recovery_fixture(tmp_path, retry_indices=range(10)):
+    result, output_root, validation_root = _stubbed_run(
+        tmp_path, "t0_sr_statonly", "success"
+    )
+    assert result.returncode == 0, result.stdout
+    state_path = output_root / ".t0_sr_statonly_campaign_state.json"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    state["topeft_git_commit"] = T0_HISTORICAL_LAUNCHER_COMMIT
+    preserved_transitions = {}
+    retry_indices = set(retry_indices)
+    for index, block in enumerate(state["blocks"]):
+        if index not in retry_indices:
+            continue
+        Path(block["expected_np_path"]).unlink()
+        Path(f'{block["expected_np_path"]}.metadata.json').unlink()
+        block["status"] = "nonprompt_failed"
+        block["source_status"] = "ready"
+        block["source_exit_code"] = 0
+        block["nonprompt_status"] = "failed"
+        block["nonprompt_exit_code"] = 1
+        block["exit_code"] = 1
+        block.pop("nonprompt_postprocessor_provenance", None)
+        for transition in block["transitions"]:
+            transition.pop("postprocessor_provenance", None)
+        block["transitions"].append(
+            {
+                "timestamp_utc": "2026-01-02T00:00:00Z",
+                "stage": "nonprompt",
+                "status": "failed",
+                "exit_code": 1,
+                "signal": None,
+                "duration_seconds": 1,
+                "detail": "synthetic_historical_nonprompt_failure",
+            }
+        )
+        block["expected_output_readback"] = [
+            {
+                "path": block["expected_nominal_path"],
+                "exists": True,
+                "regular_file": True,
+                "size_bytes": Path(block["expected_nominal_path"]).stat().st_size,
+                "nonempty": True,
+            },
+            {
+                "path": block["expected_np_path"],
+                "exists": False,
+                "regular_file": False,
+                "size_bytes": None,
+                "nonempty": False,
+            },
+        ]
+        preserved_transitions[block["id"]] = copy.deepcopy(block["transitions"])
+    state["campaign_status"] = "complete_with_known_failures"
+    state["successful_block_count"] = 10 - len(retry_indices)
+    state["known_failed_block_count"] = len(retry_indices)
+    state["attempted_block_count"] = 10
+    state["not_attempted_block_count"] = 0
+    state["final_process_exit_code"] = 1
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+    (validation_root / "block_calls.tsv").write_text("", encoding="utf-8")
+    (validation_root / "nonprompt_calls.tsv").write_text("", encoding="utf-8")
+    return state_path, output_root, validation_root, preserved_transitions
 
 
 def _resume_components(profile):
@@ -448,6 +517,147 @@ def test_t0_sr_statonly_resolves_exact_nominal_raw_count_contract(tmp_path):
     assert wrong_archive.returncode != 0
     assert "pinned to the required frozen snapshot archive" in wrong_archive.stdout
     assert not (tmp_path / "wrong_archive").exists()
+
+
+def test_t0_resume_reuses_all_sources_and_appends_postprocessor_provenance(tmp_path):
+    state_path, output_root, validation_root, preserved_transitions = (
+        _prepare_t0_recovery_fixture(tmp_path)
+    )
+
+    result = _run(
+        "t0_sr_statonly",
+        output_root,
+        "stub-t0_sr_statonly",
+        dry_run=False,
+        resume=True,
+        environment=_resume_environment(validation_root),
+    )
+
+    assert result.returncode == 0, result.stdout
+    assert result.stdout.count("Reusing validated completed source") == 10
+    assert (validation_root / "block_calls.tsv").read_text() == ""
+    nonprompt_calls = (
+        validation_root / "nonprompt_calls.tsv"
+    ).read_text().splitlines()
+    assert nonprompt_calls == PROFILE_BLOCK_IDS["t0_sr_statonly"]
+    recovered = json.loads(state_path.read_text(encoding="utf-8"))
+    assert recovered["topeft_git_commit"] == T0_HISTORICAL_LAUNCHER_COMMIT
+    assert recovered["campaign_status"] == "success"
+    assert recovered["successful_block_count"] == 10
+    assert recovered["known_failed_block_count"] == 0
+    assert recovered["final_process_exit_code"] == 0
+    topcoffea_commit = subprocess.check_output(
+        ["git", "rev-parse", "HEAD"],
+        cwd=REPOSITORY_ROOT.parent / "topcoffea",
+        text=True,
+    ).strip()
+    expected_provenance = {
+        "topeft_git_commit": subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], cwd=REPOSITORY_ROOT, text=True
+        ).strip(),
+        "topcoffea_git_commit": topcoffea_commit,
+    }
+    for block in recovered["blocks"]:
+        historical = preserved_transitions[block["id"]]
+        assert block["transitions"][: len(historical)] == historical
+        recovery = block["transitions"][len(historical) :]
+        assert [item["status"] for item in recovery] == ["running", "success"]
+        assert all(
+            item["postprocessor_provenance"] == expected_provenance
+            for item in recovery
+        )
+        assert block["nonprompt_postprocessor_provenance"] == expected_provenance
+        assert Path(block["expected_np_path"]).is_file()
+        assert Path(block["expected_np_path"]).stat().st_size > 0
+    summary = (output_root / "campaign_summary.md").read_text(encoding="utf-8")
+    assert "successful: 10" in summary
+    assert "known_failed: 0" in summary
+    assert "final_classification: `success`" in summary
+
+
+def test_t0_resume_retries_only_failed_nonprompt_subset(tmp_path):
+    _, output_root, validation_root, _ = _prepare_t0_recovery_fixture(
+        tmp_path, retry_indices=range(4, 10)
+    )
+
+    result = _run(
+        "t0_sr_statonly",
+        output_root,
+        "stub-t0_sr_statonly",
+        dry_run=False,
+        resume=True,
+        environment=_resume_environment(validation_root),
+    )
+
+    assert result.returncode == 0, result.stdout
+    assert (validation_root / "block_calls.tsv").read_text() == ""
+    assert (
+        validation_root / "nonprompt_calls.tsv"
+    ).read_text().splitlines() == PROFILE_BLOCK_IDS["t0_sr_statonly"][4:]
+    assert result.stdout.count("Skipping validated t0_sr_statonly block") == 4
+    assert result.stdout.count("Reusing validated completed source") == 6
+
+
+def test_t0_resume_fails_closed_when_ready_source_is_missing(tmp_path):
+    _, output_root, validation_root, _ = _prepare_t0_recovery_fixture(tmp_path)
+    state = _campaign_state(output_root, "t0_sr_statonly")
+    Path(state["blocks"][0]["expected_nominal_path"]).unlink()
+
+    result = _run(
+        "t0_sr_statonly",
+        output_root,
+        "stub-t0_sr_statonly",
+        dry_run=False,
+        resume=True,
+        environment=_resume_environment(validation_root),
+    )
+
+    assert result.returncode != 0
+    assert "records a reusable source, but it is missing or empty" in result.stdout
+    assert (validation_root / "block_calls.tsv").read_text() == ""
+    assert (validation_root / "nonprompt_calls.tsv").read_text() == ""
+
+
+def test_t0_resume_fails_closed_on_np_collision_or_running_state(tmp_path):
+    _, output_root, validation_root, _ = _prepare_t0_recovery_fixture(tmp_path)
+    state = _campaign_state(output_root, "t0_sr_statonly")
+    Path(f'{state["blocks"][0]["expected_np_path"]}.metadata.json').write_text(
+        '{"unexpected": "sidecar collision"}\n', encoding="utf-8"
+    )
+    collision = _run(
+        "t0_sr_statonly",
+        output_root,
+        "stub-t0_sr_statonly",
+        dry_run=False,
+        resume=True,
+        environment=_resume_environment(validation_root),
+    )
+    assert collision.returncode != 0
+    assert "expected _np path already exists" in collision.stdout
+    assert (validation_root / "block_calls.tsv").read_text() == ""
+    assert (validation_root / "nonprompt_calls.tsv").read_text() == ""
+
+    running_root = tmp_path / "running"
+    running_root.mkdir()
+    state_path, running_output, running_validation, _ = _prepare_t0_recovery_fixture(
+        running_root
+    )
+    running_state = json.loads(state_path.read_text(encoding="utf-8"))
+    running_state["blocks"][0]["status"] = "nonprompt_running"
+    running_state["blocks"][0]["nonprompt_status"] = "running"
+    state_path.write_text(json.dumps(running_state), encoding="utf-8")
+    running = _run(
+        "t0_sr_statonly",
+        running_output,
+        "stub-t0_sr_statonly",
+        dry_run=False,
+        resume=True,
+        environment=_resume_environment(running_validation),
+    )
+    assert running.returncode != 0
+    assert "ambiguous interrupted nonprompt stage" in running.stdout
+    assert (running_validation / "block_calls.tsv").read_text() == ""
+    assert (running_validation / "nonprompt_calls.tsv").read_text() == ""
 
 
 def test_combined_profiles_reuse_components_and_separate_namespaces(tmp_path):
