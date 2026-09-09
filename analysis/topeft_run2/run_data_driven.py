@@ -14,6 +14,8 @@ By default the helper uses the streaming iterator path, writing output with
 from __future__ import annotations
 
 import argparse
+import ast
+import copy
 import ctypes
 import gc
 import json
@@ -230,7 +232,13 @@ def _command_analysis_mode(command):
     return selected[0] if selected else "default"
 
 
-def _selected_category_dicts(*, analysis_mode, region, category_groups):
+def _selected_category_dicts(
+    *,
+    analysis_mode,
+    region,
+    category_groups,
+    category_config,
+):
     mode_flags = {
         "all": (False, False, False, True),
         "offz": (True, False, False, False),
@@ -243,18 +251,168 @@ def _selected_category_dicts(*, analysis_mode, region, category_groups):
     sr_name, cr_name = analysis_processor.resolve_category_dict_names(
         *mode_flags[analysis_mode]
     )
-    config = analysis_processor.load_category_config()
     block_name = sr_name if region == "SR" else cr_name if region == "CR" else None
-    if block_name is None or block_name not in config:
+    if block_name is None or block_name not in category_config:
         raise RuntimeError(f"Unsupported legacy region {region!r}.")
     selected = {}
     for group in category_groups:
-        if group not in config[block_name]:
+        if group not in category_config[block_name]:
             raise RuntimeError(
                 f"Legacy category group {group!r} is absent from {block_name}."
             )
-        selected[group] = config[block_name][group]
+        selected[group] = category_config[block_name][group]
     return (selected, {}) if region == "SR" else ({}, selected)
+
+
+def _git_show_text(repository_root, producer_commit, repository_path):
+    result = subprocess.run(
+        [
+            "git",
+            "-C",
+            str(repository_root),
+            "show",
+            f"{producer_commit}:{repository_path}",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"Legacy producer commit {producer_commit} is unavailable or lacks "
+            f"{repository_path}."
+        )
+    return result.stdout
+
+
+def _load_legacy_category_config(*, state, block, repository_root, producer_commit):
+    retained_path_text = block.get(
+        "retained_category_config_path",
+        state.get("retained_category_config_path"),
+    )
+    if retained_path_text is not None:
+        if not isinstance(retained_path_text, str) or not retained_path_text:
+            raise RuntimeError(
+                "Legacy retained_category_config_path must be a nonempty path."
+            )
+        retained_path = Path(retained_path_text)
+        try:
+            config_text = retained_path.read_text(encoding="utf-8")
+        except OSError as error:
+            raise RuntimeError(
+                f"Cannot read retained legacy category configuration {retained_path}: "
+                f"{error}"
+            ) from error
+        scope_source = "retained_execution_config"
+        scope_locator = str(retained_path)
+    else:
+        config_text = _git_show_text(
+            repository_root,
+            producer_commit,
+            "topeft/channels/ch_lst.json",
+        )
+        scope_source = "producer_commit_config"
+        scope_locator = (
+            f"{producer_commit}:topeft/channels/ch_lst.json"
+        )
+    try:
+        category_config = json.loads(config_text)
+    except json.JSONDecodeError as error:
+        raise RuntimeError(
+            f"Legacy category configuration {scope_locator} is not valid JSON: {error}"
+        ) from error
+    if not isinstance(category_config, dict):
+        raise RuntimeError(
+            f"Legacy category configuration {scope_locator} must be an object."
+        )
+    return category_config, scope_source, scope_locator
+
+
+def _historical_legacy_producer_proxy(source_text, analysis_mode):
+    """Build a bounded proxy from only the historical applicability methods."""
+
+    method_names = analysis_processor._HISTOGRAM_APPLICABILITY_LEGACY_METHODS
+    try:
+        tree = ast.parse(source_text)
+    except SyntaxError as error:
+        raise RuntimeError("Historical producer source is not parseable.") from error
+    analysis_class = next(
+        (
+            node
+            for node in tree.body
+            if isinstance(node, ast.ClassDef) and node.name == "AnalysisProcessor"
+        ),
+        None,
+    )
+    if analysis_class is None:
+        raise RuntimeError("Historical producer source lacks AnalysisProcessor.")
+    methods = {
+        node.name: node
+        for node in analysis_class.body
+        if isinstance(node, ast.FunctionDef) and node.name in method_names
+    }
+    attributes = {}
+    for method_name in method_names:
+        if method_name not in methods:
+            def _missing_historical_method(*_args, _method_name=method_name, **_kwargs):
+                raise RuntimeError(
+                    "Historical producer source cannot resolve the relevant "
+                    f"applicability method {_method_name}."
+                )
+
+            attributes[method_name] = (
+                staticmethod(_missing_historical_method)
+                if method_name != "_should_skip_histogram_fill"
+                else _missing_historical_method
+            )
+            continue
+        method_node = copy.deepcopy(methods[method_name])
+        method_node.decorator_list = []
+        module = ast.fix_missing_locations(
+            ast.Module(body=[method_node], type_ignores=[])
+        )
+        namespace = {}
+        exec(
+            compile(module, "<historical_analysis_processor>", "exec"),
+            namespace,
+        )
+        method = namespace[method_name]
+        attributes[method_name] = (
+            staticmethod(method)
+            if method_name != "_should_skip_histogram_fill"
+            else method
+        )
+
+    proxy_class = type(
+        "HistoricalLegacyApplicabilityProxy",
+        (analysis_processor.AnalysisProcessor,),
+        attributes,
+    )
+    proxy = object.__new__(proxy_class)
+    proxy._analysis_mode = analysis_mode
+    return proxy
+
+
+def _applicability_decision_differences(left, right):
+    differences = []
+    left_families = left["families"]
+    right_families = right["families"]
+    for family in sorted(set(left_families) | set(right_families)):
+        left_channels = left_families.get(family, {}).get("channels", {})
+        right_channels = right_families.get(family, {}).get("channels", {})
+        for channel in sorted(set(left_channels) | set(right_channels)):
+            left_state = left_channels.get(channel)
+            right_state = right_channels.get(channel)
+            if left_state != right_state:
+                differences.append(
+                    {
+                        "family": family,
+                        "channel": channel,
+                        "historical": left_state,
+                        "current": right_state,
+                    }
+                )
+    return differences
 
 
 def _resolve_legacy_histogram_applicability(
@@ -288,84 +446,104 @@ def _resolve_legacy_histogram_applicability(
     expected_source_path = block.get("expected_nominal_path")
     if not isinstance(expected_source_path, str) or not expected_source_path:
         raise RuntimeError("Legacy campaign block lacks expected_nominal_path.")
-    expected_sidecar = read_histogram_sidecar(expected_source_path)
-    expected_identity = expected_sidecar["artifact"]
     observed_identity = input_sidecar["artifact"]
-    for field in ("artifact_kind", "pkl_size_bytes", "pkl_sha256"):
-        if observed_identity.get(field) != expected_identity.get(field):
+    expected_path = Path(expected_source_path).resolve()
+    observed_path = Path(input_pkl).resolve()
+    if observed_path == expected_path:
+        context_binding_method = "resolved_input_path"
+    else:
+        expected_sidecar = read_histogram_sidecar(expected_source_path)
+        expected_sha256 = expected_sidecar.get("artifact", {}).get("pkl_sha256")
+        observed_sha256 = observed_identity.get("pkl_sha256")
+        if (
+            not isinstance(expected_sha256, str)
+            or not isinstance(observed_sha256, str)
+            or expected_sha256 != observed_sha256
+        ):
             raise RuntimeError(
-                f"Legacy source identity mismatch for {field}: "
-                f"expected={expected_identity.get(field)!r} "
-                f"observed={observed_identity.get(field)!r}."
+                "Legacy context/source binding failed: the consumed input is neither "
+                "the recorded source path nor a SHA-identified copy of that source."
             )
+        context_binding_method = "frozen_source_sha256"
 
     source_command = block.get("source_command_argv")
     if not isinstance(source_command, list) or any(
         not isinstance(value, str) for value in source_command
     ):
         raise RuntimeError("Legacy campaign block lacks a valid source_command_argv.")
-    category_groups = _command_option_values(source_command, "--category-groups")
-    histogram_families = _command_option_values(source_command, "--hist-vars")
-    years = _command_option_values(source_command, "-y")
-    if category_groups != block.get("category_groups"):
-        raise RuntimeError("Legacy category/channel scope disagrees with source command provenance.")
-    if histogram_families != block.get("histograms"):
-        raise RuntimeError("Legacy requested-family scope disagrees with source command provenance.")
-    if years != block.get("years"):
-        raise RuntimeError("Legacy run-period scope disagrees with source command provenance.")
+    category_groups = list(
+        dict.fromkeys(_command_option_values(source_command, "--category-groups"))
+    )
+    command_histogram_families = list(
+        dict.fromkeys(_command_option_values(source_command, "--hist-vars"))
+    )
+    years = list(dict.fromkeys(_command_option_values(source_command, "-y")))
+    diagnostic_provenance_differences = []
+    for field, command_values in (
+        ("category_groups", category_groups),
+        ("histograms", command_histogram_families),
+        ("years", years),
+    ):
+        recorded_values = block.get(field)
+        if not isinstance(recorded_values, list) or {
+            str(value) for value in recorded_values
+        } != set(command_values):
+            diagnostic_provenance_differences.append(field)
     region_flags = [region for flag, region in (("--sr", "SR"), ("--cr", "CR")) if flag in source_command]
-    if len(region_flags) != 1 or region_flags[0] != state.get("region"):
-        raise RuntimeError("Legacy analysis region disagrees with source command provenance.")
+    if len(region_flags) != 1:
+        raise RuntimeError("Legacy source command does not resolve exactly one analysis region.")
+    if state.get("region") != region_flags[0]:
+        diagnostic_provenance_differences.append("region")
     analysis_mode = _command_analysis_mode(source_command)
     runtime_families = list(
         resolved_policy_from_provenance(
             input_sidecar["sumw2_storage_provenance"]
         ).runtime_histogram_families
     )
-    if histogram_families != runtime_families:
+    if set(command_histogram_families) != set(runtime_families):
         raise RuntimeError(
-            "Legacy requested-family scope disagrees with source artifact provenance."
+            "Legacy semantic scope resolution failed: the requested family set "
+            "disagrees with the source artifact."
         )
 
     producer_commit = state.get("topeft_git_commit")
     if not isinstance(producer_commit, str) or re.fullmatch(
         r"[0-9a-f]{40}", producer_commit
     ) is None:
-        raise RuntimeError("Legacy producer identity is not an exact topeft commit.")
-    repository_root = Path(__file__).resolve().parents[2]
-    historical_source = subprocess.run(
-        [
-            "git",
-            "-C",
-            str(repository_root),
-            "show",
-            f"{producer_commit}:analysis/topeft_run2/analysis_processor.py",
-        ],
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-    if historical_source.returncode != 0:
         raise RuntimeError(
-            f"Legacy producer commit {producer_commit} is unavailable or lacks analysis_processor.py."
+            "Legacy semantic scope resolution lacks an exact producer commit locator."
         )
-    historical_semantics = (
-        analysis_processor.legacy_histogram_applicability_semantics_sha256(
-            historical_source.stdout
+    repository_root = Path(__file__).resolve().parents[2]
+    category_config, historical_scope_source, historical_scope_locator = (
+        _load_legacy_category_config(
+            state=state,
+            block=block,
+            repository_root=repository_root,
+            producer_commit=producer_commit,
         )
     )
+    historical_source = _git_show_text(
+        repository_root,
+        producer_commit,
+        "analysis/topeft_run2/analysis_processor.py",
+    )
+    try:
+        historical_semantics = (
+            analysis_processor.legacy_histogram_applicability_semantics_sha256(
+                historical_source
+            )
+        )
+    except (SyntaxError, ValueError):
+        historical_semantics = None
     current_legacy_semantics = (
         analysis_processor.legacy_histogram_applicability_semantics_sha256()
     )
-    if historical_semantics != current_legacy_semantics:
-        raise RuntimeError(
-            "Legacy producer applicability semantics are incompatible with the current query."
-        )
 
     selected_category_dicts = _selected_category_dicts(
         analysis_mode=analysis_mode,
         region=region_flags[0],
         category_groups=category_groups,
+        category_config=category_config,
     )
     applicability = analysis_processor.AnalysisProcessor.build_histogram_applicability(
         analysis_mode=analysis_mode,
@@ -376,17 +554,134 @@ def _resolve_legacy_histogram_applicability(
             dict.fromkeys(year.startswith("202") for year in years)
         ),
     )
+    semantic_comparison = "legacy_method_semantics_identical"
+    if historical_semantics is None or historical_semantics != current_legacy_semantics:
+        historical_proxy = _historical_legacy_producer_proxy(
+            historical_source,
+            analysis_mode,
+        )
+        historical_applicability = (
+            analysis_processor.AnalysisProcessor.build_histogram_applicability(
+                analysis_mode=analysis_mode,
+                runtime_families=runtime_families,
+                selected_category_dicts=selected_category_dicts,
+                split_by_lepton_flavor="--split-lep-flavor" in source_command,
+                is_run3_values=tuple(
+                    dict.fromkeys(year.startswith("202") for year in years)
+                ),
+                producer_proxy=historical_proxy,
+            )
+        )
+        decision_differences = _applicability_decision_differences(
+            historical_applicability,
+            applicability,
+        )
+        if decision_differences:
+            raise RuntimeError(
+                "Legacy applicability decisions differ over the resolved semantic "
+                "scope: "
+                + json.dumps(decision_differences, sort_keys=True)
+            )
+        semantic_comparison = "relevant_binary_decisions_equal"
     return applicability, {
-        "source_pkl_sha256": observed_identity["pkl_sha256"],
+        "context_binding_method": context_binding_method,
+        "source_pkl_sha256": observed_identity.get("pkl_sha256"),
         "producer_topeft_commit": producer_commit,
         "producer_semantics_sha256": applicability["producer_semantics_sha256"],
-        "legacy_compatibility_sha256": current_legacy_semantics,
+        "historical_legacy_semantics_sha256": historical_semantics,
+        "current_legacy_semantics_sha256": current_legacy_semantics,
+        "producer_semantic_comparison": semantic_comparison,
+        "historical_scope_source": historical_scope_source,
+        "historical_scope_locator": historical_scope_locator,
         "analysis_mode": analysis_mode,
         "region": region_flags[0],
         "category_groups": category_groups,
-        "histogram_families": histogram_families,
+        "histogram_families": runtime_families,
         "years": years,
+        "split_by_lepton_flavor": "--split-lep-flavor" in source_command,
+        "diagnostic_provenance_differences": sorted(
+            diagnostic_provenance_differences
+        ),
     }
+
+
+def _current_local_category_config_candidate(repository_root):
+    repository_path = "topeft/channels/ch_lst.json"
+    result = subprocess.run(
+        [
+            "git",
+            "-C",
+            str(repository_root),
+            "status",
+            "--short",
+            "--untracked-files=all",
+            "--",
+            repository_path,
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    state = result.stdout.strip()
+    path = repository_root / repository_path
+    if result.returncode != 0 or not state or not path.is_file():
+        return None
+    return state, path
+
+
+def _validate_legacy_histogram_artifact(input_pkl, applicability, resolution):
+    try:
+        return validate_histogram_artifact(
+            input_pkl,
+            histogram_applicability=applicability,
+        )
+    except ValueError as historical_error:
+        error_text = str(historical_error)
+        if not any(
+            marker in error_text
+            for marker in ("structurally absent", "structurally present")
+        ):
+            raise
+
+        repository_root = Path(__file__).resolve().parents[2]
+        candidate = _current_local_category_config_candidate(repository_root)
+        if candidate is None:
+            raise
+        local_state, local_path = candidate
+        try:
+            local_config = json.loads(local_path.read_text(encoding="utf-8"))
+            selected_category_dicts = _selected_category_dicts(
+                analysis_mode=resolution["analysis_mode"],
+                region=resolution["region"],
+                category_groups=resolution["category_groups"],
+                category_config=local_config,
+            )
+            local_applicability = (
+                analysis_processor.AnalysisProcessor.build_histogram_applicability(
+                    analysis_mode=resolution["analysis_mode"],
+                    runtime_families=resolution["histogram_families"],
+                    selected_category_dicts=selected_category_dicts,
+                    split_by_lepton_flavor=resolution["split_by_lepton_flavor"],
+                    is_run3_values=tuple(
+                        dict.fromkeys(
+                            year.startswith("202") for year in resolution["years"]
+                        )
+                    ),
+                )
+            )
+            validate_histogram_artifact(
+                input_pkl,
+                histogram_applicability=local_applicability,
+            )
+        except Exception:
+            raise historical_error
+        raise RuntimeError(
+            "historical_config_execution_ambiguity: the recorded-commit category "
+            "configuration contradicts artifact structure, while one bounded "
+            f"diagnostic with local config {local_path} ({local_state}) is "
+            "structurally consistent; the local file was not promoted to semantic "
+            "authority."
+        ) from historical_error
 
 
 def _peak_rss_mb() -> float:
@@ -1102,15 +1397,6 @@ def main(argv: Optional[List[str]] = None) -> int:
             "A self-describing source artifact must not receive legacy campaign context."
         )
     if (
-        serialized_applicability is not None
-        and serialized_applicability["producer_semantics_sha256"]
-        != analysis_processor.histogram_applicability_semantics_sha256()
-    ):
-        raise RuntimeError(
-            "Source artifact producer applicability semantics are incompatible "
-            "with the current producer query."
-        )
-    if (
         serialized_sidecar is not None
         and serialized_applicability is None
         and not legacy_context_requested
@@ -1133,9 +1419,10 @@ def main(argv: Optional[List[str]] = None) -> int:
                 campaign_block_id=args.legacy_campaign_block,
             )
         )
-        input_validation = validate_histogram_artifact(
+        input_validation = _validate_legacy_histogram_artifact(
             input_pkl,
-            histogram_applicability=legacy_applicability,
+            legacy_applicability,
+            legacy_context_summary,
         )
         print(
             "[run_data_driven] qualified legacy context: "

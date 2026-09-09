@@ -68,7 +68,33 @@ def _legacy_context_inputs(tmp_path):
     return state_path, source_path, state, input_sidecar
 
 
-def _install_legacy_context_stubs(monkeypatch, input_sidecar, *, families=("lt",)):
+def _legacy_category_config(*, lepton_channel="3l_onZ_1b"):
+    return {
+        "ALL_CH_LST_SR": {
+            "3l_onZ_tau": {
+                "lep_chan_lst": [[lepton_channel]],
+                "lep_flav_lst": ["eee"],
+                "appl_lst": ["isSR_3l"],
+                "jet_lst": ["=2"],
+            },
+            "4l": {
+                "lep_chan_lst": [["4l"]],
+                "lep_flav_lst": ["eeee"],
+                "appl_lst": ["isSR_4l"],
+                "jet_lst": ["=2"],
+            },
+        }
+    }
+
+
+def _install_legacy_context_stubs(
+    monkeypatch,
+    input_sidecar,
+    *,
+    families=("lt",),
+    category_config=None,
+    producer_source=None,
+):
     monkeypatch.setattr(
         run_data_driven,
         "read_histogram_sidecar",
@@ -79,15 +105,22 @@ def _install_legacy_context_stubs(monkeypatch, input_sidecar, *, families=("lt",
         "resolved_policy_from_provenance",
         lambda _provenance: SimpleNamespace(runtime_histogram_families=families),
     )
-    producer_source = Path(run_data_driven.analysis_processor.__file__).read_text(
-        encoding="utf-8"
-    )
+    if producer_source is None:
+        producer_source = Path(run_data_driven.analysis_processor.__file__).read_text(
+            encoding="utf-8"
+        )
+    if category_config is None:
+        category_config = _legacy_category_config()
     monkeypatch.setattr(
         run_data_driven.subprocess,
         "run",
-        lambda *_args, **_kwargs: SimpleNamespace(
+        lambda command, **_kwargs: SimpleNamespace(
             returncode=0,
-            stdout=producer_source,
+            stdout=(
+                json.dumps(category_config)
+                if command[-1].endswith(":topeft/channels/ch_lst.json")
+                else producer_source
+            ),
         ),
     )
 
@@ -274,30 +307,30 @@ def test_exact_legacy_context_qualifies_through_producer_query(tmp_path, monkeyp
     assert set(declaration["families"]["lt"]["channels"].values()) == {
         "not_applicable"
     }
-    assert summary == {
-        "source_pkl_sha256": "2" * 64,
-        "producer_topeft_commit": "1" * 40,
-        "producer_semantics_sha256": declaration["producer_semantics_sha256"],
-        "legacy_compatibility_sha256": (
-            run_data_driven.analysis_processor.legacy_histogram_applicability_semantics_sha256()
-        ),
-        "analysis_mode": "all",
-        "region": "SR",
-        "category_groups": ["3l_onZ_tau"],
-        "histogram_families": ["lt"],
-        "years": ["2018"],
-    }
+    assert summary["context_binding_method"] == "resolved_input_path"
+    assert summary["source_pkl_sha256"] == "2" * 64
+    assert summary["producer_topeft_commit"] == "1" * 40
+    assert summary["producer_semantics_sha256"] == declaration[
+        "producer_semantics_sha256"
+    ]
+    assert summary["producer_semantic_comparison"] == (
+        "legacy_method_semantics_identical"
+    )
+    assert summary["historical_scope_source"] == "producer_commit_config"
+    assert summary["analysis_mode"] == "all"
+    assert summary["region"] == "SR"
+    assert summary["category_groups"] == ["3l_onZ_tau"]
+    assert summary["histogram_families"] == ["lt"]
+    assert summary["years"] == ["2018"]
+    assert summary["diagnostic_provenance_differences"] == []
 
 
 @pytest.mark.parametrize(
     "mismatch,expected",
     [
-        ("source", "source identity mismatch"),
-        ("producer", "producer applicability semantics are incompatible"),
+        ("source", "context/source binding failed"),
         ("analysis_mode", "conflicting analysis modes"),
-        ("category_scope", "category/channel scope disagrees"),
-        ("family_scope", "requested-family scope disagrees with source command"),
-        ("artifact_family_scope", "requested-family scope disagrees with source artifact"),
+        ("artifact_family_scope", "requested family set disagrees"),
     ],
 )
 def test_legacy_context_mismatches_fail_closed(
@@ -311,6 +344,8 @@ def test_legacy_context_mismatches_fail_closed(
     _install_legacy_context_stubs(monkeypatch, input_sidecar, families=families)
     block = state["blocks"][0]
     if mismatch == "source":
+        different_source = tmp_path / "different_source.pkl.gz"
+        block["expected_nominal_path"] = str(different_source)
         expected_sidecar = {
             **input_sidecar,
             "artifact": {
@@ -323,18 +358,8 @@ def test_legacy_context_mismatches_fail_closed(
             "read_histogram_sidecar",
             lambda _path: expected_sidecar,
         )
-    elif mismatch == "producer":
-        monkeypatch.setattr(
-            run_data_driven.analysis_processor,
-            "legacy_histogram_applicability_semantics_sha256",
-            lambda source_text=None: "a" * 64 if source_text is None else "b" * 64,
-        )
     elif mismatch == "analysis_mode":
         block["source_command_argv"].append("--tau-h-analysis")
-    elif mismatch == "category_scope":
-        block["category_groups"] = ["different_group"]
-    elif mismatch == "family_scope":
-        block["histograms"] = ["njets"]
     state_path.write_text(json.dumps(state), encoding="utf-8")
 
     with pytest.raises(RuntimeError, match=expected):
@@ -344,6 +369,279 @@ def test_legacy_context_mismatches_fail_closed(
             campaign_state_path=state_path,
             campaign_block_id="legacy_block",
         )
+
+
+def test_legacy_context_same_path_does_not_require_redundant_source_sha(
+    tmp_path,
+    monkeypatch,
+):
+    state_path, source_path, _state, input_sidecar = _legacy_context_inputs(tmp_path)
+    input_sidecar["artifact"].pop("pkl_sha256")
+    _install_legacy_context_stubs(monkeypatch, input_sidecar)
+
+    _declaration, summary = run_data_driven._resolve_legacy_histogram_applicability(
+        input_pkl=source_path,
+        input_sidecar=input_sidecar,
+        campaign_state_path=state_path,
+        campaign_block_id="legacy_block",
+    )
+
+    assert summary["context_binding_method"] == "resolved_input_path"
+    assert summary["source_pkl_sha256"] is None
+
+
+def test_legacy_context_accepts_sha_identified_scratch_copy(tmp_path, monkeypatch):
+    state_path, source_path, state, input_sidecar = _legacy_context_inputs(tmp_path)
+    scratch_path = tmp_path / "scratch_copy.pkl.gz"
+    state["blocks"][0]["expected_nominal_path"] = str(source_path)
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+    _install_legacy_context_stubs(monkeypatch, input_sidecar)
+
+    _declaration, summary = run_data_driven._resolve_legacy_histogram_applicability(
+        input_pkl=scratch_path,
+        input_sidecar=input_sidecar,
+        campaign_state_path=state_path,
+        campaign_block_id="legacy_block",
+    )
+
+    assert summary["context_binding_method"] == "frozen_source_sha256"
+
+
+def test_legacy_scope_uses_semantic_sets_and_historical_config(
+    tmp_path,
+    monkeypatch,
+):
+    state_path, source_path, state, input_sidecar = _legacy_context_inputs(tmp_path)
+    command = state["blocks"][0]["source_command_argv"]
+    command[:] = [
+        "python",
+        "run_analysis.py",
+        "--all-analysis",
+        "--hist-vars",
+        "njets",
+        "lt",
+        "--sr",
+        "--category-groups",
+        "3l_onZ_tau",
+        "4l",
+        "-y",
+        "2018",
+    ]
+    state["blocks"][0]["histograms"] = ["lt", "njets"]
+    state["blocks"][0]["category_groups"] = ["4l", "3l_onZ_tau"]
+    state["blocks"][0]["years"] = ["2018", "2017"]
+    state["region"] = "CR"
+    state["category_config_sha256"] = "0" * 64
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+    _install_legacy_context_stubs(
+        monkeypatch,
+        input_sidecar,
+        families=("lt", "njets"),
+    )
+    monkeypatch.setattr(
+        run_data_driven.analysis_processor,
+        "load_category_config",
+        lambda: (_ for _ in ()).throw(
+            AssertionError("current category config must not be consulted")
+        ),
+    )
+
+    declaration, summary = run_data_driven._resolve_legacy_histogram_applicability(
+        input_pkl=source_path,
+        input_sidecar=input_sidecar,
+        campaign_state_path=state_path,
+        campaign_block_id="legacy_block",
+    )
+
+    assert list(declaration["families"]) == ["lt", "njets"]
+    assert summary["historical_scope_source"] == "producer_commit_config"
+    assert summary["diagnostic_provenance_differences"] == [
+        "region",
+        "years",
+    ]
+
+
+def test_legacy_scope_prefers_explicit_retained_execution_config(
+    tmp_path,
+    monkeypatch,
+):
+    state_path, source_path, state, input_sidecar = _legacy_context_inputs(tmp_path)
+    retained_path = tmp_path / "retained_ch_lst.json"
+    retained_path.write_text(
+        json.dumps(_legacy_category_config(lepton_channel="3l_onZ_1b_fwd")),
+        encoding="utf-8",
+    )
+    state["blocks"][0]["retained_category_config_path"] = str(retained_path)
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+    _install_legacy_context_stubs(monkeypatch, input_sidecar)
+
+    declaration, summary = run_data_driven._resolve_legacy_histogram_applicability(
+        input_pkl=source_path,
+        input_sidecar=input_sidecar,
+        campaign_state_path=state_path,
+        campaign_block_id="legacy_block",
+    )
+
+    assert set(declaration["families"]["lt"]["channels"].values()) == {
+        "applicable"
+    }
+    assert summary["historical_scope_source"] == "retained_execution_config"
+    assert summary["historical_scope_locator"] == str(retained_path)
+
+
+def test_legacy_producer_source_difference_passes_when_binary_decisions_match(
+    tmp_path,
+    monkeypatch,
+):
+    state_path, source_path, _state, input_sidecar = _legacy_context_inputs(tmp_path)
+    producer_source = Path(run_data_driven.analysis_processor.__file__).read_text(
+        encoding="utf-8"
+    ).replace(
+        "        skip_hist = False\n",
+        "        skip_hist = False\n        pass\n",
+        1,
+    )
+    _install_legacy_context_stubs(
+        monkeypatch,
+        input_sidecar,
+        producer_source=producer_source,
+    )
+
+    _declaration, summary = run_data_driven._resolve_legacy_histogram_applicability(
+        input_pkl=source_path,
+        input_sidecar=input_sidecar,
+        campaign_state_path=state_path,
+        campaign_block_id="legacy_block",
+    )
+
+    assert summary["producer_semantic_comparison"] == (
+        "relevant_binary_decisions_equal"
+    )
+
+
+def test_legacy_producer_source_difference_fails_only_for_material_decision(
+    tmp_path,
+    monkeypatch,
+):
+    state_path, source_path, _state, input_sidecar = _legacy_context_inputs(tmp_path)
+    producer_source = Path(run_data_driven.analysis_processor.__file__).read_text(
+        encoding="utf-8"
+    ).replace(
+        '            if (("lt" in dense_axis_name) and ("fwd" not in lep_chan)):\n'
+        "                skip_hist = True\n",
+        '            if (("lt" in dense_axis_name) and ("fwd" in lep_chan)):\n'
+        "                skip_hist = True\n",
+        1,
+    )
+    _install_legacy_context_stubs(
+        monkeypatch,
+        input_sidecar,
+        producer_source=producer_source,
+    )
+
+    with pytest.raises(RuntimeError, match="applicability decisions differ"):
+        run_data_driven._resolve_legacy_histogram_applicability(
+            input_pkl=source_path,
+            input_sidecar=input_sidecar,
+            campaign_state_path=state_path,
+            campaign_block_id="legacy_block",
+        )
+
+
+def _legacy_resolution_for_diagnostic():
+    return {
+        "analysis_mode": "all",
+        "region": "SR",
+        "category_groups": ["3l_onZ_tau"],
+        "histogram_families": ["lt"],
+        "years": ["2018"],
+        "split_by_lepton_flavor": False,
+    }
+
+
+def _legacy_declaration_for_config(category_config):
+    selected = run_data_driven._selected_category_dicts(
+        analysis_mode="all",
+        region="SR",
+        category_groups=["3l_onZ_tau"],
+        category_config=category_config,
+    )
+    return run_data_driven.analysis_processor.AnalysisProcessor.build_histogram_applicability(
+        analysis_mode="all",
+        runtime_families=("lt",),
+        selected_category_dicts=selected,
+        is_run3_values=(False,),
+    )
+
+
+def test_successful_legacy_structure_does_not_probe_local_config(monkeypatch):
+    historical = _legacy_declaration_for_config(_legacy_category_config())
+    monkeypatch.setattr(
+        run_data_driven,
+        "validate_histogram_artifact",
+        lambda *_args, **_kwargs: {"status": "valid"},
+    )
+    monkeypatch.setattr(
+        run_data_driven,
+        "_current_local_category_config_candidate",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("local config must not be probed on the successful path")
+        ),
+    )
+
+    result = run_data_driven._validate_legacy_histogram_artifact(
+        "source.pkl.gz",
+        historical,
+        _legacy_resolution_for_diagnostic(),
+    )
+
+    assert result == {"status": "valid"}
+
+
+def test_local_modified_config_is_diagnostic_only_after_contradiction(
+    tmp_path,
+    monkeypatch,
+):
+    historical = _legacy_declaration_for_config(_legacy_category_config())
+    local_path = tmp_path / "ch_lst.json"
+    local_path.write_text(
+        json.dumps(_legacy_category_config(lepton_channel="3l_onZ_1b_fwd")),
+        encoding="utf-8",
+    )
+    calls = []
+
+    def _validate(_path, *, histogram_applicability):
+        calls.append(histogram_applicability)
+        states = set(
+            histogram_applicability["families"]["lt"]["channels"].values()
+        )
+        if states == {"not_applicable"}:
+            raise ValueError(
+                "Family 'lt' is structurally present for not-applicable channel(s): test"
+            )
+        return {"status": "valid"}
+
+    monkeypatch.setattr(run_data_driven, "validate_histogram_artifact", _validate)
+    monkeypatch.setattr(
+        run_data_driven,
+        "_current_local_category_config_candidate",
+        lambda _repository_root: (" M topeft/channels/ch_lst.json", local_path),
+    )
+
+    with pytest.raises(RuntimeError, match="historical_config_execution_ambiguity"):
+        run_data_driven._validate_legacy_histogram_artifact(
+            "source.pkl.gz",
+            historical,
+            _legacy_resolution_for_diagnostic(),
+        )
+
+    assert len(calls) == 2
+    assert set(calls[0]["families"]["lt"]["channels"].values()) == {
+        "not_applicable"
+    }
+    assert set(calls[1]["families"]["lt"]["channels"].values()) == {
+        "applicable"
+    }
 
 
 def test_legacy_context_arguments_are_all_or_none():

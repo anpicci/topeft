@@ -3194,9 +3194,10 @@ def test_validated_applicability_does_not_mask_later_unrelated_exception(
         )
 
 
-def test_self_describing_artifact_rejects_incompatible_producer_semantics(
+def test_self_describing_artifact_uses_declaration_not_current_producer_semantics(
     tmp_path,
     policy,
+    monkeypatch,
 ):
     input_path = tmp_path / "incompatible_producer_processor.pkl.gz"
     _write_processor(input_path, policy)
@@ -3205,13 +3206,65 @@ def test_self_describing_artifact_rejects_incompatible_producer_semantics(
     sidecar["histogram_applicability"]["producer_semantics_sha256"] = "b" * 64
     sidecar_path.write_text(json.dumps(sidecar), encoding="utf-8")
 
-    with pytest.raises(RuntimeError, match="producer applicability semantics"):
+    monkeypatch.setattr(
+        run_data_driven.analysis_processor,
+        "histogram_applicability_semantics_sha256",
+        lambda: (_ for _ in ()).throw(
+            AssertionError("current producer query must not be consulted")
+        ),
+    )
+    monkeypatch.setattr(
+        run_data_driven.analysis_processor,
+        "load_category_config",
+        lambda: (_ for _ in ()).throw(
+            AssertionError("current category config must not be consulted")
+        ),
+    )
+    monkeypatch.setattr(
+        run_data_driven,
+        "_git_show_text",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("producer commit/config provenance must not be consulted")
+        ),
+    )
+
+    output_path = tmp_path / "accepted_historical_producer.pkl.gz"
+    run_data_driven.main(
+        [
+            "--input-pkl",
+            str(input_path),
+            "--output-pkl",
+            str(output_path),
+            "--quiet",
+        ]
+    )
+
+    assert output_path.is_file()
+
+
+def test_self_describing_artifact_rejects_malformed_binary_declaration(
+    tmp_path,
+    policy,
+):
+    input_path = tmp_path / "malformed_applicability_processor.pkl.gz"
+    _write_processor(input_path, policy)
+    sidecar_path = metadata_sidecar_path(input_path)
+    sidecar = json.loads(sidecar_path.read_text(encoding="utf-8"))
+    family = next(iter(sidecar["histogram_applicability"]["families"].values()))
+    channel = next(iter(family["channels"]))
+    family["channels"][channel] = "unknown"
+    sidecar_path.write_text(json.dumps(sidecar), encoding="utf-8")
+
+    output_path = tmp_path / "must_not_exist.pkl.gz"
+    with pytest.raises(RuntimeError, match="states are binary"):
         run_data_driven.main(
             [
                 "--input-pkl",
                 str(input_path),
                 "--output-pkl",
-                str(tmp_path / "must_not_exist.pkl.gz"),
+                str(output_path),
                 "--quiet",
             ]
         )
+
+    assert not output_path.exists()

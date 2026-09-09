@@ -1185,6 +1185,7 @@ class AnalysisProcessor(processor.ProcessorABC):
         selected_category_dicts,
         split_by_lepton_flavor=False,
         is_run3_values=(False, True),
+        producer_proxy=None,
     ):
         """Serialize the exact producer decision for selected output channels."""
 
@@ -1194,7 +1195,7 @@ class AnalysisProcessor(processor.ProcessorABC):
                 f"Unsupported producer analysis mode {analysis_mode!r}; "
                 f"expected one of {sorted(supported_modes)}."
             )
-        proxy = object.__new__(cls)
+        proxy = object.__new__(cls) if producer_proxy is None else producer_proxy
         proxy._analysis_mode = analysis_mode
         is_run3_values = tuple(dict.fromkeys(bool(value) for value in is_run3_values))
         if not is_run3_values:
