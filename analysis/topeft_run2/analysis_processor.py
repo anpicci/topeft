@@ -1,9 +1,12 @@
 #!/usr/bin/env python
+import ast
 import copy
 import coffea
+import hashlib
 import numpy as np
 import awkward as ak
 import json
+from pathlib import Path
 
 import hist
 from topcoffea.modules.histEFT import HistEFT
@@ -660,6 +663,70 @@ def load_category_config(category_config_path=None):
         return json.load(ch_json_stream)
 
 
+HISTOGRAM_APPLICABILITY_CONTRACT_VERSION = 1
+HISTOGRAM_APPLICABILITY_STATES = frozenset({"applicable", "not_applicable"})
+_HISTOGRAM_APPLICABILITY_LEGACY_METHODS = (
+    "_should_fill_ptz_wtau_channel",
+    "_should_fill_plain_ptz_channel",
+    "_should_fill_plain_ptll_channel",
+    "_should_skip_histogram_fill",
+)
+_HISTOGRAM_APPLICABILITY_METHODS = (
+    *_HISTOGRAM_APPLICABILITY_LEGACY_METHODS,
+    "histogram_fill_is_applicable",
+)
+
+
+def _histogram_applicability_methods_sha256(source_text, method_names):
+    if source_text is None:
+        source_text = Path(__file__).read_text(encoding="utf-8")
+    tree = ast.parse(source_text)
+    analysis_class = next(
+        (
+            node
+            for node in tree.body
+            if isinstance(node, ast.ClassDef) and node.name == "AnalysisProcessor"
+        ),
+        None,
+    )
+    if analysis_class is None:
+        raise ValueError("AnalysisProcessor is absent from producer source.")
+    methods = {
+        node.name: node
+        for node in analysis_class.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and node.name in method_names
+    }
+    missing = sorted(set(method_names) - set(methods))
+    if missing:
+        raise ValueError(
+            "Producer source lacks applicability method(s): " + ", ".join(missing)
+        )
+    semantic_ast = "\n".join(
+        ast.dump(methods[name], annotate_fields=True, include_attributes=False)
+        for name in method_names
+    )
+    return hashlib.sha256(semantic_ast.encode("utf-8")).hexdigest()
+
+
+def histogram_applicability_semantics_sha256(source_text=None):
+    """Hash the complete current producer applicability query."""
+
+    return _histogram_applicability_methods_sha256(
+        source_text,
+        _HISTOGRAM_APPLICABILITY_METHODS,
+    )
+
+
+def legacy_histogram_applicability_semantics_sha256(source_text=None):
+    """Hash the legacy-compatible producer veto surface used for qualification."""
+
+    return _histogram_applicability_methods_sha256(
+        source_text,
+        _HISTOGRAM_APPLICABILITY_LEGACY_METHODS,
+    )
+
+
 class AnalysisProcessor(processor.ProcessorABC):
 
     @staticmethod
@@ -1080,6 +1147,133 @@ class AnalysisProcessor(processor.ProcessorABC):
             skip_hist = True
 
         return skip_hist
+
+    def histogram_fill_is_applicable(
+        self,
+        dense_axis_name,
+        ch_name,
+        lep_chan,
+        *,
+        is_run3=None,
+        application_region=None,
+    ):
+        """Return the producer's binary category-family fill decision."""
+
+        if dense_axis_name in JVM_ETA_PHI_DIAGNOSTIC_HISTOGRAMS:
+            if is_run3 is None or application_region is None:
+                raise ValueError(
+                    "JVM diagnostic applicability requires run-period and "
+                    "application-region context."
+                )
+            if not is_run3 and (
+                ch_name != "2los_CRtt_2j"
+                or application_region != "isSR_2lOS"
+            ):
+                return False
+        return not self._should_skip_histogram_fill(
+            dense_axis_name,
+            ch_name,
+            lep_chan,
+        )
+
+    @classmethod
+    def build_histogram_applicability(
+        cls,
+        *,
+        analysis_mode,
+        runtime_families,
+        selected_category_dicts,
+        split_by_lepton_flavor=False,
+        is_run3_values=(False, True),
+    ):
+        """Serialize the exact producer decision for selected output channels."""
+
+        supported_modes = {"all", "offz", "tau", "fwd", "default"}
+        if analysis_mode not in supported_modes:
+            raise ValueError(
+                f"Unsupported producer analysis mode {analysis_mode!r}; "
+                f"expected one of {sorted(supported_modes)}."
+            )
+        proxy = object.__new__(cls)
+        proxy._analysis_mode = analysis_mode
+        is_run3_values = tuple(dict.fromkeys(bool(value) for value in is_run3_values))
+        if not is_run3_values:
+            raise ValueError("Producer applicability requires at least one run period.")
+        families = {}
+        for family in dict.fromkeys(str(value) for value in runtime_families):
+            channel_states = {}
+            for category_dict in selected_category_dicts:
+                for category in category_dict.values():
+                    jet_labels = (
+                        (None,)
+                        if family == "njets"
+                        else tuple(category["jet_lst"])
+                    )
+                    flavor_labels = (
+                        tuple(category["lep_flav_lst"])
+                        if split_by_lepton_flavor
+                        else (None,)
+                    )
+                    application_regions = tuple(
+                        dict.fromkeys(
+                            tuple(category.get("appl_lst", ()))
+                            + tuple(category.get("appl_lst_data", ()))
+                        )
+                    )
+                    if not application_regions:
+                        raise ValueError(
+                            "Producer category lacks application-region context."
+                        )
+                    for lepton_channel_definition in category["lep_chan_lst"]:
+                        lepton_channel = lepton_channel_definition[0]
+                        for jet_label in jet_labels:
+                            if jet_label is None:
+                                output_jet_label = None
+                            else:
+                                jet_mode, jet_threshold, _ = parse_analysis_njet_token(
+                                    jet_label
+                                )
+                                output_jet_label = f"{jet_mode}_{jet_threshold}j"
+                            for flavor_label in flavor_labels:
+                                output_channel = construct_cat_name(
+                                    lepton_channel,
+                                    njet_str=output_jet_label,
+                                    flav_str=flavor_label,
+                                )
+                                applicable = any(
+                                    proxy.histogram_fill_is_applicable(
+                                        family,
+                                        output_channel,
+                                        lepton_channel,
+                                        is_run3=is_run3,
+                                        application_region=application_region,
+                                    )
+                                    for is_run3 in is_run3_values
+                                    for application_region in application_regions
+                                )
+                                state = "applicable" if applicable else "not_applicable"
+                                previous = channel_states.setdefault(
+                                    output_channel,
+                                    state,
+                                )
+                                if previous != state:
+                                    raise ValueError(
+                                        "Producer applicability is inconsistent for "
+                                        f"family={family!r} channel={output_channel!r}."
+                                    )
+            families[family] = {
+                "channels": {
+                    channel: channel_states[channel]
+                    for channel in sorted(channel_states)
+                }
+            }
+        return {
+            "contract_version": HISTOGRAM_APPLICABILITY_CONTRACT_VERSION,
+            "producer_query": "AnalysisProcessor.histogram_fill_is_applicable",
+            "producer_semantics_sha256": histogram_applicability_semantics_sha256(),
+            "analysis_mode": analysis_mode,
+            "families": families,
+        }
 
 
     @property
@@ -2575,17 +2769,21 @@ class AnalysisProcessor(processor.ProcessorABC):
                                             cuts_lst.append(njet_val)
                                         ch_name = construct_cat_name(lep_chan,njet_str=njet_ch,flav_str=flav_ch)
 
+                                        if not self.histogram_fill_is_applicable(
+                                            dense_axis_name,
+                                            ch_name,
+                                            lep_chan,
+                                            is_run3=is_run3,
+                                            application_region=appl,
+                                        ):
+                                            continue
+
                                         # Get the cuts mask for all selections
                                         if dense_axis_name == "njets":
                                             all_cuts_mask = (selections.all(*cuts_lst) & njets_any_mask)
                                         else:
                                             all_cuts_mask = selections.all(*cuts_lst)
                                         if is_jvm_eta_phi_diagnostic and not is_run3:
-                                            if (
-                                                ch_name != "2los_CRtt_2j"
-                                                or appl != "isSR_2lOS"
-                                            ):
-                                                continue
                                             all_cuts_mask = (
                                                 run2_jvm_frozen_cr_mask
                                                 & selections.all("isSR_2lOS")
@@ -2719,15 +2917,6 @@ class AnalysisProcessor(processor.ProcessorABC):
                                                     sumw2_values_cut_map[sumw2_axis_name] = base_values
 
                                         # Fill the histos
-                                        skip_hist = self._should_skip_histogram_fill(
-                                            dense_axis_name,
-                                            ch_name,
-                                            lep_chan,
-                                        )
-
-                                        if skip_hist:
-                                            continue
-
                                         if fill_base_hist:
                                             axes_fill_info_dict = {
                                                 **values_cut_map,

@@ -209,7 +209,7 @@ case "$action" in
     fi
     mkdir -p -- "$(dirname -- "$source_path")"
     printf 'synthetic source\\n' > "$source_path"
-    printf '{{"synthetic": true}}\\n' > "$source_path.metadata.json"
+    printf '{{"artifact": {{"pkl_sha256": "%064d"}}, "synthetic": true}}\\n' 6 > "$source_path.metadata.json"
     if [[ " $* " != *" --defer-np "* ]]; then
       printf 'synthetic nonprompt\\n' > "$nonprompt_path"
       printf '{{"synthetic": true}}\\n' > "$nonprompt_path.metadata.json"
@@ -495,6 +495,8 @@ def test_t0_sr_statonly_resolves_exact_nominal_raw_count_contract(tmp_path):
     assert f"env_file_sha256: {T0_FROZEN_SHA256}" in result.stdout
     assert "environment_policy: exact_frozen_archive_integrity_plus_snapshot" in result.stdout
     assert "dry_run_complete: ten commands resolved" in result.stdout
+    assert "--legacy-campaign-state" not in result.stdout
+    assert "--legacy-campaign-block" not in result.stdout
     assert "2024" not in result.stdout
     assert not output_dir.exists()
 
@@ -596,6 +598,36 @@ def test_t0_resume_retries_only_failed_nonprompt_subset(tmp_path):
     ).read_text().splitlines() == PROFILE_BLOCK_IDS["t0_sr_statonly"][4:]
     assert result.stdout.count("Skipping validated t0_sr_statonly block") == 4
     assert result.stdout.count("Reusing validated completed source") == 6
+
+
+def test_t0_resume_dry_run_transports_legacy_context_without_verdict(tmp_path):
+    _, output_root, validation_root, _ = _prepare_t0_recovery_fixture(
+        tmp_path,
+        retry_indices=range(4, 10),
+    )
+
+    result = _run(
+        "t0_sr_statonly",
+        output_root,
+        "stub-t0_sr_statonly",
+        dry_run=True,
+        resume=True,
+        environment=_resume_environment(validation_root),
+    )
+
+    assert result.returncode == 0, result.stdout
+    assert result.stdout.count("Legacy context transported (no applicability verdict)") == 6
+    assert result.stdout.count("--legacy-campaign-state") == 6
+    assert result.stdout.count("--legacy-campaign-block") == 6
+    assert result.stdout.count('"analysis_mode":"all"') == 6
+    assert result.stdout.count('"producer_topeft_commit"') == 6
+    assert result.stdout.count('"source_pkl_sha256"') == 6
+    assert result.stdout.count('"category_groups"') == 6
+    assert result.stdout.count('"histogram_families"') == 6
+    assert "not_applicable" not in result.stdout
+    assert "applicable\"" not in result.stdout
+    assert (validation_root / "block_calls.tsv").read_text() == ""
+    assert (validation_root / "nonprompt_calls.tsv").read_text() == ""
 
 
 def test_t0_resume_fails_closed_when_ready_source_is_missing(tmp_path):

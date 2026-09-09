@@ -1288,6 +1288,65 @@ if mode == "historical_source_commit":
     print(source_commit)
     raise SystemExit(0)
 
+if mode == "legacy_context_summary":
+    block_id = sys.argv[3]
+    matching = [block for block in state.get("blocks", []) if block.get("id") == block_id]
+    if len(matching) != 1:
+        fail(f"campaign state must contain exactly one block {block_id!r}")
+    block = matching[0]
+    if block.get("source_status") != "ready":
+        fail(f"campaign block {block_id!r} does not contain a reusable ready source")
+    source_command = block.get("source_command_argv")
+    if not isinstance(source_command, list) or any(
+        not isinstance(value, str) for value in source_command
+    ):
+        fail(f"campaign block {block_id!r} lacks source command provenance")
+
+    def option_values(option):
+        positions = [index for index, value in enumerate(source_command) if value == option]
+        if len(positions) != 1:
+            fail(f"source command must contain exactly one {option}")
+        values = []
+        for value in source_command[positions[0] + 1:]:
+            if value.startswith("-"):
+                break
+            values.append(value)
+        if not values:
+            fail(f"source command has no values for {option}")
+        return values
+
+    selected_modes = [
+        mode_name
+        for flag, mode_name in (
+            ("--all-analysis", "all"),
+            ("--offZ-3l-split", "offz"),
+            ("--tau-h-analysis", "tau"),
+            ("--fwd-analysis", "fwd"),
+        )
+        if flag in source_command
+    ]
+    if len(selected_modes) > 1:
+        fail("source command contains conflicting analysis modes")
+    source_path = Path(block.get("expected_nominal_path", ""))
+    sidecar_path = Path(str(source_path) + ".metadata.json")
+    try:
+        sidecar = json.loads(sidecar_path.read_text(encoding="utf-8"))
+        source_identity = sidecar["artifact"]["pkl_sha256"]
+    except (OSError, json.JSONDecodeError, KeyError, TypeError) as exc:
+        fail(f"cannot resolve source identity from {sidecar_path}: {exc}")
+    summary = {
+        "analysis_mode": selected_modes[0] if selected_modes else "default",
+        "campaign_block": block_id,
+        "category_groups": option_values("--category-groups"),
+        "histogram_families": option_values("--hist-vars"),
+        "producer_topeft_commit": state.get("topeft_git_commit"),
+        "region": state.get("region"),
+        "source_pkl_sha256": source_identity,
+        "years": option_values("-y"),
+    }
+    print(json.dumps(summary, sort_keys=True, separators=(",", ":")))
+    raise SystemExit(0)
+
 if mode == "status":
     block_id = sys.argv[3]
     for block in state.get("blocks", []):
@@ -1762,8 +1821,14 @@ resolve_t0_postprocessor_provenance() {
     topcoffea/modules/sparseHist.py \
     topcoffea/modules/utils.py)
   if [[ -n "${topeft_postprocessor_status}" || -n "${topcoffea_postprocessor_status}" ]]; then
-    echo "ERROR: t0_sr_statonly postprocessor source surfaces are dirty; commit provenance would be ambiguous." >&2
-    exit 1
+    if [[ "${dry_run}" == "true" ]]; then
+      echo "Dry-run note: postprocessor source surfaces are dirty; no production child or provenance record will be created."
+    elif [[ -n "${SRPLOT009_VALIDATION_BACKEND:-}" ]]; then
+      echo "Validation-backend note: postprocessor source surfaces are dirty; the synthetic backend creates no production artifact."
+    else
+      echo "ERROR: t0_sr_statonly postprocessor source surfaces are dirty; commit provenance would be ambiguous." >&2
+      exit 1
+    fi
   fi
 }
 
@@ -2565,6 +2630,18 @@ run_sr_block() {
     --input-pkl "${source_path}"
     --output-pkl "${nonprompt_path}"
   )
+  if [[ "${production_profile}" == "t0_sr_statonly" \
+    && "${source_reusable}" == "true" \
+    && -s "${source_sidecar_path}" ]] \
+    && ! grep -Fq '"histogram_applicability"' "${source_sidecar_path}"; then
+    nonprompt_cmd+=(
+      --legacy-campaign-state "${production_state_path}"
+      --legacy-campaign-block "${production_block}"
+    )
+    echo "Legacy context transported (no applicability verdict):"
+    production_state_tool legacy_context_summary \
+      "${production_state_path}" "${production_block}"
+  fi
 
   start_epoch=$(date +%s)
 

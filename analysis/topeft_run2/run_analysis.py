@@ -2120,6 +2120,21 @@ if __name__ == "__main__":
         sumw2_policy=sumw2_policy,
         record_raw_count=record_raw_count,
     )
+    histogram_applicability = processor_instance.build_histogram_applicability(
+        analysis_mode=processor_instance._analysis_mode,
+        runtime_families=runtime_histogram_families,
+        selected_category_dicts=(
+            category_group_selection["sr_category_dict"],
+            category_group_selection["cr_category_dict"],
+        ),
+        split_by_lepton_flavor=split_lep_flavor,
+        is_run3_values=tuple(
+            dict.fromkeys(
+                sample["year"].startswith("202")
+                for sample in samplesdict.values()
+            )
+        ),
+    )
 
     if executor_name in ["work_queue", "taskvine"]:
         wq_staging_dir, wq_cleanup_after = _prepare_work_queue_staging_directory(wq_filepath)
@@ -2273,6 +2288,7 @@ if __name__ == "__main__":
             runtime_families=runtime_histogram_families,
             schema_version=NOMINAL_CONTAINER_SCHEMA_VERSION,
             policy=sumw2_policy,
+            histogram_applicability=histogram_applicability,
         )
         diagnostic_phase = "nominal_key_canonicalization"
         output = canonicalize_nominal_keys(
@@ -2313,6 +2329,7 @@ if __name__ == "__main__":
             production_sample_contract=production_sample_contract,
             requested_data_driven_products=requested_data_driven_products,
             resolved_data_driven_contract=resolved_data_driven_contract,
+            histogram_applicability=histogram_applicability,
         )
         print("Done!")
 

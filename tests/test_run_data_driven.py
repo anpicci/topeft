@@ -1,6 +1,8 @@
 import gzip
 import importlib.util
+import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import cloudpickle
 import hist
@@ -21,6 +23,73 @@ def _load_run_data_driven_module():
 
 
 run_data_driven = _load_run_data_driven_module()
+
+
+def _legacy_context_inputs(tmp_path):
+    source_path = tmp_path / "canonical_source.pkl.gz"
+    state_path = tmp_path / "campaign_state.json"
+    source_command = [
+        "python",
+        "run_analysis.py",
+        "--sr",
+        "-y",
+        "2018",
+        "--hist-vars",
+        "lt",
+        "--category-groups",
+        "3l_onZ_tau",
+        "--all-analysis",
+    ]
+    state = {
+        "production_profile": "t0_sr_statonly",
+        "topeft_git_commit": "1" * 40,
+        "region": "SR",
+        "blocks": [
+            {
+                "id": "legacy_block",
+                "source_status": "ready",
+                "expected_nominal_path": str(source_path),
+                "category_groups": ["3l_onZ_tau"],
+                "histograms": ["lt"],
+                "years": ["2018"],
+                "source_command_argv": source_command,
+            }
+        ],
+    }
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+    input_sidecar = {
+        "artifact": {
+            "artifact_kind": "processor_output",
+            "pkl_size_bytes": 123,
+            "pkl_sha256": "2" * 64,
+        },
+        "sumw2_storage_provenance": {},
+    }
+    return state_path, source_path, state, input_sidecar
+
+
+def _install_legacy_context_stubs(monkeypatch, input_sidecar, *, families=("lt",)):
+    monkeypatch.setattr(
+        run_data_driven,
+        "read_histogram_sidecar",
+        lambda _path: input_sidecar,
+    )
+    monkeypatch.setattr(
+        run_data_driven,
+        "resolved_policy_from_provenance",
+        lambda _provenance: SimpleNamespace(runtime_histogram_families=families),
+    )
+    producer_source = Path(run_data_driven.analysis_processor.__file__).read_text(
+        encoding="utf-8"
+    )
+    monkeypatch.setattr(
+        run_data_driven.subprocess,
+        "run",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            returncode=0,
+            stdout=producer_source,
+        ),
+    )
 
 
 class FakeHist:
@@ -188,6 +257,105 @@ def test_run_data_driven_rejects_manual_metadata_sidecar_option():
 def test_run_data_driven_requires_input_pkl():
     with pytest.raises(SystemExit):
         run_data_driven.main([])
+
+
+def test_exact_legacy_context_qualifies_through_producer_query(tmp_path, monkeypatch):
+    state_path, source_path, _state, input_sidecar = _legacy_context_inputs(tmp_path)
+    _install_legacy_context_stubs(monkeypatch, input_sidecar)
+
+    declaration, summary = run_data_driven._resolve_legacy_histogram_applicability(
+        input_pkl=source_path,
+        input_sidecar=input_sidecar,
+        campaign_state_path=state_path,
+        campaign_block_id="legacy_block",
+    )
+
+    assert declaration["analysis_mode"] == "all"
+    assert set(declaration["families"]["lt"]["channels"].values()) == {
+        "not_applicable"
+    }
+    assert summary == {
+        "source_pkl_sha256": "2" * 64,
+        "producer_topeft_commit": "1" * 40,
+        "producer_semantics_sha256": declaration["producer_semantics_sha256"],
+        "legacy_compatibility_sha256": (
+            run_data_driven.analysis_processor.legacy_histogram_applicability_semantics_sha256()
+        ),
+        "analysis_mode": "all",
+        "region": "SR",
+        "category_groups": ["3l_onZ_tau"],
+        "histogram_families": ["lt"],
+        "years": ["2018"],
+    }
+
+
+@pytest.mark.parametrize(
+    "mismatch,expected",
+    [
+        ("source", "source identity mismatch"),
+        ("producer", "producer applicability semantics are incompatible"),
+        ("analysis_mode", "conflicting analysis modes"),
+        ("category_scope", "category/channel scope disagrees"),
+        ("family_scope", "requested-family scope disagrees with source command"),
+        ("artifact_family_scope", "requested-family scope disagrees with source artifact"),
+    ],
+)
+def test_legacy_context_mismatches_fail_closed(
+    tmp_path,
+    monkeypatch,
+    mismatch,
+    expected,
+):
+    state_path, source_path, state, input_sidecar = _legacy_context_inputs(tmp_path)
+    families = ("njets",) if mismatch == "artifact_family_scope" else ("lt",)
+    _install_legacy_context_stubs(monkeypatch, input_sidecar, families=families)
+    block = state["blocks"][0]
+    if mismatch == "source":
+        expected_sidecar = {
+            **input_sidecar,
+            "artifact": {
+                **input_sidecar["artifact"],
+                "pkl_sha256": "3" * 64,
+            },
+        }
+        monkeypatch.setattr(
+            run_data_driven,
+            "read_histogram_sidecar",
+            lambda _path: expected_sidecar,
+        )
+    elif mismatch == "producer":
+        monkeypatch.setattr(
+            run_data_driven.analysis_processor,
+            "legacy_histogram_applicability_semantics_sha256",
+            lambda source_text=None: "a" * 64 if source_text is None else "b" * 64,
+        )
+    elif mismatch == "analysis_mode":
+        block["source_command_argv"].append("--tau-h-analysis")
+    elif mismatch == "category_scope":
+        block["category_groups"] = ["different_group"]
+    elif mismatch == "family_scope":
+        block["histograms"] = ["njets"]
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match=expected):
+        run_data_driven._resolve_legacy_histogram_applicability(
+            input_pkl=source_path,
+            input_sidecar=input_sidecar,
+            campaign_state_path=state_path,
+            campaign_block_id="legacy_block",
+        )
+
+
+def test_legacy_context_arguments_are_all_or_none():
+    with pytest.raises(SystemExit):
+        run_data_driven.main(
+            [
+                "--input-pkl",
+                "source.pkl.gz",
+                "--legacy-campaign-state",
+                "state.json",
+            ]
+        )
 
 
 def test_run_data_driven_legacy_dict_mode(tmp_path, monkeypatch):
