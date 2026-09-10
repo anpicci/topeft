@@ -21,7 +21,8 @@ T0_FROZEN_SHA256 = "c9c2cf2a8697c722291a5e5bfc492afafd367e1a2274289d5d37f9b8cfa8
 T0_HISTORICAL_LAUNCHER_COMMIT = "5e7a7b4cdfa5babddab922650e5c35bb0a2c2ea2"
 PUBLIC_PROFILES = {
     "run2_full", "run3_full", "run2_run3_full",
-    "run2_full_CR", "run3_full_CR", "run2_run3_full_CR", "t0_sr_statonly",
+    "run2_full_CR", "run3_full_CR", "run2_run3_full_CR",
+    "t0_sr_statonly", "t0_cr_statonly",
 }
 PROFILE_BLOCK_IDS = {
     "run2_full": [f"run2_full_{suffix}" for suffix in "abcde"],
@@ -30,6 +31,9 @@ PROFILE_BLOCK_IDS = {
         f"t0_sr_statonly_{era}_{suffix}"
         for era in ("run2", "run3")
         for suffix in "abcde"
+    ],
+    "t0_cr_statonly": [
+        f"t0_cr_statonly_block{index}" for index in range(1, 19)
     ],
     "run2_full_CR": [f"run2_full_CR_block{index}" for index in range(1, 7)],
     "run3_full_CR": [f"run3_full_CR_block{index}" for index in range(1, 13)],
@@ -41,6 +45,7 @@ MATRIX_EARLY_PROFILES = (
     "run2_run3_full",
     "run2_run3_full_CR",
     "t0_sr_statonly",
+    "t0_cr_statonly",
 )
 RUN2_SR_BLOCKS = [
     (("UL16", "UL16APV", "UL17", "UL18"), ("2l", "2lss_1tau", "2los_1tau", "4l"), ("njets", "lj0pt", "ptz", "ptz_wtau", "lt")),
@@ -108,7 +113,11 @@ def _clean_environment():
 
 
 def _run(profile, output_dir, campaign_tag, *, dry_run=True, resume=False, environment=None):
-    env_file = T0_FROZEN_ENV if profile == "t0_sr_statonly" else FROZEN_ENV
+    env_file = (
+        T0_FROZEN_ENV
+        if profile in {"t0_sr_statonly", "t0_cr_statonly"}
+        else FROZEN_ENV
+    )
     command = [
         str(RUN_CR), "--production-profile", profile,
         "--output-dir", str(output_dir),
@@ -519,6 +528,126 @@ def test_t0_sr_statonly_resolves_exact_nominal_raw_count_contract(tmp_path):
     assert wrong_archive.returncode != 0
     assert "pinned to the required frozen snapshot archive" in wrong_archive.stdout
     assert not (tmp_path / "wrong_archive").exists()
+
+
+def test_t0_cr_statonly_composes_full_cr_with_native_data_driven_contract(tmp_path):
+    run2 = _run("run2_full_CR", tmp_path / "run2", "t0-cr-run2-authority")
+    run3 = _run("run3_full_CR", tmp_path / "run3", "t0-cr-run3-authority")
+    output_dir = tmp_path / "t0_cr_statonly"
+    result = _run("t0_cr_statonly", output_dir, "t0-cr-statonly-test")
+
+    assert run2.returncode == run3.returncode == result.returncode == 0
+    authority_commands = _commands(run2.stdout) + _commands(run3.stdout)
+    commands = _commands(result.stdout)
+    assert len(commands) == 18
+    assert [
+        _scientific_signature(command)[:5] for command in commands
+    ] == [
+        _scientific_signature(command)[:5] for command in authority_commands
+    ]
+    for argv in commands:
+        assert argv[:2] == ["python", "run_analysis.py"]
+        assert "--snapshot" in argv
+        assert _option_values(argv, "--env-file", 1) == [str(T0_FROZEN_ENV)]
+        assert _option_values(argv, "-s", 1) == ["100000"]
+        assert _option_values(argv, "-x", 1) == ["work_queue"]
+        assert "--workers" not in argv
+        assert "--nworkers" not in argv
+        assert "--do-systs" not in argv
+        assert "--record-raw-count" in argv
+        assert "--do-np" in argv
+        assert "--np-postprocess=defer" in argv
+        assert "--options" in argv
+        assert "--skip-sr" in argv
+        assert "--skip-cr" not in argv
+        assert _option_values(argv, "--sample-universe-wrapper", 3) == [
+            "run_cr.sh", "->", "fullR3_run.sh"
+        ]
+
+    data_driven_commands = [
+        shlex.split(text)
+        for text in re.findall(
+            r"Separate nonprompt/charge-flip command "
+            r"\(not executed by dry-run\):\n([^\n]+)",
+            result.stdout,
+        )
+    ]
+    assert len(data_driven_commands) == 18
+    for source_argv, data_driven_argv in zip(commands, data_driven_commands):
+        assert data_driven_argv[:2] == ["python", "./run_data_driven.py"]
+        assert "--only-flips" not in data_driven_argv
+        source_path = Path(_option_values(source_argv, "-p", 1)[0]) / (
+            f'{_option_values(source_argv, "-o", 1)[0]}.pkl.gz'
+        )
+        assert _option_values(data_driven_argv, "--input-pkl", 1) == [
+            str(source_path)
+        ]
+        assert _option_values(data_driven_argv, "--output-pkl", 1) == [
+            str(source_path).removesuffix(".pkl.gz") + "_np.pkl.gz"
+        ]
+
+    assert result.stdout.count("sumw2_storage_mode: full_diagnostics") == 1
+    assert f"env_file_sha256: {T0_FROZEN_SHA256}" in result.stdout
+    assert "do_systs: false" in result.stdout
+    assert "do_np: true" in result.stdout
+    assert "run_cr: true" in result.stdout
+    assert "run_sr: false" in result.stdout
+    assert "eighteen source commands and eighteen separate data-driven commands" in result.stdout
+    assert not output_dir.exists()
+
+    rejected = subprocess.run(
+        [
+            str(RUN_CR),
+            "--production-profile", "t0_cr_statonly",
+            "--dry-run",
+            "--output-dir", str(tmp_path / "rejected_archive"),
+            "--campaign-tag", "t0-cr-statonly-rejected-archive",
+            "--env-file", str(FROZEN_ENV),
+        ],
+        cwd=RUN_DIRECTORY,
+        env=_clean_environment(),
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        check=False,
+    )
+    assert rejected.returncode != 0
+    assert "pinned to the required frozen snapshot archive" in rejected.stdout
+    assert not (tmp_path / "rejected_archive").exists()
+
+
+def test_t0_cr_statonly_state_tracks_source_and_data_driven_children(tmp_path):
+    result, output_root, validation_root = _stubbed_run(
+        tmp_path, "t0_cr_statonly", "success"
+    )
+
+    assert result.returncode == 0, result.stdout
+    state = _campaign_state(output_root, "t0_cr_statonly")
+    assert state["region"] == "CR"
+    assert state["nonprompt_mode"] == "separate"
+    assert state["do_systs"] is False
+    assert state["successful_block_count"] == 18
+    assert state["known_failed_block_count"] == 0
+    assert [block["id"] for block in state["blocks"]] == (
+        PROFILE_BLOCK_IDS["t0_cr_statonly"]
+    )
+    assert all(block["source_status"] == "ready" for block in state["blocks"])
+    assert all(block["nonprompt_status"] == "success" for block in state["blocks"])
+    assert all(
+        block["nonprompt_postprocessor_provenance"]
+        for block in state["blocks"]
+    )
+    block_calls = (validation_root / "block_calls.tsv").read_text().splitlines()
+    assert len(block_calls) == 18
+    assert all("--defer-np" in line for line in block_calls)
+    assert (
+        validation_root / "nonprompt_calls.tsv"
+    ).read_text().splitlines() == PROFILE_BLOCK_IDS["t0_cr_statonly"]
+    for block in state["blocks"]:
+        assert Path(block["expected_nominal_path"]).is_file()
+        assert Path(f'{block["expected_nominal_path"]}.metadata.json').is_file()
+        assert Path(block["expected_np_path"]).is_file()
+        assert Path(f'{block["expected_np_path"]}.metadata.json').is_file()
 
 
 def test_t0_resume_reuses_all_sources_and_appends_postprocessor_provenance(tmp_path):
