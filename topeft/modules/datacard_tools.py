@@ -962,6 +962,8 @@ class DatacardMaker():
             "TTZToLL_M1to10_",
             "TTToSemiLeptonic_",
             "TTTo2L2Nu_",
+            "TTtoLNu2Q_",
+            "TTto2L2Nu_",
         ],
         "ttlnu_": [
             "ttlnuJet_",
@@ -1357,8 +1359,6 @@ class DatacardMaker():
             # from run3
             "ST_tbarW_Leptonic",
             "ST_tbarW_Semileptonic",
-            "TTtoLNu2Q",
-            "TTto2L2Nu",
             "ST_tW_Leptonic",
             "ST_tW_Semileptonic",
             "ZG_MLL-50_PTG-200to400", # -->check to see if should put in GROUP
