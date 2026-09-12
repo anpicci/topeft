@@ -17,6 +17,7 @@ from topeft.modules.nonprompt_policy import (
     explicit_exclusion_aliases,
     nonprompt_alias_definition,
     nonprompt_policy_error,
+    split_year_qualified_process,
 )
 
 
@@ -133,6 +134,28 @@ RUN2_CR_ONLY_ACTIVE_ALIASES = (
     "tbarW_centralUL18",
 )
 
+RUN3_CR_ONLY_ACTIVE_BASES = (
+    "DYJetsToLL_MLL-10to50_central",
+    "DYJetsToLL_MLL-50_central",
+    "ST_antitop_t-channel_central",
+    "ST_top_s-channel_central",
+    "ST_top_t-channel_central",
+    "ST_tW_Leptonic_central",
+    "ST_tW_Semileptonic_central",
+    "ST_tbarW_Leptonic_central",
+    "ST_tbarW_Semileptonic_central",
+    "TTto4Q_central",
+    "WJetsToLNu_central",
+    "ZG_MLL-4to50_PTG-10to100_central",
+    "ZG_MLL-4to50_PTG-100to200_central",
+    "ZG_MLL-4to50_PTG-200_central",
+    "ZG_MLL-50_PTG-10to100_central",
+    "ZG_MLL-50_PTG-100to200_central",
+    "ZG_MLL-50_PTG-200to400_central",
+    "ZG_MLL-50_PTG-400to600_central",
+    "ZG_MLL-50_PTG-600_central",
+)
+
 HISTORICAL_PROMPT_ENTRIES = (
     "TTTo2L2Nu_central",
     "TTToSemiLeptonic_central",
@@ -182,6 +205,25 @@ RUN2_CR_ACTIVE_ALIASES = (
     + RUN2_CR_ONLY_ACTIVE_ALIASES
 )
 
+RUN3_CR_ONLY_ACTIVE_ALIASES = _labels(RUN3_CR_ONLY_ACTIVE_BASES, RUN3_YEARS)
+RUN3_CR_ACTIVE_ALIASES = (
+    _labels(RUN3_ACTIVE_BASES, RUN3_YEARS)
+    + _labels(("data",), RUN3_YEARS)
+    + RUN3_CR_ONLY_ACTIVE_ALIASES
+)
+
+
+def _historical_prompt_set(active_aliases):
+    params_path = Path(__file__).parents[1] / "topeft/params/params.json"
+    historical_entries = set(
+        json.loads(params_path.read_text(encoding="utf-8"))["prompt_subtraction_samples"]
+    )
+    return {
+        alias
+        for alias in active_aliases
+        if split_year_qualified_process(alias)[0] in historical_entries
+    }
+
 
 def _certificate(bases, years):
     return certify_active_nonprompt_policy(
@@ -223,6 +265,33 @@ def test_run2_cr_active_alias_universe_has_complete_explicit_policy_coverage():
         certificate.resolved_prompt_process_set
     )
     assert set(RUN2_CR_ONLY_ACTIVE_ALIASES) <= set(certificate.explicit_exclusions)
+    assert set(certificate.resolved_prompt_process_set) == _historical_prompt_set(
+        RUN2_CR_ACTIVE_ALIASES
+    )
+
+
+def test_run3_cr_active_alias_universe_has_complete_historical_policy_coverage():
+    certificate = certify_active_nonprompt_policy(
+        RUN3_CR_ACTIVE_ALIASES,
+        configuration_source="run3_cr_cfg_json_active_alias_universe",
+    )
+
+    assert len(RUN3_CR_ACTIVE_ALIASES) == 200
+    assert {row.raw_process_label for row in certificate.resolutions} == set(
+        RUN3_CR_ACTIVE_ALIASES
+    )
+    cr_only_rows = [
+        row
+        for row in certificate.resolutions
+        if row.raw_process_label in RUN3_CR_ONLY_ACTIVE_ALIASES
+    ]
+    assert len(cr_only_rows) == 76
+    assert {row.policy_role for row in cr_only_rows} == {
+        EXPLICIT_NONPROMPT_EXCLUSION
+    }
+    assert set(certificate.resolved_prompt_process_set) == _historical_prompt_set(
+        RUN3_CR_ACTIVE_ALIASES
+    )
 
 
 def test_certification_remains_bounded_to_the_active_sr_style_subset():
@@ -240,6 +309,34 @@ def test_certification_remains_bounded_to_the_active_sr_style_subset():
     assert not set(RUN2_CR_ONLY_ACTIVE_ALIASES) & {
         row.raw_process_label for row in certificate.resolutions
     }
+
+
+def test_run3_certification_remains_bounded_to_the_active_sr_style_subset():
+    active_aliases = ("TTto2L2Nu_central2022", "WWTo2L2Nu_central2022")
+    certificate = certify_active_nonprompt_policy(
+        active_aliases,
+        configuration_source="run3_sr_style_active_alias_subset",
+    )
+
+    assert {row.raw_process_label for row in certificate.resolutions} == set(
+        active_aliases
+    )
+    assert certificate.resolved_prompt_process_set == ("TTto2L2Nu_central2022",)
+    assert certificate.explicit_exclusions == ("WWTo2L2Nu_central2022",)
+    assert not set(RUN3_CR_ONLY_ACTIVE_ALIASES) & {
+        row.raw_process_label for row in certificate.resolutions
+    }
+
+
+@pytest.mark.parametrize(
+    "unknown_alias",
+    ("futureRenamedPrompt_centralUL18", "futureRenamedPrompt_central2022"),
+)
+def test_unknown_active_alias_is_fail_closed_for_both_run_eras(unknown_alias):
+    with pytest.raises(nonprompt_policy_error, match="NONPROMPT-POLICY-E006"):
+        certify_active_nonprompt_policy(
+            (unknown_alias,), configuration_source="unknown_run_era_test"
+        )
 
 
 def test_run3_additions_exclusions_and_ggzz_labels_are_exact():
