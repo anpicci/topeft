@@ -190,22 +190,22 @@ DEFAULT_NONPROMPT_ALIAS_DEFINITIONS = (
     _alias(
         "ST_antitop_t-channel_central", "single_top_antitop_t_channel", _BOTH_ERAS,
         role=EXPLICIT_NONPROMPT_EXCLUSION,
-        reason="run2_cr_historical_nonprompt_exclusion",
+        reason="historical_cr_nonprompt_exclusion",
     ),
     _alias(
         "ST_top_s-channel_central", "single_top_s_channel", _BOTH_ERAS,
         role=EXPLICIT_NONPROMPT_EXCLUSION,
-        reason="run2_cr_historical_nonprompt_exclusion",
+        reason="historical_cr_nonprompt_exclusion",
     ),
     _alias(
         "ST_top_t-channel_central", "single_top_top_t_channel", _BOTH_ERAS,
         role=EXPLICIT_NONPROMPT_EXCLUSION,
-        reason="run2_cr_historical_nonprompt_exclusion",
+        reason="historical_cr_nonprompt_exclusion",
     ),
     _alias(
         "WJetsToLNu_central", "wjets_to_lnu", _BOTH_ERAS,
         role=EXPLICIT_NONPROMPT_EXCLUSION,
-        reason="run2_cr_historical_nonprompt_exclusion",
+        reason="historical_cr_nonprompt_exclusion",
     ),
     _alias(
         "ZGToLLG_central", "zg_to_llg", _RUN2_ONLY,
