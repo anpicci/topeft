@@ -93,6 +93,46 @@ EXCLUDED_BASES = (
     "ggToZZTo2mu2nu_central",
 )
 
+# Exact aliases recorded by maintained Run-2 CR configuration/JSON inspection.
+# Update this fixture when that route's configured histAxisName values change.
+RUN2_CR_ONLY_ACTIVE_ALIASES = (
+    "DY10to50_centralUL16APV",
+    "DY10to50_centralUL16",
+    "DY10to50_centralUL18",
+    "DY50_centralUL16APV",
+    "DY50_centralUL16",
+    "DY50_centralUL18",
+    "DYJetsToLL_centralUL17",
+    "ST_antitop_t-channel_centralUL16APV",
+    "ST_antitop_t-channel_centralUL16",
+    "ST_antitop_t-channel_centralUL17",
+    "ST_antitop_t-channel_centralUL18",
+    "ST_top_s-channel_centralUL16APV",
+    "ST_top_s-channel_centralUL16",
+    "ST_top_s-channel_centralUL17",
+    "ST_top_s-channel_centralUL18",
+    "ST_top_t-channel_centralUL16APV",
+    "ST_top_t-channel_centralUL16",
+    "ST_top_t-channel_centralUL17",
+    "ST_top_t-channel_centralUL18",
+    "WJetsToLNu_centralUL16APV",
+    "WJetsToLNu_centralUL16",
+    "WJetsToLNu_centralUL17",
+    "WJetsToLNu_centralUL18",
+    "ZGToLLG_centralUL16APV",
+    "ZGToLLG_centralUL16",
+    "ZGToLLG_centralUL17",
+    "ZGToLLG_centralUL18",
+    "tW_centralUL16APV",
+    "tW_centralUL16",
+    "tW_centralUL17",
+    "tW_centralUL18",
+    "tbarW_centralUL16APV",
+    "tbarW_centralUL16",
+    "tbarW_centralUL17",
+    "tbarW_centralUL18",
+)
+
 HISTORICAL_PROMPT_ENTRIES = (
     "TTTo2L2Nu_central",
     "TTToSemiLeptonic_central",
@@ -136,6 +176,13 @@ def _labels(bases, years):
     return tuple(f"{base}{year}" for base in bases for year in years)
 
 
+RUN2_CR_ACTIVE_ALIASES = (
+    _labels(RUN2_ACTIVE_BASES, RUN2_YEARS)
+    + _labels(("data",), RUN2_YEARS)
+    + RUN2_CR_ONLY_ACTIVE_ALIASES
+)
+
+
 def _certificate(bases, years):
     return certify_active_nonprompt_policy(
         _labels(bases, years),
@@ -151,6 +198,48 @@ def test_run2_active_prompt_set_is_exactly_the_accepted_72_labels():
     assert set(certificate.explicit_exclusions) == set(
         _labels(("WWTo2L2Nu_central",), RUN2_YEARS)
     )
+
+
+def test_run2_cr_active_alias_universe_has_complete_explicit_policy_coverage():
+    certificate = certify_active_nonprompt_policy(
+        RUN2_CR_ACTIVE_ALIASES,
+        configuration_source="run2_cr_cfg_json_active_alias_universe",
+    )
+
+    assert len(RUN2_CR_ACTIVE_ALIASES) == 115
+    assert {row.raw_process_label for row in certificate.resolutions} == set(
+        RUN2_CR_ACTIVE_ALIASES
+    )
+    cr_only_rows = [
+        row
+        for row in certificate.resolutions
+        if row.raw_process_label in RUN2_CR_ONLY_ACTIVE_ALIASES
+    ]
+    assert len(cr_only_rows) == 35
+    assert {row.policy_role for row in cr_only_rows} == {
+        EXPLICIT_NONPROMPT_EXCLUSION
+    }
+    assert not set(RUN2_CR_ONLY_ACTIVE_ALIASES) & set(
+        certificate.resolved_prompt_process_set
+    )
+    assert set(RUN2_CR_ONLY_ACTIVE_ALIASES) <= set(certificate.explicit_exclusions)
+
+
+def test_certification_remains_bounded_to_the_active_sr_style_subset():
+    active_aliases = ("TTTo2L2Nu_centralUL18", "WWTo2L2Nu_centralUL18")
+    certificate = certify_active_nonprompt_policy(
+        active_aliases,
+        configuration_source="run2_sr_style_active_alias_subset",
+    )
+
+    assert {row.raw_process_label for row in certificate.resolutions} == set(
+        active_aliases
+    )
+    assert certificate.resolved_prompt_process_set == ("TTTo2L2Nu_centralUL18",)
+    assert certificate.explicit_exclusions == ("WWTo2L2Nu_centralUL18",)
+    assert not set(RUN2_CR_ONLY_ACTIVE_ALIASES) & {
+        row.raw_process_label for row in certificate.resolutions
+    }
 
 
 def test_run3_additions_exclusions_and_ggzz_labels_are_exact():
@@ -211,7 +300,7 @@ def test_case_suffix_jet_private_central_and_year_near_misses_fail(near_miss):
 
 
 def test_unknown_duplicate_alias_family_role_conflict_and_missing_required_fail():
-    with pytest.raises(nonprompt_policy_error, match="unknown active process alias"):
+    with pytest.raises(nonprompt_policy_error, match="NONPROMPT-POLICY-E006"):
         certify_active_nonprompt_policy(
             ("futureRenamedPrompt_central2022",),
             configuration_source="unknown_test",

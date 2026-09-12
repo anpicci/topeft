@@ -172,6 +172,56 @@ DEFAULT_NONPROMPT_ALIAS_DEFINITIONS = (
     _alias("ggToZZTo4mu_central", "zz_to_4l_prompt_family", _RUN3_ONLY, reason="inherits_run2_zzto4l_prompt_role"),
     _alias("ggToZZTo4tau_central", "zz_to_4l_prompt_family", _RUN3_ONLY, reason="inherits_run2_zzto4l_prompt_role"),
     _alias("WWTo2L2Nu_central", "ww_dilepton", _BOTH_ERAS, role=EXPLICIT_NONPROMPT_EXCLUSION, reason="intentional_nonprompt_policy_exclusion"),
+    _alias(
+        "DY10to50_central", "dy10to50", _RUN2_ONLY,
+        role=EXPLICIT_NONPROMPT_EXCLUSION,
+        reason="run2_cr_historical_nonprompt_exclusion",
+    ),
+    _alias(
+        "DY50_central", "dy50", _RUN2_ONLY,
+        role=EXPLICIT_NONPROMPT_EXCLUSION,
+        reason="run2_cr_historical_nonprompt_exclusion",
+    ),
+    _alias(
+        "DYJetsToLL_central", "dyjets_to_ll", _RUN2_ONLY,
+        role=EXPLICIT_NONPROMPT_EXCLUSION,
+        reason="run2_cr_historical_nonprompt_exclusion",
+    ),
+    _alias(
+        "ST_antitop_t-channel_central", "single_top_antitop_t_channel", _RUN2_ONLY,
+        role=EXPLICIT_NONPROMPT_EXCLUSION,
+        reason="run2_cr_historical_nonprompt_exclusion",
+    ),
+    _alias(
+        "ST_top_s-channel_central", "single_top_s_channel", _RUN2_ONLY,
+        role=EXPLICIT_NONPROMPT_EXCLUSION,
+        reason="run2_cr_historical_nonprompt_exclusion",
+    ),
+    _alias(
+        "ST_top_t-channel_central", "single_top_top_t_channel", _RUN2_ONLY,
+        role=EXPLICIT_NONPROMPT_EXCLUSION,
+        reason="run2_cr_historical_nonprompt_exclusion",
+    ),
+    _alias(
+        "WJetsToLNu_central", "wjets_to_lnu", _RUN2_ONLY,
+        role=EXPLICIT_NONPROMPT_EXCLUSION,
+        reason="run2_cr_historical_nonprompt_exclusion",
+    ),
+    _alias(
+        "ZGToLLG_central", "zg_to_llg", _RUN2_ONLY,
+        role=EXPLICIT_NONPROMPT_EXCLUSION,
+        reason="run2_cr_historical_nonprompt_exclusion",
+    ),
+    _alias(
+        "tW_central", "single_top_tw", _RUN2_ONLY,
+        role=EXPLICIT_NONPROMPT_EXCLUSION,
+        reason="run2_cr_historical_nonprompt_exclusion",
+    ),
+    _alias(
+        "tbarW_central", "single_top_tbarw", _RUN2_ONLY,
+        role=EXPLICIT_NONPROMPT_EXCLUSION,
+        reason="run2_cr_historical_nonprompt_exclusion",
+    ),
     _alias("WZto3LNu-2Jets_central", "electroweak_wz_two_jets", _RUN3_ONLY, role=EXPLICIT_NONPROMPT_EXCLUSION, reason="intentional_distinct_wz_two_jet_exclusion"),
     _alias("ggToZZTo2mu2nu_central", "ggzz_two_mu_two_nu", _RUN3_ONLY, role=EXPLICIT_NONPROMPT_EXCLUSION, reason="intentional_ggzz_two_mu_two_nu_exclusion"),
 )
