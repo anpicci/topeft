@@ -424,9 +424,10 @@ does not suppress the independent Run-3 component; a shared unsafe state does.
 
 For maintained profiles, omitting --env-file resolves the current worker
 environment, while --env-file PATH selects that absolute archive explicitly as
-a frozen snapshot. Work Queue has no profile-level worker count, and maintained
-profiles use explicit full_diagnostics sumw2 storage. Explicit component and
-combined profiles require a fresh absolute output directory and campaign tag.
+a frozen snapshot. Work Queue has no profile-level worker count. Ordinary full
+profiles use the implicit production sumw2 policy; T0 stat-only profiles use
+explicit full_diagnostics storage. Explicit component and combined profiles
+require a fresh absolute output directory and campaign tag.
 t0_sr_statonly covers the maintained Run-2 and early-Run-3 SR mapping with
 nominal weights and raw counts. t0_cr_statonly reuses the complete Run-2/Run-3
 CR mapping with nominal weights, raw counts, and separate native
@@ -2050,8 +2051,16 @@ prepare_production_sumw2_options() {
   if [[ "${production_profile}" == "rebin_fine" ]]; then
     return
   fi
+  if ! is_t0_statonly_profile; then
+    if [[ "${profile_resume}" == "true" \
+      && -e "${output_dir}/sumw2_full_diagnostics.yml" ]]; then
+      echo "ERROR: ${production_profile} resume contains the legacy full_diagnostics sumw2 override; it is incompatible with the implicit production policy." >&2
+      exit 1
+    fi
+    return
+  fi
   if [[ "${dry_run}" == "true" ]]; then
-    production_sumw2_temporary_options=$(mktemp /tmp/run3_full_sumw2.XXXXXX.yml)
+    production_sumw2_temporary_options=$(mktemp /tmp/t0_statonly_sumw2.XXXXXX.yml)
     production_sumw2_options_path="${production_sumw2_temporary_options}"
     printf 'sumw2_storage:\n  mode: full_diagnostics\n' > "${production_sumw2_options_path}"
   else
@@ -2062,7 +2071,7 @@ prepare_production_sumw2_options() {
   fi
   if [[ ! -f "${production_sumw2_options_path}" ]] \
     || [[ "$(<"${production_sumw2_options_path}")" != $'sumw2_storage:\n  mode: full_diagnostics' ]]; then
-    echo "ERROR: run3_full sumw2 options do not match full_diagnostics." >&2
+    echo "ERROR: ${production_profile} sumw2 options do not match full_diagnostics." >&2
     exit 1
   fi
 }
@@ -2273,10 +2282,10 @@ build_common_command_options() {
     )
   fi
   if [[ "${production_profile}" != "rebin_fine" ]]; then
-    cmd_ref+=(
-      --options "${production_sumw2_options_path}"
-      -x work_queue
-    )
+    if [[ -n "${production_sumw2_options_path}" ]]; then
+      cmd_ref+=(--options "${production_sumw2_options_path}")
+    fi
+    cmd_ref+=(-x work_queue)
   fi
 
   if [[ "${split_lep_flavor}" == "true" ]]; then
@@ -3138,8 +3147,10 @@ echo "env_file: ${production_env_file}"
 echo "env_file_sha256: ${production_env_file_sha256}"
 echo "environment_mode: ${production_environment_mode}"
 echo "environment_policy: ${production_environment_mode}"
-if [[ "${production_profile}" != "rebin_fine" ]]; then
+if is_t0_statonly_profile; then
   echo "sumw2_storage_mode: full_diagnostics"
+elif [[ "${production_profile}" != "rebin_fine" ]]; then
+  echo "sumw2_storage_mode: production (implicit)"
 fi
 echo "campaign_state: ${output_dir}/${production_state_filename}"
 print_var_sets "CR non-tau" "${cr_non_tau_var_sets[@]}"
