@@ -7,6 +7,8 @@ matrix_output_dir=""
 matrix_campaign_tag=""
 matrix_env_file=""
 matrix_resume=false
+matrix_reviewed_topeft_manager_head=""
+matrix_reviewed_topcoffea_manager_head=""
 matrix_parse_errors=()
 
 matrix_parse_args() {
@@ -48,6 +50,24 @@ matrix_parse_args() {
           index=$((index + 1))
         else
           matrix_env_file="${args[index + 1]}"
+          index=$((index + 2))
+        fi
+        ;;
+      --reviewed-topeft-manager-head)
+        if (( index + 1 >= ${#args[@]} )) || [[ "${args[index + 1]}" == -* ]]; then
+          matrix_parse_errors+=("--reviewed-topeft-manager-head requires a value")
+          index=$((index + 1))
+        else
+          matrix_reviewed_topeft_manager_head="${args[index + 1]}"
+          index=$((index + 2))
+        fi
+        ;;
+      --reviewed-topcoffea-manager-head)
+        if (( index + 1 >= ${#args[@]} )) || [[ "${args[index + 1]}" == -* ]]; then
+          matrix_parse_errors+=("--reviewed-topcoffea-manager-head requires a value")
+          index=$((index + 1))
+        else
+          matrix_reviewed_topcoffea_manager_head="${args[index + 1]}"
           index=$((index + 2))
         fi
         ;;
@@ -323,6 +343,10 @@ case "${matrix_profile}" in
     fi
     component_common=()
     [[ -n "${matrix_env_file}" ]] && component_common+=(--env-file "${matrix_env_file}")
+    [[ -n "${matrix_reviewed_topeft_manager_head}" ]] \
+      && component_common+=(--reviewed-topeft-manager-head "${matrix_reviewed_topeft_manager_head}")
+    [[ -n "${matrix_reviewed_topcoffea_manager_head}" ]] \
+      && component_common+=(--reviewed-topcoffea-manager-head "${matrix_reviewed_topcoffea_manager_head}")
     [[ "${matrix_dry_run}" == "true" ]] && component_common+=(--dry-run)
     [[ "${matrix_resume}" == "true" ]] && component_common+=(--resume)
     if "$0" --production-profile "${first_profile}" \
@@ -384,7 +408,9 @@ print_usage() {
   cat <<'EOF'
 Usage: ./run_cr.sh [--dry-run]
        ./run_cr.sh --production-profile PROFILE [--dry-run] \
-  [--output-dir PATH] [--campaign-tag TAG] [--env-file PATH] [--resume]
+  [--output-dir PATH] [--campaign-tag TAG] [--env-file PATH] [--resume] \
+  [--reviewed-topeft-manager-head SHA] \
+  [--reviewed-topcoffea-manager-head SHA]
 
 Public PROFILE values:
   run2_full, run3_full, run2_run3_full
@@ -420,6 +446,8 @@ profile_output_dir=""
 profile_campaign_tag=""
 profile_env_file=""
 profile_resume=false
+profile_reviewed_topeft_manager_head=""
+profile_reviewed_topcoffea_manager_head=""
 
 while (( $# > 0 )); do
   case "$1" in
@@ -457,6 +485,22 @@ while (( $# > 0 )); do
         exit 1
       fi
       profile_env_file="$2"
+      shift 2
+      ;;
+    --reviewed-topeft-manager-head)
+      if (( $# < 2 )) || [[ -z "$2" || "$2" == -* ]]; then
+        echo "ERROR: --reviewed-topeft-manager-head requires a value." >&2
+        exit 1
+      fi
+      profile_reviewed_topeft_manager_head="$2"
+      shift 2
+      ;;
+    --reviewed-topcoffea-manager-head)
+      if (( $# < 2 )) || [[ -z "$2" || "$2" == -* ]]; then
+        echo "ERROR: --reviewed-topcoffea-manager-head requires a value." >&2
+        exit 1
+      fi
+      profile_reviewed_topcoffea_manager_head="$2"
       shift 2
       ;;
     --resume)
@@ -1850,7 +1894,8 @@ validate_manager_repository_delta() {
   local manager_repository="$2"
   local recorded_commit="$3"
   local current_commit="$4"
-  shift 4
+  local reviewed_commit="$5"
+  shift 5
   local changed_sensitive_paths=""
 
   if [[ "${recorded_commit}" == "${current_commit}" ]]; then
@@ -1870,11 +1915,24 @@ validate_manager_repository_delta() {
     return 1
   fi
   if [[ -n "${changed_sensitive_paths}" ]]; then
-    echo "HUMAN_REVIEW_REQUIRED: ${manager_label} manager delta touches direct manager-sensitive paths; campaign validity was not changed:" >&2
+    echo "Manager-sensitive ${manager_label} paths changed between recorded and current HEAD:" >&2
     while IFS= read -r changed_path; do
       printf '  %s\n' "${changed_path}" >&2
     done <<< "${changed_sensitive_paths}"
-    return 1
+    if [[ -z "${reviewed_commit}" ]]; then
+      echo "HUMAN_REVIEW_REQUIRED: ${manager_label} manager delta has no exact-current-HEAD review; campaign validity was not changed." >&2
+      return 1
+    fi
+    if [[ ! "${reviewed_commit}" =~ ^[0-9a-f]{40}$ ]]; then
+      echo "HUMAN_REVIEW_REQUIRED: reviewed ${manager_label} manager HEAD is malformed; campaign validity was not changed." >&2
+      return 1
+    fi
+    if [[ "${reviewed_commit}" != "${current_commit}" ]]; then
+      echo "HUMAN_REVIEW_REQUIRED: reviewed ${manager_label} manager HEAD is stale; reviewed=${reviewed_commit} current=${current_commit}; campaign validity was not changed." >&2
+      return 1
+    fi
+    echo "Manager compatibility ${manager_label}: PASS_WITH_REVIEWED_MANAGER_DELTA recorded=${recorded_commit} current=${current_commit} reviewed=${reviewed_commit}"
+    return 0
   fi
   echo "Manager compatibility ${manager_label}: PASS_WITH_MANAGER_PROVENANCE_DELTA recorded=${recorded_commit} current=${current_commit}"
 }
@@ -1886,6 +1944,7 @@ validate_resume_manager_compatibility() {
 
   validate_manager_repository_delta \
     TOPEFT "${repository_root}" "${recorded_topeft_commit}" "${production_git_commit}" \
+    "${profile_reviewed_topeft_manager_head}" \
     analysis/topeft_run2/run_cr.sh \
     analysis/topeft_run2/fullR2_run.sh \
     analysis/topeft_run2/fullR3_run.sh \
@@ -1909,6 +1968,7 @@ validate_resume_manager_compatibility() {
   validate_manager_repository_delta \
     TOPCOFFEA "${topcoffea_repository_root}" \
     "${production_topcoffea_git_commit}" "${current_topcoffea_commit}" \
+    "${profile_reviewed_topcoffea_manager_head}" \
     topcoffea/modules/remote_environment.py
 }
 
