@@ -1151,7 +1151,7 @@ def desired_state(arguments):
     }
 
 
-def validate_state(state, desired, allow_historical_source_commit=False):
+def validate_state(state, desired, allow_manager_provenance_delta=False):
     for key in (
         "schema_version",
         "production_profile",
@@ -1170,7 +1170,7 @@ def validate_state(state, desired, allow_historical_source_commit=False):
         "region",
         "nonprompt_mode",
     ):
-        if key == "topeft_git_commit" and allow_historical_source_commit:
+        if key == "topeft_git_commit" and allow_manager_provenance_delta:
             recorded_source_commit = state.get(key)
             if not isinstance(recorded_source_commit, str) or re.fullmatch(
                 r"[0-9a-f]{40}", recorded_source_commit
@@ -1213,7 +1213,7 @@ state_path = Path(sys.argv[2])
 if mode in {"initialize", "validate"}:
     desired = desired_state(sys.argv[3:20])
     readonly = len(sys.argv) > 20 and sys.argv[20] == "true"
-    allow_historical_source_commit = len(sys.argv) > 21 and sys.argv[21] == "true"
+    allow_manager_provenance_delta = len(sys.argv) > 21 and sys.argv[21] == "true"
     if mode == "initialize":
         if state_path.exists():
             fail(f"refusing to overwrite existing {desired['production_profile']} campaign state: {state_path}")
@@ -1261,7 +1261,7 @@ if mode in {"initialize", "validate"}:
         validate_state(
             state,
             desired,
-            allow_historical_source_commit=allow_historical_source_commit,
+            allow_manager_provenance_delta=allow_manager_provenance_delta,
         )
         for block in state["blocks"]:
             if block["source_status"] == "running":
@@ -1845,11 +1845,78 @@ resolve_t0_postprocessor_provenance() {
   fi
 }
 
+validate_manager_repository_delta() {
+  local manager_label="$1"
+  local manager_repository="$2"
+  local recorded_commit="$3"
+  local current_commit="$4"
+  shift 4
+  local changed_sensitive_paths=""
+
+  if [[ "${recorded_commit}" == "${current_commit}" ]]; then
+    echo "Manager compatibility ${manager_label}: PASS_EXACT_HEAD ${current_commit}"
+    return 0
+  fi
+  if [[ ! -d "${manager_repository}/.git" ]] \
+    || ! git -C "${manager_repository}" cat-file -e "${recorded_commit}^{commit}" 2>/dev/null \
+    || ! git -C "${manager_repository}" cat-file -e "${current_commit}^{commit}" 2>/dev/null; then
+    echo "HUMAN_REVIEW_REQUIRED: ${manager_label} manager provenance delta cannot be classified from local commits; campaign validity was not changed." >&2
+    return 1
+  fi
+  if ! changed_sensitive_paths=$(git -C "${manager_repository}" diff \
+    --no-ext-diff --no-textconv --name-only --no-renames \
+    "${recorded_commit}" "${current_commit}" -- "$@" 2>/dev/null); then
+    echo "HUMAN_REVIEW_REQUIRED: ${manager_label} manager provenance delta could not be compared; campaign validity was not changed." >&2
+    return 1
+  fi
+  if [[ -n "${changed_sensitive_paths}" ]]; then
+    echo "HUMAN_REVIEW_REQUIRED: ${manager_label} manager delta touches direct manager-sensitive paths; campaign validity was not changed:" >&2
+    while IFS= read -r changed_path; do
+      printf '  %s\n' "${changed_path}" >&2
+    done <<< "${changed_sensitive_paths}"
+    return 1
+  fi
+  echo "Manager compatibility ${manager_label}: PASS_WITH_MANAGER_PROVENANCE_DELTA recorded=${recorded_commit} current=${current_commit}"
+}
+
+validate_resume_manager_compatibility() {
+  local recorded_topeft_commit="$1"
+  local topcoffea_repository_root="${repository_root}/../topcoffea"
+  local current_topcoffea_commit=""
+
+  validate_manager_repository_delta \
+    TOPEFT "${repository_root}" "${recorded_topeft_commit}" "${production_git_commit}" \
+    analysis/topeft_run2/run_cr.sh \
+    analysis/topeft_run2/fullR2_run.sh \
+    analysis/topeft_run2/fullR3_run.sh \
+    analysis/topeft_run2/run_analysis.py \
+    analysis/topeft_run2/analysis_processor.py \
+    input_samples/cfgs/mc_signal_samples_NDSkim.cfg \
+    input_samples/cfgs/mc_background_samples_NDSkim.cfg \
+    input_samples/cfgs/mc_background_samples_cr_NDSkim.cfg \
+    input_samples/cfgs/data_samples_NDSkim.cfg \
+    ':(glob)input_samples/cfgs/NDSkim_*_background_samples.cfg' \
+    ':(glob)input_samples/cfgs/NDSkim_*_background_samples_cr.cfg' \
+    ':(glob)input_samples/cfgs/NDSkim_*_data_samples.cfg' \
+    ':(glob)input_samples/cfgs/NDSkim_*_mc_signal_samples.cfg' \
+    ':(glob)input_samples/cfgs/NDSkim_*_mc_signal_samples_sr.cfg'
+
+  if [[ ! -d "${topcoffea_repository_root}/.git" ]] \
+    || ! current_topcoffea_commit=$(git -C "${topcoffea_repository_root}" rev-parse HEAD 2>/dev/null); then
+    echo "HUMAN_REVIEW_REQUIRED: live TOPCOFFEA manager helper provenance cannot be read; campaign validity was not changed." >&2
+    return 1
+  fi
+  validate_manager_repository_delta \
+    TOPCOFFEA "${topcoffea_repository_root}" \
+    "${production_topcoffea_git_commit}" "${current_topcoffea_commit}" \
+    topcoffea/modules/remote_environment.py
+}
+
 prepare_production_campaign() {
   local plan_directory
   local schema_version=5
-  local allow_historical_source_commit=false
-  local historical_source_commit=""
+  local allow_manager_provenance_delta=false
+  local recorded_manager_commit=""
 
   production_assert_live_plan
   production_git_commit=$(git -C "${repository_root}" rev-parse HEAD)
@@ -1871,15 +1938,10 @@ prepare_production_campaign() {
       echo "ERROR: ${production_profile} --resume requires campaign state: ${production_state_path}" >&2
       exit 1
     fi
-    if [[ "${production_profile}" == "t0_sr_statonly" ]]; then
-      allow_historical_source_commit=true
-      historical_source_commit=$(production_state_tool historical_source_commit \
-        "${production_state_path}" "${production_profile}" "${campaign_tag}" "${output_dir}")
-      if ! git -C "${repository_root}" cat-file -e "${historical_source_commit}^{commit}"; then
-        echo "ERROR: t0_sr_statonly historical source commit is not reachable in the local topeft repository." >&2
-        exit 1
-      fi
-    fi
+    allow_manager_provenance_delta=true
+    recorded_manager_commit=$(production_state_tool historical_source_commit \
+      "${production_state_path}" "${production_profile}" "${campaign_tag}" "${output_dir}")
+    validate_resume_manager_compatibility "${recorded_manager_commit}"
     production_state_tool validate \
       "${production_state_path}" \
       "${production_plan_file}" \
@@ -1900,7 +1962,7 @@ prepare_production_campaign() {
       "${production_region}" \
       "${production_np_mode}" \
       "${dry_run}" \
-      "${allow_historical_source_commit}"
+      "${allow_manager_provenance_delta}"
   elif [[ "${dry_run}" == "false" ]]; then
     production_state_tool initialize \
       "${production_state_path}" \
