@@ -62,6 +62,17 @@ RATIO_Y_RANGE = (0.0, 2.0)
 BINNING_OUTPUT_MODES = frozenset(("processing", "fitting"))
 
 
+def _plotting_numeric_view(histogram):
+    """Return a plotting-only view that does not consume raw-count state."""
+
+    if (
+        isinstance(histogram, tc_sparseHist.SparseHist)
+        and histogram.track_raw_counts
+    ):
+        return histogram.with_raw_counts_unrecorded()
+    return histogram
+
+
 def _mode_bearing_output_path(path, binning_mode):
     """Return *path* with the resolved binning mode before its extension."""
 
@@ -8276,6 +8287,11 @@ def make_region_stacked_ratio_fig(
                 uncertainty_mode
             )
         )
+
+    h_mc = _plotting_numeric_view(h_mc)
+    h_data = _plotting_numeric_view(h_data)
+    h_mc_sumw2 = _plotting_numeric_view(h_mc_sumw2)
+
     if bins is None:
         bins = []
     else:

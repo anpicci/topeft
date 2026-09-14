@@ -105,6 +105,111 @@ def _make_multigroup_stacked_inputs(num_groups=8):
     return h_mc, h_data, group_map
 
 
+def _make_mixed_raw_count_plotting_input(weights):
+    histogram = make_cr_and_sr_plots.SparseHist(
+        hist.axis.StrCategory([], name="process", growth=True),
+        hist.axis.StrCategory([], name="systematic", growth=True),
+        hist.axis.Regular(2, 0.0, 2.0, name="lj0pt"),
+        storage="Double",
+        track_raw_counts=True,
+    )
+    histogram.fill(
+        process="prompt",
+        systematic="nominal",
+        lj0pt=np.asarray([0.25, 1.25]),
+        weight=np.asarray(weights[:2]),
+        record_raw_count=True,
+    )
+    histogram.fill(
+        process="nonprompt",
+        systematic="nominal",
+        lj0pt=np.asarray([0.25, 1.25]),
+        weight=np.asarray(weights[2:]),
+        record_raw_count=False,
+    )
+    return histogram
+
+
+def test_plotting_numeric_view_preserves_payload_and_unrecords_raw_counts():
+    nominal = _make_mixed_raw_count_plotting_input([2.5, -1.25, 7.0, 3.5])
+    sumw2 = _make_mixed_raw_count_plotting_input([6.25, 1.5625, 49.0, 12.25])
+
+    source_values = {
+        key: np.array(values, copy=True)
+        for key, values in nominal.view(flow=True, as_dict=True).items()
+    }
+    source_sumw2 = {
+        key: np.array(values, copy=True)
+        for key, values in sumw2.view(flow=True, as_dict=True).items()
+    }
+    source_raw_states = {
+        key: None if state is None else np.array(state, copy=True)
+        for key, state in nominal._validated_raw_count_states().items()
+    }
+
+    with pytest.raises(RuntimeError, match="recorded and explicitly unrecorded"):
+        nominal[{"process": sum}]
+
+    nominal_view = make_cr_and_sr_plots._plotting_numeric_view(nominal)
+    sumw2_view = make_cr_and_sr_plots._plotting_numeric_view(sumw2)
+
+    assert nominal_view is not nominal
+    assert sumw2_view is not sumw2
+    assert nominal_view.axes.name == nominal.axes.name
+    assert tuple(type(axis) for axis in nominal_view.axes) == tuple(
+        type(axis) for axis in nominal.axes
+    )
+    assert [list(axis) for axis in nominal_view.categorical_axes] == [
+        list(axis) for axis in nominal.categorical_axes
+    ]
+    assert list(nominal_view.axes["process"]) == ["prompt", "nonprompt"]
+    np.testing.assert_array_equal(
+        nominal_view.axes["lj0pt"].edges,
+        nominal.axes["lj0pt"].edges,
+    )
+    for key, values in nominal_view.view(flow=True, as_dict=True).items():
+        np.testing.assert_array_equal(values, source_values[key])
+    for key, values in sumw2_view.view(flow=True, as_dict=True).items():
+        np.testing.assert_array_equal(values, source_sumw2[key])
+    for key, state in nominal._validated_raw_count_states().items():
+        expected = source_raw_states[key]
+        if expected is None:
+            assert state is None
+        else:
+            np.testing.assert_array_equal(state, expected)
+    assert all(
+        state is None
+        for state in nominal_view._validated_raw_count_states().values()
+    )
+    assert all(
+        state is None
+        for state in sumw2_view._validated_raw_count_states().values()
+    )
+    np.testing.assert_array_equal(
+        next(
+            iter(
+                nominal_view[
+                    {"process": sum, "systematic": "nominal"}
+                ].view(flow=True, as_dict=True).values()
+            )
+        ),
+        np.asarray([0.0, 9.5, 2.25, 0.0]),
+    )
+    np.testing.assert_array_equal(
+        next(
+            iter(
+                sumw2_view[
+                    {"process": sum, "systematic": "nominal"}
+                ].view(flow=True, as_dict=True).values()
+            )
+        ),
+        np.asarray([0.0, 55.25, 13.8125, 0.0]),
+    )
+
+    dense_histogram = hist.Hist(hist.axis.Regular(1, 0.0, 1.0, name="x"))
+    assert make_cr_and_sr_plots._plotting_numeric_view(dense_histogram) is dense_histogram
+
+
 def test_ratio_axis_range_is_fixed_and_ratio_legend_is_opt_in():
     h_mc, h_data, group_map = _make_simple_stacked_inputs()
 
