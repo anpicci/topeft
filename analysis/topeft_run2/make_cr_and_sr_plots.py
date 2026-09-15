@@ -6404,8 +6404,12 @@ class RegionContext(object):
         self.channel_output_mode = str(channel_output_mode or "merged")
 
 
-def _format_decimal_string(value):
+def _format_decimal_string(value, *, significant_figures=None):
+    """Format a Decimal without scientific notation for a plot label."""
     normalized = value.normalize()
+    if significant_figures is not None and normalized:
+        quantize_exponent = normalized.adjusted() - int(significant_figures) + 1
+        normalized = normalized.quantize(Decimal(f"1e{quantize_exponent}"))
     # Decimal.normalize() may produce scientific notation for integers; format
     # explicitly to keep plain strings such as "101.3".
     formatted = format(normalized, "f")
@@ -6440,8 +6444,15 @@ def _resolve_lumi_components(year_tokens):
             + ", ".join(sorted(set(missing_metadata)))
         )
 
+    aggregate_scope = _resolve_year_scope_label(year_tokens)
+    significant_figures = 3 if aggregate_scope is not None else None
     return tuple(
-        (_format_decimal_string(lumi), comtag)
+        (
+            _format_decimal_string(
+                lumi, significant_figures=significant_figures
+            ),
+            comtag,
+        )
         for comtag, lumi in lumi_by_com.items()
     )
 
