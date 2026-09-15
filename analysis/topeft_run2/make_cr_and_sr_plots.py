@@ -2178,6 +2178,8 @@ def _apply_plot_binning_view(histogram, variable, exact_channels, binning_mode):
 
     if histogram is None or binning_mode == "processing":
         return histogram
+    if "fitting" not in te_axes_info[variable]:
+        return histogram
     target_edges = resolve_common_axis_edges(
         variable,
         mode=binning_mode,
@@ -5045,9 +5047,7 @@ def _draw_stacked_panel(
     plt.sca(ax)
     cms_style = _style_get(style, ("cms",), {})
     cms_fontsize = cms_style.get("fontsize", 18.0)
-    cms_label = _draw_cms_label(
-        ax, lumitag, comtag, lumi_components, fontsize=cms_fontsize
-    )
+    cms_label = None
     _draw_mixed_energy_label(
         ax, lumi_components, scope_label, fontsize=cms_fontsize
     )
@@ -6505,11 +6505,67 @@ def _draw_mixed_energy_label(ax, lumi_components, scope_label, *, fontsize):
     )
 
 
-def _draw_cms_label(ax, lumitag, comtag, lumi_components, *, fontsize):
+def _draw_cms_label(
+    ax,
+    lumitag,
+    comtag,
+    lumi_components,
+    *,
+    fontsize,
+):
     """Draw the standard CMS label without a misleading default energy tag."""
+    status_kwargs = {"data": True, "label": "Preliminary"}
     if len(lumi_components or ()) > 1:
-        return hep.cms.label(ax=ax, rlabel="", fontsize=fontsize)
-    return hep.cms.label(ax=ax, lumi=lumitag, com=comtag, fontsize=fontsize)
+        return hep.cms.label(
+            ax=ax, rlabel="", fontsize=fontsize, **status_kwargs
+        )
+    return hep.cms.label(
+        ax=ax,
+        lumi=lumitag,
+        com=comtag,
+        fontsize=fontsize,
+        **status_kwargs,
+    )
+
+
+def _separate_cms_label_from_y_offset(
+    ax, cms_label, *, minimum_gap_points=4.0
+):
+    """Shift CMS text right only when it overlaps the y-axis multiplier."""
+    offset_text = ax.yaxis.offsetText
+    if not offset_text.get_text() or cms_label is None:
+        return False
+
+    cms_artists = (
+        cms_label if isinstance(cms_label, (list, tuple)) else (cms_label,)
+    )
+    fig = ax.figure
+    renderer = fig.canvas.get_renderer()
+    cms_bboxes = [
+        artist.get_window_extent(renderer)
+        for artist in cms_artists
+        if artist.get_visible() and artist.get_text()
+    ]
+    if not cms_bboxes:
+        return False
+
+    cms_bbox = Bbox.union(cms_bboxes)
+    offset_bbox = offset_text.get_window_extent(renderer)
+    minimum_gap_pixels = minimum_gap_points * fig.dpi / 72.0
+    required_shift_pixels = offset_bbox.x1 + minimum_gap_pixels - cms_bbox.x0
+    if required_shift_pixels <= 0:
+        return False
+
+    for artist in cms_artists:
+        artist.set_transform(
+            mpl.transforms.offset_copy(
+                artist.get_transform(),
+                fig=fig,
+                x=required_shift_pixels / fig.dpi,
+                units="inches",
+            )
+        )
+    return True
 
 
 def build_region_context(
@@ -8145,7 +8201,13 @@ def make_sparse2d_fig(
         fig = plt.figure(figsize=(10, 9))
         hep.style.use("CMS")
         ax = fig.add_subplot(111)
-        _draw_cms_label(ax, lumitag, comtag, lumi_components, fontsize=20.0)
+        _draw_cms_label(
+            ax,
+            lumitag,
+            comtag,
+            lumi_components,
+            fontsize=20.0,
+        )
         _draw_mixed_energy_label(
             ax, lumi_components, scope_label, fontsize=20.0
         )
@@ -8194,7 +8256,13 @@ def make_sparse2d_fig(
 
     axes_top = [ax_mc, ax_data]
 
-    _draw_cms_label(ax_mc, lumitag, comtag, lumi_components, fontsize=20.0)
+    _draw_cms_label(
+        ax_mc,
+        lumitag,
+        comtag,
+        lumi_components,
+        fontsize=20.0,
+    )
     _draw_mixed_energy_label(
         ax_mc, lumi_components, scope_label, fontsize=20.0
     )
@@ -8410,6 +8478,8 @@ def make_region_stacked_ratio_fig(
     if style is None:
         style = {}
     axes_style = _style_get(style, ("axes",), {})
+    cms_style = _style_get(style, ("cms",), {})
+    cms_fontsize = cms_style.get("fontsize", 18.0)
     legend_style = _style_get(style, ("legend",), {})
     uncertainty_legend_style = _style_get(style, ("uncertainty_legend",), {})
     legend_top_margin_min = legend_style.get("top_margin_min", 0.01)
@@ -8689,6 +8759,20 @@ def make_region_stacked_ratio_fig(
     if y_offset is not None:
         ax.yaxis.offsetText.set_x(y_offset)
     ax.yaxis.offsetText.set_fontsize(offset_fontsize)
+
+    # Materialize the ScalarFormatter offset before asking mplhep to place the
+    # CMS label.  mplhep then applies its built-in horizontal clearance for a
+    # visible scientific-notation multiplier.
+    fig.canvas.draw()
+    cms_label = _draw_cms_label(
+        ax,
+        lumitag,
+        comtag,
+        lumi_components,
+        fontsize=cms_fontsize,
+    )
+    fig.canvas.draw()
+    _separate_cms_label_from_y_offset(ax, cms_label)
 
     apply_minor_x = bool(secondary_ticks_cfg.get("x", True))
     apply_minor_y = bool(secondary_ticks_cfg.get("y", True))

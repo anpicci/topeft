@@ -284,6 +284,35 @@ def test_plot_binning_view_uses_stored_processing_and_shared_fitting_resolution(
     assert sum(next(iter(fitting_view.view(flow=True).values()))) == pytest.approx(3.0)
 
 
+def test_plot_binning_view_preserves_no_fitting_family_identity(monkeypatch):
+    channel = "2los_CRZ_2j"
+    histogram = make_cr_and_sr_plots.SparseHist(
+        hist.axis.StrCategory(["background"], name="process", growth=True),
+        hist.axis.Regular(15, 0, 300, name="j0pt"),
+    )
+    histogram.fill(process="background", j0pt=np.array([25.0, 175.0, 275.0]))
+    original_edges = histogram.axes["j0pt"].edges.copy()
+    original_view = {
+        key: value.copy() for key, value in histogram.view(flow=True).items()
+    }
+
+    def _unexpected_rebin(*args, **kwargs):
+        pytest.fail("no-fitting families must not call rebin_histogram")
+
+    monkeypatch.setattr(
+        make_cr_and_sr_plots, "rebin_histogram", _unexpected_rebin
+    )
+    fitting_view = make_cr_and_sr_plots._apply_plot_binning_view(
+        histogram, "j0pt", [channel], "fitting"
+    )
+
+    assert fitting_view is histogram
+    assert np.array_equal(fitting_view.axes["j0pt"].edges, original_edges)
+    assert set(fitting_view.view(flow=True)) == set(original_view)
+    for key, value in fitting_view.view(flow=True).items():
+        assert np.array_equal(value, original_view[key])
+
+
 def test_aggregate_fitting_plot_rejects_incompatible_exact_channel_axes():
     histogram = make_cr_and_sr_plots.SparseHist(
         hist.axis.StrCategory(["background"], name="process", growth=True),
@@ -765,6 +794,80 @@ def _get_cms_text_union_bbox(fig, ax, renderer):
         for text in cms_texts
     ]
     return Bbox.union(cms_bboxes)
+
+
+def test_cms_label_always_routes_preliminary_status(monkeypatch):
+    captured = {}
+
+    def _capture_label(**kwargs):
+        captured.update(kwargs)
+        return ()
+
+    monkeypatch.setattr(make_cr_and_sr_plots.hep.cms, "label", _capture_label)
+    make_cr_and_sr_plots._draw_cms_label(
+        object(),
+        "138",
+        "13",
+        (("138", "13"),),
+        fontsize=18.0,
+    )
+
+    status_keys = {
+        key: captured[key] for key in ("data", "label") if key in captured
+    }
+    assert status_keys == {"data": True, "label": "Preliminary"}
+
+
+@pytest.mark.parametrize("unblind", (False, True))
+def test_stacked_plot_routes_cms_preliminary_status(unblind):
+    h_mc, h_data, group_map = _make_simple_stacked_inputs()
+    fig = make_cr_and_sr_plots.make_region_stacked_ratio_fig(
+        h_mc=h_mc,
+        h_data=h_data,
+        unit_norm_bool=False,
+        var="lj0pt",
+        group=group_map,
+        unblind=unblind,
+    )
+
+    try:
+        label_text = " ".join(
+            text.get_text() or ""
+            for text in (*fig.texts, *fig.axes[0].texts)
+        )
+        assert "Preliminary" in label_text
+        assert "Simulation" not in label_text
+    finally:
+        make_cr_and_sr_plots.plt.close(fig)
+
+
+def test_scientific_multiplier_does_not_overlap_cms_status():
+    h_mc, h_data, group_map = _make_simple_stacked_inputs()
+    h_mc *= 1.0e7
+    h_data *= 1.0e7
+
+    fig = make_cr_and_sr_plots.make_region_stacked_ratio_fig(
+        h_mc=h_mc,
+        h_data=h_data,
+        unit_norm_bool=False,
+        var="lj0pt",
+        group=group_map,
+        unblind=True,
+    )
+
+    try:
+        fig.canvas.draw()
+        ax = fig.axes[0]
+        renderer = fig.canvas.get_renderer()
+        cms_box = _get_cms_text_union_bbox(fig, ax, renderer)
+        offset_box = ax.yaxis.offsetText.get_window_extent(renderer).transformed(
+            fig.transFigure.inverted()
+        )
+
+        assert ax.yaxis.offsetText.get_text()
+        assert offset_box.x1 < cms_box.x0
+    finally:
+        make_cr_and_sr_plots.plt.close(fig)
 
 
 def test_blind_mode_does_not_draw_data_or_ratio_markers_and_omits_ratio_panel(monkeypatch):
