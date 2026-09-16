@@ -29,6 +29,7 @@ from mpl_toolkits.axes_grid1 import make_axes_locatable
 
 import mplhep as hep
 import hist
+from scipy.stats import chi2
 from matplotlib.transforms import Bbox
 import topcoffea.modules.histEFT as tc_histEFT
 import topcoffea.modules.sparseHist as tc_sparseHist
@@ -60,6 +61,8 @@ _VALUES_METHOD_CAPS = {}
 _SYSTEMATICS_SUMMARY_EMITTED = set()
 RATIO_Y_RANGE = (0.0, 2.0)
 BINNING_OUTPUT_MODES = frozenset(("processing", "fitting"))
+DATA_POISSON_CONFIDENCE_LEVEL = 0.6827
+DATA_INTEGER_ABSOLUTE_TOLERANCE = 8 * np.finfo(float).eps
 
 
 def _plotting_numeric_view(histogram):
@@ -3351,7 +3354,8 @@ def _render_variable_category(
     plot_diagnostic_context = {
         "region": region_ctx.name,
         "year_or_run": "-".join(str(year) for year in years),
-        "presentation_mode": region_ctx.binning_mode,
+        "presentation_mode": region_ctx.channel_output_mode,
+        "binning_mode": region_ctx.binning_mode,
         "category": category_label,
         "variable": var_name,
     }
@@ -4957,6 +4961,7 @@ def _prepare_nominal_sm_plot_view(
     displayed_total = np.sum(plot_matrix, axis=0)
     context = dict(diagnostic_context or {})
     context.setdefault("variable", "")
+    context.setdefault("binning_mode", "")
     diagnostics = []
     for process_index, bin_index in np.argwhere(raw_matrix < 0):
         variance = (
@@ -4969,6 +4974,7 @@ def _prepare_nominal_sm_plot_view(
                 "region": context.get("region", ""),
                 "year_or_run": context.get("year_or_run", ""),
                 "presentation_mode": context.get("presentation_mode", ""),
+                "binning_mode": context.get("binning_mode", ""),
                 "category": context.get("category", ""),
                 "variable": context.get("variable", ""),
                 "bin_index": int(bin_index),
@@ -5076,6 +5082,170 @@ def _configure_ratio_y_formatter(rax):
     formatter.set_useOffset(False)
     rax.yaxis.set_major_formatter(formatter)
     return formatter
+
+
+def _garwood_data_intervals(
+    data_counts,
+    *,
+    confidence_level=DATA_POISSON_CONFIDENCE_LEVEL,
+):
+    """Return exact central Neyman/Garwood intervals for Data counts."""
+
+    counts = np.asarray(data_counts, dtype=float)
+    if not np.all(np.isfinite(counts)):
+        raise ValueError("Data counts must be finite for Poisson intervals.")
+    if np.any(counts < 0):
+        raise ValueError("Data counts must be nonnegative for Poisson intervals.")
+
+    nearest_integers = np.rint(counts)
+    integer_valued = np.isclose(
+        counts,
+        nearest_integers,
+        rtol=0.0,
+        atol=DATA_INTEGER_ABSOLUTE_TOLERANCE,
+    )
+    if not np.all(integer_valued):
+        invalid = counts[~integer_valued]
+        raise ValueError(
+            "Data counts must be integer-valued for Poisson intervals; "
+            f"observed noninteger values {invalid.tolist()}."
+        )
+    if not 0.0 < confidence_level < 1.0:
+        raise ValueError("The Poisson confidence level must lie strictly between 0 and 1.")
+
+    integer_counts = nearest_integers.astype(np.int64)
+    alpha = 1.0 - float(confidence_level)
+    lower_endpoints = np.zeros_like(counts, dtype=float)
+    positive_mask = integer_counts > 0
+    lower_endpoints[positive_mask] = 0.5 * chi2.ppf(
+        alpha / 2.0,
+        2 * integer_counts[positive_mask],
+    )
+    upper_endpoints = 0.5 * chi2.ppf(
+        1.0 - alpha / 2.0,
+        2 * (integer_counts + 1),
+    )
+    return {
+        "central_counts": counts.copy(),
+        "lower_endpoints": lower_endpoints,
+        "upper_endpoints": upper_endpoints,
+        "lower_errors": counts - lower_endpoints,
+        "upper_errors": upper_endpoints - counts,
+        "zero_count_mask": integer_counts == 0,
+        "confidence_level": float(confidence_level),
+    }
+
+
+def _draw_data_main_panel(
+    ax,
+    data_counts,
+    bins,
+    *,
+    log_axis_enabled,
+    renderer_epsilon,
+    show_data_errors,
+    density,
+):
+    """Draw Data with Garwood errors and log-safe zero-count upper limits."""
+
+    intervals = _garwood_data_intervals(data_counts)
+    data_error_kwargs = dict(DATA_ERR_OPS)
+    zero_count_mask = intervals["zero_count_mask"]
+    upper_limit_artists = []
+    upper_limit_anchors = np.asarray([], dtype=float)
+    upper_limit_render_floor = None
+
+    if not show_data_errors:
+        hep.histplot(
+            intervals["central_counts"],
+            ax=ax,
+            bins=bins,
+            stack=False,
+            density=density,
+            label="Data",
+            histtype="errorbar",
+            yerr=False,
+            **data_error_kwargs,
+        )
+    elif not log_axis_enabled:
+        hep.histplot(
+            intervals["central_counts"],
+            ax=ax,
+            bins=bins,
+            stack=False,
+            density=density,
+            label="Data",
+            histtype="errorbar",
+            yerr=np.vstack(
+                (intervals["lower_errors"], intervals["upper_errors"])
+            ),
+            **data_error_kwargs,
+        )
+    else:
+        positive_counts = intervals["central_counts"].copy()
+        positive_counts[zero_count_mask] = np.nan
+        positive_errors = np.vstack(
+            (intervals["lower_errors"], intervals["upper_errors"])
+        )
+        positive_errors[:, zero_count_mask] = np.nan
+        hep.histplot(
+            positive_counts,
+            ax=ax,
+            bins=bins,
+            stack=False,
+            density=density,
+            label="Data",
+            histtype="errorbar",
+            yerr=positive_errors,
+            **data_error_kwargs,
+        )
+
+        if np.any(zero_count_mask):
+            upper_limit_anchors = intervals["upper_endpoints"][zero_count_mask]
+            minimum_anchor = float(np.min(upper_limit_anchors))
+            candidate_floor = minimum_anchor * 0.25
+            if renderer_epsilon is None:
+                upper_limit_render_floor = candidate_floor
+            else:
+                upper_limit_render_floor = min(
+                    float(renderer_epsilon), candidate_floor
+                )
+            upper_limit_render_floor = max(
+                upper_limit_render_floor, np.nextafter(0.0, 1.0)
+            )
+            current_bottom = ax.get_ylim()[0]
+            if current_bottom > upper_limit_render_floor:
+                ax.set_ylim(bottom=upper_limit_render_floor)
+
+            centers = 0.5 * (np.asarray(bins[:-1]) + np.asarray(bins[1:]))
+            zero_centers = centers[zero_count_mask]
+            downward_extent = upper_limit_anchors - upper_limit_render_floor
+            error_kwargs = {
+                "color": data_error_kwargs.get("color", "k"),
+                "elinewidth": data_error_kwargs.get("elinewidth", 1),
+                "linestyle": "none",
+                "fmt": "none",
+                "uplims": True,
+                "capsize": 2.5,
+                "zorder": 4,
+            }
+            upper_limit_artists.append(
+                ax.errorbar(
+                    zero_centers,
+                    upper_limit_anchors,
+                    yerr=np.vstack(
+                        (downward_extent, np.zeros_like(downward_extent))
+                    ),
+                    **error_kwargs,
+                )
+            )
+
+    return {
+        "intervals": intervals,
+        "upper_limit_artists": upper_limit_artists,
+        "upper_limit_anchors": upper_limit_anchors,
+        "upper_limit_render_floor": upper_limit_render_floor,
+    }
 
 
 def _draw_stacked_panel(
@@ -5389,23 +5559,22 @@ def _draw_stacked_panel(
 
     ratio_vals = None
     ratio_yerr = None
+    ratio_interval_endpoints = None
+    data_rendering = None
     mc_totals = displayed_mc_totals
     if include_ratio_panel:
-        data_error_kwargs = dict(DATA_ERR_OPS)
-        if not show_data_errors:
-            data_error_kwargs["yerr"] = False
-        hep.histplot(
-           summed_data_values,
-           ax=ax,
-           bins=bins,
-           stack=False,
-           density=unit_norm_bool,
-           label="Data",
-           histtype="errorbar",
-           **data_error_kwargs,
+        data_rendering = _draw_data_main_panel(
+            ax,
+            summed_data_values,
+            bins,
+            log_axis_enabled=log_axis_enabled,
+            renderer_epsilon=log_y_baseline,
+            show_data_errors=show_data_errors,
+            density=unit_norm_bool,
         )
 
-        data_vals = summed_data_values
+        data_intervals = data_rendering["intervals"]
+        data_vals = data_intervals["central_counts"]
         mc_vals_total = displayed_mc_totals
 
         ratio_vals = _safe_divide(
@@ -5414,12 +5583,26 @@ def _draw_stacked_panel(
             default=np.nan,
         )
         if show_data_errors:
-            ratio_yerr = _safe_divide(
-                np.sqrt(data_vals),
+            ratio_lower_endpoints = _safe_divide(
+                data_intervals["lower_endpoints"],
                 mc_vals_total,
-                default=0.0,
+                default=np.nan,
             )
-            ratio_yerr[mc_vals_total == 0] = np.nan
+            ratio_upper_endpoints = _safe_divide(
+                data_intervals["upper_endpoints"],
+                mc_vals_total,
+                default=np.nan,
+            )
+            ratio_yerr = np.vstack(
+                (
+                    ratio_vals - ratio_lower_endpoints,
+                    ratio_upper_endpoints - ratio_vals,
+                )
+            )
+            ratio_interval_endpoints = {
+                "lower": ratio_lower_endpoints,
+                "upper": ratio_upper_endpoints,
+            }
 
         zero_denominator_mask = mc_vals_total == 0
         if np.any(zero_denominator_mask):
@@ -5427,7 +5610,10 @@ def _draw_stacked_panel(
             ratio_vals[zero_denominator_mask] = np.nan
             if ratio_yerr is not None:
                 ratio_yerr = ratio_yerr.astype(float, copy=True)
-                ratio_yerr[zero_denominator_mask] = np.nan
+                ratio_yerr[:, zero_denominator_mask] = np.nan
+            if ratio_interval_endpoints is not None:
+                ratio_interval_endpoints["lower"][zero_denominator_mask] = np.nan
+                ratio_interval_endpoints["upper"][zero_denominator_mask] = np.nan
 
         ratio_error_kwargs = dict(DATA_ERR_OPS)
         hep.histplot(
@@ -5456,8 +5642,10 @@ def _draw_stacked_panel(
         "log_axis_enabled": log_axis_enabled,
         "log_y_baseline": log_y_baseline,
         "renderer_epsilon": log_y_baseline,
+        "data_rendering": data_rendering,
         "ratio_values": ratio_vals,
         "ratio_errors": ratio_yerr,
+        "ratio_interval_endpoints": ratio_interval_endpoints,
     }
 
 
@@ -8879,12 +9067,21 @@ def make_region_stacked_ratio_fig(
             ratio_arrays.append(np.asarray(ratio_values, dtype=float))
             data_ratio_arrays.append(np.asarray(ratio_values, dtype=float))
             if ratio_errors is not None:
-                ratio_lower = np.asarray(ratio_values, dtype=float) - np.asarray(
-                    ratio_errors, dtype=float
-                )
-                ratio_upper = np.asarray(ratio_values, dtype=float) + np.asarray(
-                    ratio_errors, dtype=float
-                )
+                ratio_error_array = np.asarray(ratio_errors, dtype=float)
+                if ratio_error_array.ndim == 2:
+                    ratio_lower = (
+                        np.asarray(ratio_values, dtype=float) - ratio_error_array[0]
+                    )
+                    ratio_upper = (
+                        np.asarray(ratio_values, dtype=float) + ratio_error_array[1]
+                    )
+                else:
+                    ratio_lower = (
+                        np.asarray(ratio_values, dtype=float) - ratio_error_array
+                    )
+                    ratio_upper = (
+                        np.asarray(ratio_values, dtype=float) + ratio_error_array
+                    )
                 ratio_arrays.extend([ratio_lower, ratio_upper])
                 data_ratio_arrays.extend([ratio_lower, ratio_upper])
 
@@ -9112,6 +9309,25 @@ def make_region_stacked_ratio_fig(
         if panel_info.get("ratio_values") is None
         else np.asarray(panel_info["ratio_values"], dtype=float).copy()
     )
+    fig._topeft_ratio_errors = (
+        None
+        if panel_info.get("ratio_errors") is None
+        else np.asarray(panel_info["ratio_errors"], dtype=float).copy()
+    )
+    data_rendering = panel_info.get("data_rendering") or {}
+    data_intervals = data_rendering.get("intervals") or {}
+    fig._topeft_data_intervals = {
+        key: value.copy() if isinstance(value, np.ndarray) else value
+        for key, value in data_intervals.items()
+    }
+    ratio_interval_endpoints = panel_info.get("ratio_interval_endpoints") or {}
+    fig._topeft_ratio_interval_endpoints = {
+        key: np.asarray(value, dtype=float).copy()
+        for key, value in ratio_interval_endpoints.items()
+    }
+    fig._topeft_data_upper_limit_artists = list(
+        data_rendering.get("upper_limit_artists", ())
+    )
     fig._topeft_plot_summary = {
         "requested_scale": "log" if log_scale else "linear",
         "resolved_scale": "log" if use_log_y else "linear",
@@ -9120,6 +9336,18 @@ def make_region_stacked_ratio_fig(
         ],
         "scientific_exponent": formatter_info["scientific_exponent"],
         "renderer_epsilon": log_y_baseline,
+        "Data_zero_bin_count": int(
+            np.count_nonzero(data_intervals.get("zero_count_mask", ()))
+        ),
+        "Garwood_upper_limit_count": int(
+            np.size(data_rendering.get("upper_limit_anchors", ()))
+        ),
+        "Garwood_upper_limit_anchors": np.asarray(
+            data_rendering.get("upper_limit_anchors", ()), dtype=float
+        ).copy(),
+        "Garwood_upper_limit_render_floor": data_rendering.get(
+            "upper_limit_render_floor"
+        ),
         "zero_total_bin_count": int(np.count_nonzero(zero_total_mask)),
         "negative_process_bin_count": len(plot_diagnostics),
         "ratio_denominator": np.asarray(mc_totals, dtype=float).copy(),

@@ -112,6 +112,22 @@ def _make_negative_stacked_inputs():
     }
 
 
+def _make_data_interval_stacked_inputs():
+    process_axis = hist.axis.StrCategory([], name="process", growth=True)
+    value_axis = hist.axis.Regular(3, 0.0, 3.0, name="lj0pt")
+    h_mc = hist.Hist(process_axis, value_axis, storage=hist.storage.Double())
+    h_data = hist.Hist(process_axis, value_axis, storage=hist.storage.Double())
+
+    for bin_index, value in enumerate((10.0, 5.0, 0.0)):
+        if value:
+            h_mc.fill(process="source", lj0pt=bin_index + 0.5, weight=value)
+    for bin_index, value in enumerate((0.0, 1.0, 2.0)):
+        if value:
+            h_data.fill(process="data", lj0pt=bin_index + 0.5, weight=value)
+
+    return h_mc, h_data, {"Process": ["source"]}
+
+
 def _make_multigroup_stacked_inputs(num_groups=8):
     process_axis = hist.axis.StrCategory([], name="process", growth=True)
     value_axis = hist.axis.Regular(2, 0.0, 2.0, name="lj0pt")
@@ -291,7 +307,8 @@ def test_nominal_sm_plot_view_clips_grouped_centrals_without_redistribution():
         diagnostic_context={
             "region": "CR",
             "year_or_run": "run2",
-            "presentation_mode": "fitting",
+            "presentation_mode": "merged",
+            "binning_mode": "fitting",
             "category": "2los_CRZ",
             "variable": "lj0pt",
         },
@@ -315,7 +332,8 @@ def test_nominal_sm_plot_view_clips_grouped_centrals_without_redistribution():
         {
             "region": "CR",
             "year_or_run": "run2",
-            "presentation_mode": "fitting",
+            "presentation_mode": "merged",
+            "binning_mode": "fitting",
             "category": "2los_CRZ",
             "variable": "lj0pt",
             "bin_index": 1,
@@ -329,6 +347,165 @@ def test_nominal_sm_plot_view_clips_grouped_centrals_without_redistribution():
             "ratio_denominator": 2.0,
         }
     ]
+
+
+def test_garwood_data_intervals_match_exact_numeric_anchors():
+    intervals = make_cr_and_sr_plots._garwood_data_intervals(
+        np.array([0.0, 1.0, 2.0])
+    )
+
+    np.testing.assert_allclose(
+        intervals["lower_endpoints"],
+        [0.0, 0.17274753436, 0.70817037722],
+        rtol=0.0,
+        atol=1e-11,
+    )
+    np.testing.assert_allclose(
+        intervals["upper_endpoints"],
+        [1.84105476095, 3.29956971157, 4.63791009915],
+        rtol=0.0,
+        atol=1e-11,
+    )
+    np.testing.assert_array_equal(intervals["central_counts"], [0.0, 1.0, 2.0])
+    np.testing.assert_array_equal(intervals["zero_count_mask"], [True, False, False])
+    assert intervals["confidence_level"] == pytest.approx(0.6827)
+
+
+@pytest.mark.parametrize("value", [0, 1, 2, 3.0])
+def test_garwood_data_intervals_accept_integer_valued_counts(value):
+    intervals = make_cr_and_sr_plots._garwood_data_intervals([value])
+    assert intervals["central_counts"][0] == value
+
+
+def test_garwood_data_intervals_reject_noninteger_data():
+    with pytest.raises(ValueError, match="must be integer-valued"):
+        make_cr_and_sr_plots._garwood_data_intervals([1.25])
+
+
+def test_linear_data_uses_asymmetric_garwood_errors_without_epsilon():
+    h_mc, h_data, group_map = _make_data_interval_stacked_inputs()
+    fig = make_cr_and_sr_plots.make_region_stacked_ratio_fig(
+        h_mc=h_mc,
+        h_data=h_data,
+        unit_norm_bool=False,
+        var="lj0pt",
+        group=group_map,
+        unblind=True,
+        uncertainty_mode="stat",
+    )
+
+    try:
+        intervals = fig._topeft_data_intervals
+        assert intervals["central_counts"][0] == 0.0
+        assert intervals["lower_errors"][0] == 0.0
+        assert intervals["upper_errors"][0] == pytest.approx(1.84105476095)
+        assert intervals["lower_errors"][1] != pytest.approx(
+            intervals["upper_errors"][1]
+        )
+        assert fig._topeft_plot_summary["renderer_epsilon"] is None
+        assert fig._topeft_plot_summary["Garwood_upper_limit_count"] == 0
+    finally:
+        make_cr_and_sr_plots.plt.close(fig)
+
+
+def test_log_zero_data_uses_garwood_upper_limit_without_fake_marker(monkeypatch):
+    h_mc, h_data, group_map = _make_data_interval_stacked_inputs()
+    histplot_calls = []
+    original_histplot = make_cr_and_sr_plots.hep.histplot
+
+    def _capture_histplot(*args, **kwargs):
+        histplot_calls.append((args, kwargs))
+        return original_histplot(*args, **kwargs)
+
+    monkeypatch.setattr(make_cr_and_sr_plots.hep, "histplot", _capture_histplot)
+    fig = make_cr_and_sr_plots.make_region_stacked_ratio_fig(
+        h_mc=h_mc,
+        h_data=h_data,
+        unit_norm_bool=False,
+        var="lj0pt",
+        group=group_map,
+        unblind=True,
+        uncertainty_mode="stat",
+        log_scale=True,
+    )
+
+    try:
+        data_call = next(
+            call for call in histplot_calls if call[1].get("label") == "Data"
+        )
+        rendered_data_centrals = np.asarray(data_call[0][0], dtype=float)
+        assert np.isnan(rendered_data_centrals[0])
+        assert np.isnan(rendered_data_centrals[-1])
+        assert rendered_data_centrals[1] == 1.0
+        rendered_data_errors = np.asarray(data_call[1]["yerr"], dtype=float)
+        assert rendered_data_errors[0, 1] != pytest.approx(
+            rendered_data_errors[1, 1]
+        )
+        assert fig._topeft_plot_summary["Garwood_upper_limit_count"] == 2
+        np.testing.assert_allclose(
+            fig._topeft_plot_summary["Garwood_upper_limit_anchors"],
+            [1.84105476095, 1.84105476095],
+            rtol=0.0,
+            atol=1e-11,
+        )
+        assert len(fig._topeft_data_upper_limit_artists) == 1
+        assert fig._topeft_plot_summary["renderer_epsilon"] != pytest.approx(
+            fig._topeft_plot_summary["Garwood_upper_limit_anchors"][0]
+        )
+        assert fig._topeft_data_intervals["lower_endpoints"][0] == 0.0
+    finally:
+        make_cr_and_sr_plots.plt.close(fig)
+
+
+def test_ratio_uses_garwood_endpoints_and_masks_zero_mc():
+    h_mc, h_data, group_map = _make_data_interval_stacked_inputs()
+    fig = make_cr_and_sr_plots.make_region_stacked_ratio_fig(
+        h_mc=h_mc,
+        h_data=h_data,
+        unit_norm_bool=False,
+        var="lj0pt",
+        group=group_map,
+        unblind=True,
+        uncertainty_mode="stat",
+    )
+
+    try:
+        intervals = fig._topeft_data_intervals
+        denominator = fig._topeft_plot_summary["ratio_denominator"]
+        assert fig._topeft_ratio_values[0] == 0.0
+        assert fig._topeft_ratio_errors[0, 0] == 0.0
+        assert fig._topeft_ratio_errors[1, 0] == pytest.approx(
+            intervals["upper_endpoints"][0] / denominator[0]
+        )
+        assert fig._topeft_ratio_values[1] == pytest.approx(1.0 / 5.0)
+        assert fig._topeft_ratio_interval_endpoints["lower"][1] == pytest.approx(
+            intervals["lower_endpoints"][1] / denominator[1]
+        )
+        assert fig._topeft_ratio_interval_endpoints["upper"][1] == pytest.approx(
+            intervals["upper_endpoints"][1] / denominator[1]
+        )
+        assert np.isnan(fig._topeft_ratio_values[2])
+        assert np.all(np.isnan(fig._topeft_ratio_errors[:, 2]))
+        assert np.isnan(fig._topeft_ratio_interval_endpoints["lower"][2])
+        assert np.isnan(fig._topeft_ratio_interval_endpoints["upper"][2])
+    finally:
+        make_cr_and_sr_plots.plt.close(fig)
+
+
+def test_negative_diagnostics_keep_presentation_and_binning_modes_separate():
+    plot_view = make_cr_and_sr_plots._prepare_nominal_sm_plot_view(
+        [[-1.0], [2.0]],
+        process_names=("Negative", "Positive"),
+        diagnostic_context={
+            "presentation_mode": "merged-njets",
+            "binning_mode": "processing",
+        },
+    )
+
+    diagnostic = plot_view["clipped_negative_diagnostics"][0]
+    assert diagnostic["presentation_mode"] == "merged-njets"
+    assert diagnostic["binning_mode"] == "processing"
+    assert diagnostic["presentation_mode"] != diagnostic["binning_mode"]
 
 
 def test_stacked_plot_uses_clipped_total_for_ratio_and_preserved_sumw2():
