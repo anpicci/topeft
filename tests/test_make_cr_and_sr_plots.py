@@ -82,6 +82,36 @@ def _make_simple_stacked_inputs(axis_label=None):
     return h_mc, h_data, group_map
 
 
+def _make_negative_stacked_inputs():
+    process_axis = hist.axis.StrCategory([], name="process", growth=True)
+    value_axis = hist.axis.Regular(4, 0.0, 4.0, name="lj0pt")
+    h_mc = hist.Hist(process_axis, value_axis, storage=hist.storage.Double())
+    h_sumw2 = hist.Hist(process_axis, value_axis, storage=hist.storage.Double())
+    h_data = hist.Hist(process_axis, value_axis, storage=hist.storage.Double())
+
+    central_values = {
+        "source_a": np.array([10.0, -5.0, 0.0, 4.0]),
+        "source_b": np.array([3.0, 2.0, 0.0, 1.0]),
+    }
+    variances = {
+        "source_a": np.array([4.0, 25.0, 9.0, 16.0]),
+        "source_b": np.array([1.0, 4.0, 1.0, 1.0]),
+    }
+    for process, values in central_values.items():
+        for bin_index, value in enumerate(values):
+            h_mc.fill(process=process, lj0pt=bin_index + 0.5, weight=value)
+    for process, values in variances.items():
+        for bin_index, value in enumerate(values):
+            h_sumw2.fill(process=process, lj0pt=bin_index + 0.5, weight=value)
+    for bin_index, value in enumerate((13.0, 4.0, 0.0, 10.0)):
+        h_data.fill(process="data", lj0pt=bin_index + 0.5, weight=value)
+
+    return h_mc, h_sumw2, h_data, {
+        "Process A": ["source_a"],
+        "Process B": ["source_b"],
+    }
+
+
 def _make_multigroup_stacked_inputs(num_groups=8):
     process_axis = hist.axis.StrCategory([], name="process", growth=True)
     value_axis = hist.axis.Regular(2, 0.0, 2.0, name="lj0pt")
@@ -241,6 +271,172 @@ def test_ratio_axis_range_is_fixed_and_ratio_legend_is_opt_in():
     finally:
         make_cr_and_sr_plots.plt.close(default_fig)
         make_cr_and_sr_plots.plt.close(legend_fig)
+
+
+def test_nominal_sm_plot_view_clips_grouped_centrals_without_redistribution():
+    grouped_centrals = np.array(
+        [[10.0, -5.0, 0.0, 4.0], [3.0, 2.0, 0.0, 1.0]]
+    )
+    grouped_variances = np.array(
+        [[4.0, 25.0, 9.0, 16.0], [1.0, 4.0, 1.0, 1.0]]
+    )
+    source_centrals = grouped_centrals.copy()
+    source_variances = grouped_variances.copy()
+
+    plot_view = make_cr_and_sr_plots._prepare_nominal_sm_plot_view(
+        grouped_centrals,
+        grouped_variances=grouped_variances,
+        process_names=("Process A", "Process B"),
+        bin_edges=np.arange(5, dtype=float),
+        diagnostic_context={
+            "region": "CR",
+            "year_or_run": "run2",
+            "presentation_mode": "fitting",
+            "category": "2los_CRZ",
+            "variable": "lj0pt",
+        },
+    )
+
+    np.testing.assert_array_equal(
+        plot_view["plot_grouped_centrals"]["Process A"],
+        [10.0, 0.0, 0.0, 4.0],
+    )
+    np.testing.assert_array_equal(
+        plot_view["plot_grouped_centrals"]["Process B"],
+        [3.0, 2.0, 0.0, 1.0],
+    )
+    np.testing.assert_array_equal(plot_view["displayed_total"], [13.0, 2.0, 0.0, 5.0])
+    np.testing.assert_array_equal(plot_view["grouped_variances"]["Process A"], grouped_variances[0])
+    np.testing.assert_array_equal(plot_view["total_variance"], [5.0, 29.0, 10.0, 17.0])
+    np.testing.assert_array_equal(grouped_centrals, source_centrals)
+    np.testing.assert_array_equal(grouped_variances, source_variances)
+
+    assert plot_view["clipped_negative_diagnostics"] == [
+        {
+            "region": "CR",
+            "year_or_run": "run2",
+            "presentation_mode": "fitting",
+            "category": "2los_CRZ",
+            "variable": "lj0pt",
+            "bin_index": 1,
+            "bin_low": 1.0,
+            "bin_high": 2.0,
+            "display_process": "Process A",
+            "raw_signed_yield": -5.0,
+            "plotted_yield": 0.0,
+            "variance": 25.0,
+            "displayed_total_after_clip": 2.0,
+            "ratio_denominator": 2.0,
+        }
+    ]
+
+
+def test_stacked_plot_uses_clipped_total_for_ratio_and_preserved_sumw2():
+    h_mc, h_sumw2, h_data, group_map = _make_negative_stacked_inputs()
+    source_mc = h_mc.values(flow=True).copy()
+    source_sumw2 = h_sumw2.values(flow=True).copy()
+
+    fig = make_cr_and_sr_plots.make_region_stacked_ratio_fig(
+        h_mc=h_mc,
+        h_data=h_data,
+        h_mc_sumw2=h_sumw2,
+        unit_norm_bool=False,
+        var="lj0pt",
+        group=group_map,
+        unblind=True,
+        uncertainty_mode="stat",
+    )
+
+    try:
+        np.testing.assert_array_equal(
+            fig._topeft_plot_view["displayed_total"], [13.0, 2.0, 0.0, 5.0, 0.0]
+        )
+        np.testing.assert_allclose(
+            fig._topeft_ratio_values,
+            [1.0, 2.0, np.nan, 2.0, np.nan],
+            equal_nan=True,
+        )
+        np.testing.assert_allclose(
+            fig._topeft_uncertainty_bands["mc_stat_uncertainty"],
+            np.sqrt([5.0, 29.0, 10.0, 17.0, 0.0]),
+        )
+        assert np.isnan(fig._topeft_uncertainty_bands["ratio_stat_band_up"][2])
+        assert np.isnan(fig._topeft_uncertainty_bands["ratio_stat_band_down"][2])
+        assert fig._topeft_plot_diagnostics[0]["variance"] == 25.0
+        np.testing.assert_array_equal(h_mc.values(flow=True), source_mc)
+        np.testing.assert_array_equal(h_sumw2.values(flow=True), source_sumw2)
+    finally:
+        make_cr_and_sr_plots.plt.close(fig)
+
+
+def test_log_plot_keeps_zero_centrals_and_uses_renderer_only_epsilon():
+    h_mc, h_sumw2, h_data, group_map = _make_negative_stacked_inputs()
+    fig = make_cr_and_sr_plots.make_region_stacked_ratio_fig(
+        h_mc=h_mc,
+        h_data=h_data,
+        h_mc_sumw2=h_sumw2,
+        unit_norm_bool=False,
+        var="lj0pt",
+        group=group_map,
+        unblind=True,
+        uncertainty_mode="stat",
+        log_scale=True,
+    )
+
+    try:
+        assert fig.axes[0].get_yscale() == "log"
+        np.testing.assert_array_equal(
+            fig._topeft_plot_view["displayed_total"], [13.0, 2.0, 0.0, 5.0, 0.0]
+        )
+        assert fig._topeft_plot_summary["renderer_epsilon"] == pytest.approx(0.02)
+        assert fig._topeft_plot_summary["zero_total_bin_count"] == 2
+        assert np.isnan(fig._topeft_ratio_values[2])
+        assert isinstance(
+            fig.axes[0].yaxis.get_major_formatter(),
+            make_cr_and_sr_plots.ticker.LogFormatterMathtext,
+        )
+        assert not fig._topeft_plot_summary["scientific_formatter_used"]
+    finally:
+        make_cr_and_sr_plots.plt.close(fig)
+
+
+def test_all_zero_displayed_total_falls_back_from_log(caplog):
+    plot_arrays = [np.zeros(3), np.zeros(3)]
+    resolved = make_cr_and_sr_plots._prepare_log_scaled_stacks(
+        plot_arrays, "lj0pt", True
+    )
+
+    resolved_arrays, requested, enabled, epsilon, displayed_total = resolved
+    assert requested is False
+    assert enabled is False
+    assert epsilon is None
+    np.testing.assert_array_equal(displayed_total, np.zeros(3))
+    for resolved_array, source_array in zip(resolved_arrays, plot_arrays):
+        np.testing.assert_array_equal(resolved_array, source_array)
+    assert "displayed clipped MC total is zero in every bin" in caplog.text
+
+
+@pytest.mark.parametrize(
+    ("ylim", "expected_scientific"),
+    [((0.0, 99.9), False), ((0.0, 100.0), True), ((-1.0, 10000.0), True)],
+)
+def test_main_y_formatter_uses_inclusive_final_visible_threshold(
+    ylim, expected_scientific
+):
+    fig, (ax, rax) = make_cr_and_sr_plots.plt.subplots(2, 1)
+    try:
+        ax.set_ylim(*ylim)
+        result = make_cr_and_sr_plots._configure_main_y_formatter(
+            ax, log_axis_enabled=False
+        )
+        make_cr_and_sr_plots._configure_ratio_y_formatter(rax)
+        fig.canvas.draw()
+        assert result["scientific_formatter_used"] is expected_scientific
+        assert ax.yaxis.offsetText.get_text() if expected_scientific else not ax.yaxis.offsetText.get_text()
+        assert not rax.yaxis.offsetText.get_text()
+        assert not rax.yaxis.get_major_formatter()._scientific
+    finally:
+        make_cr_and_sr_plots.plt.close(fig)
 
 
 def test_show_ratio_legend_cli_is_disabled_by_default_and_explicitly_enabled():
@@ -2362,11 +2558,11 @@ def test_combined_run2_run3_year_context_is_rejected():
         "CR", hist_inputs, years=["2022"], unblind=True
     )
 
-    assert run2_ctx.lumi_pair == ("137.6", "13")
-    assert run2_ctx.lumi_components == (("137.6", "13"),)
+    assert run2_ctx.lumi_pair == ("138", "13")
+    assert run2_ctx.lumi_components == (("138", "13"),)
     assert run2_ctx.scope_label == "Run 2"
-    assert run3_ctx.lumi_pair == ("61.891", "13.6")
-    assert run3_ctx.lumi_components == (("61.891", "13.6"),)
+    assert run3_ctx.lumi_pair == ("61.9", "13.6")
+    assert run3_ctx.lumi_components == (("61.9", "13.6"),)
     assert run3_ctx.scope_label == "Run 3"
     assert physical_year_ctx.lumi_pair == ("7.98", "13.6")
     assert physical_year_ctx.scope_label is None
