@@ -5887,12 +5887,14 @@ def _compute_uncertainty_bands(
                 systematic_reference_total, dtype=float
             )
             if systematic_reference_total.shape != mc_totals.shape:
-                matched_reference = np.zeros_like(mc_totals, dtype=float)
-                copy_size = min(
-                    systematic_reference_total.size, matched_reference.size
+                raise ValueError(
+                    "Uncertainty-band systematic reference and displayed MC total "
+                    "shapes differ: "
+                    f"systematic_reference_total.shape="
+                    f"{systematic_reference_total.shape}, "
+                    f"mc_totals.shape={mc_totals.shape}. "
+                    "Silent truncation/padding is forbidden."
                 )
-                matched_reference[:copy_size] = systematic_reference_total[:copy_size]
-                systematic_reference_total = matched_reference
 
         # Systematic endpoints are produced around the signed nominal total.
         # Preserve their excursions, then recenter those excursions on the

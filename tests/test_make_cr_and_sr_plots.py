@@ -1192,6 +1192,33 @@ def test_total_band_recenters_signed_systematic_excursions_on_displayed_total():
         make_cr_and_sr_plots.plt.close(fig)
 
 
+def test_uncertainty_band_shape_mismatch_fails_closed():
+    with pytest.raises(ValueError) as exc_info:
+        make_cr_and_sr_plots._compute_uncertainty_bands(
+            ax=None,
+            rax=None,
+            bins=np.array([0.0, 1.0, 2.0]),
+            mc_totals=np.array([4.0, 5.0]),
+            mc_sumw2_vals={},
+            h_mc_sumw2=None,
+            unit_norm_bool=False,
+            mc_scaled=False,
+            mc_norm_factor=1.0,
+            err_p_syst=np.array([5.0, 6.0]),
+            err_m_syst=np.array([3.0, 4.0]),
+            err_ratio_p_syst=None,
+            err_ratio_m_syst=None,
+            syst_err="total",
+            raw_mc_totals=np.array([4.0, 5.0, 6.0, 7.0]),
+        )
+
+    message = str(exc_info.value)
+    assert "systematic reference and displayed MC total shapes differ" in message
+    assert "systematic_reference_total.shape=(4,)" in message
+    assert "mc_totals.shape=(2,)" in message
+    assert "Silent truncation/padding is forbidden" in message
+
+
 def _get_cms_text_union_bbox(fig, ax, renderer):
     def _cms_matches(text_artist):
         text = text_artist.get_text() or ""
