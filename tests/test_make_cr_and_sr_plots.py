@@ -636,6 +636,14 @@ def test_binning_cli_defaults_to_processing_and_accepts_fitting():
     )
 
 
+def test_output_formats_cli_defaults_to_png_and_accepts_vector_formats():
+    parser = make_cr_and_sr_plots.build_arg_parser()
+    assert parser.parse_args(["-f", "input.pkl.gz"]).output_formats == ["png"]
+    assert parser.parse_args(
+        ["-f", "input.pkl.gz", "--output-formats", "png", "pdf", "svg"]
+    ).output_formats == ["png", "pdf", "svg"]
+
+
 def test_plot_binning_view_uses_stored_processing_and_shared_fitting_resolution():
     channel = "3l_1tau_1b_2j"
     histogram = make_cr_and_sr_plots.SparseHist(
@@ -1145,6 +1153,41 @@ def test_stat_and_total_modes_keep_mc_uncertainty_bands(monkeypatch, uncertainty
             assert len(fill_between_calls) == 2
         else:
             assert len(fill_between_calls) == 4
+    finally:
+        make_cr_and_sr_plots.plt.close(fig)
+
+
+def test_total_band_recenters_signed_systematic_excursions_on_displayed_total():
+    h_mc, h_sumw2, h_data, group_map = _make_negative_stacked_inputs()
+    raw_mc_totals = h_mc[{"process": sum}].values(flow=True)[1:]
+
+    fig = make_cr_and_sr_plots.make_region_stacked_ratio_fig(
+        h_mc=h_mc,
+        h_data=h_data,
+        h_mc_sumw2=h_sumw2,
+        unit_norm_bool=False,
+        var="lj0pt",
+        group=group_map,
+        unblind=True,
+        uncertainty_mode="total",
+        syst_err="total",
+        err_p_syst=raw_mc_totals + 1.0,
+        err_m_syst=raw_mc_totals - 1.0,
+        err_ratio_p_syst=np.ones_like(raw_mc_totals),
+        err_ratio_m_syst=np.ones_like(raw_mc_totals),
+    )
+
+    try:
+        bands = fig._topeft_uncertainty_bands
+        assert bands["systematic_reference_total"][1] == pytest.approx(-3.0)
+        expected_uncertainty = np.sqrt(29.0 + 1.0)
+        assert bands["mc_total_band_up_physical"][1] == pytest.approx(
+            2.0 + expected_uncertainty
+        )
+        assert bands["mc_total_band_down_physical"][1] == pytest.approx(0.0)
+        assert bands["ratio_total_band_up"][1] == pytest.approx(
+            1.0 + expected_uncertainty / 2.0
+        )
     finally:
         make_cr_and_sr_plots.plt.close(fig)
 
@@ -3189,6 +3232,33 @@ def test_binning_mode_output_paths_are_collision_free(tmp_path):
 
     with pytest.raises(ValueError, match="Unsupported binning mode"):
         make_cr_and_sr_plots._mode_bearing_output_path(logical_png, "unknown")
+
+
+def test_save_figure_formats_uses_one_mode_bearing_root(tmp_path):
+    class RecordingFigure:
+        def __init__(self):
+            self.calls = []
+
+        def savefig(self, path, **kwargs):
+            self.calls.append((path, kwargs))
+
+    figure = RecordingFigure()
+    output_paths = make_cr_and_sr_plots._save_figure_formats(
+        figure,
+        tmp_path / "category" / "stem",
+        "fitting",
+        ("png", "pdf", "svg", "png"),
+        bbox_inches="tight",
+    )
+
+    expected_paths = tuple(
+        str(tmp_path / "category" / f"stem_fitting.{suffix}")
+        for suffix in ("png", "pdf", "svg")
+    )
+    assert output_paths == expected_paths
+    assert [call[0] for call in figure.calls] == list(expected_paths)
+    assert [call[1]["format"] for call in figure.calls] == ["png", "pdf", "svg"]
+    assert all(call[1]["bbox_inches"] == "tight" for call in figure.calls)
 
 
 def test_negative_weight_reports_for_binning_modes_coexist(tmp_path):

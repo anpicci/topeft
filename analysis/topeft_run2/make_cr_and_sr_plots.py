@@ -61,6 +61,7 @@ _VALUES_METHOD_CAPS = {}
 _SYSTEMATICS_SUMMARY_EMITTED = set()
 RATIO_Y_RANGE = (0.0, 2.0)
 BINNING_OUTPUT_MODES = frozenset(("processing", "fitting"))
+SUPPORTED_OUTPUT_FORMATS = ("png", "pdf", "svg")
 DATA_POISSON_CONFIDENCE_LEVEL = 0.6827
 DATA_INTEGER_ABSOLUTE_TOLERANCE = 8 * np.finfo(float).eps
 
@@ -85,6 +86,48 @@ def _mode_bearing_output_path(path, binning_mode):
         )
     path_root, path_extension = os.path.splitext(os.fspath(path))
     return f"{path_root}_{binning_mode}{path_extension}"
+
+
+def _normalize_output_formats(output_formats):
+    """Return a unique, ordered tuple of supported figure formats."""
+
+    if output_formats is None:
+        output_formats = ("png",)
+    elif isinstance(output_formats, str):
+        output_formats = (output_formats,)
+
+    normalized_formats = []
+    for output_format in output_formats:
+        normalized_format = str(output_format).lower().lstrip(".")
+        if normalized_format not in SUPPORTED_OUTPUT_FORMATS:
+            raise ValueError(
+                "Unsupported output format {!r}; expected one of: {}.".format(
+                    output_format, ", ".join(SUPPORTED_OUTPUT_FORMATS)
+                )
+            )
+        if normalized_format not in normalized_formats:
+            normalized_formats.append(normalized_format)
+    if not normalized_formats:
+        raise ValueError("At least one output format must be selected.")
+    return tuple(normalized_formats)
+
+
+def _save_figure_formats(
+    fig,
+    path,
+    binning_mode,
+    output_formats=("png",),
+    **savefig_kwargs,
+):
+    """Save one logical figure in each requested format and return its paths."""
+
+    output_root = _mode_bearing_output_path(path, binning_mode)
+    output_paths = []
+    for output_format in _normalize_output_formats(output_formats):
+        output_path = f"{output_root}.{output_format}"
+        fig.savefig(output_path, format=output_format, **savefig_kwargs)
+        output_paths.append(output_path)
+    return tuple(output_paths)
 
 
 def _fast_sparsehist_from_reduce(cls, cat_axes, dense_axes, init_args, dense_hists):
@@ -2828,6 +2871,7 @@ def _initialize_render_worker(
     verbose,
     rebin_plot_vars=None,
     negative_weight_report=True,
+    output_formats=("png",),
     prepared_payloads=None,
     shared_region_ctx=None,
 ):
@@ -2858,6 +2902,7 @@ def _initialize_render_worker(
         "verbose": bool(verbose),
         "rebin_plot_vars": dict(rebin_plot_vars or {}),
         "negative_weight_report": bool(negative_weight_report),
+        "output_formats": _normalize_output_formats(output_formats),
         "prepared_variables": prepared_variables,
     }
 
@@ -2917,6 +2962,7 @@ def _render_variable_from_worker(task_id, payload):
             variable_payload=variable_payload,
             rebin_plot_vars=ctx["rebin_plot_vars"],
             negative_weight_report=ctx["negative_weight_report"],
+            output_formats=ctx["output_formats"],
         )
     else:
         if not variable_payload:
@@ -2958,6 +3004,7 @@ def _render_variable_from_worker(task_id, payload):
                     available_channels=variable_payload.get("available_channels"),
                     rebin_plot_vars=ctx["rebin_plot_vars"],
                     negative_weight_report=ctx["negative_weight_report"],
+                    output_formats=ctx["output_formats"],
                 )
     return task_id, stat_only, stat_and_syst, html_set, negative_rows
 
@@ -3190,6 +3237,7 @@ def _render_variable(
     variable_payload=None,
     rebin_plot_vars=None,
     negative_weight_report=True,
+    output_formats=("png",),
 ):
     """Render plots for *var_name* and return summary accounting."""
 
@@ -3259,6 +3307,7 @@ def _render_variable(
             available_channels=variable_payload.get("available_channels"),
             rebin_plot_vars=rebin_plot_vars,
             negative_weight_report=negative_weight_report,
+            output_formats=output_formats,
         )
         stat_only_plots += stat_only
         stat_and_syst_plots += stat_and_syst
@@ -3290,6 +3339,7 @@ def _render_variable_category(
     available_channels=None,
     rebin_plot_vars=None,
     negative_weight_report=True,
+    output_formats=("png",),
 ):
     """Render a single (variable, category) pair and return bookkeeping totals."""
 
@@ -3731,11 +3781,11 @@ def _render_variable_category(
         )
         if isinstance(fig, dict):
             combined_fig = fig["combined"]
-            combined_fig.savefig(
-                _mode_bearing_output_path(
-                    os.path.join(save_dir_path_tmp, title),
-                    region_ctx.binning_mode,
-                ),
+            _save_figure_formats(
+                combined_fig,
+                os.path.join(save_dir_path_tmp, title),
+                region_ctx.binning_mode,
+                output_formats,
                 bbox_inches="tight",
                 pad_inches=0.05,
             )
@@ -3744,20 +3794,20 @@ def _render_variable_category(
                 if key == "combined":
                     continue
                 suffix = suffix_map.get(key, f"_{key}")
-                panel_fig.savefig(
-                    _mode_bearing_output_path(
-                        os.path.join(save_dir_path_tmp, f"{title}{suffix}"),
-                        region_ctx.binning_mode,
-                    ),
+                _save_figure_formats(
+                    panel_fig,
+                    os.path.join(save_dir_path_tmp, f"{title}{suffix}"),
+                    region_ctx.binning_mode,
+                    output_formats,
                     bbox_inches="tight",
                     pad_inches=0.05,
                 )
         else:
-            fig.savefig(
-                _mode_bearing_output_path(
-                    os.path.join(save_dir_path_tmp, title),
-                    region_ctx.binning_mode,
-                ),
+            _save_figure_formats(
+                fig,
+                os.path.join(save_dir_path_tmp, title),
+                region_ctx.binning_mode,
+                output_formats,
                 bbox_inches="tight",
                 pad_inches=0.05,
             )
@@ -4003,11 +4053,14 @@ def _render_variable_category(
             )
             return _empty_render_result()
         _record_plot_view_diagnostics(fig)
-        save_path = _mode_bearing_output_path(
-            os.path.join(save_dir_path_tmp, f"{title}.png"),
+        _save_figure_formats(
+            fig,
+            os.path.join(save_dir_path_tmp, title),
             region_ctx.binning_mode,
+            output_formats,
+            bbox_inches="tight",
+            pad_inches=0.05,
         )
-        fig.savefig(save_path, bbox_inches="tight", pad_inches=0.05)
         _close_figure_payload(fig)
         has_syst_inputs = any(
             err is not None
@@ -5709,6 +5762,7 @@ def _compute_uncertainty_bands(
     err_ratio_m_syst,
     syst_err,
     *,
+    raw_mc_totals=None,
     log_axis_enabled=False,
     log_y_baseline=None,
     style=None,
@@ -5825,8 +5879,40 @@ def _compute_uncertainty_bands(
         if has_ratio_axis and ratio_syst_down is not None:
             ratio_syst_down = np.where(mc_totals == 0, np.nan, ratio_syst_down)
 
-        syst_up_diff = np.clip(syst_up - mc_totals, a_min=0, a_max=None)
-        syst_down_diff = np.clip(mc_totals - syst_down, a_min=0, a_max=None)
+        if raw_mc_totals is None:
+            systematic_reference_total = np.asarray(mc_totals, dtype=float)
+        else:
+            systematic_reference_total = _trim_overflow(raw_mc_totals)
+            systematic_reference_total = np.asarray(
+                systematic_reference_total, dtype=float
+            )
+            if systematic_reference_total.shape != mc_totals.shape:
+                matched_reference = np.zeros_like(mc_totals, dtype=float)
+                copy_size = min(
+                    systematic_reference_total.size, matched_reference.size
+                )
+                matched_reference[:copy_size] = systematic_reference_total[:copy_size]
+                systematic_reference_total = matched_reference
+
+        # Systematic endpoints are produced around the signed nominal total.
+        # Preserve their excursions, then recenter those excursions on the
+        # plot-only total after negative process-bin clipping.
+        syst_up_diff = np.clip(
+            syst_up - systematic_reference_total, a_min=0, a_max=None
+        )
+        syst_down_diff = np.clip(
+            systematic_reference_total - syst_down, a_min=0, a_max=None
+        )
+        displayed_syst_up = mc_totals + syst_up_diff
+        displayed_syst_down = np.clip(
+            mc_totals - syst_down_diff, a_min=0, a_max=None
+        )
+        ratio_syst_up = 1 + _safe_divide(
+            syst_up_diff, mc_totals, default=np.nan
+        )
+        ratio_syst_down = 1 - _safe_divide(
+            syst_down_diff, mc_totals, default=np.nan
+        )
 
         total_unc_up = np.sqrt(mc_stat_unc**2 + syst_up_diff**2)
         total_unc_down = np.sqrt(mc_stat_unc**2 + syst_down_diff**2)
@@ -5849,8 +5935,8 @@ def _compute_uncertainty_bands(
 
         ratio_syst_band_up = _append_last(ratio_syst_up)
         ratio_syst_band_down = _append_last(ratio_syst_down)
-        mc_syst_band_up = _append_last(np.clip(syst_up, a_min=0, a_max=None))
-        mc_syst_band_down = _append_last(np.clip(syst_down, a_min=0, a_max=None))
+        mc_syst_band_up = _append_last(displayed_syst_up)
+        mc_syst_band_down = _append_last(displayed_syst_down)
     else:
         ratio_syst_band_up = ratio_syst_band_down = None
         mc_syst_band_up = mc_syst_band_down = None
@@ -5989,6 +6075,15 @@ def _compute_uncertainty_bands(
         "mc_stat_uncertainty": mc_stat_unc,
         "mc_stat_band_up_physical": mc_stat_up,
         "mc_stat_band_down_physical": mc_stat_down,
+        "mc_total_band_up_physical": None
+        if mc_total_band_up is None
+        else mc_total_band_up[:-1],
+        "mc_total_band_down_physical": None
+        if mc_total_band_down is None
+        else mc_total_band_down[:-1],
+        "systematic_reference_total": None
+        if not has_main_syst_arrays
+        else systematic_reference_total,
     }
 
 
@@ -7237,6 +7332,7 @@ def produce_region_plots(
     verbose=False,
     rebin_plot_vars=None,
     negative_weight_report=True,
+    output_formats=("png",),
 ):
     """Render requested variables and return negative-report rows from the sweep."""
 
@@ -7455,6 +7551,7 @@ def produce_region_plots(
                     verbose,
                     rebin_plot_vars,
                     negative_weight_report,
+                    output_formats,
                     prepared_payloads,
                     shared_region_ctx,
                 ),
@@ -7503,6 +7600,7 @@ def produce_region_plots(
                     variable_payload=variable_payload,
                     rebin_plot_vars=rebin_plot_vars,
                     negative_weight_report=negative_weight_report,
+                    output_formats=output_formats,
                 )
             else:
                 if not variable_payload:
@@ -7552,6 +7650,7 @@ def produce_region_plots(
                             semantic_category=semantic_category,
                             rebin_plot_vars=rebin_plot_vars,
                             negative_weight_report=negative_weight_report,
+                            output_formats=output_formats,
                         )
             stat_only_plots += stat_only
             stat_and_syst_plots += stat_and_syst
@@ -8954,6 +9053,14 @@ def make_region_stacked_ratio_fig(
     mc_sumw2_vals = panel_info["mc_sumw2_vals"]
     mc_totals = panel_info["mc_totals"]
     plot_view = panel_info.get("plot_view", {})
+    raw_grouped_centrals = plot_view.get("raw_grouped_centrals", {})
+    if raw_grouped_centrals:
+        raw_mc_totals = np.sum(
+            [np.asarray(values, dtype=float) for values in raw_grouped_centrals.values()],
+            axis=0,
+        )
+    else:
+        raw_mc_totals = np.asarray(mc_totals, dtype=float)
     log_axis_enabled = panel_info.get("log_axis_enabled", False)
     has_ratio_axis = rax is not None
     use_log_y = log_axis_enabled
@@ -9017,6 +9124,7 @@ def make_region_stacked_ratio_fig(
             err_ratio_p_syst,
             err_ratio_m_syst,
             "stat" if uncertainty_mode == "stat" else syst_err,
+            raw_mc_totals=raw_mc_totals,
             log_axis_enabled=log_axis_enabled,
             log_y_baseline=log_y_baseline,
             style=style,
@@ -9379,6 +9487,7 @@ def run_plots_for_region(
     negative_weight_report=True,
     show_ratio_legend=False,
     binning_mode="processing",
+    output_formats=("png",),
 ):
     """Run one CR/SR plotting pass and write optional zero/negative reports."""
 
@@ -9488,6 +9597,7 @@ def run_plots_for_region(
             verbose=verbose,
             rebin_plot_vars=rebin_plot_vars,
             negative_weight_report=negative_weight_report,
+            output_formats=output_formats,
         )
         if negative_rows:
             all_negative_rows.extend(negative_rows)
@@ -9687,6 +9797,16 @@ def build_arg_parser():
         ),
     )
     parser.add_argument(
+        "--output-formats",
+        nargs="+",
+        choices=SUPPORTED_OUTPUT_FORMATS,
+        default=["png"],
+        help=(
+            "One or more figure formats to emit for every logical plot "
+            "(default: png)."
+        ),
+    )
+    parser.add_argument(
         "--workers",
         type=int,
         default=1,
@@ -9879,6 +9999,7 @@ def run_with_args(args, parser):
     print(f"Channel output selection: {args.channel_output}")
     print(f"Binning view: {args.binning}")
     print(f"Resolved uncertainty mode: {uncertainty_mode}")
+    print("Output formats: {}".format(", ".join(args.output_formats)))
 
     try:
         rebin_plot_vars = parse_rebin_plot_vars(args.rebin_plot_vars)
@@ -10002,6 +10123,7 @@ def run_with_args(args, parser):
         negative_weight_report=args.negative_weight_report,
         show_ratio_legend=args.show_ratio_legend,
         binning_mode=args.binning,
+        output_formats=args.output_formats,
     )
     return 0
 
