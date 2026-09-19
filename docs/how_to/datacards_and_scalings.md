@@ -3,8 +3,8 @@
 `analysis/topeft_run2/make_cards.py` is the maintained direct card-production
 interface. It consumes one or more compatible histogram PKLs—normally the
 nonprompt-transformed products—and writes individual text cards, ROOT template
-files, a generated `selectedWCs.txt` unless `--use-selected` is active, and
-`scalings-preselect.json`. There is no maintained general card wrapper; tracked
+files, canonical `selectedWCs.txt`, and `scalings-preselect.json`. There is no
+maintained general card wrapper; tracked
 matrix scripts can be campaign/operator records without becoming a second
 interface authority.
 
@@ -66,15 +66,12 @@ exist as histogram families in the merged input.
 - Use `--miss-parton-file` and `--sr-registry` to select existing supported
   configuration. Do not duplicate payload or registry data in an operator
   wrapper.
-- Do not rely on `--rate-syst-json` in the current implementation. The parser
-  accepts it, but `make_cards.py` passes the value as `rate_syst_path` while
-  `DatacardMaker` consumes `rate_systs_path`; the supplied path is therefore
-  ignored and the maker selects its Run 2 or Run 3 default rate-systematics
-  file. Correcting that keyword boundary is an executable change.
-- `--use-selected FILE` reads the reviewed JSON for card construction, but it
-  does not copy `FILE` to `<out_dir>/selectedWCs.txt`. Before finalization,
-  place and independently verify the exact reviewed `selectedWCs.txt` in the
-  card output directory; otherwise the finalizer has no file to copy.
+- `--rate-syst-json` overrides the run-era rate-systematics JSON path. An
+  explicit value is forwarded to `DatacardMaker` as `rate_systs_path`; when it
+  is omitted, `DatacardMaker` selects its maintained Run 2 or Run 3 default.
+- `--use-selected FILE` reads the reviewed JSON for card construction,
+  canonicalizes its signal-only representation, and materializes that
+  representation as `<out_dir>/selectedWCs.txt` without modifying `FILE`.
 - When extending the CLI, update parsing, Condor forwarding if applicable,
   `DatacardMaker` construction, output/provenance behavior, and focused tests.
 
@@ -90,8 +87,9 @@ To add a supported selection/configuration control:
 1. Identify its existing owner: physical channels in `ch_lst.json`, axes in
    `axes.py`, currently default-selected rate-systematic JSON in
    `DatacardMaker`, missing-parton payload/registry through their dedicated
-   options, or WC selection through selected-WC inputs. Treat the ineffective
-   `--rate-syst-json` keyword path as a source defect, not an extension model.
+   options, or WC selection through selected-WC inputs. Use
+   `--rate-syst-json` only to select an existing supported rate-systematics
+   JSON.
 2. Add a CLI selector only when choosing among existing supported authorities;
    do not copy the configuration into `make_cards.py`.
 3. Validate choices before output creation and thread the resolved value to
@@ -106,11 +104,10 @@ Card changes can affect template shapes, nuisance content, WC selection, the
 preselected scaling records, and every later EFT fit. Validate the card/template
 pair together rather than checking the text card alone.
 
-The normal generated-selection output set contains one text-card/ROOT-template
-pair per selected physical channel and distribution, `selectedWCs.txt`, and
-`scalings-preselect.json`. With `--use-selected`, the operator must supply the
-reviewed `selectedWCs.txt` in the output directory separately. The preselect
-file records producer-owned EFT polynomial payloads under physical
+The output set for either the generated or `--use-selected` selection path
+contains one text-card/ROOT-template pair per selected physical channel and
+distribution, canonical `selectedWCs.txt`, and `scalings-preselect.json`. The
+preselect file records producer-owned EFT polynomial payloads under physical
 channel/distribution labels. `make_cards.py` does not assign final `chN` labels
 or create `combinedcard.txt`.
 

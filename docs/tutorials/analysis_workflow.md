@@ -403,13 +403,14 @@ Use a coherent final `_np.pkl.gz` family for ordinary card production:
 python make_cards.py /path/to/final_np.pkl.gz \
   --out-dir /absolute/path/to/cards \
   --var-lst lj0pt ptz ptll ptz_wtau lt \
-  --ch-lst '^2lss_.*' '^3l_.*' '^4l_.*' \
+  --ch-lst '^2lss_.*' '^2los_.*' '^3l_.*' '^4l_.*' \
   --binning fitting \
   --year-coverage-policy error
 ```
 
-Here `--ch-lst` belongs to the card CLI's channel selection interface. It does
-not change the separate `axes.info[family]["fitting"]["channels"]` contract,
+Here `--ch-lst` belongs to the card CLI's channel selection interface. Its
+patterns select physical channel labels but do not redefine the maintained
+registry or the separate `axes.info[family]["fitting"]["channels"]` contract,
 whose keys are exact channel names.
 
 `make_cards.py` validates/merges the input family, selects variables and
