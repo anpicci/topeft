@@ -1,0 +1,42 @@
+analysis: TOP_26_006
+
+wc_population:
+  scientific:
+    - cpt
+    - ctW
+    - ctZ
+    - ctp
+    - cpQM
+    - ctG
+    - cbW
+    - cpQ3
+    - cptb
+    - cQl3i
+    - cQlMi
+    - cQei
+    - ctli
+    - ctei
+    - ctlSi
+    - ctlTi
+    - cQq13
+    - cQq83
+    - cQq11
+    - ctq1
+    - cQq81
+    - ctq8
+    - ctt1
+    - cQQ1
+    - cQt8
+    - cQt1
+
+  fixed_zero:
+    - ctu1
+    - ctu8
+    - ctd1
+    - ctd8
+    - cQu1
+    - cQu8
+    - cQd1
+    - cQd8
+    - ctb8
+    - cQb8
