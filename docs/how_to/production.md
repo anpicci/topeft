@@ -60,6 +60,15 @@ inputs, outputs, and environment archive. Resume only that frozen plan:
 separately. Do not point a fresh campaign at an existing output directory, and
 do not edit the state file to force a resume.
 
+Resume validates the recorded manager provenance against the current `topeft`
+and `topcoffea` checkouts. A change outside the manager-sensitive paths is
+accepted after local comparison. If a manager-sensitive path changed, resume
+refuses by default; after an exact-current review, provide the reviewed full
+SHA for each affected manager with `--reviewed-topeft-manager-head SHA` and/or
+`--reviewed-topcoffea-manager-head SHA`. Each supplied SHA must equal the
+current corresponding checkout HEAD. Missing, malformed, or stale values are
+rejected and do not bypass the other frozen-state checks.
+
 For maintained profiles, omit `--env-file` to resolve or create the current
 worker environment for the checkout. Supply an absolute `--env-file` to use
 exactly that archive as an intentional frozen snapshot; snapshot integrity and

@@ -11,11 +11,11 @@
 | Direct options | `run_analysis.py` argparse | Own executor, resources, analysis toggles, output, policy, and provenance inputs |
 | YAML option overlay | `run_analysis.py --options FILE` | Supplies recognized runtime values through one top-level YAML mapping |
 
-The maintained public production interface is the six-profile `run_cr.sh`
-matrix described below. `run3_full` is the complete maintained Run 3 SR
-production profile. `rebin_fine` is a specialized legacy profile for its
-declared changed-binning family blocks; it is not a synonym for the public
-profile matrix.
+The maintained public production interface is the eight-profile `run_cr.sh`
+matrix described below: six ordinary full profiles and two T0 stat-only
+profiles. `run3_full` is the complete maintained Run 3 SR production profile.
+`rebin_fine` is a specialized legacy profile for its declared changed-binning
+family blocks; it is not a synonym for the public profile matrix.
 
 ## Current NDSkim cfg reachability
 
@@ -30,8 +30,8 @@ default selection for one invocation.
 Historical sample configs may remain in the repository for reproduction. Their
 presence does not make them reachable from the maintained wrappers.
 
-The six maintained public `run_cr.sh` profiles map to the exact 24-cfg Run 2
-and Run 3 SR+CR production surface. That surface is the validated Project01
+The six ordinary full `run_cr.sh` profiles map to the exact 24-cfg Run 2 and
+Run 3 SR+CR production surface. That surface is the validated Project01
 production contract: canonical sample-JSON entries remain `/store/...` paths,
 which resolve through `file:///project01/ndcms/apiccine` onto the accepted
 migrated input universe. Cfgs outside this maintained production surface are
@@ -176,13 +176,18 @@ is its consumer and storage owner. Tests are in
 
 ## Current `run_cr.sh` profiles
 
-`run_cr.sh` exposes six maintained public profiles: `run2_full`, `run3_full`,
-`run2_full_CR`, `run3_full_CR`, `run2_run3_full`, and
-`run2_run3_full_CR`. The combined profiles place their Run 2 and Run 3
-components in separate child namespaces. The no-argument invocation remains a
-legacy alias for the fixed `run2_full` campaign. `rebin_fine` remains a
-specialist legacy profile for fitting families whose bins changed; it is not a
-replacement for the public profile matrix.
+`run_cr.sh` exposes eight maintained public profiles: `run2_full`, `run3_full`,
+`run2_full_CR`, `run3_full_CR`, `run2_run3_full`, `run2_run3_full_CR`,
+`t0_sr_statonly`, and `t0_cr_statonly`. The combined profiles place their Run 2
+and Run 3 components in separate child namespaces. The ordinary full profiles
+use the implicit `production` sumw2 policy and do not record raw counts. The
+T0 stat-only profiles use explicit `full_diagnostics` sumw2 storage and record
+raw counts: `t0_sr_statonly` covers the maintained Run-2 and early-Run-3 SR
+mapping, while `t0_cr_statonly` covers the Run-2/Run-3 CR mapping with separate
+native nonprompt and charge-flip postprocessing. The no-argument invocation
+remains a legacy alias for the fixed `run2_full` campaign. `rebin_fine` remains
+a specialist legacy profile for fitting families whose bins changed; it is not
+a replacement for the public profile matrix.
 
 The public profiles require a fresh absolute output directory and campaign tag,
 use the maintained frozen environment archive, and do not expose a profile-level
