@@ -1098,7 +1098,7 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--port",
-        default="9164-9170",
+        default="9165",
         help="Specify the Work Queue port. An integer PORT or an integer range PORT_MIN-PORT_MAX.",
     )
     parser.add_argument(
