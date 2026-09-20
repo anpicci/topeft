@@ -3,10 +3,11 @@
 `analysis/topeft_run2/make_cards.py` is the maintained direct card-production
 interface. It consumes one or more compatible histogram PKLs—normally the
 nonprompt-transformed products—and writes individual text cards, ROOT template
-files, canonical `selectedWCs.txt`, and `scalings-preselect.json`. There is no
-maintained general card wrapper; tracked
-matrix scripts can be campaign/operator records without becoming a second
-interface authority.
+files, canonical `selectedWCs.txt`, and `scalings-preselect.json`. For a
+prequalified multi-row production, the one maintained resumable execution
+entry point is
+`analysis/topeft_run2/run_datacard_matrix_resumable.sh`. Campaign/operator
+scripts remain records and are not additional maintained interfaces.
 
 | Interface | Owns | Defaults/derived state | Delegates or does not own |
 | --- | --- | --- | --- |
@@ -103,6 +104,90 @@ To add a supported selection/configuration control:
 Card changes can affect template shapes, nuisance content, WC selection, the
 preselected scaling records, and every later EFT fit. Validate the card/template
 pair together rather than checking the text card alone.
+
+## Run a prequalified matrix resumably
+
+The canonical runner accepts an ordered JSON manifest; it does not derive or
+qualify the physics matrix. Each row records its logical and attempt IDs, era,
+working directory, input PKL, output root, distribution, literal physical
+channel argv, years, missing-parton path, SR registry, row-specific merge
+report, immutable snapshot/log destinations, expected output paths, and exact
+`make_cards.py` argv. The manifest also selects a control root and advisory-lock
+path. Use attempt-specific log, snapshot, merge-report, and expected-output
+paths.
+
+The schema is `topeft_datacard_matrix_v1`:
+
+```json
+{
+  "schema": "topeft_datacard_matrix_v1",
+  "control_root": "/path/to/runner-control",
+  "lock_path": "/path/to/runner-control/runner.lock",
+  "rows": [{
+    "row_id": "run3_01",
+    "attempt_id": "attempt_01",
+    "era": "run3",
+    "working_directory": "/path/to/topeft",
+    "input_pkl": "/path/to/input.pkl.gz",
+    "output_root": "/path/to/cards/run3",
+    "distribution": "lj0pt",
+    "physical_channels": ["physical_channel_a", "physical_channel_b"],
+    "years": ["2022", "2022EE", "2023", "2023BPix"],
+    "missing_parton_path": "data/missing_parton/missing_parton_run3.root",
+    "sr_registry": "ALL_CH_LST_SR",
+    "merge_report_path": "/path/to/evidence/run3_01/merge_report.json",
+    "snapshot_directory": "/path/to/runner-control/snapshots/run3_01_attempt_01",
+    "log_path": "/path/to/evidence/run3_01/row.log",
+    "expected_output_paths": ["/path/to/cards/run3/card.txt", "/path/to/cards/run3/card.root"],
+    "producer_argv": ["analysis/topeft_run2/make_cards.py", "/path/to/input.pkl.gz", "--out-dir", "/path/to/cards/run3", "--var-lst", "lj0pt", "--ch-lst", "physical_channel_a", "physical_channel_b", "--year", "2022", "2022EE", "2023", "2023BPix", "--miss-parton-file", "data/missing_parton/missing_parton_run3.root", "--sr-registry", "ALL_CH_LST_SR", "--merge-report", "/path/to/evidence/run3_01/merge_report.json"]
+  }]
+}
+```
+
+All path fields except `missing_parton_path` are absolute. The runner verifies
+that the structured row fields agree with their exact `producer_argv`
+counterparts before launching anything.
+
+A minimal invocation is:
+
+```bash
+analysis/topeft_run2/run_datacard_matrix_resumable.sh --plan-only /path/to/manifest.json
+analysis/topeft_run2/run_datacard_matrix_resumable.sh --status /path/to/manifest.json
+analysis/topeft_run2/run_datacard_matrix_resumable.sh /path/to/manifest.json
+```
+
+Run long, manually authorized executions in a named `tmux` session so the
+operator can detach without terminating the runner. Inspect `--plan-only` and
+`--status` first, and keep the exact accepted manifest unchanged during an
+attempt. The runner validates the entire schema before execution, holds one OS
+advisory lock for the mutating run, executes rows sequentially through
+`codex-run.sh` and the pinned Python environment, and stops on the first command
+or evidence failure. Physical channels stay separate literal argv values; the
+manifest must not encode them as a shell regex.
+
+After a successful row command, the runner checks the declared outputs, retains
+the row-specific merge report, snapshots `selectedWCs.txt`,
+`scalings-preselect.json`, and the merge report, hashes the immutable log and
+snapshots, and atomically publishes an execution receipt. A receipt proves only
+that the declared command executed successfully and that its recorded artifacts
+still match. It is not a physics certificate.
+
+On restart, a row is skipped only when its receipt matches the current manifest,
+argv, paths, and artifact hashes. Existing row-owned output without a valid
+receipt is a fail-closed interruption: the runner neither deletes it nor reruns
+the row. External reconciliation must decide whether a new attempt is safe and,
+if so, supply a new attempt ID and non-overwriting paths. There is no automatic
+retry and no output-existence shortcut.
+
+Keep these lifecycle layers separate:
+
+1. This runner owns sequential execution, logs, snapshots, and execution
+   receipts.
+2. A later review owns scientific certification of cards, templates, and
+   producer metadata.
+3. A separately authorized step owns selected-WC and scaling consolidation.
+4. `datacards_post_processing.py` remains the finalizer and is never launched by
+   the resumable runner.
 
 The output set for either the generated or `--use-selected` selection path
 contains one text-card/ROOT-template pair per selected physical channel and
