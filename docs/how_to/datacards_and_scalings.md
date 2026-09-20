@@ -167,6 +167,11 @@ analysis/topeft_run2/run_datacard_matrix_resumable.sh --status /path/to/manifest
 analysis/topeft_run2/run_datacard_matrix_resumable.sh /path/to/manifest.json
 ```
 
+The public wrapper locates its companion Python engine relative to its own
+absolute directory, so it does not depend on the checkout location or the
+caller's current working directory. It prefers `python` and falls back to
+`python3` for the runner engine bootstrap.
+
 Run long, manually authorized executions in a named `tmux` session so the
 operator can detach without terminating the runner. Inspect `--plan-only` and
 `--status` first, and keep the exact accepted manifest unchanged during an
@@ -184,8 +189,23 @@ size and SHA256. This is execution-integrity evidence, not a physics
 certificate.
 
 On restart, a row is skipped only when its receipt matches the current manifest,
-argv, paths, runtime contract, and byte-bound artifacts. Owner metadata is
-updated atomically under the OS lock before each row. `--status` reports
+argv, paths, runtime contract, and byte-bound artifacts. A valid immutable
+receipt permits that skip even if the row's historical input PKL or
+missing-parton file is no longer available. Rows that are about to execute
+still require the current runtime contract, a readable regular input PKL, and
+a readable regular missing-parton file. The manifest binds
+`missing_parton_path` to exactly one matching `--miss-parton-file` producer
+argument, so the checked file is the file passed to `make_cards.py`.
+
+`--plan-only` does not mutate or execute. For each `not_started` row it reports
+runtime and execution-input availability and marks the overall plan not
+launch-ready when a required input is unavailable; completed rows are not
+penalized for unavailable historical execution inputs.
+
+Owner metadata is updated atomically under the OS lock before each row.
+`started_at` records when this runner acquired execution ownership and remains
+stable for that runner's lifetime; `current_row_started_at` records the start
+of the current row and changes with each row. `--status` reports
 `active` only when evidence has no receipt *and* the lock plus owner metadata
 identify that exact row/attempt; evidence with a free lock is
 `interrupted_requires_external_reconciliation`, even if stale owner JSON

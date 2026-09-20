@@ -1,6 +1,8 @@
 import hashlib
 import json
 from pathlib import Path
+import re
+import shutil
 import subprocess
 import sys
 import time
@@ -60,7 +62,7 @@ def make_row(tmp_path, fake, row_id="row_01", attempt="attempt_01", extra=None):
     evidence = tmp_path / "evidence" / f"{row_id}_{attempt}"
     input_pkl = tmp_path / "inputs" / f"{row_id}_{attempt}.pkl.gz"
     input_pkl.parent.mkdir(exist_ok=True); input_pkl.write_text("input\n")
-    missing = tmp_path / "missing.root"; missing.write_text("missing\n")
+    missing = tmp_path / "inputs" / f"{row_id}_{attempt}_missing.root"; missing.write_text("missing\n")
     outputs = [root / "card.txt", root / "card.root"]
     args = ["--out-dir", str(root), "--var-lst", "lj0pt", "--ch-lst", "channel_a", "channel_b", "--binning", "fitting", "--year", "2022", "2022EE", "--miss-parton-file", str(missing), "--sr-registry", "ALL_CH_LST_SR", "--merge-report", str(evidence / "merge.json"), "--expected-output", *map(str, outputs), *(extra or [])]
     return {"row_id": row_id, "attempt_id": attempt, "era": "run3", "working_directory": str(fake.parent), "input_pkl": str(input_pkl), "output_root": str(root), "distribution": "lj0pt", "physical_channels": ["channel_a", "channel_b"], "years": ["2022", "2022EE"], "missing_parton_path": str(missing), "sr_registry": "ALL_CH_LST_SR", "merge_report_path": str(evidence / "merge.json"), "snapshot_directory": str(tmp_path / "control" / "snapshots" / f"{row_id}_{attempt}"), "log_path": str(evidence / "row.log"), "expected_output_paths": list(map(str, outputs)), "producer_args": args}
@@ -87,6 +89,52 @@ def receipt(tmp_path, row):
     return json.loads((tmp_path / "control" / "receipts" / f"{row['row_id']}__{row['attempt_id']}.json").read_text())
 
 
+def replace_option_value(row, option, value):
+    row["producer_args"][row["producer_args"].index(option) + 1] = str(value)
+
+
+def wait_for_owner(path, row_id):
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        try:
+            owner = json.loads(path.read_text())
+        except (FileNotFoundError, json.JSONDecodeError):
+            time.sleep(.01)
+            continue
+        if owner.get("current_row_id") == row_id:
+            return owner
+        time.sleep(.01)
+    raise AssertionError(f"owner metadata never reached {row_id}")
+
+
+def test_public_wrapper_is_portable_and_has_no_shell_exit(tmp_path):
+    source = RUNNER.read_text()
+    assert re.search(r"\bexit\b", source) is None
+    assert "/users/apiccine/work/correction-lib" not in source
+    relocated = tmp_path / "different-checkout" / "analysis" / "topeft_run2"
+    relocated.mkdir(parents=True)
+    relocated_wrapper = relocated / RUNNER.name
+    shutil.copy2(RUNNER, relocated_wrapper)
+    shutil.copy2(ENGINE, relocated / ENGINE.name)
+    completed = subprocess.run(
+        [str(relocated_wrapper), "--help"],
+        cwd=tmp_path,
+        text=True,
+        capture_output=True,
+    )
+    assert completed.returncode == 0
+    assert "Run a prequalified datacard matrix" in completed.stdout
+    no_interpreter = subprocess.run(
+        ["/bin/bash", str(relocated_wrapper), "--help"],
+        cwd=tmp_path,
+        env={"PATH": ""},
+        text=True,
+        capture_output=True,
+    )
+    assert no_interpreter.returncode == 127
+    assert "python or python3 is required for the runner engine" in no_interpreter.stderr
+
+
 def test_schema_and_identity_rejections(tmp_path, fake_script):
     row = make_row(tmp_path, fake_script); row.pop("era")
     path, _ = manifest(tmp_path, fake_script, [row]); assert result(invoke(path).stderr)["status"] == "manifest_schema_error"
@@ -99,6 +147,31 @@ def test_plan_and_status_are_nonmutating(tmp_path, fake_script):
     assert result(invoke(path, "--plan-only").stdout)["rows"][0]["action"] == "execute"
     assert result(invoke(path, "--status").stdout)["rows"][0]["status"] == "not_started"
     assert not Path(data["control_root"]).exists() and not (tmp_path / "counter").exists()
+
+
+def test_plan_only_reports_missing_execution_input_but_skips_complete_history(tmp_path, fake_script):
+    missing = make_row(tmp_path, fake_script, "missing")
+    Path(missing["missing_parton_path"]).unlink()
+    missing_path, _ = manifest(tmp_path, fake_script, [missing], "missing-plan.json")
+    missing_plan = invoke(missing_path, "--plan-only")
+    missing_result = result(missing_plan.stdout)
+    assert missing_plan.returncode != 0
+    assert not missing_result["launch_ready"]
+    assert missing_result["rows"][0]["action"] == "block"
+    assert not missing_result["rows"][0]["execution_input_availability"]["checks"]["missing_parton_path"]["available"]
+
+    complete = make_row(tmp_path, fake_script, "complete")
+    complete_path, _ = manifest(tmp_path, fake_script, [complete], "complete-plan.json")
+    assert invoke(complete_path).returncode == 0
+    Path(complete["input_pkl"]).unlink()
+    Path(complete["missing_parton_path"]).unlink()
+    complete_plan = invoke(complete_path, "--plan-only")
+    complete_result = result(complete_plan.stdout)
+    assert complete_plan.returncode == 0
+    assert complete_result["launch_ready"]
+    assert complete_result["rows"][0]["status"] == "complete"
+    assert complete_result["rows"][0]["action"] == "skip"
+    assert not complete_result["rows"][0]["execution_input_availability"]["checked"]
 
 
 def test_active_interrupted_and_stale_owner_statuses(tmp_path, fake_script):
@@ -137,6 +210,64 @@ def test_resume_failures_and_new_attempt(tmp_path, fake_script):
     assert result(invoke(orphan_path).stderr)["status"] == "interrupted_requires_external_reconciliation"
 
 
+def test_completed_row_skips_unavailable_historical_inputs_before_next_row(tmp_path, fake_script):
+    counter = tmp_path / "second-counter"
+    first = make_row(tmp_path, fake_script, "first", extra=["--mutate-path", str(fake_script)])
+    second = make_row(tmp_path, fake_script, "second", extra=["--counter", str(counter)])
+    path, _ = manifest(tmp_path, fake_script, [first, second], "resume.json")
+    assert result(invoke(path).stderr)["status"] == "runtime_contract_mismatch"
+    assert receipt(tmp_path, first)["row_id"] == "first"
+    fake_script.write_text(FAKE)
+    Path(first["input_pkl"]).unlink()
+    Path(first["missing_parton_path"]).unlink()
+    resumed = invoke(path)
+    resumed_result = result(resumed.stdout)
+    assert resumed.returncode == 0
+    assert resumed_result["rows"][0]["action"] == "skipped_valid_receipt"
+    assert resumed_result["rows"][1]["action"] == "executed"
+    assert counter.read_text() == "1"
+
+
+def test_missing_parton_binding_and_execution_availability(tmp_path, fake_script):
+    missing = make_row(tmp_path, fake_script, "missing")
+    Path(missing["missing_parton_path"]).unlink()
+    path, _ = manifest(tmp_path, fake_script, [missing], "missing.json")
+    missing_result = invoke(path)
+    assert result(missing_result.stderr)["status"] == "runtime_preflight_error"
+    assert not Path(missing["log_path"]).exists()
+
+    nonregular = make_row(tmp_path, fake_script, "nonregular")
+    nonregular_path = tmp_path / "nonregular-missing-parton"
+    nonregular_path.mkdir()
+    nonregular["missing_parton_path"] = str(nonregular_path)
+    replace_option_value(nonregular, "--miss-parton-file", nonregular_path)
+    path, _ = manifest(tmp_path, fake_script, [nonregular], "nonregular.json")
+    nonregular_result = invoke(path)
+    assert result(nonregular_result.stderr)["status"] == "runtime_preflight_error"
+    assert not Path(nonregular["log_path"]).exists()
+
+    valid = make_row(tmp_path, fake_script, "valid")
+    path, _ = manifest(tmp_path, fake_script, [valid], "valid.json")
+    assert invoke(path).returncode == 0
+
+    relative = make_row(tmp_path, fake_script, "relative")
+    relative["missing_parton_path"] = "relative.root"
+    replace_option_value(relative, "--miss-parton-file", "relative.root")
+    path, _ = manifest(tmp_path, fake_script, [relative], "relative.json")
+    assert result(invoke(path, "--plan-only").stderr)["status"] == "manifest_schema_error"
+
+    mismatch = make_row(tmp_path, fake_script, "mismatch")
+    other = tmp_path / "inputs" / "other-missing.root"; other.write_text("other\n")
+    mismatch["missing_parton_path"] = str(other)
+    path, _ = manifest(tmp_path, fake_script, [mismatch], "mismatch.json")
+    assert result(invoke(path, "--plan-only").stderr)["status"] == "manifest_schema_error"
+
+    duplicate = make_row(tmp_path, fake_script, "duplicate")
+    duplicate["producer_args"].extend(["--miss-parton-file", duplicate["missing_parton_path"]])
+    path, _ = manifest(tmp_path, fake_script, [duplicate], "duplicate-option.json")
+    assert result(invoke(path, "--plan-only").stderr)["status"] == "manifest_schema_error"
+
+
 def test_runtime_contract_blocks_before_and_between_rows(tmp_path, fake_script):
     row = make_row(tmp_path, fake_script); path, data = manifest(tmp_path, fake_script, [row]); fake_script.write_text("changed\n")
     assert result(invoke(path).stderr)["status"] == "runtime_contract_mismatch" and not Path(row["log_path"]).exists()
@@ -170,3 +301,18 @@ def test_lock_blocks_second_owner_and_no_finalizer_behavior(tmp_path, fake_scrip
     assert result(invoke(path).stderr)["status"] == "execution_lock_held"
     first.communicate(timeout=10); assert first.returncode == 0
     source = ENGINE.read_text(); assert "datacards_post_processing" not in source and '"scalings.json"' not in source
+
+
+def test_owner_started_at_is_stable_across_row_updates(tmp_path, fake_script):
+    first = make_row(tmp_path, fake_script, "first", extra=["--sleep", ".4"])
+    second = make_row(tmp_path, fake_script, "second", extra=["--sleep", ".4"])
+    path, data = manifest(tmp_path, fake_script, [first, second], "owner.json")
+    process = subprocess.Popen([str(RUNNER), str(path)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    owner_path = Path(data["control_root"]) / "runner_owner.json"
+    first_owner = wait_for_owner(owner_path, "first")
+    second_owner = wait_for_owner(owner_path, "second")
+    stdout, stderr = process.communicate(timeout=10)
+    assert process.returncode == 0, stdout + stderr
+    assert first_owner["started_at"] == second_owner["started_at"]
+    assert first_owner["current_row_started_at"] != second_owner["current_row_started_at"]
+    assert not owner_path.exists()

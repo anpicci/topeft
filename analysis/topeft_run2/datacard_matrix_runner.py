@@ -133,9 +133,9 @@ def validate_row(row: Any, index: int, control_root: Path) -> dict[str, Any]:
     row_id, attempt = text(row["row_id"], "row_id"), text(row["attempt_id"], "attempt_id")
     if not IDENTIFIER_RE.fullmatch(row_id) or not IDENTIFIER_RE.fullmatch(attempt):
         raise RunnerError("manifest_schema_error", "row_id and attempt_id must be portable identifiers")
-    for key in ("era", "distribution", "missing_parton_path", "sr_registry"):
+    for key in ("era", "distribution", "sr_registry"):
         text(row[key], key)
-    for key in ("working_directory", "input_pkl", "output_root", "merge_report_path", "snapshot_directory", "log_path"):
+    for key in ("working_directory", "input_pkl", "output_root", "missing_parton_path", "merge_report_path", "snapshot_directory", "log_path"):
         absolute(row[key], key)
     channels, years = strings(row["physical_channels"], "physical_channels"), strings(row["years"], "years")
     outputs, args = strings(row["expected_output_paths"], "expected_output_paths"), strings(row["producer_args"], "producer_args")
@@ -167,7 +167,7 @@ def load_manifest(path: Path) -> tuple[dict[str, Any], str]:
         raise RunnerError("manifest_schema_error", f"schema must be {MANIFEST_SCHEMA}")
     root, lock = absolute(manifest["control_root"], "control_root"), absolute(manifest["lock_path"], "lock_path")
     inside(lock, root, "lock_path")
-    validate_runtime(manifest["runtime_contract"])
+    validate_runtime(manifest["runtime_contract"], verify_files=False)
     if not isinstance(manifest["rows"], list) or not manifest["rows"]:
         raise RunnerError("manifest_schema_error", "rows must be nonempty")
     rows = [validate_row(row, index, root) for index, row in enumerate(manifest["rows"])]
@@ -200,12 +200,61 @@ def resolved_argv(manifest: dict[str, Any], row: dict[str, Any]) -> list[str]:
     return [contract["python_executable"], contract["make_cards_path"], row["input_pkl"], *row["producer_args"]]
 
 
+def path_availability(path: Path, *, executable: bool = False) -> dict[str, Any]:
+    regular_file = path.is_file()
+    readable = regular_file and os.access(path, os.R_OK)
+    executable_ok = not executable or (regular_file and os.access(path, os.X_OK))
+    return {
+        "path": str(path),
+        "exists": path.exists(),
+        "regular_file": regular_file,
+        "readable": readable,
+        "executable": executable_ok if executable else None,
+        "available": regular_file and readable and executable_ok,
+    }
+
+
+def execution_input_availability(manifest: dict[str, Any], row: dict[str, Any]) -> dict[str, Any]:
+    runtime = manifest["runtime_contract"]
+    checks = {
+        "working_directory": {
+            "path": row["working_directory"],
+            "exists": Path(row["working_directory"]).exists(),
+            "directory": Path(row["working_directory"]).is_dir(),
+            "available": Path(row["working_directory"]).is_dir(),
+        },
+        "input_pkl": path_availability(Path(row["input_pkl"])),
+        "missing_parton_path": path_availability(Path(row["missing_parton_path"])),
+        "python_executable": path_availability(Path(runtime["python_executable"]), executable=True),
+        "make_cards_path": path_availability(Path(runtime["make_cards_path"])),
+    }
+    fingerprint_checks = []
+    for item in runtime["fingerprints"]:
+        path = Path(item["path"])
+        available = path.is_file() and os.access(path, os.R_OK)
+        observed_sha256 = hash_file(path) if available else None
+        fingerprint_checks.append({
+            "path": str(path),
+            "available": available,
+            "expected_sha256": item["sha256"],
+            "observed_sha256": observed_sha256,
+            "matches": available and observed_sha256 == item["sha256"],
+        })
+    checks["runtime_fingerprints"] = fingerprint_checks
+    ready = all(check["available"] for key, check in checks.items() if key != "runtime_fingerprints") and all(item["matches"] for item in fingerprint_checks)
+    return {"required": True, "checked": True, "ready": ready, "checks": checks}
+
+
 def validate_row_inputs(row: dict[str, Any]) -> None:
-    working_directory, input_pkl = Path(row["working_directory"]), Path(row["input_pkl"])
+    working_directory = Path(row["working_directory"])
     if not working_directory.is_dir():
         raise RunnerError("runtime_preflight_error", f"working directory unavailable: {working_directory}", row_id=row["row_id"])
-    if not input_pkl.is_file():
+    input_pkl = Path(row["input_pkl"])
+    if not input_pkl.is_file() or not os.access(input_pkl, os.R_OK):
         raise RunnerError("runtime_preflight_error", f"input_pkl unavailable: {input_pkl}", row_id=row["row_id"])
+    missing_parton = Path(row["missing_parton_path"])
+    if not missing_parton.is_file() or not os.access(missing_parton, os.R_OK):
+        raise RunnerError("runtime_preflight_error", f"missing_parton_path unavailable: {missing_parton}", row_id=row["row_id"])
 
 
 def record(path: Path) -> dict[str, Any]:
@@ -282,7 +331,23 @@ def read_only(mode: str, manifest: dict[str, Any], manifest_hash: str) -> dict[s
         for row, status in zip(manifest["rows"], rows):
             status["action"] = "skip" if status["status"] == "complete" else "execute" if status["status"] == "not_started" else "block"
             status["resolved_argv"] = resolved_argv(manifest, row)
-    return {"schema": "topeft_datacard_matrix_read_only_result_v2", "mode": mode, "manifest_sha256": manifest_hash, "runtime_contract_digest": runtime_digest(manifest["runtime_contract"]), "lock_held": held, "owner_metadata": owner, "mutated": False, "rows": rows}
+            if status["status"] == "not_started":
+                availability = execution_input_availability(manifest, row)
+                status["execution_input_availability"] = availability
+                if not availability["ready"]:
+                    status["action"] = "block"
+                    status["reason"] = "execution inputs are not launch-ready"
+            else:
+                status["execution_input_availability"] = {
+                    "required": False,
+                    "checked": False,
+                    "ready": status["status"] == "complete",
+                    "reason": "valid receipt permits skip without historical execution inputs" if status["status"] == "complete" else "row state blocks before execution-input checks",
+                }
+    result = {"schema": "topeft_datacard_matrix_read_only_result_v2", "mode": mode, "manifest_sha256": manifest_hash, "runtime_contract_digest": runtime_digest(manifest["runtime_contract"]), "lock_held": held, "owner_metadata": owner, "mutated": False, "rows": rows}
+    if mode == "plan_only":
+        result["launch_ready"] = all(row["action"] in {"skip", "execute"} for row in rows)
+    return result
 
 
 def atomic_json(payload: dict[str, Any], destination: Path, overwrite: bool) -> None:
@@ -325,9 +390,9 @@ def copy_once(source: Path, destination: Path) -> None:
         temporary.unlink(missing_ok=True)
 
 
-def owner_payload(manifest: dict[str, Any], manifest_hash: str, row: dict[str, Any] | None = None) -> dict[str, Any]:
+def owner_payload(manifest: dict[str, Any], manifest_hash: str, owner_started_at: str, row: dict[str, Any] | None = None) -> dict[str, Any]:
     runtime = manifest["runtime_contract"]
-    return {"schema_version": OWNER_SCHEMA, "pid": os.getpid(), "hostname": socket.gethostname(), "started_at": now(), "manifest_sha256": manifest_hash, "lock_path": manifest["lock_path"], "current_row_id": row["row_id"] if row else None, "current_attempt_id": row["attempt_id"] if row else None, "current_row_started_at": now() if row else None, "python_executable": runtime["python_executable"], "make_cards_path": runtime["make_cards_path"]}
+    return {"schema_version": OWNER_SCHEMA, "pid": os.getpid(), "hostname": socket.gethostname(), "started_at": owner_started_at, "manifest_sha256": manifest_hash, "lock_path": manifest["lock_path"], "current_row_id": row["row_id"] if row else None, "current_attempt_id": row["attempt_id"] if row else None, "current_row_started_at": now() if row else None, "python_executable": runtime["python_executable"], "make_cards_path": runtime["make_cards_path"]}
 
 
 def execute_row(manifest: dict[str, Any], manifest_hash: str, row: dict[str, Any]) -> dict[str, Any]:
@@ -367,26 +432,27 @@ def execute(manifest: dict[str, Any], manifest_hash: str) -> dict[str, Any]:
             fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError as exc:
             raise RunnerError("execution_lock_held", f"another runner owns lock: {lock}") from exc
-        validate_runtime(manifest["runtime_contract"])
-        for row in manifest["rows"]:
-            validate_row_inputs(row)
-        atomic_json(owner_payload(manifest, manifest_hash), owner_path(manifest), True)
+        owner_started_at = now()
         for row in manifest["rows"]:
             state = classify(manifest, manifest_hash, row, True, read_owner(manifest))
             if state["status"] not in {"not_started", "complete"}:
                 raise RunnerError(state["status"], state["reason"], row_id=row["row_id"])
+        atomic_json(owner_payload(manifest, manifest_hash, owner_started_at), owner_path(manifest), True)
         results: list[dict[str, Any]] = []
         for row in manifest["rows"]:
+            state = classify(manifest, manifest_hash, row, True, read_owner(manifest))
+            if state["status"] == "complete":
+                results.append({"row_id": row["row_id"], "attempt_id": row["attempt_id"], "action": "skipped_valid_receipt", "receipt_path": state["receipt_path"]}); continue
+            if state["status"] != "not_started":
+                raise RunnerError(state["status"], state["reason"], row_id=row["row_id"])
             validate_runtime(manifest["runtime_contract"])
             validate_row_inputs(row)
             fresh = classify(manifest, manifest_hash, row, True, read_owner(manifest))
-            if fresh["status"] == "complete":
-                results.append({"row_id": row["row_id"], "attempt_id": row["attempt_id"], "action": "skipped_valid_receipt", "receipt_path": fresh["receipt_path"]}); continue
             if fresh["status"] != "not_started":
                 raise RunnerError(fresh["status"], fresh["reason"], row_id=row["row_id"])
-            atomic_json(owner_payload(manifest, manifest_hash, row), owner_path(manifest), True)
+            atomic_json(owner_payload(manifest, manifest_hash, owner_started_at, row), owner_path(manifest), True)
             results.append(execute_row(manifest, manifest_hash, row))
-            atomic_json(owner_payload(manifest, manifest_hash), owner_path(manifest), True)
+            atomic_json(owner_payload(manifest, manifest_hash, owner_started_at), owner_path(manifest), True)
         owner_path(manifest).unlink(missing_ok=True)
         return {"schema": "topeft_datacard_matrix_execution_result_v2", "manifest_sha256": manifest_hash, "rows": results}
 
@@ -398,7 +464,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         manifest, manifest_hash = load_manifest(args.manifest)
         result = read_only("plan_only" if args.plan_only else "status", manifest, manifest_hash) if (args.plan_only or args.status) else execute(manifest, manifest_hash)
-        print(json.dumps(result, indent=2, sort_keys=True)); return 0
+        print(json.dumps(result, indent=2, sort_keys=True))
+        return 2 if args.plan_only and not result["launch_ready"] else 0
     except RunnerError as exc:
         error = {"schema": "topeft_datacard_matrix_error_v2", "status": exc.code, "message": str(exc)}
         if exc.row_id is not None: error["row_id"] = exc.row_id
