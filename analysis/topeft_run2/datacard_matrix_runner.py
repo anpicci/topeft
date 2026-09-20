@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
-"""Execute a prequalified datacard-row manifest sequentially and fail closed."""
-
+"""Run an opaque, prequalified datacard manifest without a shell intermediary."""
 from __future__ import annotations
 
 import argparse
@@ -18,47 +17,29 @@ import sys
 import tempfile
 from typing import Any
 
-
-WORKSPACE_ROOT = Path("/users/apiccine/work/correction-lib")
-WRAPPER = WORKSPACE_ROOT / "codex-run.sh"
-PYTHON_ENV = Path("/users/apiccine/work/miniconda3/envs/clib-env/bin/python")
-MANIFEST_SCHEMA = "topeft_datacard_matrix_v1"
-RECEIPT_SCHEMA = "topeft_datacard_execution_receipt_v1"
+MANIFEST_SCHEMA = "topeft_datacard_matrix_v2"
+RECEIPT_SCHEMA = "topeft_datacard_execution_receipt_v2"
+OWNER_SCHEMA = "topeft_datacard_runner_owner_v1"
 IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
-TOP_LEVEL_FIELDS = {"schema", "control_root", "lock_path", "rows"}
-ROW_FIELDS = {
-    "row_id",
-    "attempt_id",
-    "era",
-    "working_directory",
-    "input_pkl",
-    "output_root",
-    "distribution",
-    "physical_channels",
-    "years",
-    "missing_parton_path",
-    "sr_registry",
-    "merge_report_path",
-    "snapshot_directory",
-    "log_path",
-    "expected_output_paths",
-    "producer_argv",
-}
-SNAPSHOT_NAMES = {
-    "selected_wcs": "selectedWCs.txt",
-    "scalings": "scalings-preselect.json",
-    "merge_report": "merge_report.json",
-}
+SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+TOP_FIELDS = {"schema", "control_root", "lock_path", "runtime_contract", "rows"}
+RUNTIME_FIELDS = {"contract_id", "python_executable", "make_cards_path", "fingerprints"}
+FINGERPRINT_FIELDS = {"path", "sha256"}
+ROW_FIELDS = {"row_id", "attempt_id", "era", "working_directory", "input_pkl", "output_root", "distribution", "physical_channels", "years", "missing_parton_path", "sr_registry", "merge_report_path", "snapshot_directory", "log_path", "expected_output_paths", "producer_args"}
+SNAPSHOTS = {"selected_wcs": "selectedWCs.txt", "scalings": "scalings-preselect.json", "merge_report": "merge_report.json"}
 
 
 class RunnerError(Exception):
     def __init__(self, code: str, message: str, *, row_id: str | None = None):
         super().__init__(message)
-        self.code = code
-        self.row_id = row_id
+        self.code, self.row_id = code, row_id
 
 
-def sha256_path(path: Path) -> str:
+def now() -> str:
+    return dt.datetime.now(dt.timezone.utc).isoformat()
+
+
+def hash_file(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
         for block in iter(lambda: handle.read(1024 * 1024), b""):
@@ -66,684 +47,362 @@ def sha256_path(path: Path) -> str:
     return digest.hexdigest()
 
 
-def utc_now() -> str:
-    return dt.datetime.now(dt.timezone.utc).isoformat()
-
-
-def require_exact_fields(obj: dict[str, Any], fields: set[str], label: str) -> None:
-    missing = sorted(fields - set(obj))
-    extra = sorted(set(obj) - fields)
+def exact_fields(value: Any, allowed: set[str], label: str) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise RunnerError("manifest_schema_error", f"{label} must be an object")
+    missing, extra = sorted(allowed - set(value)), sorted(set(value) - allowed)
     if missing or extra:
-        raise RunnerError(
-            "manifest_schema_error",
-            f"{label} fields differ: missing={missing}, extra={extra}",
-        )
+        raise RunnerError("manifest_schema_error", f"{label} fields differ: missing={missing}, extra={extra}")
+    return value
 
 
-def require_string(value: Any, label: str) -> str:
+def text(value: Any, label: str) -> str:
     if not isinstance(value, str) or not value:
         raise RunnerError("manifest_schema_error", f"{label} must be a nonempty string")
     return value
 
 
-def require_string_list(value: Any, label: str) -> list[str]:
-    if not isinstance(value, list) or not value:
-        raise RunnerError("manifest_schema_error", f"{label} must be a nonempty list")
-    if any(not isinstance(item, str) or not item for item in value):
-        raise RunnerError(
-            "manifest_schema_error", f"{label} entries must be nonempty strings"
-        )
+def strings(value: Any, label: str) -> list[str]:
+    if not isinstance(value, list) or not value or any(not isinstance(item, str) or not item for item in value):
+        raise RunnerError("manifest_schema_error", f"{label} must be a nonempty string list")
     return value
 
 
-def require_absolute_path(value: Any, label: str) -> Path:
-    text = require_string(value, label)
-    path = Path(text)
-    if not path.is_absolute() or os.path.normpath(text) != text:
-        raise RunnerError(
-            "manifest_schema_error", f"{label} must be an absolute normalized path"
-        )
+def absolute(value: Any, label: str) -> Path:
+    path = Path(text(value, label))
+    if not path.is_absolute() or os.path.normpath(str(path)) != str(path):
+        raise RunnerError("manifest_schema_error", f"{label} must be an absolute normalized path")
     return path
 
 
-def ensure_within(path: Path, root: Path, label: str) -> None:
+def inside(path: Path, root: Path, label: str) -> None:
     try:
         path.relative_to(root)
     except ValueError as exc:
-        raise RunnerError(
-            "manifest_schema_error", f"{label} must be within control_root"
-        ) from exc
+        raise RunnerError("manifest_schema_error", f"{label} must be within control_root") from exc
 
 
-def option_values(argv: list[str], option: str) -> list[str]:
-    positions = [index for index, item in enumerate(argv) if item == option]
+def option_values(args: list[str], option: str) -> list[str]:
+    positions = [index for index, value in enumerate(args) if value == option]
     if len(positions) != 1:
-        raise RunnerError(
-            "manifest_schema_error", f"producer_argv must contain {option} exactly once"
-        )
+        raise RunnerError("manifest_schema_error", f"producer_args must contain {option} exactly once")
     values: list[str] = []
-    for item in argv[positions[0] + 1 :]:
-        if item.startswith("--"):
+    for value in args[positions[0] + 1:]:
+        if value.startswith("--"):
             break
-        values.append(item)
+        values.append(value)
     if not values:
-        raise RunnerError(
-            "manifest_schema_error", f"producer_argv option {option} needs a value"
-        )
+        raise RunnerError("manifest_schema_error", f"producer_args option {option} needs a value")
     return values
 
 
-def validate_row(row: dict[str, Any], index: int, control_root: Path) -> None:
-    label = f"rows[{index}]"
-    require_exact_fields(row, ROW_FIELDS, label)
-    row_id = require_string(row["row_id"], f"{label}.row_id")
-    attempt_id = require_string(row["attempt_id"], f"{label}.attempt_id")
-    if not IDENTIFIER_RE.fullmatch(row_id) or not IDENTIFIER_RE.fullmatch(attempt_id):
-        raise RunnerError(
-            "manifest_schema_error",
-            f"{label} row_id and attempt_id must be portable identifiers",
-        )
-    for key in ("era", "distribution", "missing_parton_path", "sr_registry"):
-        require_string(row[key], f"{label}.{key}")
-    for key in (
-        "working_directory",
-        "input_pkl",
-        "output_root",
-        "merge_report_path",
-        "snapshot_directory",
-        "log_path",
-    ):
-        require_absolute_path(row[key], f"{label}.{key}")
-    channels = require_string_list(row["physical_channels"], f"{label}.physical_channels")
-    years = require_string_list(row["years"], f"{label}.years")
-    expected = require_string_list(
-        row["expected_output_paths"], f"{label}.expected_output_paths"
-    )
-    for expected_index, path in enumerate(expected):
-        expected_path = require_absolute_path(
-            path, f"{label}.expected_output_paths[{expected_index}]"
-        )
-        try:
-            expected_path.relative_to(Path(row["output_root"]))
-        except ValueError as exc:
-            raise RunnerError(
-                "manifest_schema_error",
-                f"{label} expected outputs must be below output_root",
-            ) from exc
-    if len(set(expected)) != len(expected):
-        raise RunnerError("manifest_schema_error", f"{label} repeats an expected output")
-    if len(set(channels)) != len(channels) or len(set(years)) != len(years):
-        raise RunnerError(
-            "manifest_schema_error", f"{label} repeats a channel or year"
-        )
+def runtime_digest(contract: dict[str, Any]) -> str:
+    return hashlib.sha256(json.dumps(contract, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
-    argv = require_string_list(row["producer_argv"], f"{label}.producer_argv")
-    if Path(argv[0]).name != "make_cards.py":
-        raise RunnerError(
-            "manifest_schema_error", f"{label}.producer_argv must start with make_cards.py"
-        )
-    forbidden = {"--condor", "-C", "--merge-only", "--select-only"}
-    selected_forbidden = sorted(forbidden.intersection(argv))
-    if selected_forbidden:
-        raise RunnerError(
-            "manifest_schema_error",
-            f"{label}.producer_argv selects non-row mode(s): {selected_forbidden}",
-        )
-    if row["input_pkl"] not in argv[1:]:
-        raise RunnerError(
-            "manifest_schema_error", f"{label}.input_pkl is absent from producer_argv"
-        )
-    exact_options = {
-        "--out-dir": [row["output_root"]],
-        "--var-lst": [row["distribution"]],
-        "--ch-lst": channels,
-        "--year": years,
-        "--miss-parton-file": [row["missing_parton_path"]],
-        "--sr-registry": [row["sr_registry"]],
-        "--merge-report": [row["merge_report_path"]],
-    }
-    for option, expected_values in exact_options.items():
-        observed_values = option_values(argv, option)
-        if observed_values != expected_values:
-            raise RunnerError(
-                "manifest_schema_error",
-                f"{label} {option} mismatch: {observed_values!r} != {expected_values!r}",
-            )
-    snapshot_directory = Path(row["snapshot_directory"])
-    ensure_within(
-        snapshot_directory,
-        control_root,
-        f"{label}.snapshot_directory",
-    )
+
+def validate_runtime(contract: Any, verify_files: bool = True) -> dict[str, Any]:
+    contract = exact_fields(contract, RUNTIME_FIELDS, "runtime_contract")
+    text(contract["contract_id"], "runtime_contract.contract_id")
+    python = absolute(contract["python_executable"], "runtime_contract.python_executable")
+    make_cards = absolute(contract["make_cards_path"], "runtime_contract.make_cards_path")
+    fingerprints = contract["fingerprints"]
+    if not isinstance(fingerprints, list) or not fingerprints:
+        raise RunnerError("manifest_schema_error", "runtime_contract.fingerprints must be nonempty")
+    seen: set[str] = set()
+    for index, item in enumerate(fingerprints):
+        item = exact_fields(item, FINGERPRINT_FIELDS, f"runtime_contract.fingerprints[{index}]")
+        path = absolute(item["path"], f"runtime_contract.fingerprints[{index}].path")
+        digest = text(item["sha256"], f"runtime_contract.fingerprints[{index}].sha256")
+        if not SHA256_RE.fullmatch(digest) or str(path) in seen:
+            raise RunnerError("manifest_schema_error", "runtime fingerprints require unique absolute paths and lowercase SHA256")
+        seen.add(str(path))
+    if verify_files:
+        if not python.is_file() or not os.access(python, os.X_OK):
+            raise RunnerError("runtime_contract_mismatch", f"python executable unavailable: {python}")
+        if not make_cards.is_file():
+            raise RunnerError("runtime_contract_mismatch", f"make_cards path unavailable: {make_cards}")
+        for item in fingerprints:
+            path = Path(item["path"])
+            if not path.is_file() or hash_file(path) != item["sha256"]:
+                raise RunnerError("runtime_contract_mismatch", f"runtime fingerprint mismatch: {path}")
+    return contract
+
+
+def validate_row(row: Any, index: int, control_root: Path) -> dict[str, Any]:
+    row = exact_fields(row, ROW_FIELDS, f"rows[{index}]")
+    row_id, attempt = text(row["row_id"], "row_id"), text(row["attempt_id"], "attempt_id")
+    if not IDENTIFIER_RE.fullmatch(row_id) or not IDENTIFIER_RE.fullmatch(attempt):
+        raise RunnerError("manifest_schema_error", "row_id and attempt_id must be portable identifiers")
+    for key in ("era", "distribution", "missing_parton_path", "sr_registry"):
+        text(row[key], key)
+    for key in ("working_directory", "input_pkl", "output_root", "merge_report_path", "snapshot_directory", "log_path"):
+        absolute(row[key], key)
+    channels, years = strings(row["physical_channels"], "physical_channels"), strings(row["years"], "years")
+    outputs, args = strings(row["expected_output_paths"], "expected_output_paths"), strings(row["producer_args"], "producer_args")
+    if len(set(channels)) != len(channels) or len(set(years)) != len(years) or len(set(outputs)) != len(outputs):
+        raise RunnerError("manifest_schema_error", "row repeats a channel, year, or output path")
+    for output in outputs:
+        try:
+            absolute(output, "expected_output_path").relative_to(Path(row["output_root"]))
+        except ValueError as exc:
+            raise RunnerError("manifest_schema_error", "expected outputs must be below output_root") from exc
+    if {"--condor", "-C", "--merge-only", "--select-only"}.intersection(args):
+        raise RunnerError("manifest_schema_error", "producer_args selects a non-row mode")
+    required = {"--out-dir": [row["output_root"]], "--var-lst": [row["distribution"]], "--ch-lst": channels, "--year": years, "--miss-parton-file": [row["missing_parton_path"]], "--sr-registry": [row["sr_registry"]], "--merge-report": [row["merge_report_path"]]}
+    for option, expected in required.items():
+        if option_values(args, option) != expected:
+            raise RunnerError("manifest_schema_error", f"{option} differs from structured row field")
+    inside(Path(row["snapshot_directory"]), control_root, "snapshot_directory")
+    return row
 
 
 def load_manifest(path: Path) -> tuple[dict[str, Any], str]:
     try:
         raw = path.read_bytes()
-    except OSError as exc:
-        raise RunnerError("manifest_read_error", str(exc)) from exc
-    manifest_sha256 = hashlib.sha256(raw).hexdigest()
-    try:
         manifest = json.loads(raw)
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise RunnerError("manifest_schema_error", f"invalid UTF-8 JSON: {exc}") from exc
-    if not isinstance(manifest, dict):
-        raise RunnerError("manifest_schema_error", "manifest root must be an object")
-    require_exact_fields(manifest, TOP_LEVEL_FIELDS, "manifest")
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise RunnerError("manifest_read_error", str(exc)) from exc
+    manifest = exact_fields(manifest, TOP_FIELDS, "manifest")
     if manifest["schema"] != MANIFEST_SCHEMA:
-        raise RunnerError(
-            "manifest_schema_error", f"schema must be {MANIFEST_SCHEMA!r}"
-        )
-    control_root = require_absolute_path(manifest["control_root"], "control_root")
-    lock_path = require_absolute_path(manifest["lock_path"], "lock_path")
-    ensure_within(lock_path, control_root, "lock_path")
-    rows = manifest["rows"]
-    if not isinstance(rows, list) or not rows:
-        raise RunnerError("manifest_schema_error", "rows must be a nonempty list")
-    row_ids: list[str] = []
-    attempt_keys: list[tuple[str, str]] = []
-    row_owned_paths: list[str] = []
-    snapshot_directories: list[str] = []
-    for index, row in enumerate(rows):
-        if not isinstance(row, dict):
-            raise RunnerError(
-                "manifest_schema_error", f"rows[{index}] must be an object"
-            )
-        validate_row(row, index, control_root)
-        row_ids.append(row["row_id"])
-        attempt_keys.append((row["row_id"], row["attempt_id"]))
-        row_owned_paths.extend(row["expected_output_paths"])
-        row_owned_paths.extend([row["merge_report_path"], row["log_path"]])
-        snapshot_directories.append(row["snapshot_directory"])
+        raise RunnerError("manifest_schema_error", f"schema must be {MANIFEST_SCHEMA}")
+    root, lock = absolute(manifest["control_root"], "control_root"), absolute(manifest["lock_path"], "lock_path")
+    inside(lock, root, "lock_path")
+    validate_runtime(manifest["runtime_contract"])
+    if not isinstance(manifest["rows"], list) or not manifest["rows"]:
+        raise RunnerError("manifest_schema_error", "rows must be nonempty")
+    rows = [validate_row(row, index, root) for index, row in enumerate(manifest["rows"])]
+    row_ids = [row["row_id"] for row in rows]
+    attempts = [(row["row_id"], row["attempt_id"]) for row in rows]
+    owned = [value for row in rows for value in [*row["expected_output_paths"], row["merge_report_path"], row["log_path"], row["snapshot_directory"]]]
     if len(set(row_ids)) != len(row_ids):
         raise RunnerError("manifest_schema_error", "duplicate row_id")
-    if len(set(attempt_keys)) != len(attempt_keys):
-        raise RunnerError("manifest_schema_error", "duplicate row/attempt pair")
-    if len(set(row_owned_paths)) != len(row_owned_paths):
-        raise RunnerError(
-            "manifest_schema_error", "row-owned output/report/log paths must be unique"
-        )
-    if len(set(snapshot_directories)) != len(snapshot_directories):
-        raise RunnerError(
-            "manifest_schema_error", "snapshot_directory must be unique per row attempt"
-        )
-    return manifest, manifest_sha256
+    if len(set(attempts)) != len(attempts):
+        raise RunnerError("manifest_schema_error", "duplicate row/attempt identity")
+    if len(set(owned)) != len(owned):
+        raise RunnerError("manifest_schema_error", "row-owned paths must be unique")
+    return manifest, hashlib.sha256(raw).hexdigest()
 
 
 def receipt_path(manifest: dict[str, Any], row: dict[str, Any]) -> Path:
-    filename = f"{row['row_id']}__{row['attempt_id']}.json"
-    return Path(manifest["control_root"]) / "receipts" / filename
+    return Path(manifest["control_root"]) / "receipts" / f"{row['row_id']}__{row['attempt_id']}.json"
 
 
-def resolved_python_argv(row: dict[str, Any]) -> list[str]:
-    producer_argv = list(row["producer_argv"])
-    script = Path(producer_argv[0])
-    if not script.is_absolute():
-        script = Path(row["working_directory"]) / script
-    return [str(PYTHON_ENV), str(script), *producer_argv[1:]]
+def owner_path(manifest: dict[str, Any]) -> Path:
+    return Path(manifest["control_root"]) / "runner_owner.json"
 
 
-def wrapper_invocation(row: dict[str, Any]) -> list[str]:
-    shell_program = (
-        'set -euo pipefail; working_directory=$1; shift; '
-        'cd "$working_directory"; exec "$@"'
-    )
-    return [
-        str(WRAPPER),
-        "/bin/bash",
-        "--noprofile",
-        "--norc",
-        "-c",
-        shell_program,
-        "datacard-matrix-row",
-        row["working_directory"],
-        *resolved_python_argv(row),
-    ]
+def snapshots(row: dict[str, Any]) -> dict[str, Path]:
+    return {key: Path(row["snapshot_directory"]) / name for key, name in SNAPSHOTS.items()}
 
 
-def nonzero_summary(paths: list[str]) -> list[dict[str, Any]]:
-    return [
-        {
-            "path": path,
-            "exists": Path(path).is_file(),
-            "nonzero": Path(path).is_file() and Path(path).stat().st_size > 0,
-        }
-        for path in paths
-    ]
+def resolved_argv(manifest: dict[str, Any], row: dict[str, Any]) -> list[str]:
+    contract = manifest["runtime_contract"]
+    return [contract["python_executable"], contract["make_cards_path"], row["input_pkl"], *row["producer_args"]]
 
 
-def artifact_record(path: Path) -> dict[str, str]:
-    return {"path": str(path), "sha256": sha256_path(path)}
+def validate_row_inputs(row: dict[str, Any]) -> None:
+    working_directory, input_pkl = Path(row["working_directory"]), Path(row["input_pkl"])
+    if not working_directory.is_dir():
+        raise RunnerError("runtime_preflight_error", f"working directory unavailable: {working_directory}", row_id=row["row_id"])
+    if not input_pkl.is_file():
+        raise RunnerError("runtime_preflight_error", f"input_pkl unavailable: {input_pkl}", row_id=row["row_id"])
 
 
-def snapshot_paths(row: dict[str, Any]) -> dict[str, Path]:
-    root = Path(row["snapshot_directory"])
-    return {key: root / name for key, name in SNAPSHOT_NAMES.items()}
+def record(path: Path) -> dict[str, Any]:
+    return {"path": str(path), "size_bytes": path.stat().st_size, "sha256": hash_file(path)}
 
 
-def unreceipted_paths(row: dict[str, Any]) -> list[str]:
-    candidates = [
-        *[Path(path) for path in row["expected_output_paths"]],
-        Path(row["merge_report_path"]),
-        Path(row["log_path"]),
-        *snapshot_paths(row).values(),
-    ]
-    return [str(path) for path in candidates if path.exists()]
+def valid_record(value: Any, path: Path) -> bool:
+    return isinstance(value, dict) and set(value) == {"path", "size_bytes", "sha256"} and value.get("path") == str(path) and isinstance(value.get("size_bytes"), int) and isinstance(value.get("sha256"), str) and path.is_file() and path.stat().st_size == value["size_bytes"] and hash_file(path) == value["sha256"]
 
 
-def validate_artifact(record: Any, expected_path: Path) -> bool:
-    return (
-        isinstance(record, dict)
-        and record.get("path") == str(expected_path)
-        and isinstance(record.get("sha256"), str)
-        and expected_path.is_file()
-        and expected_path.stat().st_size > 0
-        and sha256_path(expected_path) == record["sha256"]
-    )
-
-
-def validate_receipt(
-    receipt: Any,
-    manifest: dict[str, Any],
-    manifest_sha256: str,
-    row: dict[str, Any],
-) -> tuple[bool, str]:
+def validate_receipt(receipt: Any, manifest: dict[str, Any], manifest_hash: str, row: dict[str, Any]) -> tuple[bool, str]:
     if not isinstance(receipt, dict):
         return False, "receipt root is not an object"
-    scalar_expectations = {
-        "schema": RECEIPT_SCHEMA,
-        "manifest_sha256": manifest_sha256,
-        "row_id": row["row_id"],
-        "attempt_id": row["attempt_id"],
-        "exact_resolved_argv": resolved_python_argv(row),
-        "wrapper_invocation": wrapper_invocation(row),
-        "command_return_code": 0,
-        "expected_output_paths": row["expected_output_paths"],
-    }
-    for key, expected in scalar_expectations.items():
-        if receipt.get(key) != expected:
-            return False, f"receipt field {key} does not match"
-    for key in ("start_timestamp", "end_timestamp"):
-        if not isinstance(receipt.get(key), str) or not receipt[key]:
-            return False, f"receipt field {key} is missing"
-    artifacts = receipt.get("artifacts")
-    if not isinstance(artifacts, dict):
-        return False, "receipt artifacts are missing"
-    expected_artifacts = {
-        "merge_report": Path(row["merge_report_path"]),
-        "selected_wcs_snapshot": snapshot_paths(row)["selected_wcs"],
-        "scalings_snapshot": snapshot_paths(row)["scalings"],
-        "merge_report_snapshot": snapshot_paths(row)["merge_report"],
-        "log": Path(row["log_path"]),
-    }
-    for key, path in expected_artifacts.items():
-        if not validate_artifact(artifacts.get(key), path):
-            return False, f"artifact {key} is missing, empty, moved, or hash-mismatched"
-    observed = receipt.get("observed_expected_outputs")
-    current = nonzero_summary(row["expected_output_paths"])
-    if observed != current or not all(item["nonzero"] for item in current):
-        return False, "expected-output summary is stale or incomplete"
-    return True, "receipt and all referenced artifacts match"
+    runtime = manifest["runtime_contract"]
+    expected = {"schema": RECEIPT_SCHEMA, "manifest_sha256": manifest_hash, "row_id": row["row_id"], "attempt_id": row["attempt_id"], "resolved_argv": resolved_argv(manifest, row), "command_return_code": 0, "runtime_contract_id": runtime["contract_id"], "python_executable": runtime["python_executable"], "make_cards_path": runtime["make_cards_path"], "runtime_fingerprints": runtime["fingerprints"], "runtime_contract_digest": runtime_digest(runtime)}
+    if any(receipt.get(key) != value for key, value in expected.items()):
+        return False, "receipt contract does not match"
+    if not all(isinstance(receipt.get(key), str) and receipt[key] for key in ("start_timestamp", "end_timestamp")):
+        return False, "receipt timestamps missing"
+    outputs = receipt.get("primary_outputs")
+    if not isinstance(outputs, list) or len(outputs) != len(row["expected_output_paths"]) or any(not valid_record(item, Path(path)) for item, path in zip(outputs, row["expected_output_paths"])):
+        return False, "primary output is missing, size-mismatched, or hash-mismatched"
+    artifacts = {"merge_report": Path(row["merge_report_path"]), "selected_wcs_snapshot": snapshots(row)["selected_wcs"], "scalings_snapshot": snapshots(row)["scalings"], "merge_report_snapshot": snapshots(row)["merge_report"], "log": Path(row["log_path"])}
+    if not isinstance(receipt.get("artifacts"), dict) or set(receipt["artifacts"]) != set(artifacts) or any(not valid_record(receipt["artifacts"][key], path) for key, path in artifacts.items()):
+        return False, "control artifact is missing, size-mismatched, or hash-mismatched"
+    return True, "receipt and byte-bound artifacts match"
 
 
-def classify_row(
-    manifest: dict[str, Any], manifest_sha256: str, row: dict[str, Any]
-) -> dict[str, Any]:
-    path = receipt_path(manifest, row)
-    base = {
-        "row_id": row["row_id"],
-        "attempt_id": row["attempt_id"],
-        "receipt_path": str(path),
-    }
-    if path.exists():
+def read_owner(manifest: dict[str, Any]) -> dict[str, Any] | None:
+    try:
+        owner = json.loads(owner_path(manifest).read_text())
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    return owner if isinstance(owner, dict) else None
+
+
+def lock_held(path: Path) -> bool:
+    if not path.exists():
+        return False
+    try:
+        with path.open("rb") as handle:
+            try:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                return True
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            return False
+    except OSError:
+        return True
+
+
+def classify(manifest: dict[str, Any], manifest_hash: str, row: dict[str, Any], held: bool | None = None, owner: dict[str, Any] | None = None) -> dict[str, Any]:
+    receipt = receipt_path(manifest, row)
+    base = {"row_id": row["row_id"], "attempt_id": row["attempt_id"], "receipt_path": str(receipt)}
+    if receipt.exists():
         try:
-            receipt = json.loads(path.read_text(encoding="utf-8"))
+            valid, reason = validate_receipt(json.loads(receipt.read_text()), manifest, manifest_hash, row)
         except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
-            return {**base, "status": "invalid_receipt", "reason": str(exc)}
-        valid, reason = validate_receipt(receipt, manifest, manifest_sha256, row)
-        return {
-            **base,
-            "status": "complete" if valid else "invalid_receipt",
-            "reason": reason,
-        }
-    existing = unreceipted_paths(row)
-    if existing:
-        return {
-            **base,
-            "status": "unreceipted_output",
-            "reason": "row-owned artifacts exist without a receipt",
-            "existing_paths": existing,
-        }
-    return {**base, "status": "not_started", "reason": "no row-owned artifacts"}
+            valid, reason = False, str(exc)
+        return {**base, "status": "complete" if valid else "invalid_receipt", "reason": reason}
+    evidence = [str(path) for path in [*[Path(path) for path in row["expected_output_paths"]], Path(row["merge_report_path"]), Path(row["log_path"]), *snapshots(row).values()] if path.exists()]
+    if not evidence:
+        return {**base, "status": "not_started", "reason": "no row-owned artifacts"}
+    held = lock_held(Path(manifest["lock_path"])) if held is None else held
+    owner = read_owner(manifest) if owner is None else owner
+    active = held and isinstance(owner, dict) and owner.get("schema_version") == OWNER_SCHEMA and owner.get("manifest_sha256") == manifest_hash and owner.get("current_row_id") == row["row_id"] and owner.get("current_attempt_id") == row["attempt_id"]
+    return {**base, "status": "active" if active else "interrupted_requires_external_reconciliation", "reason": "lock and owner identify current row" if active else "row-owned artifacts exist without valid receipt", "existing_paths": evidence}
 
 
-def read_only_result(
-    mode: str, manifest: dict[str, Any], manifest_sha256: str
-) -> dict[str, Any]:
-    rows = []
-    for row in manifest["rows"]:
-        status = classify_row(manifest, manifest_sha256, row)
-        if mode == "plan_only":
-            action = {
-                "complete": "skip",
-                "not_started": "execute",
-                "invalid_receipt": "block",
-                "unreceipted_output": "block",
-            }[status["status"]]
-            status.update(
-                {
-                    "action": action,
-                    "output_root": row["output_root"],
-                    "expected_output_paths": row["expected_output_paths"],
-                    "snapshot_directory": row["snapshot_directory"],
-                    "log_path": row["log_path"],
-                    "exact_resolved_argv": resolved_python_argv(row),
-                    "wrapper_invocation": wrapper_invocation(row),
-                }
-            )
-        rows.append(status)
-    return {
-        "schema": "topeft_datacard_matrix_read_only_result_v1",
-        "mode": mode,
-        "manifest_sha256": manifest_sha256,
-        "mutated": False,
-        "rows": rows,
-    }
+def read_only(mode: str, manifest: dict[str, Any], manifest_hash: str) -> dict[str, Any]:
+    held, owner = lock_held(Path(manifest["lock_path"])), read_owner(manifest)
+    rows = [classify(manifest, manifest_hash, row, held, owner) for row in manifest["rows"]]
+    if mode == "plan_only":
+        for row, status in zip(manifest["rows"], rows):
+            status["action"] = "skip" if status["status"] == "complete" else "execute" if status["status"] == "not_started" else "block"
+            status["resolved_argv"] = resolved_argv(manifest, row)
+    return {"schema": "topeft_datacard_matrix_read_only_result_v2", "mode": mode, "manifest_sha256": manifest_hash, "runtime_contract_digest": runtime_digest(manifest["runtime_contract"]), "lock_held": held, "owner_metadata": owner, "mutated": False, "rows": rows}
 
 
-def validate_runtime_inputs(manifest: dict[str, Any]) -> None:
-    if not WRAPPER.is_file() or not os.access(WRAPPER, os.X_OK):
-        raise RunnerError("runtime_preflight_error", f"wrapper unavailable: {WRAPPER}")
-    if not PYTHON_ENV.is_file() or not os.access(PYTHON_ENV, os.X_OK):
-        raise RunnerError(
-            "runtime_preflight_error", f"pinned Python unavailable: {PYTHON_ENV}"
-        )
-    for row in manifest["rows"]:
-        row_id = row["row_id"]
-        working_directory = Path(row["working_directory"])
-        input_pkl = Path(row["input_pkl"])
-        script = Path(resolved_python_argv(row)[1])
-        required = {
-            "working_directory": working_directory,
-            "input_pkl": input_pkl,
-            "producer_script": script,
-        }
-        for label, path in required.items():
-            exists = path.is_dir() if label == "working_directory" else path.is_file()
-            if not exists:
-                raise RunnerError(
-                    "runtime_preflight_error",
-                    f"{label} unavailable: {path}",
-                    row_id=row_id,
-                )
+def atomic_json(payload: dict[str, Any], destination: Path, overwrite: bool) -> None:
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    if not overwrite and destination.exists():
+        raise RunnerError("receipt_write_failure", f"destination exists: {destination}")
+    with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=destination.parent, prefix=f".{destination.name}.", delete=False) as handle:
+        temporary = Path(handle.name)
+        json.dump(payload, handle, indent=2, sort_keys=True)
+        handle.write("\n")
+        handle.flush(); os.fsync(handle.fileno())
+    try:
+        json.loads(temporary.read_text())
+        if overwrite:
+            os.replace(temporary, destination)
+        else:
+            os.link(temporary, destination)
+    except FileExistsError as exc:
+        raise RunnerError("receipt_write_failure", f"destination exists: {destination}") from exc
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
-def make_parent(path: Path) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-
-
-def atomic_copy_no_overwrite(source: Path, destination: Path) -> None:
+def copy_once(source: Path, destination: Path) -> None:
     if not source.is_file() or source.stat().st_size == 0:
-        raise RunnerError(
-            "snapshot_failure", f"snapshot source is missing or empty: {source}"
-        )
-    make_parent(destination)
+        raise RunnerError("snapshot_failure", f"control source missing or empty: {source}")
+    destination.parent.mkdir(parents=True, exist_ok=True)
     if destination.exists():
         raise RunnerError("snapshot_failure", f"snapshot exists: {destination}")
-    temporary: Path | None = None
+    with tempfile.NamedTemporaryFile(mode="wb", dir=destination.parent, prefix=f".{destination.name}.", delete=False) as handle:
+        temporary = Path(handle.name)
+        with source.open("rb") as input_handle:
+            shutil.copyfileobj(input_handle, handle)
+        handle.flush(); os.fsync(handle.fileno())
     try:
-        with tempfile.NamedTemporaryFile(
-            mode="wb", dir=destination.parent, prefix=f".{destination.name}.", delete=False
-        ) as output:
-            temporary = Path(output.name)
-            with source.open("rb") as input_handle:
-                shutil.copyfileobj(input_handle, output)
-            output.flush()
-            os.fsync(output.fileno())
-        if temporary.stat().st_size == 0:
-            raise RunnerError("snapshot_failure", f"empty temporary snapshot: {source}")
         os.link(temporary, destination)
     except FileExistsError as exc:
         raise RunnerError("snapshot_failure", f"snapshot exists: {destination}") from exc
     finally:
-        if temporary is not None:
-            temporary.unlink(missing_ok=True)
+        temporary.unlink(missing_ok=True)
 
 
-def atomic_json_no_overwrite(payload: dict[str, Any], destination: Path) -> None:
-    make_parent(destination)
-    if destination.exists():
-        raise RunnerError("receipt_write_failure", f"receipt exists: {destination}")
-    temporary: Path | None = None
+def owner_payload(manifest: dict[str, Any], manifest_hash: str, row: dict[str, Any] | None = None) -> dict[str, Any]:
+    runtime = manifest["runtime_contract"]
+    return {"schema_version": OWNER_SCHEMA, "pid": os.getpid(), "hostname": socket.gethostname(), "started_at": now(), "manifest_sha256": manifest_hash, "lock_path": manifest["lock_path"], "current_row_id": row["row_id"] if row else None, "current_attempt_id": row["attempt_id"] if row else None, "current_row_started_at": now() if row else None, "python_executable": runtime["python_executable"], "make_cards_path": runtime["make_cards_path"]}
+
+
+def execute_row(manifest: dict[str, Any], manifest_hash: str, row: dict[str, Any]) -> dict[str, Any]:
+    log = Path(row["log_path"]); log.parent.mkdir(parents=True, exist_ok=True)
     try:
-        with tempfile.NamedTemporaryFile(
-            mode="w",
-            encoding="utf-8",
-            dir=destination.parent,
-            prefix=f".{destination.name}.",
-            delete=False,
-        ) as output:
-            temporary = Path(output.name)
-            json.dump(payload, output, indent=2, sort_keys=True)
-            output.write("\n")
-            output.flush()
-            os.fsync(output.fileno())
-        json.loads(temporary.read_text(encoding="utf-8"))
-        os.link(temporary, destination)
+        handle = log.open("xb")
     except FileExistsError as exc:
-        raise RunnerError(
-            "receipt_write_failure", f"receipt exists: {destination}"
-        ) from exc
-    finally:
-        if temporary is not None:
-            temporary.unlink(missing_ok=True)
+        raise RunnerError("interrupted_requires_external_reconciliation", f"log exists: {log}", row_id=row["row_id"]) from exc
+    argv, started = resolved_argv(manifest, row), now()
+    with handle:
+        handle.write((json.dumps({"row_id": row["row_id"], "attempt_id": row["attempt_id"], "resolved_argv": argv, "start_timestamp": started}, sort_keys=True) + "\n").encode())
+        handle.flush()
+        completed = subprocess.run(argv, cwd=row["working_directory"], stdout=handle, stderr=subprocess.STDOUT, check=False)
+        os.fsync(handle.fileno())
+    if completed.returncode:
+        raise RunnerError("row_command_failed", f"direct producer argv returned {completed.returncode}; no retry was attempted", row_id=row["row_id"])
+    output_paths = [Path(path) for path in row["expected_output_paths"]]
+    if any(not path.is_file() or path.stat().st_size == 0 for path in output_paths):
+        raise RunnerError("expected_output_check_failed", "expected output missing or empty", row_id=row["row_id"])
+    root, merge = Path(row["output_root"]), Path(row["merge_report_path"])
+    sources = {"selected_wcs": root / "selectedWCs.txt", "scalings": root / "scalings-preselect.json", "merge_report": merge}
+    destinations = snapshots(row)
+    for key, source in sources.items():
+        copy_once(source, destinations[key])
+    runtime = manifest["runtime_contract"]
+    receipt = {"schema": RECEIPT_SCHEMA, "manifest_sha256": manifest_hash, "row_id": row["row_id"], "attempt_id": row["attempt_id"], "resolved_argv": argv, "start_timestamp": started, "end_timestamp": now(), "command_return_code": completed.returncode, "runtime_contract_id": runtime["contract_id"], "python_executable": runtime["python_executable"], "make_cards_path": runtime["make_cards_path"], "runtime_fingerprints": runtime["fingerprints"], "runtime_contract_digest": runtime_digest(runtime), "primary_outputs": [record(path) for path in output_paths], "artifacts": {"merge_report": record(merge), "selected_wcs_snapshot": record(destinations["selected_wcs"]), "scalings_snapshot": record(destinations["scalings"]), "merge_report_snapshot": record(destinations["merge_report"]), "log": record(log)}}
+    final = receipt_path(manifest, row)
+    atomic_json(receipt, final, False)
+    return {"row_id": row["row_id"], "attempt_id": row["attempt_id"], "action": "executed", "receipt_path": str(final)}
 
 
-def execute_row(
-    manifest: dict[str, Any], manifest_sha256: str, row: dict[str, Any]
-) -> dict[str, Any]:
-    row_id = row["row_id"]
-    log_path = Path(row["log_path"])
-    make_parent(log_path)
-    try:
-        log_handle = log_path.open("xb")
-    except FileExistsError as exc:
-        raise RunnerError(
-            "interrupted_row_requires_external_reconciliation",
-            f"log already exists without a valid receipt: {log_path}",
-            row_id=row_id,
-        ) from exc
-
-    invocation = wrapper_invocation(row)
-    started = utc_now()
-    return_code: int | None = None
-    try:
-        with log_handle:
-            header = {
-                "attempt_id": row["attempt_id"],
-                "exact_resolved_argv": resolved_python_argv(row),
-                "row_id": row_id,
-                "start_timestamp": started,
-                "wrapper_invocation": invocation,
-            }
-            log_handle.write((json.dumps(header, sort_keys=True) + "\n").encode("utf-8"))
-            log_handle.flush()
-            process = subprocess.Popen(
-                invocation,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-            )
-            assert process.stdout is not None
-            for block in iter(lambda: process.stdout.read(8192), b""):
-                log_handle.write(block)
-                log_handle.flush()
-                sys.stdout.buffer.write(block)
-                sys.stdout.buffer.flush()
-            return_code = process.wait()
-            os.fsync(log_handle.fileno())
-    except BaseException:
-        raise
-    ended = utc_now()
-    if return_code != 0:
-        raise RunnerError(
-            "row_command_failed",
-            f"wrapper command returned {return_code}; no retry was attempted",
-            row_id=row_id,
-        )
-
-    output_summary = nonzero_summary(row["expected_output_paths"])
-    if not all(item["nonzero"] for item in output_summary):
-        raise RunnerError(
-            "expected_output_check_failed",
-            "one or more expected outputs are missing or empty",
-            row_id=row_id,
-        )
-    merge_report = Path(row["merge_report_path"])
-    output_root = Path(row["output_root"])
-    sources = {
-        "selected_wcs": output_root / "selectedWCs.txt",
-        "scalings": output_root / "scalings-preselect.json",
-        "merge_report": merge_report,
-    }
-    for label, source in sources.items():
-        if not source.is_file() or source.stat().st_size == 0:
-            raise RunnerError(
-                "snapshot_failure",
-                f"{label} source is missing or empty: {source}",
-                row_id=row_id,
-            )
-    destinations = snapshot_paths(row)
-    for label in ("selected_wcs", "scalings", "merge_report"):
-        atomic_copy_no_overwrite(sources[label], destinations[label])
-
-    receipt = {
-        "schema": RECEIPT_SCHEMA,
-        "manifest_sha256": manifest_sha256,
-        "row_id": row_id,
-        "attempt_id": row["attempt_id"],
-        "exact_resolved_argv": resolved_python_argv(row),
-        "wrapper_invocation": invocation,
-        "start_timestamp": started,
-        "end_timestamp": ended,
-        "command_return_code": return_code,
-        "merge_report_path": str(merge_report),
-        "expected_output_paths": row["expected_output_paths"],
-        "observed_expected_outputs": output_summary,
-        "artifacts": {
-            "merge_report": artifact_record(merge_report),
-            "selected_wcs_snapshot": artifact_record(destinations["selected_wcs"]),
-            "scalings_snapshot": artifact_record(destinations["scalings"]),
-            "merge_report_snapshot": artifact_record(destinations["merge_report"]),
-            "log": artifact_record(log_path),
-        },
-    }
-    final_receipt = receipt_path(manifest, row)
-    atomic_json_no_overwrite(receipt, final_receipt)
-    return {
-        "row_id": row_id,
-        "attempt_id": row["attempt_id"],
-        "action": "executed",
-        "receipt_path": str(final_receipt),
-    }
-
-
-def execute_manifest(
-    manifest: dict[str, Any], manifest_sha256: str
-) -> dict[str, Any]:
-    control_root = Path(manifest["control_root"])
-    lock_path = Path(manifest["lock_path"])
-    control_root.mkdir(parents=True, exist_ok=True)
-    make_parent(lock_path)
-    with lock_path.open("a+b") as lock_handle:
+def execute(manifest: dict[str, Any], manifest_hash: str) -> dict[str, Any]:
+    root, lock = Path(manifest["control_root"]), Path(manifest["lock_path"])
+    root.mkdir(parents=True, exist_ok=True); lock.parent.mkdir(parents=True, exist_ok=True)
+    with lock.open("a+b") as handle:
         try:
-            fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError as exc:
-            raise RunnerError(
-                "execution_lock_held",
-                f"another runner owns the advisory lock: {lock_path}",
-            ) from exc
-
-        statuses = [
-            classify_row(manifest, manifest_sha256, row) for row in manifest["rows"]
-        ]
-        for row, status in zip(manifest["rows"], statuses):
-            if status["status"] == "invalid_receipt":
-                raise RunnerError(
-                    "stale_or_invalid_execution_receipt",
-                    status["reason"],
-                    row_id=status["row_id"],
-                )
-            if status["status"] == "unreceipted_output":
-                interruption_paths = {
-                    row["merge_report_path"],
-                    row["log_path"],
-                    *[str(path) for path in snapshot_paths(row).values()],
-                }
-                status_code = (
-                    "interrupted_row_requires_external_reconciliation"
-                    if interruption_paths.intersection(status["existing_paths"])
-                    else "preexisting_unreceipted_output"
-                )
-                raise RunnerError(
-                    status_code,
-                    f"{status['reason']}: {status['existing_paths']}",
-                    row_id=status["row_id"],
-                )
-        validate_runtime_inputs(manifest)
-
-        results = []
-        for row, status in zip(manifest["rows"], statuses):
-            if status["status"] == "complete":
-                results.append(
-                    {
-                        "row_id": row["row_id"],
-                        "attempt_id": row["attempt_id"],
-                        "action": "skipped_valid_receipt",
-                        "receipt_path": status["receipt_path"],
-                    }
-                )
-                continue
-            results.append(execute_row(manifest, manifest_sha256, row))
-        return {
-            "schema": "topeft_datacard_matrix_execution_result_v1",
-            "manifest_sha256": manifest_sha256,
-            "owner": {"pid": os.getpid(), "hostname": socket.gethostname()},
-            "rows": results,
-        }
-
-
-def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        description="Run a prequalified datacard matrix with fail-closed receipts."
-    )
-    modes = parser.add_mutually_exclusive_group()
-    modes.add_argument("--plan-only", action="store_true")
-    modes.add_argument("--status", action="store_true")
-    parser.add_argument("manifest", type=Path)
-    return parser
+            raise RunnerError("execution_lock_held", f"another runner owns lock: {lock}") from exc
+        validate_runtime(manifest["runtime_contract"])
+        for row in manifest["rows"]:
+            validate_row_inputs(row)
+        atomic_json(owner_payload(manifest, manifest_hash), owner_path(manifest), True)
+        for row in manifest["rows"]:
+            state = classify(manifest, manifest_hash, row, True, read_owner(manifest))
+            if state["status"] not in {"not_started", "complete"}:
+                raise RunnerError(state["status"], state["reason"], row_id=row["row_id"])
+        results: list[dict[str, Any]] = []
+        for row in manifest["rows"]:
+            validate_runtime(manifest["runtime_contract"])
+            validate_row_inputs(row)
+            fresh = classify(manifest, manifest_hash, row, True, read_owner(manifest))
+            if fresh["status"] == "complete":
+                results.append({"row_id": row["row_id"], "attempt_id": row["attempt_id"], "action": "skipped_valid_receipt", "receipt_path": fresh["receipt_path"]}); continue
+            if fresh["status"] != "not_started":
+                raise RunnerError(fresh["status"], fresh["reason"], row_id=row["row_id"])
+            atomic_json(owner_payload(manifest, manifest_hash, row), owner_path(manifest), True)
+            results.append(execute_row(manifest, manifest_hash, row))
+            atomic_json(owner_payload(manifest, manifest_hash), owner_path(manifest), True)
+        owner_path(manifest).unlink(missing_ok=True)
+        return {"schema": "topeft_datacard_matrix_execution_result_v2", "manifest_sha256": manifest_hash, "rows": results}
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
+    parser = argparse.ArgumentParser(description="Run a prequalified datacard matrix with byte-bound receipts.")
+    modes = parser.add_mutually_exclusive_group(); modes.add_argument("--plan-only", action="store_true"); modes.add_argument("--status", action="store_true")
+    parser.add_argument("manifest", type=Path); args = parser.parse_args(argv)
     try:
-        manifest, manifest_sha256 = load_manifest(args.manifest)
-        if args.plan_only or args.status:
-            mode = "plan_only" if args.plan_only else "status"
-            result = read_only_result(mode, manifest, manifest_sha256)
-        else:
-            result = execute_manifest(manifest, manifest_sha256)
-        print(json.dumps(result, indent=2, sort_keys=True))
-        return 0
+        manifest, manifest_hash = load_manifest(args.manifest)
+        result = read_only("plan_only" if args.plan_only else "status", manifest, manifest_hash) if (args.plan_only or args.status) else execute(manifest, manifest_hash)
+        print(json.dumps(result, indent=2, sort_keys=True)); return 0
     except RunnerError as exc:
-        failure = {
-            "schema": "topeft_datacard_matrix_error_v1",
-            "status": exc.code,
-            "message": str(exc),
-        }
-        if exc.row_id is not None:
-            failure["row_id"] = exc.row_id
-        print(json.dumps(failure, indent=2, sort_keys=True), file=sys.stderr)
-        return 2
+        error = {"schema": "topeft_datacard_matrix_error_v2", "status": exc.code, "message": str(exc)}
+        if exc.row_id is not None: error["row_id"] = exc.row_id
+        print(json.dumps(error, indent=2, sort_keys=True), file=sys.stderr); return 2
 
 
 if __name__ == "__main__":

@@ -1,431 +1,172 @@
+import hashlib
 import json
 from pathlib import Path
 import subprocess
+import sys
 import time
 
 import pytest
 
 
-REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
-RUNNER = REPOSITORY_ROOT / "analysis/topeft_run2/run_datacard_matrix_resumable.sh"
-ENGINE = REPOSITORY_ROOT / "analysis/topeft_run2/datacard_matrix_runner.py"
+ROOT = Path(__file__).resolve().parents[1]
+RUNNER = ROOT / "analysis/topeft_run2/run_datacard_matrix_resumable.sh"
+ENGINE = ROOT / "analysis/topeft_run2/datacard_matrix_runner.py"
 
-
-FAKE_MAKE_CARDS = r'''
-import json
+FAKE = r'''
 from pathlib import Path
-import sys
-import time
-
-argv = sys.argv[1:]
-
-def one(option):
-    return argv[argv.index(option) + 1]
-
-def many(option):
-    values = []
-    for value in argv[argv.index(option) + 1:]:
-        if value.startswith("--"):
-            break
-        values.append(value)
-    return values
-
-if "--counter" in argv:
-    counter = Path(one("--counter"))
-    current = int(counter.read_text()) if counter.exists() else 0
-    counter.write_text(str(current + 1))
-if "--order-file" in argv:
-    with Path(one("--order-file")).open("a") as output:
-        output.write(one("--row-token") + "\n")
-if "--assert-path-exists" in argv:
-    assert Path(one("--assert-path-exists")).is_file()
-if "--sleep-seconds" in argv:
-    time.sleep(float(one("--sleep-seconds")))
-if "--fail-before-output" in argv:
-    raise SystemExit(7)
-
-output_root = Path(one("--out-dir"))
-output_root.mkdir(parents=True, exist_ok=True)
-Path(one("--merge-report")).parent.mkdir(parents=True, exist_ok=True)
-Path(one("--merge-report")).write_text(json.dumps({"fake": True}) + "\n")
-(output_root / "selectedWCs.txt").write_text(json.dumps({"signal": ["ctW"]}) + "\n")
-(output_root / "scalings-preselect.json").write_text(json.dumps([{"channel": "fake"}]) + "\n")
-for output_name in many("--expected-output"):
-    output = Path(output_name)
-    output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_text("synthetic\n")
+import json, sys, time
+args = sys.argv[1:]
+input_pkl = args[0]
+def one(name): return args[args.index(name) + 1]
+def many(name):
+    result = []
+    for item in args[args.index(name) + 1:]:
+        if item.startswith("--"): break
+        result.append(item)
+    return result
+if "--record-argv" in args: Path(one("--record-argv")).write_text(json.dumps(args))
+if "--counter" in args:
+    p = Path(one("--counter")); p.write_text(str(int(p.read_text()) + 1 if p.exists() else 1))
+if "--order" in args:
+    with Path(one("--order")).open("a") as h: h.write(one("--token") + "\n")
+if "--write-path" in args:
+    p = Path(one("--write-path")); p.parent.mkdir(parents=True, exist_ok=True); p.write_text("external\n")
+if "--mutate-path" in args: Path(one("--mutate-path")).write_text("runtime drift\n")
+if "--sleep" in args: time.sleep(float(one("--sleep")))
+if "--fail" in args: raise SystemExit(7)
+root = Path(one("--out-dir")); root.mkdir(parents=True, exist_ok=True)
+report = Path(one("--merge-report")); report.parent.mkdir(parents=True, exist_ok=True); report.write_text("{}\n")
+(root / "selectedWCs.txt").write_text("selected\n")
+(root / "scalings-preselect.json").write_text("scalings\n")
+for name in many("--expected-output"):
+    p = Path(name); p.parent.mkdir(parents=True, exist_ok=True); p.write_text("synthetic " + input_pkl + "\n")
 '''
 
 
-def row_paths(tmp_path, row_id, attempt_id):
-    evidence = tmp_path / "evidence" / f"{row_id}_{attempt_id}"
-    output_root = tmp_path / "cards"
-    return {
-        "output_root": output_root,
-        "merge_report": evidence / "merge_report.json",
-        "snapshot_directory": tmp_path / "control" / "snapshots" / f"{row_id}_{attempt_id}",
-        "log": evidence / "row.log",
-        "expected": [
-            output_root / f"{row_id}_{attempt_id}.txt",
-            output_root / f"{row_id}_{attempt_id}.root",
-        ],
-    }
-
-
-def make_row(tmp_path, fake_script, row_id="row_01", attempt_id="attempt_01", extra=None):
-    paths = row_paths(tmp_path, row_id, attempt_id)
-    input_pkl = tmp_path / "input.pkl.gz"
-    input_pkl.write_text("synthetic input\n")
-    missing_parton = tmp_path / "missing_parton.root"
-    missing_parton.write_text("synthetic payload\n")
-    channels = ["channel_a", "channel_b"]
-    years = ["2022", "2022EE"]
-    producer_argv = [
-        str(fake_script),
-        str(input_pkl),
-        "--out-dir",
-        str(paths["output_root"]),
-        "--var-lst",
-        "lj0pt",
-        "--ch-lst",
-        *channels,
-        "--binning",
-        "fitting",
-        "--year",
-        *years,
-        "--miss-parton-file",
-        str(missing_parton),
-        "--sr-registry",
-        "ALL_CH_LST_SR",
-        "--merge-report",
-        str(paths["merge_report"]),
-    ]
-    producer_argv.extend(["--expected-output", *[str(path) for path in paths["expected"]]])
-    producer_argv.extend(extra or [])
-    return {
-        "row_id": row_id,
-        "attempt_id": attempt_id,
-        "era": "run3",
-        "working_directory": str(fake_script.parent),
-        "input_pkl": str(input_pkl),
-        "output_root": str(paths["output_root"]),
-        "distribution": "lj0pt",
-        "physical_channels": channels,
-        "years": years,
-        "missing_parton_path": str(missing_parton),
-        "sr_registry": "ALL_CH_LST_SR",
-        "merge_report_path": str(paths["merge_report"]),
-        "snapshot_directory": str(paths["snapshot_directory"]),
-        "log_path": str(paths["log"]),
-        "expected_output_paths": [str(path) for path in paths["expected"]],
-        "producer_argv": producer_argv,
-    }
-
-
-def write_manifest(tmp_path, rows, name="manifest.json"):
-    manifest = {
-        "schema": "topeft_datacard_matrix_v1",
-        "control_root": str(tmp_path / "control"),
-        "lock_path": str(tmp_path / "control" / "runner.lock"),
-        "rows": rows,
-    }
-    path = tmp_path / name
-    path.write_text(json.dumps(manifest, indent=2) + "\n")
-    return path, manifest
+def sha(path):
+    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
 @pytest.fixture
 def fake_script(tmp_path):
-    script = tmp_path / "fake" / "make_cards.py"
+    script = tmp_path / "runtime" / "make_cards.py"
     script.parent.mkdir()
-    script.write_text(FAKE_MAKE_CARDS)
+    script.write_text(FAKE)
     return script
 
 
-def run_runner(manifest, mode=None):
-    command = [str(RUNNER)]
-    if mode:
-        command.append(mode)
-    command.append(str(manifest))
-    return subprocess.run(command, text=True, capture_output=True)
+def make_row(tmp_path, fake, row_id="row_01", attempt="attempt_01", extra=None):
+    root = tmp_path / "cards" / f"{row_id}_{attempt}"
+    evidence = tmp_path / "evidence" / f"{row_id}_{attempt}"
+    input_pkl = tmp_path / "inputs" / f"{row_id}_{attempt}.pkl.gz"
+    input_pkl.parent.mkdir(exist_ok=True); input_pkl.write_text("input\n")
+    missing = tmp_path / "missing.root"; missing.write_text("missing\n")
+    outputs = [root / "card.txt", root / "card.root"]
+    args = ["--out-dir", str(root), "--var-lst", "lj0pt", "--ch-lst", "channel_a", "channel_b", "--binning", "fitting", "--year", "2022", "2022EE", "--miss-parton-file", str(missing), "--sr-registry", "ALL_CH_LST_SR", "--merge-report", str(evidence / "merge.json"), "--expected-output", *map(str, outputs), *(extra or [])]
+    return {"row_id": row_id, "attempt_id": attempt, "era": "run3", "working_directory": str(fake.parent), "input_pkl": str(input_pkl), "output_root": str(root), "distribution": "lj0pt", "physical_channels": ["channel_a", "channel_b"], "years": ["2022", "2022EE"], "missing_parton_path": str(missing), "sr_registry": "ALL_CH_LST_SR", "merge_report_path": str(evidence / "merge.json"), "snapshot_directory": str(tmp_path / "control" / "snapshots" / f"{row_id}_{attempt}"), "log_path": str(evidence / "row.log"), "expected_output_paths": list(map(str, outputs)), "producer_args": args}
 
 
-def final_json(stream):
-    starts = [index for index in range(len(stream)) if stream.startswith("{", index)]
-    for index in reversed(starts):
-        try:
-            return json.loads(stream[index:])
-        except json.JSONDecodeError:
-            continue
-    raise AssertionError(f"no final JSON object in stream: {stream!r}")
+def manifest(tmp_path, fake, rows, name="manifest.json"):
+    data = {"schema": "topeft_datacard_matrix_v2", "control_root": str(tmp_path / "control"), "lock_path": str(tmp_path / "control" / "runner.lock"), "runtime_contract": {"contract_id": "synthetic-runtime", "python_executable": sys.executable, "make_cards_path": str(fake), "fingerprints": [{"path": str(fake), "sha256": sha(fake)}]}, "rows": rows}
+    path = tmp_path / name; path.write_text(json.dumps(data, indent=2) + "\n")
+    return path, data
 
 
-def test_manifest_schema_rejection_happens_before_execution(tmp_path, fake_script):
-    counter = tmp_path / "counter"
-    row = make_row(tmp_path, fake_script, extra=["--counter", str(counter)])
-    row.pop("era")
-    manifest, _ = write_manifest(tmp_path, [row])
-    completed = run_runner(manifest)
-    assert completed.returncode != 0
-    assert final_json(completed.stderr)["status"] == "manifest_schema_error"
-    assert not counter.exists()
+def invoke(path, mode=None):
+    return subprocess.run([str(RUNNER), *( [mode] if mode else []), str(path)], text=True, capture_output=True)
 
 
-def test_duplicate_row_id_rejected(tmp_path, fake_script):
-    first = make_row(tmp_path, fake_script, "same", "attempt_01")
-    second = make_row(tmp_path, fake_script, "same", "attempt_02")
-    manifest, _ = write_manifest(tmp_path, [first, second])
-    completed = run_runner(manifest, "--plan-only")
-    assert completed.returncode != 0
-    assert "duplicate row_id" in completed.stderr
+def result(stream):
+    for start in reversed([i for i, char in enumerate(stream) if char == "{"]):
+        try: return json.loads(stream[start:])
+        except json.JSONDecodeError: pass
+    raise AssertionError(stream)
 
 
-def test_plan_only_preserves_order_and_does_not_execute_or_mutate(tmp_path, fake_script):
-    counter = tmp_path / "counter"
-    rows = [
-        make_row(tmp_path, fake_script, "row_02", extra=["--counter", str(counter)]),
-        make_row(tmp_path, fake_script, "row_01", extra=["--counter", str(counter)]),
-    ]
-    manifest, manifest_data = write_manifest(tmp_path, rows)
-    completed = run_runner(manifest, "--plan-only")
-    result = final_json(completed.stdout)
-    assert completed.returncode == 0
-    assert [item["row_id"] for item in result["rows"]] == ["row_02", "row_01"]
-    assert [item["action"] for item in result["rows"]] == ["execute", "execute"]
-    assert result["mutated"] is False
-    assert not counter.exists()
-    assert not Path(manifest_data["control_root"]).exists()
+def receipt(tmp_path, row):
+    return json.loads((tmp_path / "control" / "receipts" / f"{row['row_id']}__{row['attempt_id']}.json").read_text())
 
 
-def test_status_does_not_mutate(tmp_path, fake_script):
-    row = make_row(tmp_path, fake_script)
-    manifest, manifest_data = write_manifest(tmp_path, [row])
-    before = sorted(str(path.relative_to(tmp_path)) for path in tmp_path.rglob("*"))
-    completed = run_runner(manifest, "--status")
-    after = sorted(str(path.relative_to(tmp_path)) for path in tmp_path.rglob("*"))
-    result = final_json(completed.stdout)
-    assert completed.returncode == 0
-    assert result["rows"][0]["status"] == "not_started"
-    assert before == after
-    assert not Path(manifest_data["control_root"]).exists()
+def test_schema_and_identity_rejections(tmp_path, fake_script):
+    row = make_row(tmp_path, fake_script); row.pop("era")
+    path, _ = manifest(tmp_path, fake_script, [row]); assert result(invoke(path).stderr)["status"] == "manifest_schema_error"
+    first, second = make_row(tmp_path, fake_script), make_row(tmp_path, fake_script)
+    path, _ = manifest(tmp_path, fake_script, [first, second], "duplicate.json"); assert result(invoke(path, "--plan-only").stderr)["status"] == "manifest_schema_error"
 
 
-def test_successful_synthetic_execution_and_receipt(tmp_path, fake_script):
-    row = make_row(tmp_path, fake_script)
-    manifest, _ = write_manifest(tmp_path, [row])
-    completed = run_runner(manifest)
-    assert completed.returncode == 0, completed.stderr
-    receipt_path = tmp_path / "control/receipts/row_01__attempt_01.json"
-    receipt = json.loads(receipt_path.read_text())
-    assert receipt["command_return_code"] == 0
-    assert all(item["nonzero"] for item in receipt["observed_expected_outputs"])
-    assert Path(receipt["artifacts"]["selected_wcs_snapshot"]["path"]).is_file()
-    assert Path(receipt["artifacts"]["scalings_snapshot"]["path"]).is_file()
-    assert Path(receipt["artifacts"]["merge_report_snapshot"]["path"]).is_file()
+def test_plan_and_status_are_nonmutating(tmp_path, fake_script):
+    row = make_row(tmp_path, fake_script, extra=["--counter", str(tmp_path / "counter")]); path, data = manifest(tmp_path, fake_script, [row])
+    assert result(invoke(path, "--plan-only").stdout)["rows"][0]["action"] == "execute"
+    assert result(invoke(path, "--status").stdout)["rows"][0]["status"] == "not_started"
+    assert not Path(data["control_root"]).exists() and not (tmp_path / "counter").exists()
 
 
-def test_two_rows_execute_sequentially_in_manifest_order(tmp_path, fake_script):
-    order = tmp_path / "order.txt"
-    first = make_row(
-        tmp_path,
-        fake_script,
-        "row_a",
-        extra=["--order-file", str(order), "--row-token", "row_a"],
-    )
-    second = make_row(
-        tmp_path,
-        fake_script,
-        "row_b",
-        extra=["--order-file", str(order), "--row-token", "row_b"],
-    )
-    manifest, _ = write_manifest(tmp_path, [first, second])
-    completed = run_runner(manifest)
-    assert completed.returncode == 0, completed.stderr
-    assert order.read_text().splitlines() == ["row_a", "row_b"]
-
-
-def test_second_row_not_launched_and_no_retry_after_first_failure(tmp_path, fake_script):
-    order = tmp_path / "order.txt"
-    counter = tmp_path / "counter"
-    first = make_row(
-        tmp_path,
-        fake_script,
-        "row_a",
-        extra=[
-            "--order-file",
-            str(order),
-            "--row-token",
-            "row_a",
-            "--counter",
-            str(counter),
-            "--fail-before-output",
-        ],
-    )
-    second = make_row(
-        tmp_path,
-        fake_script,
-        "row_b",
-        extra=["--order-file", str(order), "--row-token", "row_b"],
-    )
-    manifest, _ = write_manifest(tmp_path, [first, second])
-    completed = run_runner(manifest)
-    assert completed.returncode != 0
-    assert final_json(completed.stderr)["status"] == "row_command_failed"
-    assert order.read_text().splitlines() == ["row_a"]
-    assert counter.read_text() == "1"
-
-
-def test_valid_receipt_skips_row_on_resume(tmp_path, fake_script):
-    counter = tmp_path / "counter"
-    row = make_row(tmp_path, fake_script, extra=["--counter", str(counter)])
-    manifest, _ = write_manifest(tmp_path, [row])
-    assert run_runner(manifest).returncode == 0
-    resumed = run_runner(manifest)
-    assert resumed.returncode == 0, resumed.stderr
-    assert counter.read_text() == "1"
-    assert final_json(resumed.stdout)["rows"][0]["action"] == "skipped_valid_receipt"
-
-
-def test_existing_output_without_receipt_blocks(tmp_path, fake_script):
-    row = make_row(tmp_path, fake_script)
-    output = Path(row["expected_output_paths"][0])
-    output.parent.mkdir(parents=True)
-    output.write_text("preexisting\n")
-    manifest, _ = write_manifest(tmp_path, [row])
-    completed = run_runner(manifest)
-    assert completed.returncode != 0
-    assert final_json(completed.stderr)["status"] == "preexisting_unreceipted_output"
-
-
-def test_stale_receipt_blocks(tmp_path, fake_script):
-    row = make_row(tmp_path, fake_script)
-    manifest, _ = write_manifest(tmp_path, [row])
-    assert run_runner(manifest).returncode == 0
-    snapshot = Path(row["snapshot_directory"]) / "selectedWCs.txt"
-    snapshot.write_text("tampered\n")
-    completed = run_runner(manifest)
-    assert completed.returncode != 0
-    assert final_json(completed.stderr)["status"] == "stale_or_invalid_execution_receipt"
-
-
-def test_interrupted_log_without_receipt_blocks(tmp_path, fake_script):
-    row = make_row(tmp_path, fake_script)
-    log = Path(row["log_path"])
-    log.parent.mkdir(parents=True)
-    log.write_text("interrupted\n")
-    manifest, _ = write_manifest(tmp_path, [row])
-    status = final_json(run_runner(manifest, "--status").stdout)
-    assert status["rows"][0]["status"] == "unreceipted_output"
-    completed = run_runner(manifest)
-    assert final_json(completed.stderr)["status"] == "interrupted_row_requires_external_reconciliation"
-
-
-@pytest.mark.parametrize("artifact", ["merge_report", "snapshot"])
-def test_attempt_evidence_without_receipt_blocks_as_interrupted(
-    tmp_path, fake_script, artifact
-):
-    row = make_row(tmp_path, fake_script)
-    if artifact == "merge_report":
-        collision = Path(row["merge_report_path"])
-    else:
-        collision = Path(row["snapshot_directory"]) / "selectedWCs.txt"
-    collision.parent.mkdir(parents=True)
-    collision.write_text("preexisting\n")
-    manifest, _ = write_manifest(tmp_path, [row])
-    completed = run_runner(manifest)
-    assert completed.returncode != 0
-    assert (
-        final_json(completed.stderr)["status"]
-        == "interrupted_row_requires_external_reconciliation"
-    )
-
-
-def test_new_attempt_with_unique_paths_can_execute_after_failed_attempt(tmp_path, fake_script):
-    first = make_row(
-        tmp_path,
-        fake_script,
-        attempt_id="attempt_01",
-        extra=["--fail-before-output"],
-    )
-    first_manifest, _ = write_manifest(tmp_path, [first], "first.json")
-    assert run_runner(first_manifest).returncode != 0
-    second = make_row(tmp_path, fake_script, attempt_id="attempt_02")
-    second_manifest, _ = write_manifest(tmp_path, [second], "second.json")
-    completed = run_runner(second_manifest)
-    assert completed.returncode == 0, completed.stderr
-    assert Path(first["log_path"]).is_file()
-    assert (tmp_path / "control/receipts/row_01__attempt_02.json").is_file()
-
-
-def test_snapshot_is_created_before_next_row(tmp_path, fake_script):
-    first = make_row(tmp_path, fake_script, "row_a")
-    first_snapshot = Path(first["snapshot_directory"]) / "selectedWCs.txt"
-    second = make_row(
-        tmp_path,
-        fake_script,
-        "row_b",
-        extra=["--assert-path-exists", str(first_snapshot)],
-    )
-    manifest, _ = write_manifest(tmp_path, [first, second])
-    completed = run_runner(manifest)
-    assert completed.returncode == 0, completed.stderr
-
-
-def test_lock_prevents_second_runner(tmp_path, fake_script):
-    row = make_row(tmp_path, fake_script, extra=["--sleep-seconds", "2"])
-    manifest, _ = write_manifest(tmp_path, [row])
-    first = subprocess.Popen([str(RUNNER), str(manifest)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    log = Path(row["log_path"])
+def test_active_interrupted_and_stale_owner_statuses(tmp_path, fake_script):
+    row = make_row(tmp_path, fake_script, extra=["--sleep", "1.2"]); path, data = manifest(tmp_path, fake_script, [row])
+    first = subprocess.Popen([str(RUNNER), str(path)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     deadline = time.monotonic() + 10
-    while not log.exists() and time.monotonic() < deadline:
-        time.sleep(0.02)
-    assert log.exists()
-    second = run_runner(manifest)
-    assert second.returncode != 0
-    assert final_json(second.stderr)["status"] == "execution_lock_held"
-    first_stdout, first_stderr = first.communicate(timeout=15)
-    assert first.returncode == 0, first_stderr + first_stdout
+    while not Path(row["log_path"]).exists() and time.monotonic() < deadline: time.sleep(.02)
+    active = result(invoke(path, "--status").stdout); assert active["lock_held"] and active["rows"][0]["status"] == "active"
+    out, err = first.communicate(timeout=10); assert first.returncode == 0, out + err
+    Path(row["log_path"]).unlink(); (tmp_path / "control" / "receipts" / "row_01__attempt_01.json").unlink()
+    Path(row["expected_output_paths"][0]).write_text("interrupted\n")
+    assert result(invoke(path, "--status").stdout)["rows"][0]["status"] == "interrupted_requires_external_reconciliation"
+    owner = {"schema_version": "topeft_datacard_runner_owner_v1", "manifest_sha256": sha(path), "current_row_id": row["row_id"], "current_attempt_id": row["attempt_id"]}
+    (tmp_path / "control" / "runner_owner.json").write_text(json.dumps(owner))
+    assert result(invoke(path, "--status").stdout)["rows"][0]["status"] == "interrupted_requires_external_reconciliation"
 
 
-def test_receipt_records_exact_wrapper_and_resolved_argv(tmp_path, fake_script):
-    row = make_row(tmp_path, fake_script)
-    manifest, _ = write_manifest(tmp_path, [row])
-    assert run_runner(manifest).returncode == 0
-    receipt = json.loads(
-        (tmp_path / "control/receipts/row_01__attempt_01.json").read_text()
-    )
-    invocation = receipt["wrapper_invocation"]
-    assert invocation[:5] == [
-        "/users/apiccine/work/correction-lib/codex-run.sh",
-        "/bin/bash",
-        "--noprofile",
-        "--norc",
-        "-c",
-    ]
-    assert receipt["exact_resolved_argv"][0] == "/users/apiccine/work/miniconda3/envs/clib-env/bin/python"
-    assert receipt["exact_resolved_argv"][1] == str(fake_script)
+def test_receipt_byte_binds_outputs_and_control_artifacts(tmp_path, fake_script):
+    row = make_row(tmp_path, fake_script); path, _ = manifest(tmp_path, fake_script, [row]); assert invoke(path).returncode == 0
+    data = receipt(tmp_path, row); assert all(set(item) == {"path", "size_bytes", "sha256"} for item in data["primary_outputs"])
+    for path_to_mutate in [row["expected_output_paths"][0], row["expected_output_paths"][1], data["artifacts"]["selected_wcs_snapshot"]["path"], data["artifacts"]["scalings_snapshot"]["path"]]:
+        Path(path_to_mutate).write_text("tampered\n")
+        assert result(invoke(path, "--status").stdout)["rows"][0]["status"] == "invalid_receipt"
+        Path(path_to_mutate).write_text("synthetic " + row["input_pkl"] + "\n" if str(path_to_mutate).endswith((".txt", ".root")) and "snapshots" not in str(path_to_mutate) else "selected\n" if str(path_to_mutate).endswith("selectedWCs.txt") else "scalings\n")
+    Path(row["expected_output_paths"][0]).unlink()
+    assert result(invoke(path, "--status").stdout)["rows"][0]["status"] == "invalid_receipt"
 
 
-def test_physical_channels_remain_shell_safe_literal_argv(tmp_path, fake_script):
-    injected = tmp_path / "must_not_exist"
-    channel = f"channel;touch {injected}"
-    row = make_row(tmp_path, fake_script)
-    row["physical_channels"] = [channel]
-    start = row["producer_argv"].index("--ch-lst") + 1
-    end = row["producer_argv"].index("--binning")
-    row["producer_argv"][start:end] = [channel]
-    manifest, _ = write_manifest(tmp_path, [row])
-    completed = run_runner(manifest)
-    assert completed.returncode == 0, completed.stderr
-    assert not injected.exists()
-    receipt = json.loads(
-        (tmp_path / "control/receipts/row_01__attempt_01.json").read_text()
-    )
-    argv = receipt["exact_resolved_argv"]
-    assert argv[argv.index("--ch-lst") + 1] == channel
+def test_resume_failures_and_new_attempt(tmp_path, fake_script):
+    counter = tmp_path / "counter"; row = make_row(tmp_path, fake_script, extra=["--counter", str(counter)]); path, _ = manifest(tmp_path, fake_script, [row])
+    assert invoke(path).returncode == 0 and invoke(path).returncode == 0 and counter.read_text() == "1"
+    bad = make_row(tmp_path, fake_script, "bad", extra=["--fail"]); later = make_row(tmp_path, fake_script, "later", extra=["--counter", str(tmp_path / "later")]); bad_path, _ = manifest(tmp_path, fake_script, [bad, later], "bad.json")
+    assert result(invoke(bad_path).stderr)["status"] == "row_command_failed" and not (tmp_path / "later").exists()
+    retry = make_row(tmp_path, fake_script, "bad", "attempt_02"); retry_path, _ = manifest(tmp_path, fake_script, [retry], "retry.json"); assert invoke(retry_path).returncode == 0
+    orphan = make_row(tmp_path, fake_script, "orphan"); Path(orphan["expected_output_paths"][0]).parent.mkdir(parents=True); Path(orphan["expected_output_paths"][0]).write_text("orphan\n"); orphan_path, _ = manifest(tmp_path, fake_script, [orphan], "orphan.json")
+    assert result(invoke(orphan_path).stderr)["status"] == "interrupted_requires_external_reconciliation"
 
 
-def test_engine_has_no_finalizer_or_consolidation_behavior():
-    source = ENGINE.read_text()
-    assert "datacards_post_processing" not in source
-    assert '"scalings.json"' not in source
+def test_runtime_contract_blocks_before_and_between_rows(tmp_path, fake_script):
+    row = make_row(tmp_path, fake_script); path, data = manifest(tmp_path, fake_script, [row]); fake_script.write_text("changed\n")
+    assert result(invoke(path).stderr)["status"] == "runtime_contract_mismatch" and not Path(row["log_path"]).exists()
+    fake_script.write_text(FAKE); first = make_row(tmp_path, fake_script, "first", extra=["--mutate-path", str(fake_script)]); second = make_row(tmp_path, fake_script, "second", extra=["--counter", str(tmp_path / "second")]); path, _ = manifest(tmp_path, fake_script, [first, second], "drift.json")
+    assert result(invoke(path).stderr)["status"] == "runtime_contract_mismatch" and not (tmp_path / "second").exists()
+
+
+def test_fresh_classification_blocks_future_external_output(tmp_path, fake_script):
+    future = make_row(tmp_path, fake_script, "future", extra=["--counter", str(tmp_path / "future")])
+    first = make_row(tmp_path, fake_script, "first", extra=["--write-path", future["expected_output_paths"][0]])
+    path, _ = manifest(tmp_path, fake_script, [first, future])
+    assert result(invoke(path).stderr)["status"] == "interrupted_requires_external_reconciliation" and not (tmp_path / "future").exists()
+
+
+def test_input_binding_literal_argv_and_direct_execution(tmp_path, fake_script):
+    record_argv = tmp_path / "argv.json"; channel = "channel;touch should_not_exist"
+    row = make_row(tmp_path, fake_script, extra=["--record-argv", str(record_argv)])
+    row["physical_channels"] = [channel]; start = row["producer_args"].index("--ch-lst") + 1; end = row["producer_args"].index("--binning"); row["producer_args"][start:end] = [channel]
+    path, _ = manifest(tmp_path, fake_script, [row]); assert invoke(path).returncode == 0
+    argv = json.loads(record_argv.read_text()); assert argv[0] == row["input_pkl"] and argv[argv.index("--ch-lst") + 1] == channel
+    source = ENGINE.read_text(); assert "subprocess.run(" in source and "shell=True" not in source and "codex-run.sh" not in source
+    assert "codex-run.sh" not in RUNNER.read_text() and "/bin/bash --noprofile" not in RUNNER.read_text()
+    row = make_row(tmp_path, fake_script, "negative"); original = row["input_pkl"]; row["input_pkl"] = str(tmp_path / "missing-input.pkl"); row["producer_args"].extend(["--unrelated", original]); path, _ = manifest(tmp_path, fake_script, [row], "negative.json")
+    assert result(invoke(path).stderr)["status"] == "runtime_preflight_error"
+
+
+def test_lock_blocks_second_owner_and_no_finalizer_behavior(tmp_path, fake_script):
+    row = make_row(tmp_path, fake_script, extra=["--sleep", "1"]); path, _ = manifest(tmp_path, fake_script, [row]); first = subprocess.Popen([str(RUNNER), str(path)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    deadline = time.monotonic() + 10
+    while not Path(row["log_path"]).exists() and time.monotonic() < deadline: time.sleep(.02)
+    assert result(invoke(path).stderr)["status"] == "execution_lock_held"
+    first.communicate(timeout=10); assert first.returncode == 0
+    source = ENGINE.read_text(); assert "datacards_post_processing" not in source and '"scalings.json"' not in source

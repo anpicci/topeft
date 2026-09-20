@@ -116,13 +116,23 @@ report, immutable snapshot/log destinations, expected output paths, and exact
 path. Use attempt-specific log, snapshot, merge-report, and expected-output
 paths.
 
-The schema is `topeft_datacard_matrix_v1`:
+The schema is `topeft_datacard_matrix_v2`. The manifest owns an opaque,
+prequalified runtime contract: it names the absolute producer Python and
+`make_cards.py` paths and hashes the qualification layer's chosen runtime
+files. The runner only verifies that contract mechanically; it never decides
+which source files are scientifically sufficient.
 
 ```json
 {
-  "schema": "topeft_datacard_matrix_v1",
+  "schema": "topeft_datacard_matrix_v2",
   "control_root": "/path/to/runner-control",
   "lock_path": "/path/to/runner-control/runner.lock",
+  "runtime_contract": {
+    "contract_id": "qualified-run3-runtime-001",
+    "python_executable": "/absolute/path/to/python",
+    "make_cards_path": "/absolute/path/to/topeft/analysis/topeft_run2/make_cards.py",
+    "fingerprints": [{"path": "/absolute/path/to/runtime-file", "sha256": "<lowercase-sha256>"}]
+  },
   "rows": [{
     "row_id": "run3_01",
     "attempt_id": "attempt_01",
@@ -133,20 +143,21 @@ The schema is `topeft_datacard_matrix_v1`:
     "distribution": "lj0pt",
     "physical_channels": ["physical_channel_a", "physical_channel_b"],
     "years": ["2022", "2022EE", "2023", "2023BPix"],
-    "missing_parton_path": "data/missing_parton/missing_parton_run3.root",
+    "missing_parton_path": "/absolute/path/to/missing_parton_run3.root",
     "sr_registry": "ALL_CH_LST_SR",
     "merge_report_path": "/path/to/evidence/run3_01/merge_report.json",
     "snapshot_directory": "/path/to/runner-control/snapshots/run3_01_attempt_01",
     "log_path": "/path/to/evidence/run3_01/row.log",
     "expected_output_paths": ["/path/to/cards/run3/card.txt", "/path/to/cards/run3/card.root"],
-    "producer_argv": ["analysis/topeft_run2/make_cards.py", "/path/to/input.pkl.gz", "--out-dir", "/path/to/cards/run3", "--var-lst", "lj0pt", "--ch-lst", "physical_channel_a", "physical_channel_b", "--year", "2022", "2022EE", "2023", "2023BPix", "--miss-parton-file", "data/missing_parton/missing_parton_run3.root", "--sr-registry", "ALL_CH_LST_SR", "--merge-report", "/path/to/evidence/run3_01/merge_report.json"]
+    "producer_args": ["--out-dir", "/path/to/cards/run3", "--var-lst", "lj0pt", "--ch-lst", "physical_channel_a", "physical_channel_b", "--year", "2022", "2022EE", "2023", "2023BPix", "--miss-parton-file", "/absolute/path/to/missing_parton_run3.root", "--sr-registry", "ALL_CH_LST_SR", "--merge-report", "/path/to/evidence/run3_01/merge_report.json"]
   }]
 }
 ```
 
-All path fields except `missing_parton_path` are absolute. The runner verifies
-that the structured row fields agree with their exact `producer_argv`
-counterparts before launching anything.
+All paths are absolute. `input_pkl` is structural, not searched for in an
+argument list. For a row, the literal producer argv is exactly
+`[python_executable, make_cards_path, input_pkl, *producer_args]`; each physical
+channel remains one argv element.
 
 A minimal invocation is:
 
@@ -159,25 +170,34 @@ analysis/topeft_run2/run_datacard_matrix_resumable.sh /path/to/manifest.json
 Run long, manually authorized executions in a named `tmux` session so the
 operator can detach without terminating the runner. Inspect `--plan-only` and
 `--status` first, and keep the exact accepted manifest unchanged during an
-attempt. The runner validates the entire schema before execution, holds one OS
-advisory lock for the mutating run, executes rows sequentially through
-`codex-run.sh` and the pinned Python environment, and stops on the first command
-or evidence failure. Physical channels stay separate literal argv values; the
-manifest must not encode them as a shell regex.
+attempt. The runner validates the schema and runtime fingerprints before plan
+or execution, holds one OS advisory lock for a mutating run, and directly runs
+the qualified Python argv with no shell intermediary and no `codex-run.sh`
+runtime dependency. It stops on the first command or evidence failure.
 
 After a successful row command, the runner checks the declared outputs, retains
 the row-specific merge report, snapshots `selectedWCs.txt`,
-`scalings-preselect.json`, and the merge report, hashes the immutable log and
-snapshots, and atomically publishes an execution receipt. A receipt proves only
-that the declared command executed successfully and that its recorded artifacts
-still match. It is not a physics certificate.
+`scalings-preselect.json`, and the merge report, hashes the primary TXT/ROOT
+outputs and every row-local control artifact (merge report, snapshots, and log),
+and atomically publishes an execution receipt. Receipt validation rechecks both
+size and SHA256. This is execution-integrity evidence, not a physics
+certificate.
 
 On restart, a row is skipped only when its receipt matches the current manifest,
-argv, paths, and artifact hashes. Existing row-owned output without a valid
-receipt is a fail-closed interruption: the runner neither deletes it nor reruns
-the row. External reconciliation must decide whether a new attempt is safe and,
-if so, supply a new attempt ID and non-overwriting paths. There is no automatic
-retry and no output-existence shortcut.
+argv, paths, runtime contract, and byte-bound artifacts. Owner metadata is
+updated atomically under the OS lock before each row. `--status` reports
+`active` only when evidence has no receipt *and* the lock plus owner metadata
+identify that exact row/attempt; evidence with a free lock is
+`interrupted_requires_external_reconciliation`, even if stale owner JSON
+remains. `invalid_receipt` means recorded bytes no longer match.
+
+Before each row launch, the held runner rechecks the runtime contract and
+freshly classifies the row. Only `not_started` launches; valid receipts skip,
+and `active`, interrupted, unreceipted, or invalid state blocks. External
+reconciliation must decide whether a new attempt is safe and, if so, supply a
+new attempt ID and non-overwriting paths. There is no automatic retry or
+output-existence shortcut. A runtime fingerprint change blocks before the next
+row.
 
 Keep these lifecycle layers separate:
 
