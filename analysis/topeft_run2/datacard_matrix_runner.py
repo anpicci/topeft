@@ -291,19 +291,21 @@ def read_owner(manifest: dict[str, Any]) -> dict[str, Any] | None:
     return owner if isinstance(owner, dict) else None
 
 
-def lock_held(path: Path) -> bool:
+def probe_lock(path: Path) -> tuple[bool | None, str | None]:
     if not path.exists():
-        return False
+        return False, None
     try:
         with path.open("rb") as handle:
             try:
-                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                fcntl.flock(handle.fileno(), fcntl.LOCK_SH | fcntl.LOCK_NB)
             except BlockingIOError:
-                return True
+                return True, None
             fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
-            return False
-    except OSError:
-        return True
+            return False, None
+    except FileNotFoundError:
+        return False, None
+    except OSError as exc:
+        return None, f"{type(exc).__name__}: {exc}"
 
 
 def classify(manifest: dict[str, Any], manifest_hash: str, row: dict[str, Any], held: bool | None = None, owner: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -318,14 +320,16 @@ def classify(manifest: dict[str, Any], manifest_hash: str, row: dict[str, Any], 
     evidence = [str(path) for path in [*[Path(path) for path in row["expected_output_paths"]], Path(row["merge_report_path"]), Path(row["log_path"]), *snapshots(row).values()] if path.exists()]
     if not evidence:
         return {**base, "status": "not_started", "reason": "no row-owned artifacts"}
-    held = lock_held(Path(manifest["lock_path"])) if held is None else held
+    held = probe_lock(Path(manifest["lock_path"]))[0] if held is None else held
     owner = read_owner(manifest) if owner is None else owner
-    active = held and isinstance(owner, dict) and owner.get("schema_version") == OWNER_SCHEMA and owner.get("manifest_sha256") == manifest_hash and owner.get("current_row_id") == row["row_id"] and owner.get("current_attempt_id") == row["attempt_id"]
-    return {**base, "status": "active" if active else "interrupted_requires_external_reconciliation", "reason": "lock and owner identify current row" if active else "row-owned artifacts exist without valid receipt", "existing_paths": evidence}
+    active = held is True and isinstance(owner, dict) and owner.get("schema_version") == OWNER_SCHEMA and owner.get("manifest_sha256") == manifest_hash and owner.get("current_row_id") == row["row_id"] and owner.get("current_attempt_id") == row["attempt_id"]
+    reason = "lock and owner identify current row" if active else "lock state is unknown; row-owned artifacts exist without valid receipt" if held is None else "row-owned artifacts exist without valid receipt"
+    return {**base, "status": "active" if active else "interrupted_requires_external_reconciliation", "reason": reason, "existing_paths": evidence}
 
 
 def read_only(mode: str, manifest: dict[str, Any], manifest_hash: str) -> dict[str, Any]:
-    held, owner = lock_held(Path(manifest["lock_path"])), read_owner(manifest)
+    held, lock_probe_error = probe_lock(Path(manifest["lock_path"]))
+    owner = read_owner(manifest)
     rows = [classify(manifest, manifest_hash, row, held, owner) for row in manifest["rows"]]
     if mode == "plan_only":
         for row, status in zip(manifest["rows"], rows):
@@ -344,7 +348,7 @@ def read_only(mode: str, manifest: dict[str, Any], manifest_hash: str) -> dict[s
                     "ready": status["status"] == "complete",
                     "reason": "valid receipt permits skip without historical execution inputs" if status["status"] == "complete" else "row state blocks before execution-input checks",
                 }
-    result = {"schema": "topeft_datacard_matrix_read_only_result_v2", "mode": mode, "manifest_sha256": manifest_hash, "runtime_contract_digest": runtime_digest(manifest["runtime_contract"]), "lock_held": held, "owner_metadata": owner, "mutated": False, "rows": rows}
+    result = {"schema": "topeft_datacard_matrix_read_only_result_v2", "mode": mode, "manifest_sha256": manifest_hash, "runtime_contract_digest": runtime_digest(manifest["runtime_contract"]), "lock_held": held, "lock_probe_error": lock_probe_error, "owner_metadata": owner, "mutated": False, "rows": rows}
     if mode == "plan_only":
         result["launch_ready"] = all(row["action"] in {"skip", "execute"} for row in rows)
     return result
@@ -433,28 +437,30 @@ def execute(manifest: dict[str, Any], manifest_hash: str) -> dict[str, Any]:
         except BlockingIOError as exc:
             raise RunnerError("execution_lock_held", f"another runner owns lock: {lock}") from exc
         owner_started_at = now()
-        for row in manifest["rows"]:
-            state = classify(manifest, manifest_hash, row, True, read_owner(manifest))
-            if state["status"] not in {"not_started", "complete"}:
-                raise RunnerError(state["status"], state["reason"], row_id=row["row_id"])
-        atomic_json(owner_payload(manifest, manifest_hash, owner_started_at), owner_path(manifest), True)
-        results: list[dict[str, Any]] = []
-        for row in manifest["rows"]:
-            state = classify(manifest, manifest_hash, row, True, read_owner(manifest))
-            if state["status"] == "complete":
-                results.append({"row_id": row["row_id"], "attempt_id": row["attempt_id"], "action": "skipped_valid_receipt", "receipt_path": state["receipt_path"]}); continue
-            if state["status"] != "not_started":
-                raise RunnerError(state["status"], state["reason"], row_id=row["row_id"])
-            validate_runtime(manifest["runtime_contract"])
-            validate_row_inputs(row)
-            fresh = classify(manifest, manifest_hash, row, True, read_owner(manifest))
-            if fresh["status"] != "not_started":
-                raise RunnerError(fresh["status"], fresh["reason"], row_id=row["row_id"])
-            atomic_json(owner_payload(manifest, manifest_hash, owner_started_at, row), owner_path(manifest), True)
-            results.append(execute_row(manifest, manifest_hash, row))
+        try:
+            for row in manifest["rows"]:
+                state = classify(manifest, manifest_hash, row, True, read_owner(manifest))
+                if state["status"] not in {"not_started", "complete"}:
+                    raise RunnerError(state["status"], state["reason"], row_id=row["row_id"])
             atomic_json(owner_payload(manifest, manifest_hash, owner_started_at), owner_path(manifest), True)
-        owner_path(manifest).unlink(missing_ok=True)
-        return {"schema": "topeft_datacard_matrix_execution_result_v2", "manifest_sha256": manifest_hash, "rows": results}
+            results: list[dict[str, Any]] = []
+            for row in manifest["rows"]:
+                state = classify(manifest, manifest_hash, row, True, read_owner(manifest))
+                if state["status"] == "complete":
+                    results.append({"row_id": row["row_id"], "attempt_id": row["attempt_id"], "action": "skipped_valid_receipt", "receipt_path": state["receipt_path"]}); continue
+                if state["status"] != "not_started":
+                    raise RunnerError(state["status"], state["reason"], row_id=row["row_id"])
+                validate_runtime(manifest["runtime_contract"])
+                validate_row_inputs(row)
+                fresh = classify(manifest, manifest_hash, row, True, read_owner(manifest))
+                if fresh["status"] != "not_started":
+                    raise RunnerError(fresh["status"], fresh["reason"], row_id=row["row_id"])
+                atomic_json(owner_payload(manifest, manifest_hash, owner_started_at, row), owner_path(manifest), True)
+                results.append(execute_row(manifest, manifest_hash, row))
+                atomic_json(owner_payload(manifest, manifest_hash, owner_started_at), owner_path(manifest), True)
+            return {"schema": "topeft_datacard_matrix_execution_result_v2", "manifest_sha256": manifest_hash, "rows": results}
+        finally:
+            owner_path(manifest).unlink(missing_ok=True)
 
 
 def main(argv: list[str] | None = None) -> int:

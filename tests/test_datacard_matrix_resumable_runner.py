@@ -9,6 +9,8 @@ import time
 
 import pytest
 
+from analysis.topeft_run2 import datacard_matrix_runner as runner_engine
+
 
 ROOT = Path(__file__).resolve().parents[1]
 RUNNER = ROOT / "analysis/topeft_run2/run_datacard_matrix_resumable.sh"
@@ -175,18 +177,44 @@ def test_plan_only_reports_missing_execution_input_but_skips_complete_history(tm
 
 
 def test_active_interrupted_and_stale_owner_statuses(tmp_path, fake_script):
-    row = make_row(tmp_path, fake_script, extra=["--sleep", "1.2"]); path, data = manifest(tmp_path, fake_script, [row])
-    first = subprocess.Popen([str(RUNNER), str(path)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    deadline = time.monotonic() + 10
-    while not Path(row["log_path"]).exists() and time.monotonic() < deadline: time.sleep(.02)
-    active = result(invoke(path, "--status").stdout); assert active["lock_held"] and active["rows"][0]["status"] == "active"
-    out, err = first.communicate(timeout=10); assert first.returncode == 0, out + err
-    Path(row["log_path"]).unlink(); (tmp_path / "control" / "receipts" / "row_01__attempt_01.json").unlink()
-    Path(row["expected_output_paths"][0]).write_text("interrupted\n")
-    assert result(invoke(path, "--status").stdout)["rows"][0]["status"] == "interrupted_requires_external_reconciliation"
-    owner = {"schema_version": "topeft_datacard_runner_owner_v1", "manifest_sha256": sha(path), "current_row_id": row["row_id"], "current_attempt_id": row["attempt_id"]}
-    (tmp_path / "control" / "runner_owner.json").write_text(json.dumps(owner))
-    assert result(invoke(path, "--status").stdout)["rows"][0]["status"] == "interrupted_requires_external_reconciliation"
+    row = make_row(tmp_path, fake_script); path, data = manifest(tmp_path, fake_script, [row])
+    free = result(invoke(path, "--status").stdout)
+    assert free["lock_held"] is False and free["lock_probe_error"] is None
+    lock = Path(data["lock_path"]); lock.parent.mkdir(parents=True); lock.touch()
+    stale_owner = {"schema_version": "topeft_datacard_runner_owner_v1", "manifest_sha256": sha(path), "current_row_id": row["row_id"], "current_attempt_id": row["attempt_id"]}
+    (tmp_path / "control" / "runner_owner.json").write_text(json.dumps(stale_owner))
+    log = Path(row["log_path"]); log.parent.mkdir(parents=True); log.write_text("interrupted\n")
+    stale = result(invoke(path, "--status").stdout)
+    assert stale["lock_held"] is False and stale["rows"][0]["status"] == "interrupted_requires_external_reconciliation"
+    with lock.open("a+b") as handle:
+        runner_engine.fcntl.flock(handle.fileno(), runner_engine.fcntl.LOCK_EX | runner_engine.fcntl.LOCK_NB)
+        active = result(invoke(path, "--status").stdout)
+        assert active["lock_held"] is True and active["lock_probe_error"] is None and active["rows"][0]["status"] == "active"
+        wrong_owner = {**stale_owner, "current_row_id": "different_row"}
+        (tmp_path / "control" / "runner_owner.json").write_text(json.dumps(wrong_owner))
+        mismatched = result(invoke(path, "--status").stdout)
+        assert mismatched["lock_held"] is True and mismatched["rows"][0]["status"] == "interrupted_requires_external_reconciliation"
+    (tmp_path / "control" / "runner_owner.json").write_text(json.dumps(stale_owner))
+    final = result(invoke(path, "--status").stdout)
+    assert final["lock_held"] is False and final["rows"][0]["status"] == "interrupted_requires_external_reconciliation"
+
+
+def test_lock_probe_oserror_is_explicit_unknown(tmp_path, fake_script, monkeypatch):
+    row = make_row(tmp_path, fake_script)
+    path, data = manifest(tmp_path, fake_script, [row])
+    lock = Path(data["lock_path"]); lock.parent.mkdir(parents=True); lock.touch()
+    log = Path(row["log_path"]); log.parent.mkdir(parents=True); log.write_text("interrupted\n")
+    loaded, manifest_hash = runner_engine.load_manifest(path)
+
+    def probe_error(*_args):
+        raise OSError("synthetic lock probe failure")
+
+    monkeypatch.setattr(runner_engine.fcntl, "flock", probe_error)
+    status = runner_engine.read_only("status", loaded, manifest_hash)
+    assert status["lock_held"] is None
+    assert status["lock_probe_error"] == "OSError: synthetic lock probe failure"
+    assert status["rows"][0]["status"] == "interrupted_requires_external_reconciliation"
+    assert status["rows"][0]["reason"].startswith("lock state is unknown")
 
 
 def test_receipt_byte_binds_outputs_and_control_artifacts(tmp_path, fake_script):
@@ -205,9 +233,25 @@ def test_resume_failures_and_new_attempt(tmp_path, fake_script):
     assert invoke(path).returncode == 0 and invoke(path).returncode == 0 and counter.read_text() == "1"
     bad = make_row(tmp_path, fake_script, "bad", extra=["--fail"]); later = make_row(tmp_path, fake_script, "later", extra=["--counter", str(tmp_path / "later")]); bad_path, _ = manifest(tmp_path, fake_script, [bad, later], "bad.json")
     assert result(invoke(bad_path).stderr)["status"] == "row_command_failed" and not (tmp_path / "later").exists()
+    assert Path(bad["log_path"]).exists()
+    assert not (tmp_path / "control" / "runner_owner.json").exists()
     retry = make_row(tmp_path, fake_script, "bad", "attempt_02"); retry_path, _ = manifest(tmp_path, fake_script, [retry], "retry.json"); assert invoke(retry_path).returncode == 0
     orphan = make_row(tmp_path, fake_script, "orphan"); Path(orphan["expected_output_paths"][0]).parent.mkdir(parents=True); Path(orphan["expected_output_paths"][0]).write_text("orphan\n"); orphan_path, _ = manifest(tmp_path, fake_script, [orphan], "orphan.json")
     assert result(invoke(orphan_path).stderr)["status"] == "interrupted_requires_external_reconciliation"
+
+
+def test_unexpected_exception_cleans_active_owner(tmp_path, fake_script, monkeypatch):
+    row = make_row(tmp_path, fake_script)
+    path, data = manifest(tmp_path, fake_script, [row])
+    loaded, manifest_hash = runner_engine.load_manifest(path)
+
+    def unexpected(*_args):
+        raise RuntimeError("synthetic unexpected failure")
+
+    monkeypatch.setattr(runner_engine, "execute_row", unexpected)
+    with pytest.raises(RuntimeError, match="synthetic unexpected failure"):
+        runner_engine.execute(loaded, manifest_hash)
+    assert not (Path(data["control_root"]) / "runner_owner.json").exists()
 
 
 def test_completed_row_skips_unavailable_historical_inputs_before_next_row(tmp_path, fake_script):
