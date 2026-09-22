@@ -421,6 +421,7 @@ def main():
         "sr_registry": sr_registry,
         "out_dir": out_dir,
         "var_lst": var_lst,
+        "channel_patterns": ch_lst,
         "do_mc_stat": do_mc_stat,
         "ignore": ignore,
         "do_nuisance": do_nuis,

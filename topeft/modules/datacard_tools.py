@@ -725,15 +725,26 @@ def load_and_merge_histogram_pkls(
 
     return merged_hists, report
 
-def _card_numerical_split_view(histograms):
-    """Copy split inputs into the card-only view without raw-count bookkeeping."""
+def _card_numerical_split_view(histograms, channel_patterns=()):
+    """Build the card-only split view for the requested physical channels."""
 
     numerical_view = {}
     for key, histogram in histograms.items():
-        if not isinstance(histogram, SparseHist) or not histogram.track_raw_counts:
-            numerical_view[key] = histogram
+        numerical_histogram = histogram
+        if channel_patterns and "channel" in _categorical_axis_names(histogram):
+            available_channels = list(histogram.axes["channel"])
+            selected_channels = regex_match(available_channels, channel_patterns)
+            numerical_histogram = histogram.prune("channel", selected_channels)
+
+        if (
+            not isinstance(numerical_histogram, SparseHist)
+            or not numerical_histogram.track_raw_counts
+        ):
+            numerical_view[key] = numerical_histogram
             continue
-        numerical_histogram = copy.deepcopy(histogram)
+
+        if numerical_histogram is histogram:
+            numerical_histogram = copy.deepcopy(histogram)
         del numerical_histogram._raw_counts
         numerical_histogram._track_raw_counts = False
         numerical_view[key] = numerical_histogram
@@ -1333,6 +1344,7 @@ class DatacardMaker():
         )
         self.out_dir         = kwargs.pop("out_dir",".")
         self.var_lst         = kwargs.pop("var_lst",[])
+        self.channel_patterns = kwargs.pop("channel_patterns",[])
         self.do_mc_stat      = kwargs.pop("do_mc_stat",False)
         self.coeffs          = kwargs.pop("wcs",[])
         self.use_real_data   = kwargs.pop("unblind",False)
@@ -1533,7 +1545,10 @@ class DatacardMaker():
             raise ValueError("Need either fpath or hists for read().")
 
         if is_split_nominal_mapping(self.hists):
-            self.hists = _card_numerical_split_view(self.hists)
+            self.hists = _card_numerical_split_view(
+                self.hists,
+                channel_patterns=self.channel_patterns,
+            )
             if merge_report is not None and merge_report.get(
                 "runtime_histogram_families"
             ):
