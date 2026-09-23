@@ -6,7 +6,7 @@ import hashlib
 import json
 import math
 import shutil
-import tempfile
+import uuid
 from pathlib import Path
 
 
@@ -155,6 +155,12 @@ def _write_json(path, value):
         handle.write("\n")
 
 
+def _make_temporary_sibling(output_dir):
+    temporary_dir = output_dir.parent / f".{output_dir.name}.tmp-{uuid.uuid4().hex}"
+    temporary_dir.mkdir()
+    return temporary_dir
+
+
 def _build_provenance(registry_path, registry, era, source_units, outputs):
     return {
         "schema": PROVENANCE_SCHEMA,
@@ -250,10 +256,7 @@ def consolidate_metadata(registry_path, era, output_dir):
     if output_dir.exists():
         raise FileExistsError(f"output directory already exists: {output_dir}")
     output_dir.parent.mkdir(parents=True, exist_ok=True)
-    temporary_dir = Path(
-        tempfile.mkdtemp(prefix=f".{output_dir.name}.tmp-", dir=output_dir.parent)
-    )
-    published = False
+    temporary_dir = _make_temporary_sibling(output_dir)
     try:
         temporary_scalings = temporary_dir / "scalings-preselect.json"
         temporary_selected = temporary_dir / "selectedWCs.txt"
@@ -284,10 +287,12 @@ def consolidate_metadata(registry_path, era, output_dir):
         if output_dir.exists():
             raise FileExistsError(f"output directory already exists: {output_dir}")
         temporary_dir.rename(output_dir)
-        published = True
-    finally:
-        if not published and temporary_dir.exists():
+    except BaseException as original_error:
+        try:
             shutil.rmtree(temporary_dir)
+        except OSError as cleanup_error:
+            raise original_error from cleanup_error
+        raise
 
     scalings_output = output_dir / "scalings-preselect.json"
     selected_output = output_dir / "selectedWCs.txt"

@@ -1,5 +1,7 @@
 import hashlib
 import json
+import os
+import stat
 from pathlib import Path
 
 import pytest
@@ -244,6 +246,27 @@ def test_atomic_publication_includes_all_outputs_and_provenance(tmp_path):
     }
     for filename, metadata in provenance["outputs"].items():
         assert metadata["sha256"] == sha256(output / filename)
+    assert list(tmp_path.glob(".output.tmp-*")) == []
+
+
+def test_published_directory_uses_mkdir_permissions_under_umask(tmp_path):
+    unit = make_unit(
+        tmp_path, "unit_a", "a", [record("a", "p")], {"p": ["c1"]}
+    )
+    output = tmp_path / "output"
+    test_umask = 0o027
+
+    previous_umask = os.umask(test_umask)
+    try:
+        consolidator.consolidate_metadata(
+            write_registry(tmp_path, [unit]), "run3", output
+        )
+    finally:
+        os.umask(previous_umask)
+
+    expected_mode = 0o777 & ~test_umask
+    assert stat.S_IMODE(output.stat().st_mode) == expected_mode
+    assert expected_mode != 0o700
 
 
 def test_atomic_publication_failure_leaves_final_directory_absent(

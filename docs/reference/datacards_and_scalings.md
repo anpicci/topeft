@@ -139,7 +139,11 @@ deterministic for identical explicit inputs. The tool writes only
 `consolidation-provenance.json`. It writes and reads back the complete result
 in a temporary sibling directory before atomically publishing the requested
 directory. It refuses an existing output directory, and a failed write leaves
-the requested directory absent. The provenance file identifies the input
+the requested directory absent. Publication assumes one writer per requested
+output path; concurrent same-path writers are unsupported. The temporary
+sibling uses ordinary directory creation permissions under the process umask
+and parent filesystem inheritance, and is removed after success or failure.
+The provenance file identifies the input
 registry and hash, consumed unit/snapshot hashes, payload filenames and hashes,
 semantic key, duplicate policy, selected-WC union policy, and maintained tool
 source identity.
