@@ -12,7 +12,7 @@ scripts remain records and are not additional maintained interfaces.
 | Interface | Owns | Defaults/derived state | Delegates or does not own |
 | --- | --- | --- | --- |
 | `make_cards.py` | input merge validation, WC selection, channel/variable selection, `DatacardMaker` construction, local or generated Condor execution | fitting binning, year coverage `warn`, Asimov data, no nuisances or MC-stat opt-in | `DatacardMaker` owns card/template/scaling construction; registries, rate payloads, binning and histogram artifacts remain external authorities |
-| `consolidate_datacard_metadata.py` | one-era assembly of explicitly registered, receipt-bound row snapshots | registry order fixes scaling-record order and first-seen WC-union order | does not discover rows, recalculate scalings, finalize `chN`, or combine eras |
+| `consolidate_datacard_metadata.py` | one-era assembly of explicitly registered, receipt-bound row snapshots | registry order fixes scaling-record order and first-seen WC-union order; `(physical_channel, process)` is unique within the era | does not discover rows, recalculate scalings, finalize `chN`, or combine eras |
 | `datacards_post_processing.py` | one topology selection, deterministic physical-channel ordering, file selection/copy, `chN` relabeling | exact one-of selector; `-a` chooses `ALL_CH_LST_SR`; destination is fixed to `ptz-lj0pt_withSys` | does not make individual cards, fit them, combine them, or recalculate producer scaling payloads |
 | EFTFit/Combine | individual-card combination and statistical fit | external workflow | creates `combinedcard.txt` later; does not redefine topeft's channel/topology selection |
 
@@ -257,11 +257,22 @@ the explicit registry order determines first appearance, and repeated WCs are
 included once. Different row-local selected-WC files are expected and do not
 need byte equality.
 
-The outputs are consolidated `scalings-preselect.json` and `selectedWCs.txt`.
-The consolidator is not the finalizer: it does not produce `scalings.json`,
+Multiple upstream PKLs may contribute while a physical datacard is being
+constructed. Once the datacard-layer record exists, however, exactly one
+scaling record may own a `(physical_channel, process)` identity within an era;
+a duplicate is a contract violation, not a merge or deduplication case. Run 2
+and Run 3 remain separate namespaces until later combined packaging.
+
+The atomically published outputs are consolidated `scalings-preselect.json`,
+`selectedWCs.txt`, and `consolidation-provenance.json`. The requested output
+directory must not already exist; a failed write leaves it absent. The
+consolidator is not the finalizer: it does not produce `scalings.json`,
 assign `chN`, copy or rewrite cards/templates, read PKLs, combine eras, or run
 statistical software. Record the exact consumed unit set and output hashes in
-campaign provenance before moving these files across a staging boundary.
+campaign provenance before moving these files across a staging boundary. The
+published provenance file records the explicit registry identity, consumed
+units and snapshot hashes, output hashes, semantic key, and consolidation
+policies plus the maintained tool source identity without copying the registry.
 
 The output set for either the generated or `--use-selected` selection path
 contains one text-card/ROOT-template pair per selected physical channel and

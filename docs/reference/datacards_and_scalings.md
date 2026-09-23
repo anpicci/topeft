@@ -119,20 +119,36 @@ era, rejects repeated execution-unit identities, rechecks all declared hashes,
 and requires each scaling record's physical `<channel>_<distribution>` label
 to belong to that unit. Scaling identity is `(channel, process)`; any duplicate
 across the selected fragments is an error rather than a deduplication request.
+Multiple upstream PKLs may contribute before one physical datacard identity is
+formed, but the consolidated datacard layer has exactly one logical
+`(physical_channel, process)` instance per era. Run 2 and Run 3 are separate
+namespaces at this boundary.
+
+Each scaling record requires a non-empty string `channel`, a non-empty string
+`process`, a `list[str]` `parameters` value, and a two-dimensional list of
+finite numeric `scaling` values. The consolidator intentionally does not
+enforce parameter order or count, coefficient-vector dimensions, bin-vector
+dimensions, or cross-era WC-basis equality.
 
 Scaling records are emitted unchanged in explicit registry/fragment order.
 `selectedWCs.txt` remains a JSON object. Its process-to-WC values are the
 first-seen union over that same explicit order, while JSON object keys use the
 stable serializer ordering. The output representation is therefore byte
 deterministic for identical explicit inputs. The tool writes only
-`scalings-preselect.json` and `selectedWCs.txt` and refuses an existing output
-directory.
+`scalings-preselect.json`, `selectedWCs.txt`, and
+`consolidation-provenance.json`. It writes and reads back the complete result
+in a temporary sibling directory before atomically publishing the requested
+directory. It refuses an existing output directory, and a failed write leaves
+the requested directory absent. The provenance file identifies the input
+registry and hash, consumed unit/snapshot hashes, payload filenames and hashes,
+semantic key, duplicate policy, selected-WC union policy, and maintained tool
+source identity.
 
-This interface does not validate or alter parameter bases, coefficient-vector
-dimensions, bin counts, numerical payloads, card/template physics, or process
-semantics. Those remain producer or separately authorized validation
-responsibilities. It also does not run the finalizer or produce
-`scalings.json`.
+This interface does not validate or alter parameter bases, parameter order,
+coefficient-vector dimensions, bin counts, numerical physics content,
+card/template physics, or process semantics. Those remain producer or
+separately authorized validation responsibilities. It also does not run the
+finalizer or produce `scalings.json`.
 
 ## Scaling finalization
 
@@ -190,10 +206,11 @@ record has:
   by `DatacardMaker`.
 
 The finalizer changes only `channel` and filters unselected records; it must not
-recompute `parameters` or `scaling`. Multiple producer records for the same
-physical channel/process remain multiple records. Consumers must interpret a
-missing exact channel/process record as absence of an external morph, not as a
-request to borrow another process's record.
+recompute `parameters` or `scaling`. Duplicate records for the same physical
+channel/process must already have failed at per-era consolidation and are not a
+finalizer merge case. Consumers must interpret a missing exact channel/process
+record as absence of an external morph, not as a request to borrow another
+process's record.
 
 ## Developer surfaces
 
@@ -209,7 +226,7 @@ request to borrow another process's record.
 | `DatacardMaker.get_selected_wcs` | Family and optional exact channel subset → process→WC sets | Inspects signal coefficient terms in fitting bins, ignoring flow, using class tolerance and optional WC restriction. No files written. |
 | `DatacardMaker.make_scalings_json` | Existing record list, physical channel, family, process, WC names, scaling array → same appended list | Emits physical `<channel>_<family>`, `<process>_sm`, formatted parameters, and per-bin scaling excluding underflow. |
 | `DatacardMaker.analyze` | Family, channel, selected-WC map, negative-bin policy, WC values → card result/`None` | Writes `ttx_multileptons-{channel}_{family}.txt/.root`, appends scaling records, applies fitting view to nominal and sumw2, and validates physical scaling edges. Unknown family/channel currently reports and returns `None`; deeper contract failures raise. |
-| `consolidate_datacard_metadata.consolidate_metadata` | Successful-unit registry path, era, new output directory → provenance summary | Reopens only explicit receipt-bound sources, rejects duplicate semantic scaling identities, writes deterministic per-era preselect/WC metadata, and never finalizes or combines cards. |
+| `consolidate_datacard_metadata.consolidate_metadata` | Successful-unit registry path, era, new output directory → provenance summary | Reopens only explicit receipt-bound sources, validates the minimum scaling-record structure, rejects duplicate semantic identities, and atomically writes deterministic per-era preselect/WC metadata plus provenance; it never finalizes or combines cards. |
 | `topeft/channels/ch_lst.json` | Developer-facing configuration registry | Owns named topology blocks and physical channel/jet membership. Different consumers select explicit blocks; it is not a global claim that every block is current analysis scope. |
 
 `DatacardMaker` extension points are the maintained process/systematic

@@ -17,9 +17,13 @@ not a consolidated era payload.
 `consolidate_datacard_metadata.py` assembles one era from an explicit accepted
 successful-unit registry. It preserves producer scaling records, rejects a
 duplicate physical-channel/process identity, and forms the deterministic
-process-to-WC union. Its outputs are still `scalings-preselect.json` and
-`selectedWCs.txt`; the consolidator is not the finalizer and does not produce
-`scalings.json`.
+process-to-WC union. Multiple upstream PKLs may contribute before a physical
+datacard identity is formed, but the datacard layer has exactly one logical
+`(physical_channel, process)` instance within each era. A duplicate there is a
+contract violation, not a merge case. The atomically published result contains
+`scalings-preselect.json`, `selectedWCs.txt`, and
+`consolidation-provenance.json`; the consolidator is not the finalizer and does
+not produce `scalings.json`.
 
 `datacards_post_processing.py <datacard_dir> -a` selects the current full
 topology from `ch_lst.json`. It sorts physical channel names deterministically,
@@ -48,6 +52,9 @@ shift, combined scaling assembly, or combined-card construction is another
 packaging/consumer boundary. `datacards_post_processing.py` does not combine
 the eras. EFTFit and Combine remain outside `topeft` ownership; they are not
 validators for producer metadata consolidation.
+Run 2 and Run 3 remain separate namespaces until that later combined-package
+boundary; neither consolidated JSON position nor filesystem ordering defines
+combined channel identity.
 
 See the [card and scaling how-to](../how_to/datacards_and_scalings.md) and the
 [artifact reference](../reference/datacards_and_scalings.md).

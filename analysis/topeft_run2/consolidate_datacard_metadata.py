@@ -4,10 +4,15 @@
 import argparse
 import hashlib
 import json
+import math
+import shutil
+import tempfile
 from pathlib import Path
 
 
 REGISTRY_SCHEMA = "topeft_successful_metadata_units_v1"
+PROVENANCE_SCHEMA = "topeft_datacard_metadata_consolidation_v1"
+PROVENANCE_FILENAME = "consolidation-provenance.json"
 
 
 def _read_json(path, label):
@@ -75,13 +80,45 @@ def _validate_scaling_records(records, unit):
             raise ValueError(
                 f"invalid scaling record {index} in {unit['execution_unit_id']}"
             )
-        if not isinstance(record["channel"], str) or not isinstance(
-            record["process"], str
-        ):
+        if not isinstance(record["channel"], str) or not record["channel"].strip():
             raise ValueError(
-                f"non-string scaling identity at record {index} in "
+                f"invalid scaling channel at record {index} in "
                 f"{unit['execution_unit_id']}"
             )
+        if (
+            not isinstance(record["process"], str)
+            or not record["process"].strip()
+        ):
+            raise ValueError(
+                f"invalid scaling process at record {index} in "
+                f"{unit['execution_unit_id']}"
+            )
+        if not isinstance(record["parameters"], list) or not all(
+            isinstance(parameter, str) for parameter in record["parameters"]
+        ):
+            raise ValueError(
+                f"invalid scaling parameters at record {index} in "
+                f"{unit['execution_unit_id']}"
+            )
+        scaling = record["scaling"]
+        if not isinstance(scaling, list) or not all(
+            isinstance(bin_scaling, list) for bin_scaling in scaling
+        ):
+            raise ValueError(
+                f"invalid scaling structure at record {index} in "
+                f"{unit['execution_unit_id']}"
+            )
+        for bin_scaling in scaling:
+            for value in bin_scaling:
+                if (
+                    isinstance(value, bool)
+                    or not isinstance(value, (int, float))
+                    or not math.isfinite(value)
+                ):
+                    raise ValueError(
+                        f"invalid scaling value at record {index} in "
+                        f"{unit['execution_unit_id']}"
+                    )
         if record["channel"] not in owned_channels:
             raise ValueError(
                 f"scaling channel {record['channel']} is not owned by "
@@ -116,6 +153,40 @@ def _write_json(path, value):
     with Path(path).open("x", encoding="utf-8") as handle:
         json.dump(value, handle, indent=2, sort_keys=True)
         handle.write("\n")
+
+
+def _build_provenance(registry_path, registry, era, source_units, outputs):
+    return {
+        "schema": PROVENANCE_SCHEMA,
+        "era": era,
+        "input_registry": {
+            "path": str(registry_path),
+            "sha256": _sha256(registry_path),
+            "source_registry_identity_sha256": registry.get(
+                "source_registry_identity_sha256"
+            ),
+        },
+        "consumed_units": [
+            {
+                "execution_unit_id": unit["execution_unit_id"],
+                "attempt_id": unit["attempt_id"],
+                "receipt_sha256": unit["receipt_sha256"],
+                "scalings_snapshot_sha256": unit["scalings_snapshot_sha256"],
+                "selectedWCs_snapshot_sha256": unit[
+                    "selectedWCs_snapshot_sha256"
+                ],
+            }
+            for unit in source_units
+        ],
+        "outputs": outputs,
+        "scaling_semantic_key": ["physical_channel", "process"],
+        "duplicate_policy": "fail_closed",
+        "selectedWCs_policy": "deterministic_per_era_process_to_wc_union",
+        "tool_source": {
+            "path": str(Path(__file__).resolve()),
+            "sha256": _sha256(Path(__file__)),
+        },
+    }
 
 
 def consolidate_metadata(registry_path, era, output_dir):
@@ -176,11 +247,51 @@ def consolidate_metadata(registry_path, era, output_dir):
             }
         )
 
-    output_dir.mkdir(parents=True, exist_ok=False)
+    if output_dir.exists():
+        raise FileExistsError(f"output directory already exists: {output_dir}")
+    output_dir.parent.mkdir(parents=True, exist_ok=True)
+    temporary_dir = Path(
+        tempfile.mkdtemp(prefix=f".{output_dir.name}.tmp-", dir=output_dir.parent)
+    )
+    published = False
+    try:
+        temporary_scalings = temporary_dir / "scalings-preselect.json"
+        temporary_selected = temporary_dir / "selectedWCs.txt"
+        temporary_provenance = temporary_dir / PROVENANCE_FILENAME
+        _write_json(temporary_scalings, records)
+        _write_json(temporary_selected, selected_union)
+        outputs = {
+            "scalings-preselect.json": {"sha256": _sha256(temporary_scalings)},
+            "selectedWCs.txt": {"sha256": _sha256(temporary_selected)},
+        }
+        provenance = _build_provenance(
+            registry_path, registry, era, source_units, outputs
+        )
+        _write_json(temporary_provenance, provenance)
+
+        if _read_json(temporary_scalings, "written scaling output") != records:
+            raise ValueError("written scaling output failed readback")
+        if (
+            _read_json(temporary_selected, "written selectedWCs output")
+            != selected_union
+        ):
+            raise ValueError("written selectedWCs output failed readback")
+        if (
+            _read_json(temporary_provenance, "written provenance output")
+            != provenance
+        ):
+            raise ValueError("written provenance output failed readback")
+        if output_dir.exists():
+            raise FileExistsError(f"output directory already exists: {output_dir}")
+        temporary_dir.rename(output_dir)
+        published = True
+    finally:
+        if not published and temporary_dir.exists():
+            shutil.rmtree(temporary_dir)
+
     scalings_output = output_dir / "scalings-preselect.json"
     selected_output = output_dir / "selectedWCs.txt"
-    _write_json(scalings_output, records)
-    _write_json(selected_output, selected_union)
+    provenance_output = output_dir / PROVENANCE_FILENAME
 
     return {
         "era": era,
@@ -198,6 +309,8 @@ def consolidate_metadata(registry_path, era, output_dir):
         "scalings_output_sha256": _sha256(scalings_output),
         "selectedWCs_output_path": str(selected_output),
         "selectedWCs_output_sha256": _sha256(selected_output),
+        "provenance_output_path": str(provenance_output),
+        "provenance_output_sha256": _sha256(provenance_output),
     }
 
 
