@@ -14,8 +14,9 @@ import uuid
 from pathlib import Path
 
 
-manifest_schema = "topeft_combined_datacard_manifest_v1"
-provenance_schema = "topeft_combined_datacard_package_v1"
+package_schema = "TOP22006_v1"
+manifest_artifact_type = "combined_mapping_manifest"
+provenance_artifact_type = "package_provenance"
 naming_policy = "era_prefix_v1: Run2_/Run3_ + exact source basename"
 order_policy = "run2: N; run3: 129+N for certified per-era chN"
 shapes_line_pattern = re.compile(r"^([ \t]*shapes[ \t]+\S+[ \t]+\S+[ \t]+)(\S+)")
@@ -52,8 +53,10 @@ def _require_unique(values, label):
 
 def validate_manifest(manifest, output_root, expected_per_era_count=129):
     """Return rows in declared combined order after all input gates pass."""
-    if manifest.get("schema") != manifest_schema:
+    if manifest.get("schema") != package_schema:
         raise ValueError("unsupported combined manifest schema")
+    if manifest.get("artifact_type") != manifest_artifact_type:
+        raise ValueError("unsupported combined manifest artifact type")
     if manifest.get("destination_naming_policy") != naming_policy:
         raise ValueError("unsupported destination naming policy")
     if manifest.get("combined_order_policy") != order_policy:
@@ -63,7 +66,7 @@ def validate_manifest(manifest, output_root, expected_per_era_count=129):
     output_root = Path(output_root)
     if not output_root.is_absolute() or Path(manifest.get("destination_package_root", "")) != output_root:
         raise ValueError("output root differs from the manifest")
-    source_root = Path(manifest.get("source_004j_package_root", ""))
+    source_root = Path(manifest.get("source_per_era_package_root", ""))
     if not source_root.is_absolute() or not source_root.is_dir():
         raise ValueError("source package root is absent")
     mapping_entries = {}
@@ -262,8 +265,9 @@ def assemble_package(manifest_path, ordered_path, output_root, expected_per_era_
         (temporary_root / "ordered_card_inputs.txt").write_text(expected_order, encoding="utf-8")
         (temporary_root / "README.md").write_text(_package_readme(), encoding="utf-8")
         provenance = {
-            "schema": provenance_schema,
-            "source_004j_package_root": manifest["source_004j_package_root"],
+            "schema": package_schema,
+            "artifact_type": provenance_artifact_type,
+            "source_per_era_package_root": manifest["source_per_era_package_root"],
             "destination_package_root": str(output_root),
             "destination_naming_policy": naming_policy,
             "combined_order_policy": manifest["combined_order_policy"],

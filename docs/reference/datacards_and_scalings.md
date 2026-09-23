@@ -219,12 +219,14 @@ process's record.
 ## Combined package interface
 
 `analysis/topeft_run2/assemble_combined_datacard_package.py` consumes a
-`topeft_combined_datacard_manifest_v1` JSON file, an exact manifest-derived
+`TOP22006_v1` JSON manifest with `artifact_type` set to
+`combined_mapping_manifest`, an exact manifest-derived
 `ordered_card_inputs.txt`, and a new output root. Its CLI requires
-`--manifest`, `--ordered-card-inputs`, and `--output-root`. The manifest binds
-the 004J per-era mapping/scaling source hashes and has 258 rows. Each row binds
-physical identity, per-era `chN`, combined `chN`, order index, source TXT/ROOT
-paths, destination names, and the expected packaged template reference.
+`--manifest`, `--ordered-card-inputs`, and `--output-root`. The manifest uses
+`source_per_era_package_root`, binds the 004J per-era mapping/scaling source
+hashes, and has 258 rows. Each row binds physical identity, per-era `chN`,
+combined `chN`, order index, source TXT/ROOT paths, destination names, and the
+expected packaged template reference.
 
 For per-era `chN`, `N=1..129`, Run 2 keeps `chN` at order `N`; Run 3 maps to
 `ch(129+N)` at order `129+N`. Destination names are `Run2_` or `Run3_` plus
@@ -237,8 +239,9 @@ then publishes from a complete temporary sibling directory by rename. This
 assumes one writer per output path and ordinary parent filesystem permissions.
 
 The tool does not create `combinedcard.txt`, run Combine/EFTFit, decide
-nuisance names, or create a combined `selectedWCs.txt`. Real package
-publication requires a separate nuisance-boundary qualification.
+nuisance names, or create a combined `selectedWCs.txt`. Current fresh cards
+are valid package inputs as-is; nuisance convention migration is separately
+owned and does not gate package publication.
 
 ## Developer surfaces
 

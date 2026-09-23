@@ -358,9 +358,11 @@ scaling payload while their channel follows the manifest.
 Use an already reviewed `combined_mapping_manifest.json` and matching
 `ordered_card_inputs.txt`. The latter must contain the manifest's 258
 destination TXT basenames in `combined_order_index` order. The maintained
-assembler validates these inputs and the bound per-era scaling hashes before
-writing, rejects an existing output root, builds in a sibling directory, and
-publishes the complete package by rename:
+assembler requires the persistent `TOP22006_v1` schema, an `artifact_type` of
+`combined_mapping_manifest`, and the `source_per_era_package_root` field. It
+validates these inputs and the bound per-era scaling hashes before writing,
+rejects an existing output root, builds in a sibling directory, and publishes
+the complete package by rename:
 
 ```bash
 python analysis/topeft_run2/assemble_combined_datacard_package.py \
@@ -369,9 +371,10 @@ python analysis/topeft_run2/assemble_combined_datacard_package.py \
   --output-root /path/to/new-combined-package
 ```
 
-Package publication also requires a separately qualified nuisance-naming
-boundary. This assembler does not rename or decide nuisance correlations and
-does not synthesize a combined `selectedWCs.txt`.
+Current fresh cards are valid package inputs as-is. Nuisance convention
+migration is separately owned and does not gate package publication. This
+assembler does not rename or decide nuisance correlations and does not
+synthesize a combined `selectedWCs.txt`.
 
 The historical consumer command was:
 

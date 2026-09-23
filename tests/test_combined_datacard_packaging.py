@@ -9,7 +9,11 @@ import pytest
 
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "analysis" / "topeft_run2"))
-from assemble_combined_datacard_package import assemble_package, rewrite_card_template  # noqa: E402
+from assemble_combined_datacard_package import (  # noqa: E402
+    assemble_package,
+    rewrite_card_template,
+    validate_manifest,
+)
 
 
 def _sha256(path):
@@ -84,8 +88,9 @@ def _fixture(tmp_path):
         })
         scalings[era] = _write_json(source_dir / "scalings.json", records)
     manifest = {
-        "schema": "topeft_combined_datacard_manifest_v1",
-        "source_004j_package_root": str(source_root),
+        "schema": "TOP22006_v1",
+        "artifact_type": "combined_mapping_manifest",
+        "source_per_era_package_root": str(source_root),
         "destination_package_root": str(output_root),
         "destination_naming_policy": "era_prefix_v1: Run2_/Run3_ + exact source basename",
         "combined_order_policy": "run2: N; run3: 129+N for certified per-era chN",
@@ -110,6 +115,10 @@ def test_assembly_uses_manifest_order_and_preserves_payload(tmp_path):
     assert provenance["packaged_txt_count"] == 4
     assert provenance["packaged_root_count"] == 4
     assert provenance["source_scaling_record_counts"] == {"run2": 2, "run3": 2}
+    assert provenance["schema"] == "TOP22006_v1"
+    assert provenance["artifact_type"] == "package_provenance"
+    assert provenance["source_per_era_package_root"] == str(tmp_path / "source")
+    assert "source_004j_package_root" not in provenance
     assert (output_root / "ordered_card_inputs.txt").read_text() == "".join(
         row["destination_txt_name"] + "\n" for row in rows
     )
@@ -211,3 +220,26 @@ def test_manifest_row_must_match_bound_physical_to_ch_mapping(tmp_path):
     with pytest.raises(ValueError, match="differs from 004J"):
         assemble_package(manifest_path, ordered_path, output_root, expected_per_era_count=2)
     assert not output_root.exists()
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("schema", "topeft_combined_datacard_manifest_v1", "schema"),
+        ("artifact_type", "wrong_type", "artifact type"),
+    ],
+)
+def test_legacy_schema_and_invalid_artifact_type_fail_closed(tmp_path, field, value, message):
+    manifest_path, _, output_root, _, _ = _fixture(tmp_path)
+    manifest = json.loads(manifest_path.read_text())
+    manifest[field] = value
+    with pytest.raises(ValueError, match=message):
+        validate_manifest(manifest, output_root, expected_per_era_count=2)
+
+
+def test_legacy_source_root_key_is_not_a_compatibility_alias(tmp_path):
+    manifest_path, _, output_root, _, _ = _fixture(tmp_path)
+    manifest = json.loads(manifest_path.read_text())
+    manifest["source_004j_package_root"] = manifest.pop("source_per_era_package_root")
+    with pytest.raises(ValueError, match="source package root"):
+        validate_manifest(manifest, output_root, expected_per_era_count=2)
