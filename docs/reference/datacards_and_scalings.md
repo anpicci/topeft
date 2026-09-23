@@ -21,8 +21,8 @@ With `--use-selected FILE`, `make_cards.py` reads the supplied WC selection and
 materializes the same canonical signal-only representation as output-side
 `selectedWCs.txt` without modifying the caller's file. A preselect record
 contains a physical `channel`, a producer-owned `process`, `parameters`, and
-scaling coefficient payload. Multiple records for one physical channel/process
-are valid producer output.
+scaling coefficient payload. A consolidated metadata set must not contain
+multiple records for one physical channel/process identity.
 
 `make_cards.build_arg_parser()` is the public option authority. Stable groups
 are:
@@ -97,6 +97,42 @@ artifacts or WC order, missing required sumw2, unsupported SR application-axis
 labels, unresolved sparse axes that would duplicate ROOT template names,
 invalid exact rebinning, missing/mismatched shape pairs, and payload/registry
 incompatibility.
+
+## Metadata consolidation
+
+`analysis/topeft_run2/consolidate_datacard_metadata.py` is the maintained
+one-era assembly interface for row-split production. Its CLI requires
+`--registry`, `--era {run2,run3}`, and a new `--output-dir`.
+
+The registry schema is `topeft_successful_metadata_units_v1`. It must be marked
+accepted and contain an explicit `units` list. Each selected unit supplies:
+
+- `era`, `execution_unit_id`, and `attempt_id`;
+- `receipt_path` and `receipt_sha256`;
+- `scalings_snapshot_path` and `scalings_snapshot_sha256`;
+- `selectedWCs_snapshot_path` and `selectedWCs_snapshot_sha256`;
+- `owned_scientific_target_identities`, expressed as era, physical channel,
+  and distribution.
+
+The tool does no filesystem discovery. It filters the explicit list to one
+era, rejects repeated execution-unit identities, rechecks all declared hashes,
+and requires each scaling record's physical `<channel>_<distribution>` label
+to belong to that unit. Scaling identity is `(channel, process)`; any duplicate
+across the selected fragments is an error rather than a deduplication request.
+
+Scaling records are emitted unchanged in explicit registry/fragment order.
+`selectedWCs.txt` remains a JSON object. Its process-to-WC values are the
+first-seen union over that same explicit order, while JSON object keys use the
+stable serializer ordering. The output representation is therefore byte
+deterministic for identical explicit inputs. The tool writes only
+`scalings-preselect.json` and `selectedWCs.txt` and refuses an existing output
+directory.
+
+This interface does not validate or alter parameter bases, coefficient-vector
+dimensions, bin counts, numerical payloads, card/template physics, or process
+semantics. Those remain producer or separately authorized validation
+responsibilities. It also does not run the finalizer or produce
+`scalings.json`.
 
 ## Scaling finalization
 
@@ -173,6 +209,7 @@ request to borrow another process's record.
 | `DatacardMaker.get_selected_wcs` | Family and optional exact channel subset → process→WC sets | Inspects signal coefficient terms in fitting bins, ignoring flow, using class tolerance and optional WC restriction. No files written. |
 | `DatacardMaker.make_scalings_json` | Existing record list, physical channel, family, process, WC names, scaling array → same appended list | Emits physical `<channel>_<family>`, `<process>_sm`, formatted parameters, and per-bin scaling excluding underflow. |
 | `DatacardMaker.analyze` | Family, channel, selected-WC map, negative-bin policy, WC values → card result/`None` | Writes `ttx_multileptons-{channel}_{family}.txt/.root`, appends scaling records, applies fitting view to nominal and sumw2, and validates physical scaling edges. Unknown family/channel currently reports and returns `None`; deeper contract failures raise. |
+| `consolidate_datacard_metadata.consolidate_metadata` | Successful-unit registry path, era, new output directory → provenance summary | Reopens only explicit receipt-bound sources, rejects duplicate semantic scaling identities, writes deterministic per-era preselect/WC metadata, and never finalizes or combines cards. |
 | `topeft/channels/ch_lst.json` | Developer-facing configuration registry | Owns named topology blocks and physical channel/jet membership. Different consumers select explicit blocks; it is not a global claim that every block is current analysis scope. |
 
 `DatacardMaker` extension points are the maintained process/systematic
@@ -186,8 +223,10 @@ See [flexible binning](flexible_binning.md) and
 ## Source and test authority
 
 - `analysis/topeft_run2/make_cards.py`
+- `analysis/topeft_run2/consolidate_datacard_metadata.py`
 - `topeft/modules/datacard_tools.py`
 - `analysis/topeft_run2/datacards_post_processing.py`
+- `tests/test_datacard_metadata_consolidation.py`
 - `tests/test_make_cards_multi_pkl.py`
 - `tests/test_datacard_late_rebin.py`
 - `tests/test_datacard_tools_selective_sumw2.py`

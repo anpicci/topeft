@@ -12,6 +12,7 @@ scripts remain records and are not additional maintained interfaces.
 | Interface | Owns | Defaults/derived state | Delegates or does not own |
 | --- | --- | --- | --- |
 | `make_cards.py` | input merge validation, WC selection, channel/variable selection, `DatacardMaker` construction, local or generated Condor execution | fitting binning, year coverage `warn`, Asimov data, no nuisances or MC-stat opt-in | `DatacardMaker` owns card/template/scaling construction; registries, rate payloads, binning and histogram artifacts remain external authorities |
+| `consolidate_datacard_metadata.py` | one-era assembly of explicitly registered, receipt-bound row snapshots | registry order fixes scaling-record order and first-seen WC-union order | does not discover rows, recalculate scalings, finalize `chN`, or combine eras |
 | `datacards_post_processing.py` | one topology selection, deterministic physical-channel ordering, file selection/copy, `chN` relabeling | exact one-of selector; `-a` chooses `ALL_CH_LST_SR`; destination is fixed to `ptz-lj0pt_withSys` | does not make individual cards, fit them, combine them, or recalculate producer scaling payloads |
 | EFTFit/Combine | individual-card combination and statistical fit | external workflow | creates `combinedcard.txt` later; does not redefine topeft's channel/topology selection |
 
@@ -229,6 +230,39 @@ Keep these lifecycle layers separate:
 4. `datacards_post_processing.py` remains the finalizer and is never launched by
    the resumable runner.
 
+## Consolidate receipt-bound row metadata
+
+When a prequalified campaign runs `make_cards.py` in multiple rows, do not use
+the shared `selectedWCs.txt` and `scalings-preselect.json` left by the last row.
+First certify the successful execution units and serialize an explicit
+`topeft_successful_metadata_units_v1` registry. Each unit identifies its era,
+logical and attempt IDs, receipt path/hash, both snapshot paths/hashes, and its
+owned `(era, physical_channel, distribution)` targets.
+
+Run the maintained consolidator separately for each era and into a new output
+directory:
+
+```bash
+python consolidate_datacard_metadata.py \
+  --registry /path/to/current_successful_metadata_units.json \
+  --era run2 \
+  --output-dir /new/diagnostic/or/staging/run2
+```
+
+Repeat with `--era run3` and a distinct output directory. The tool reads only
+units listed for that era, rechecks the receipt and snapshot hashes, preserves
+the producer records, and rejects any duplicate `(physical channel, process)`
+identity. It forms `selectedWCs.txt` as a deterministic process-to-WC union:
+the explicit registry order determines first appearance, and repeated WCs are
+included once. Different row-local selected-WC files are expected and do not
+need byte equality.
+
+The outputs are consolidated `scalings-preselect.json` and `selectedWCs.txt`.
+The consolidator is not the finalizer: it does not produce `scalings.json`,
+assign `chN`, copy or rewrite cards/templates, read PKLs, combine eras, or run
+statistical software. Record the exact consumed unit set and output hashes in
+campaign provenance before moving these files across a staging boundary.
+
 The output set for either the generated or `--use-selected` selection path
 contains one text-card/ROOT-template pair per selected physical channel and
 distribution, canonical `selectedWCs.txt`, and `scalings-preselect.json`. The
@@ -281,6 +315,22 @@ not recalculated during relabeling.
 creates `combinedcard.txt` before the Combine handoff. If the final scaling
 file has no record for an exact channel/process pair, that pair has no external
 EFT morph; do not fabricate one during finalization.
+
+The canonical ownership sequence is:
+
+```text
+make_cards rows
+  -> receipt-bound row metadata snapshots
+  -> per-era consolidate_datacard_metadata.py
+  -> consolidated scalings-preselect.json + selectedWCs.txt
+  -> datacards_post_processing.py <era> -a
+  -> per-era selected package + scalings.json
+  -> separate Run2+Run3 packaging boundary
+  -> consumer handoff
+```
+
+The finalizer does not combine Run 2 and Run 3. Combined packaging and the
+EFTFit/Combine consumer workflow remain separate boundaries.
 
 Validate this boundary with `tests/test_split_datacard_boundary.py`,
 `tests/test_ptll_semantic_contract.py`,

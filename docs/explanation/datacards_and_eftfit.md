@@ -9,9 +9,17 @@ Combine later combine those cards and construct the workspace.
 ## Artifact sequence
 
 `make_cards.py` writes one text card and ROOT template per selected physical
-channel, plus `selectedWCs.txt` and `scalings-preselect.json`. The scaling
-preselection is still expressed in physical channel names and retains the
-producer-owned process, parameter, and coefficient payload.
+channel, plus row-local `selectedWCs.txt` and `scalings-preselect.json`. When a
+campaign is split into rows, each successful row's metadata must be snapshotted
+and bound to its execution receipt; the shared files left by the last row are
+not a consolidated era payload.
+
+`consolidate_datacard_metadata.py` assembles one era from an explicit accepted
+successful-unit registry. It preserves producer scaling records, rejects a
+duplicate physical-channel/process identity, and forms the deterministic
+process-to-WC union. Its outputs are still `scalings-preselect.json` and
+`selectedWCs.txt`; the consolidator is not the finalizer and does not produce
+`scalings.json`.
 
 `datacards_post_processing.py <datacard_dir> -a` selects the current full
 topology from `ch_lst.json`. It sorts physical channel names deterministically,
@@ -34,6 +42,12 @@ The campaign-specific `run_make_cards_run3_yawen_matrix.sh` is a DATACARD023
 archival operator record. It does not own the durable region-to-distribution
 mapping or define a supported current wrapper. Changing, generalizing, moving,
 or deleting that runnable script requires a separate source-control decision.
+
+After separate Run 2 and Run 3 finalization, any cross-era renaming, channel
+shift, combined scaling assembly, or combined-card construction is another
+packaging/consumer boundary. `datacards_post_processing.py` does not combine
+the eras. EFTFit and Combine remain outside `topeft` ownership; they are not
+validators for producer metadata consolidation.
 
 See the [card and scaling how-to](../how_to/datacards_and_scalings.md) and the
 [artifact reference](../reference/datacards_and_scalings.md).
