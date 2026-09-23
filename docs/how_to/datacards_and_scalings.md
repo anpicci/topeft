@@ -337,7 +337,9 @@ make_cards rows
   -> consolidated scalings-preselect.json + selectedWCs.txt
   -> datacards_post_processing.py <era> -a
   -> per-era selected package + scalings.json
-  -> separate Run2+Run3 packaging boundary
+  -> assemble_combined_datacard_package.py
+  -> finalize_combined_datacard_package.py sanitize
+  -> finalize_combined_datacard_package.py certify
   -> consumer handoff
 ```
 
@@ -356,8 +358,8 @@ copied ROOT template; scaling records keep their process, parameters, and
 scaling payload while their channel follows the manifest.
 
 Use an already reviewed `combined_mapping_manifest.json` and matching
-`ordered_card_inputs.txt`. The latter must contain the manifest's 258
-destination TXT basenames in `combined_order_index` order. The maintained
+`ordered_card_inputs.txt`. The latter contains destination TXT basenames in
+`combined_order_index` order. The maintained
 assembler requires the persistent `TOP22006_v1` schema, an `artifact_type` of
 `combined_mapping_manifest`, and the `source_per_era_package_root` field. It
 validates these inputs and the bound per-era scaling hashes before writing,
@@ -398,8 +400,56 @@ not attributed to Andrew. It ties the card order to the same `ch1..ch258`
 mapping used for combined `scalings.json`. This how-to does not authorize or
 perform the downstream command.
 
-Validate combined package mechanics with
-`tests/test_combined_datacard_packaging.py`. Validate card and finalizer
+## Finalize a consumer package and certify it independently
+
+`analysis/topeft_run2/finalize_combined_datacard_package.py` owns the final
+consumer-metadata boundary. The assembler owns first publication: one writer
+builds a complete sibling directory, refuses an existing destination, and
+renames it only after its checks pass. The finalizer then modifies only
+`combined_mapping_manifest.json`, `package-provenance.json`, and `README.md`.
+
+`sanitize` creates its own before-state inventory and preserves the original
+internal manifest, provenance, and README in diagnostics. It freezes every
+other package-file hash, projects a consumer-safe `TOP22006_v1` manifest,
+writes consumer-safe provenance, and atomically replaces the three metadata
+files with same-directory temporary siblings. Package identity is explicit:
+
+```bash
+python analysis/topeft_run2/finalize_combined_datacard_package.py sanitize \
+  --package-root /path/to/combined-package \
+  --diagnostics-dir /path/to/finalization-diagnostics \
+  --analysis TOP-26-006 \
+  --package-version v1 \
+  --package-date YYMMDD \
+  --assembler-commit <commit-sha>
+```
+
+`certify` is read-only with respect to the package. It consumes the preserved
+internal build manifest because the consumer manifest deliberately omits source
+paths. It validates metadata and README, reconstructs each allowed TXT
+`shapes`-basename rewrite, compares ROOT hashes, checks manifest-derived order,
+rebuilds semantic scaling identities, rejects forbidden outputs, and scans
+consumer text. Operators may add package-specific forbidden labels without
+changing source:
+
+```bash
+python analysis/topeft_run2/finalize_combined_datacard_package.py certify \
+  --package-root /path/to/combined-package \
+  --build-manifest /path/to/internal_pre_sanitization_metadata/combined_mapping_manifest.json \
+  --diagnostics-dir /path/to/certification-diagnostics \
+  --forbid-token internal-label \
+  --forbid-regex 'campaign_[0-9]+'
+```
+
+Certification writes `package_file_certification.csv`,
+`internal_reference_scan.json`, and `combined_package_certification.json` in
+its diagnostics directory. These commands do not run `combineCards.py`,
+`text2workspace`, EFTFit, Combine fits/scans/impacts, or package production.
+The combined selected-WC/WC-population input remains owned by fit configuration.
+
+Validate assembly with `tests/test_combined_datacard_packaging.py` and consumer
+finalization with `tests/test_combined_datacard_package_finalization.py`.
+Validate card and per-era finalizer
 changes with `tests/test_split_datacard_boundary.py`,
 `tests/test_ptll_semantic_contract.py`,
 `tests/test_datacard_late_rebin.py`, and the relevant card-option tests. A

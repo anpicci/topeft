@@ -71,5 +71,27 @@ TOP-26-006 hardening, not an Andrew-authored mechanism. A combined
 valid package inputs as-is; nuisance convention migration is separately owned
 and does not gate package publication.
 
+## Consumer metadata and independent certification
+
+The build manifest needs source paths and hashes so the assembler can copy and
+relabel individual artifacts. A consumer package should not expose that
+internal build provenance. The maintained finalizer projects it into a consumer
+manifest that preserves physical identity, channel labels, order, and
+destination names while omitting source paths. Consumer provenance retains
+useful content hashes without treating diagnostics as package semantics.
+
+Card order and scaling channels share the manifest as their authority.
+Filesystem enumeration and shell globs can happen to be stable in one run but
+do not define semantic identity. `ordered_card_inputs.txt` is the consumer
+ordered projection of the manifest and is the input for later card combination.
+
+Independent certification is separate from the assembler. It reconstructs the
+permitted `shapes` filename substitution, compares ROOT copies byte for byte,
+verifies order, rebuilds scaling identities by channel and process, and rejects
+forbidden consumer outputs. This establishes the datacard/template/scaling
+boundary; it does not construct a workspace or run EFTFit or Combine.
+Wilson-coefficient population for a workspace is fit configuration work, so a
+combined `selectedWCs.txt` remains outside this package boundary.
+
 See the [card and scaling how-to](../how_to/datacards_and_scalings.md) and the
 [artifact reference](../reference/datacards_and_scalings.md).

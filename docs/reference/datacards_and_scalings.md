@@ -223,13 +223,13 @@ process's record.
 `combined_mapping_manifest`, an exact manifest-derived
 `ordered_card_inputs.txt`, and a new output root. Its CLI requires
 `--manifest`, `--ordered-card-inputs`, and `--output-root`. The manifest uses
-`source_per_era_package_root`, binds the 004J per-era mapping/scaling source
-hashes, and has 258 rows. Each row binds physical identity, per-era `chN`,
+`source_per_era_package_root`, binds per-era mapping/scaling source hashes,
+and has one row per packaged target. Each row binds physical identity, per-era `chN`,
 combined `chN`, order index, source TXT/ROOT paths, destination names, and the
 expected packaged template reference.
 
-For per-era `chN`, `N=1..129`, Run 2 keeps `chN` at order `N`; Run 3 maps to
-`ch(129+N)` at order `129+N`. Destination names are `Run2_` or `Run3_` plus
+For the current two-era mapping, Run 2 keeps its per-era index and Run 3 uses
+the declared Run-2 cardinality as its offset. Destination names are `Run2_` or `Run3_` plus
 the source basename. The tool verifies unique domains and paths, copies each
 ROOT unchanged, edits only the exact shapes-file token in each TXT card, and
 changes only `channel` in each scaling record. It rejects missing or ambiguous
@@ -242,6 +242,30 @@ The tool does not create `combinedcard.txt`, run Combine/EFTFit, decide
 nuisance names, or create a combined `selectedWCs.txt`. Current fresh cards
 are valid package inputs as-is; nuisance convention migration is separately
 owned and does not gate package publication.
+
+## Consumer package finalization contract
+
+`analysis/topeft_run2/finalize_combined_datacard_package.py` is the maintained
+consumer finalizer/certifier. Its durable constants are `TOP22006_v1`,
+`combined_mapping_manifest`, `package_provenance`, the metadata filenames,
+`scalings.json`, and `ordered_card_inputs.txt`; package paths, dates, versions,
+counts, source roots, and assembler commits are runtime input or derived from
+the manifest.
+
+`sanitize` requires `--package-root`, `--diagnostics-dir`, `--analysis`,
+`--package-version`, `--package-date`, and `--assembler-commit`. It creates
+`package_before_after_inventory.json` and an
+`internal_pre_sanitization_metadata/` copy of the original metadata. The
+consumer manifest has `schema`, `artifact_type`, `package_root`, and `rows`.
+Each row contains `era`, `physical_name`, `per_era_chN`, `combined_chN`,
+`combined_order_index`, `destination_txt_name`, and `destination_root_name`.
+Consumer provenance uses neutral package identity and hashes, not source paths.
+
+`certify` requires `--package-root`, `--build-manifest`, and
+`--diagnostics-dir`; repeated `--forbid-token` and `--forbid-regex` extend its
+stable internal-reference scan. It uses the internal build manifest for source
+paths, writes `package_file_certification.csv`, `internal_reference_scan.json`,
+and `combined_package_certification.json`, and does not modify the package.
 
 ## Developer surfaces
 
