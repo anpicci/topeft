@@ -14,6 +14,7 @@ scripts remain records and are not additional maintained interfaces.
 | `make_cards.py` | input merge validation, WC selection, channel/variable selection, `DatacardMaker` construction, local or generated Condor execution | fitting binning, year coverage `warn`, Asimov data, no nuisances or MC-stat opt-in | `DatacardMaker` owns card/template/scaling construction; registries, rate payloads, binning and histogram artifacts remain external authorities |
 | `consolidate_datacard_metadata.py` | one-era assembly of explicitly registered, receipt-bound row snapshots | registry order fixes scaling-record order and first-seen WC-union order; `(physical_channel, process)` is unique within the era | does not discover rows, recalculate scalings, finalize `chN`, or combine eras |
 | `datacards_post_processing.py` | one topology selection, deterministic physical-channel ordering, file selection/copy, `chN` relabeling | exact one-of selector; `-a` chooses `ALL_CH_LST_SR`; destination is fixed to `ptz-lj0pt_withSys` | does not make individual cards, fit them, combine them, or recalculate producer scaling payloads |
+| `assemble_combined_datacard_package.py` | explicit-manifest Run 2 + Run 3 card/template copying, template-reference edits, and scaling relabeling | manifest `combined_order_index` and `combined_chN`; fresh output root | does not decide nuisance names, create a combined card, or run consumer software |
 | EFTFit/Combine | individual-card combination and statistical fit | external workflow | creates `combinedcard.txt` later; does not redefine topeft's channel/topology selection |
 
 The region -> distribution -> binning mapping is shared source authority:
@@ -343,7 +344,60 @@ make_cards rows
 The finalizer does not combine Run 2 and Run 3. Combined packaging and the
 EFTFit/Combine consumer workflow remain separate boundaries.
 
-Validate this boundary with `tests/test_split_datacard_boundary.py`,
+## Assemble a combined Run 2 + Run 3 package
+
+The accepted per-era physical-to-`chN` maps determine the combined manifest:
+for a per-era `chN` with integer `N` in `1..129`, Run 2 keeps `chN` and takes
+order index `N`; Run 3 takes `ch(129+N)` and order index `129+N`. The manifest
+names every source TXT/ROOT pair explicitly and gives each destination the
+`Run2_` or `Run3_` prefix. Individual cards retain their physical `bin_*`
+identities. The assembler changes only the shapes-file token that names the
+copied ROOT template; scaling records keep their process, parameters, and
+scaling payload while their channel follows the manifest.
+
+Use an already reviewed `combined_mapping_manifest.json` and matching
+`ordered_card_inputs.txt`. The latter must contain the manifest's 258
+destination TXT basenames in `combined_order_index` order. The maintained
+assembler validates these inputs and the bound per-era scaling hashes before
+writing, rejects an existing output root, builds in a sibling directory, and
+publishes the complete package by rename:
+
+```bash
+python analysis/topeft_run2/assemble_combined_datacard_package.py \
+  --manifest /path/to/combined_mapping_manifest.json \
+  --ordered-card-inputs /path/to/ordered_card_inputs.txt \
+  --output-root /path/to/new-combined-package
+```
+
+Package publication also requires a separately qualified nuisance-naming
+boundary. This assembler does not rename or decide nuisance correlations and
+does not synthesize a combined `selectedWCs.txt`.
+
+The historical consumer command was:
+
+```bash
+combineCards.py ttx_multileptons-*.txt > combinedcard.txt
+```
+
+That glob left card order implicit. The canonical package instead includes
+`combined_mapping_manifest.json` as the physical-to-combined-channel authority
+and `ordered_card_inputs.txt` as the consumer card-order authority. In a later,
+separately authorized consumer session, run from the combined package root:
+
+```bash
+cd <combined-package-root>
+mapfile -t cards < ordered_card_inputs.txt
+combineCards.py "${cards[@]}" > combinedcard.txt
+```
+
+The ordered-input and `mapfile` convention is new TOP-26-006 hardening; it is
+not attributed to Andrew. It ties the card order to the same `ch1..ch258`
+mapping used for combined `scalings.json`. This how-to does not authorize or
+perform the downstream command.
+
+Validate combined package mechanics with
+`tests/test_combined_datacard_packaging.py`. Validate card and finalizer
+changes with `tests/test_split_datacard_boundary.py`,
 `tests/test_ptll_semantic_contract.py`,
 `tests/test_datacard_late_rebin.py`, and the relevant card-option tests. A
 binning change can alter template bin counts and `scalings-preselect.json`, so

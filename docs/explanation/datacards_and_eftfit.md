@@ -56,5 +56,16 @@ Run 2 and Run 3 remain separate namespaces until that later combined-package
 boundary; neither consolidated JSON position nor filesystem ordering defines
 combined channel identity.
 
+The maintained combined-package assembler consumes one explicit 258-row
+manifest. It keeps Run 2 `ch1..ch129`, maps Run 3 per-era `ch1..ch129` to
+combined `ch130..ch258`, prefixes packaged card/template filenames by era,
+and updates only each card's ROOT template reference. Individual card `bin_*`
+identities remain physical. The manifest supplies the ordered card list, so
+the later consumer invocation uses `ordered_card_inputs.txt` instead of the
+historical `ttx_multileptons-*.txt` shell glob. That ordered-input convention
+is new TOP-26-006 hardening, not an Andrew-authored mechanism. A combined
+`selectedWCs.txt` is outside this packaging boundary. Nuisance naming must be
+qualified separately before a real combined package is published.
+
 See the [card and scaling how-to](../how_to/datacards_and_scalings.md) and the
 [artifact reference](../reference/datacards_and_scalings.md).

@@ -216,6 +216,30 @@ finalizer merge case. Consumers must interpret a missing exact channel/process
 record as absence of an external morph, not as a request to borrow another
 process's record.
 
+## Combined package interface
+
+`analysis/topeft_run2/assemble_combined_datacard_package.py` consumes a
+`topeft_combined_datacard_manifest_v1` JSON file, an exact manifest-derived
+`ordered_card_inputs.txt`, and a new output root. Its CLI requires
+`--manifest`, `--ordered-card-inputs`, and `--output-root`. The manifest binds
+the 004J per-era mapping/scaling source hashes and has 258 rows. Each row binds
+physical identity, per-era `chN`, combined `chN`, order index, source TXT/ROOT
+paths, destination names, and the expected packaged template reference.
+
+For per-era `chN`, `N=1..129`, Run 2 keeps `chN` at order `N`; Run 3 maps to
+`ch(129+N)` at order `129+N`. Destination names are `Run2_` or `Run3_` plus
+the source basename. The tool verifies unique domains and paths, copies each
+ROOT unchanged, edits only the exact shapes-file token in each TXT card, and
+changes only `channel` in each scaling record. It rejects missing or ambiguous
+card/template references, duplicate scaling identities, stale ordered input,
+and an existing final output root. It writes package provenance and a README,
+then publishes from a complete temporary sibling directory by rename. This
+assumes one writer per output path and ordinary parent filesystem permissions.
+
+The tool does not create `combinedcard.txt`, run Combine/EFTFit, decide
+nuisance names, or create a combined `selectedWCs.txt`. Real package
+publication requires a separate nuisance-boundary qualification.
+
 ## Developer surfaces
 
 | Fully qualified symbol | Kind/status; parameters and return | Stable contract |
