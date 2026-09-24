@@ -219,7 +219,7 @@ process's record.
 ## Combined package interface
 
 `analysis/topeft_run2/assemble_combined_datacard_package.py` consumes a
-`TOP22006_v1` JSON manifest with `artifact_type` set to
+`TOP26006_v1` JSON manifest with `artifact_type` set to
 `combined_mapping_manifest`, an exact manifest-derived
 `ordered_card_inputs.txt`, and a new output root. Its CLI requires
 `--manifest`, `--ordered-card-inputs`, and `--output-root`. The manifest uses
@@ -246,7 +246,7 @@ owned and does not gate package publication.
 ## Consumer package finalization contract
 
 `analysis/topeft_run2/finalize_combined_datacard_package.py` is the maintained
-consumer finalizer/certifier. Its durable constants are `TOP22006_v1`,
+consumer finalizer/certifier. Its durable constants are `TOP26006_v1`,
 `combined_mapping_manifest`, `package_provenance`, the metadata filenames,
 `scalings.json`, and `ordered_card_inputs.txt`; package paths, dates, versions,
 counts, source roots, and assembler commits are runtime input or derived from

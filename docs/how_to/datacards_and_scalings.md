@@ -360,7 +360,7 @@ scaling payload while their channel follows the manifest.
 Use an already reviewed `combined_mapping_manifest.json` and matching
 `ordered_card_inputs.txt`. The latter contains destination TXT basenames in
 `combined_order_index` order. The maintained
-assembler requires the persistent `TOP22006_v1` schema, an `artifact_type` of
+assembler requires the persistent `TOP26006_v1` schema, an `artifact_type` of
 `combined_mapping_manifest`, and the `source_per_era_package_root` field. It
 validates these inputs and the bound per-era scaling hashes before writing,
 rejects an existing output root, builds in a sibling directory, and publishes
@@ -410,7 +410,7 @@ renames it only after its checks pass. The finalizer then modifies only
 
 `sanitize` creates its own before-state inventory and preserves the original
 internal manifest, provenance, and README in diagnostics. It freezes every
-other package-file hash, projects a consumer-safe `TOP22006_v1` manifest,
+other package-file hash, projects a consumer-safe `TOP26006_v1` manifest,
 writes consumer-safe provenance, and atomically replaces the three metadata
 files with same-directory temporary siblings. Package identity is explicit:
 

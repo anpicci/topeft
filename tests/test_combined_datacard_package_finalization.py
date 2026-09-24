@@ -66,7 +66,7 @@ def _fixture(tmp_path):
         source_scalings[era] = _write_json(source_dir / "scalings.json", [record])
         expected_scalings.append({**record, "channel": f"ch{index}"})
     build_manifest = {
-        "schema": "TOP22006_v1",
+        "schema": "TOP26006_v1",
         "artifact_type": "combined_mapping_manifest",
         "source_mappings": mappings,
         "source_scalings": source_scalings,
@@ -76,7 +76,7 @@ def _fixture(tmp_path):
     _write_json(manifest_path, build_manifest)
     _write_json(package_root / "combined_mapping_manifest.json", build_manifest)
     _write_json(package_root / "package-provenance.json", {
-        "schema": "TOP22006_v1", "artifact_type": "package_provenance",
+        "schema": "TOP26006_v1", "artifact_type": "package_provenance",
         "assembler_source_sha256": "a" * 64, "source_build_path": "/internal/build/path",
     })
     (package_root / "README.md").write_text("internal build instructions\n", encoding="utf-8")
@@ -121,13 +121,13 @@ def test_sanitize_builds_inventory_backups_and_consumer_metadata(tmp_path):
     assert inventory["non_metadata_hashes_unchanged"] is True
     assert (diagnostics / "internal_pre_sanitization_metadata" / "README.md").is_file()
     manifest = json.loads((package_root / "combined_mapping_manifest.json").read_text())
-    assert manifest["schema"] == "TOP22006_v1"
+    assert manifest["schema"] == "TOP26006_v1"
     assert manifest["artifact_type"] == "combined_mapping_manifest"
     assert len(manifest["rows"]) == len(rows)
     assert set(manifest["rows"][0]) == {"era", "physical_name", "per_era_chN", "combined_chN", "combined_order_index", "destination_txt_name", "destination_root_name"}
     assert "source_txt_path" not in (package_root / "combined_mapping_manifest.json").read_text()
     provenance = json.loads((package_root / "package-provenance.json").read_text())
-    assert provenance["schema"] == "TOP22006_v1"
+    assert provenance["schema"] == "TOP26006_v1"
     assert provenance["artifact_type"] == "package_provenance"
     assert "source_build_path" not in provenance
     assert {path.name: _sha256(path) for path in package_root.iterdir() if path.name in original_payload} == original_payload

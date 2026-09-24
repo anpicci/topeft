@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Any
 
 
-PACKAGE_SCHEMA = "TOP22006_v1"
+PACKAGE_SCHEMA = "TOP26006_v1"
 MANIFEST_ARTIFACT_TYPE = "combined_mapping_manifest"
 PROVENANCE_ARTIFACT_TYPE = "package_provenance"
 METADATA_NAMES = (

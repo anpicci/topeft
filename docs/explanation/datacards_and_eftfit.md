@@ -57,7 +57,7 @@ boundary; neither consolidated JSON position nor filesystem ordering defines
 combined channel identity.
 
 The maintained combined-package assembler consumes one explicit 258-row
-`TOP22006_v1` manifest with `artifact_type` set to
+`TOP26006_v1` manifest with `artifact_type` set to
 `combined_mapping_manifest` and the durable
 `source_per_era_package_root` field. It keeps Run 2 `ch1..ch129`, maps Run 3
 per-era `ch1..ch129` to combined `ch130..ch258`, prefixes packaged

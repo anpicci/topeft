@@ -14,7 +14,7 @@ import uuid
 from pathlib import Path
 
 
-package_schema = "TOP22006_v1"
+package_schema = "TOP26006_v1"
 manifest_artifact_type = "combined_mapping_manifest"
 provenance_artifact_type = "package_provenance"
 naming_policy = "era_prefix_v1: Run2_/Run3_ + exact source basename"

@@ -88,7 +88,7 @@ def _fixture(tmp_path):
         })
         scalings[era] = _write_json(source_dir / "scalings.json", records)
     manifest = {
-        "schema": "TOP22006_v1",
+        "schema": "TOP26006_v1",
         "artifact_type": "combined_mapping_manifest",
         "source_per_era_package_root": str(source_root),
         "destination_package_root": str(output_root),
@@ -115,7 +115,7 @@ def test_assembly_uses_manifest_order_and_preserves_payload(tmp_path):
     assert provenance["packaged_txt_count"] == 4
     assert provenance["packaged_root_count"] == 4
     assert provenance["source_scaling_record_counts"] == {"run2": 2, "run3": 2}
-    assert provenance["schema"] == "TOP22006_v1"
+    assert provenance["schema"] == "TOP26006_v1"
     assert provenance["artifact_type"] == "package_provenance"
     assert provenance["source_per_era_package_root"] == str(tmp_path / "source")
     assert "source_004j_package_root" not in provenance
