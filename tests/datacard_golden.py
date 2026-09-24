@@ -9,7 +9,7 @@ from pathlib import Path
 _sha256_pattern = re.compile(r"[0-9a-f]{64}\Z")
 _forbidden_pattern = re.compile(r"(?:/groups/|/users/|reports/diagnostics|t0_datacards_|ptz-lj0pt_withSys)")
 _result_keys = (
-    "payload_mismatches", "semantic_contract_mismatches", "intentional_layout_deltas",
+    "payload_mismatches", "semantic_contract_mismatches",
     "allowed_provenance_deltas", "unexpected_provenance_deltas",
 )
 
@@ -95,7 +95,7 @@ def load_golden_fixture(path):
         if fixture["package_contract_schema"] != "TOP26006_v1":
             raise ValueError("consumer schema is malformed")
         ordered = fixture["ordered_card_inputs"]
-        if set(ordered) != {"historical_source_sha256", "basenames"} or not _sha256_pattern.fullmatch(ordered["historical_source_sha256"]):
+        if set(ordered) != {"source_sha256", "basenames"} or not _sha256_pattern.fullmatch(ordered["source_sha256"]):
             raise ValueError("ordered-card fixture is malformed")
         if (not isinstance(ordered["basenames"], list) or len(ordered["basenames"]) != len(payload["txt"])
                 or len(set(ordered["basenames"])) != len(ordered["basenames"])
@@ -116,7 +116,6 @@ def load_golden_fixture(path):
         variable_keys = {"package_root", "package_date", "package_version", "created_at",
                          "assembler_commit", "assembler_source_sha256"}
         conditional = {"manifest_sha256": "combined_mapping_semantics_equal",
-                       "ordered_card_inputs_sha256": "ordered_card_basenames_equal_with_cards_prefix",
                        "source_mapping_sha256": "combined_mapping_semantics_equal"}
         if (not isinstance(stable, dict) or set(stable) != stable_keys
                 or not isinstance(contract["reference_values"], dict)
@@ -143,30 +142,20 @@ def _collect_payload(package_root):
     root = Path(package_root)
     cards = root / "cards"
     result = {"txt": {}, "root": {}}
-    metadata = {"selectedWCs.txt", "ordered_card_inputs.txt"}
-    for directory in (root, cards):
-        if not directory.is_dir():
-            continue
-        for kind, suffix in (("txt", ".txt"), ("root", ".root")):
-            for path in directory.glob("*" + suffix):
-                if path.name not in metadata:
-                    result[kind].setdefault(path.name, []).append((directory, _sha256(path)))
+    for kind, suffix in (("txt", ".txt"), ("root", ".root")):
+        for path in cards.glob("*" + suffix):
+            result[kind][path.name] = _sha256(path)
     return result
 
 
 def _ordered_basenames(lines):
     basenames = []
-    prefixes = []
     for line in lines:
         if line.startswith("cards/") and _basename(line[6:], ".txt"):
             basenames.append(line[6:])
-            prefixes.append("cards/")
-        elif _basename(line, ".txt"):
-            basenames.append(line)
-            prefixes.append("")
         else:
-            raise ValueError("ordered card path is outside approved layouts: " + line)
-    return basenames, prefixes
+            raise ValueError("ordered card path must use cards/: " + line)
+    return basenames
 
 
 def _normalize_mapping(rows):
@@ -179,16 +168,13 @@ def _normalize_mapping(rows):
         value = {key: row[key] for key in keys}
         for key in ("destination_txt_name", "destination_root_name"):
             name = value[key]
-            if name.startswith("cards/"):
-                name = name[6:]
             if not _basename(name, ".txt" if key.endswith("txt_name") else ".root"):
-                raise ValueError("combined mapping destination is outside approved layouts")
-            value[key] = name
+                raise ValueError("combined mapping destination must be a basename")
         normalized.append(value)
     return normalized
 
 
-def _compare_provenance(fixture, package_root, result, mapping_equal, ordered_equal, prefix_only):
+def _compare_provenance(fixture, package_root, result, mapping_equal):
     path = Path(package_root) / "package-provenance.json"
     contract = fixture["provenance_comparison_contract"]
     if not path.is_file():
@@ -219,8 +205,6 @@ def _compare_provenance(fixture, package_root, result, mapping_equal, ordered_eq
             result["allowed_provenance_deltas"].append({"key": key, "reference": expected, "observed": observed[key]})
         elif key in ("manifest_sha256", "source_mapping_sha256") and mapping_equal:
             result["allowed_provenance_deltas"].append({"key": key, "reference": expected, "observed": observed[key], "basis": "combined_mapping_semantics_equal"})
-        elif key == "ordered_card_inputs_sha256" and ordered_equal and prefix_only:
-            result["allowed_provenance_deltas"].append({"key": key, "reference": expected, "observed": observed[key], "basis": "approved_cards_prefix_only"})
         else:
             result["unexpected_provenance_deltas"].append({"key": key, "reference": expected, "observed": observed[key]})
     if "package_root" in observed:
@@ -234,22 +218,22 @@ def compare_package(fixture, package_root, physical_to_chN=None):
     result = {key: [] for key in _result_keys}
     package_root = Path(package_root)
     payload = _collect_payload(package_root)
+    if not (package_root / "cards").is_dir():
+        result["semantic_contract_mismatches"].append({"artifact": "cards", "reason": "missing_payload_directory"})
+    for suffix in (".txt", ".root"):
+        for path in package_root.glob("*" + suffix):
+            if path.name not in {"selectedWCs.txt", "ordered_card_inputs.txt"}:
+                result["semantic_contract_mismatches"].append({"artifact": "payload", "reason": "root_level_payload", "basename": path.name})
     for kind in ("txt", "root"):
         expected = fixture["payload"][kind]
         observed = payload[kind]
         for name in sorted(set(expected) | set(observed)):
-            entries = observed.get(name, [])
             if name not in expected:
                 result["payload_mismatches"].append({"kind": kind, "basename": name, "reason": "extra"})
-            elif not entries:
+            elif name not in observed:
                 result["payload_mismatches"].append({"kind": kind, "basename": name, "reason": "missing"})
-            elif len(entries) != 1:
-                result["payload_mismatches"].append({"kind": kind, "basename": name, "reason": "duplicate_layout_identity"})
-            elif entries[0][1] != expected[name]:
-                result["payload_mismatches"].append({"kind": kind, "basename": name, "reason": "sha256", "expected": expected[name], "observed": entries[0][1]})
-    if (not result["payload_mismatches"] and (package_root / "cards").is_dir()
-            and any(entries and entries[0][0] == package_root / "cards" for values in payload.values() for entries in values.values())):
-        result["intentional_layout_deltas"].append({"artifact": "payload", "from": "package_root", "to": "cards/"})
+            elif observed[name] != expected[name]:
+                result["payload_mismatches"].append({"kind": kind, "basename": name, "reason": "sha256", "expected": expected[name], "observed": observed[name]})
     for filename, key in (("scalings.json", "scalings_sha256"),):
         path = package_root / filename
         observed = _sha256(path) if path.is_file() else None
@@ -275,21 +259,22 @@ def compare_package(fixture, package_root, physical_to_chN=None):
 
     ordered_path = package_root / "ordered_card_inputs.txt"
     ordered_equal = False
-    prefix_only = False
     try:
         lines = ordered_path.read_text(encoding="utf-8").splitlines()
-        basenames, prefixes = _ordered_basenames(lines)
+        basenames = _ordered_basenames(lines)
         expected = fixture["ordered_card_inputs"]["basenames"]
         ordered_equal = basenames == expected
-        prefix_only = ordered_equal and bool(lines) and all(prefix == "cards/" for prefix in prefixes)
+        for line in lines:
+            if not (package_root / line).is_file():
+                result["semantic_contract_mismatches"].append({"artifact": "ordered_card_inputs", "reason": "unresolved_path", "path": line})
+        if _sha256(ordered_path) != fixture["ordered_card_inputs"]["source_sha256"]:
+            result["semantic_contract_mismatches"].append({"artifact": "ordered_card_inputs", "reason": "sha256"})
         if not ordered_equal:
             for index in range(max(len(expected), len(basenames))):
                 want = expected[index] if index < len(expected) else None
                 got = basenames[index] if index < len(basenames) else None
                 if want != got:
                     result["semantic_contract_mismatches"].append({"artifact": "ordered_card_inputs", "index": index, "expected": want, "observed": got})
-        elif prefix_only:
-            result["intentional_layout_deltas"].append({"artifact": "ordered_card_inputs", "from": "package_root", "to": "cards/"})
     except (ValueError, OSError) as exc:
         result["semantic_contract_mismatches"].append({"artifact": "ordered_card_inputs", "reason": str(exc)})
     manifest_path = package_root / "combined_mapping_manifest.json"
@@ -320,5 +305,5 @@ def compare_package(fixture, package_root, physical_to_chN=None):
             result["semantic_contract_mismatches"].append({"artifact": "README.md", "reason": "ordered_list_or_glob_contract_missing"})
     except OSError as exc:
         result["semantic_contract_mismatches"].append({"artifact": "README.md", "reason": str(exc)})
-    _compare_provenance(fixture, package_root, result, mapping_equal, ordered_equal, prefix_only)
+    _compare_provenance(fixture, package_root, result, mapping_equal)
     return result
