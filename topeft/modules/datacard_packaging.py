@@ -4,6 +4,7 @@ Inputs are already resolved and ordered by the caller. This module neither
 discovers package files nor runs the legacy packaging commands.
 """
 
+import copy
 import hashlib
 import math
 import re
@@ -140,9 +141,9 @@ def verify_per_era_selected_wcs(observed, source_units):
 def _scaling_record(record):
     if not isinstance(record, dict) or not {"channel", "process", "parameters", "scaling"} <= set(record):
         raise ValueError("incomplete scaling record")
-    if not isinstance(record["channel"], str) or not record["channel"]:
+    if not isinstance(record["channel"], str) or not record["channel"].strip():
         raise ValueError("invalid scaling channel")
-    if not isinstance(record["process"], str) or not record["process"]:
+    if not isinstance(record["process"], str) or not record["process"].strip():
         raise ValueError("invalid scaling process")
     if not isinstance(record["parameters"], list) or any(not isinstance(item, str) for item in record["parameters"]):
         raise ValueError("invalid scaling parameters")
@@ -171,7 +172,7 @@ def consolidate_scaling_records(source_units, mapping):
             if identity in seen or record["channel"] not in labels:
                 raise ValueError("duplicate or unmapped scaling identity")
             seen.add(identity)
-            transformed = dict(record)
+            transformed = copy.deepcopy(record)
             transformed["channel"] = labels[record["channel"]]
             result.append(transformed)
     return result
@@ -238,6 +239,9 @@ def verify_combined_mapping(observed, run2_mapping, run3_mapping):
     """Check domains, offsets, names, and row order without the builder."""
     _per_era_rows(run2_mapping)
     _per_era_rows(run3_mapping)
+    for rows in (run2_mapping, run3_mapping):
+        if any(_channel_index(row["per_era_chN"]) != position for position, row in enumerate(rows, 1)):
+            raise ValueError("per-era source mapping rows are out of canonical order")
     if not isinstance(observed, list) or len(observed) != len(run2_mapping) + len(run3_mapping):
         raise ValueError("combined mapping count differs")
     by_era = {"run2": run2_mapping, "run3": run3_mapping}

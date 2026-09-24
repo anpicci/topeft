@@ -92,6 +92,40 @@ def test_scaling_relabelling_payload_and_fault_isolation(monkeypatch):
         packaging.verify_per_era_scalings(packaging.consolidate_scaling_records(source, mapping), source, mapping)
 
 
+@pytest.mark.parametrize("field", ["channel", "process"])
+@pytest.mark.parametrize("blank", ["", "   "])
+def test_scaling_rejects_blank_identities(field, blank):
+    record = copy.deepcopy(_source_scalings()[0][0])
+    record[field] = blank
+    with pytest.raises(ValueError):
+        packaging._scaling_record(record)
+
+
+def test_scaling_preserves_valid_identity_and_owns_nested_records():
+    source = _source_scalings()
+    source[0][0]["process"] = " ttH "
+    source[0][0]["metadata"] = {"tags": ["first"]}
+    source[0][1]["metadata"] = {"tags": ["second"]}
+    source_before = json.dumps(source)
+    mapping = [
+        {"physical_name": "alpha_ptz", "per_era_chN": "ch1"},
+        {"physical_name": "beta_lj0pt", "per_era_chN": "ch2"},
+    ]
+
+    output = packaging.consolidate_scaling_records(source, mapping)
+    assert json.dumps(source) == source_before
+    assert [record["process"] for record in output] == [" ttH ", "ttH"]
+    assert output[0]["metadata"] == source[0][0]["metadata"]
+    assert packaging.verify_per_era_scalings(output, source, mapping)
+    second_before = copy.deepcopy(output[1])
+
+    output[0]["scaling"][0][1] = 9.0
+    output[0]["parameters"].append("ctG")
+    output[0]["metadata"]["tags"].append("changed")
+    assert json.dumps(source) == source_before
+    assert output[1] == second_before
+
+
 def test_combined_mapping_golden_offset_and_fault_isolation(monkeypatch):
     run2, run3 = _mappings()
     golden = _golden("combined")["combined_mapping"]
@@ -109,6 +143,36 @@ def test_combined_mapping_golden_offset_and_fault_isolation(monkeypatch):
     monkeypatch.setattr(packaging, "build_combined_mapping", lambda *_: corrupted)
     with pytest.raises(ValueError):
         packaging.verify_combined_mapping(packaging.build_combined_mapping(run2, run3), run2, run3)
+
+
+def test_combined_verifier_rejects_reinterpreted_source_order():
+    run2_source = [
+        {"physical_name": "beta", "per_era_chN": "ch2"},
+        {"physical_name": "alpha", "per_era_chN": "ch1"},
+    ]
+    run3_source = [{"physical_name": "gamma", "per_era_chN": "ch1"}]
+    observed = [
+        {"era": "run2", "physical_name": "beta", "per_era_chN": "ch1",
+         "combined_chN": "ch1", "combined_order_index": 1,
+         "destination_txt_name": "Run2_ttx_multileptons-beta.txt",
+         "destination_root_name": "Run2_ttx_multileptons-beta.root"},
+        {"era": "run2", "physical_name": "alpha", "per_era_chN": "ch2",
+         "combined_chN": "ch2", "combined_order_index": 2,
+         "destination_txt_name": "Run2_ttx_multileptons-alpha.txt",
+         "destination_root_name": "Run2_ttx_multileptons-alpha.root"},
+        {"era": "run3", "physical_name": "gamma", "per_era_chN": "ch1",
+         "combined_chN": "ch3", "combined_order_index": 3,
+         "destination_txt_name": "Run3_ttx_multileptons-gamma.txt",
+         "destination_root_name": "Run3_ttx_multileptons-gamma.root"},
+    ]
+    with pytest.raises(ValueError, match="source mapping rows are out of canonical order"):
+        packaging.verify_combined_mapping(observed, run2_source, run3_source)
+
+    canonical_run2 = [
+        {"physical_name": "beta", "per_era_chN": "ch1"},
+        {"physical_name": "alpha", "per_era_chN": "ch2"},
+    ]
+    assert packaging.verify_combined_mapping(observed, canonical_run2, run3_source)
 
 
 def test_ordered_inputs_golden_and_fault_isolation(monkeypatch):
