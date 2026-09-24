@@ -1,12 +1,5 @@
 {
   "analysis": "TOP-26-006",
-  "artifact_type_expectations": [
-    "txt_card",
-    "root_template",
-    "scalings",
-    "combined_mapping_manifest",
-    "package_provenance"
-  ],
   "combined_mapping": [
     {
       "combined_chN": "ch1",
@@ -3129,7 +3122,8 @@
     ],
     "conditional_digest_deltas": {
       "manifest_sha256": "combined_mapping_semantics_equal",
-      "ordered_card_inputs_sha256": "ordered_card_basenames_equal_with_cards_prefix"
+      "ordered_card_inputs_sha256": "ordered_card_basenames_equal_with_cards_prefix",
+      "source_mapping_sha256": "combined_mapping_semantics_equal"
     },
     "reference_values": {
       "assembler_commit": "2bee7689470178e2c8f6f23fca6d5271d9efd69d",
@@ -3137,7 +3131,11 @@
       "manifest_sha256": "c94ddd594aa7b1827c8255d8b16df215ba1668adcc7ce502cba0d71ac293c214",
       "ordered_card_inputs_sha256": "b99b8ee97d0daca17243fa354bffeaa08830f6c5594a5a4db622ce9d4d9f64dc",
       "package_date": "260923",
-      "package_version": "v1"
+      "package_version": "v1",
+      "source_mapping_sha256": {
+        "run2": "f19bc8bab9922019ba2c103195bc429e2d11559f3ba0990251d201d99777f802",
+        "run3": "fe2e612884b178ef96128b7211775be98eae171d701a358d613d302d93fd92de"
+      }
     },
     "required_stable_semantic_values": {
       "analysis": "TOP-26-006",
@@ -3146,10 +3144,6 @@
       "packaged_txt_count": 258,
       "scalings_sha256": "0356fde7e341bcce08753f789508782b6b186771ced539e4d6906ef86999733f",
       "schema": "TOP26006_v1",
-      "source_mapping_sha256": {
-        "run2": "f19bc8bab9922019ba2c103195bc429e2d11559f3ba0990251d201d99777f802",
-        "run3": "fe2e612884b178ef96128b7211775be98eae171d701a358d613d302d93fd92de"
-      },
       "source_scalings_sha256": {
         "run2": "789c115afd9838488fcdd2e96705c31c51843e0a45cf2790cc0ecc917d575d47",
         "run3": "a5709ab85012201a11923499e946842dc2abd8e05d26abfce4a87cd0908123ef"

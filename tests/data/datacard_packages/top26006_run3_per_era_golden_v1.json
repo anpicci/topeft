@@ -1,11 +1,5 @@
 {
   "analysis": "TOP-26-006",
-  "artifact_type_expectations": [
-    "txt_card",
-    "root_template",
-    "selected_wcs",
-    "scalings"
-  ],
   "era": "run3",
   "fixture_schema": "top26006_datacard_golden_v1",
   "payload": {

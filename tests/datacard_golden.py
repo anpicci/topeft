@@ -26,6 +26,29 @@ def _basename(value, suffix):
     return isinstance(value, str) and value == Path(value).name and value.endswith(suffix) and value not in (suffix,)
 
 
+def _per_era_mapping_issues(rows, expected_count):
+    if not isinstance(rows, list):
+        return [{"reason": "not_list"}]
+    issues = []
+    if len(rows) != expected_count:
+        issues.append({"reason": "row_count", "expected": expected_count, "observed": len(rows)})
+    physical_names = {}
+    channel_names = {}
+    for index, row in enumerate(rows):
+        if (not isinstance(row, dict) or set(row) != {"physical_name", "per_era_chN"}
+                or any(not isinstance(row[key], str) for key in ("physical_name", "per_era_chN"))):
+            issues.append({"reason": "malformed_row", "index": index, "observed": row})
+            continue
+        for key, seen in (("physical_name", physical_names), ("per_era_chN", channel_names)):
+            value = row[key]
+            if value in seen:
+                issues.append({"reason": "duplicate_" + key, "index": index,
+                               "first_index": seen[value], key: value})
+            else:
+                seen[value] = index
+    return issues
+
+
 def load_golden_fixture(path):
     """Load a strict portable fixture; malformed or site-bound fixtures fail closed."""
     raw = Path(path).read_text(encoding="utf-8")
@@ -34,7 +57,7 @@ def load_golden_fixture(path):
     fixture = json.loads(raw)
     if not isinstance(fixture, dict):
         raise ValueError("fixture must be an object")
-    common = {"fixture_schema", "analysis", "reference_role", "artifact_type_expectations",
+    common = {"fixture_schema", "analysis", "reference_role",
               "payload", "scalings_sha256", "target_layout_contract", "target_package_naming_contract"}
     combined = {"package_contract_schema", "ordered_card_inputs", "combined_mapping",
                 "readme_operational_contract", "provenance_comparison_contract"}
@@ -83,21 +106,35 @@ def load_golden_fixture(path):
         if fixture["readme_operational_contract"] != {"ordered_list_combine_cards_required": True, "direct_glob_forbidden": True}:
             raise ValueError("README contract is malformed")
         contract = fixture["provenance_comparison_contract"]
-        if set(contract) != {"required_stable_semantic_values", "reference_values", "allowed_variable_keys", "conditional_digest_deltas"}:
+        if not isinstance(contract, dict) or set(contract) != {"required_stable_semantic_values", "reference_values", "allowed_variable_keys", "conditional_digest_deltas"}:
             raise ValueError("provenance contract is malformed")
         stable = contract["required_stable_semantic_values"]
+        stable_keys = {"schema", "artifact_type", "analysis", "packaged_txt_count", "packaged_root_count",
+                       "scalings_sha256", "source_scalings_sha256"}
+        reference_keys = {"assembler_commit", "assembler_source_sha256", "manifest_sha256",
+                          "ordered_card_inputs_sha256", "package_date", "package_version", "source_mapping_sha256"}
+        variable_keys = {"package_root", "package_date", "package_version", "created_at",
+                         "assembler_commit", "assembler_source_sha256"}
+        conditional = {"manifest_sha256": "combined_mapping_semantics_equal",
+                       "ordered_card_inputs_sha256": "ordered_card_basenames_equal_with_cards_prefix",
+                       "source_mapping_sha256": "combined_mapping_semantics_equal"}
+        if (not isinstance(stable, dict) or set(stable) != stable_keys
+                or not isinstance(contract["reference_values"], dict)
+                or set(contract["reference_values"]) != reference_keys
+                or not isinstance(contract["allowed_variable_keys"], list)
+                or len(contract["allowed_variable_keys"]) != len(variable_keys)
+                or set(contract["allowed_variable_keys"]) != variable_keys
+                or contract["conditional_digest_deltas"] != conditional):
+            raise ValueError("provenance key contract is malformed")
         if (stable.get("schema") != "TOP26006_v1" or stable.get("artifact_type") != "package_provenance"
                 or stable.get("analysis") != "TOP-26-006"
                 or stable.get("packaged_txt_count") != len(payload["txt"])
                 or stable.get("packaged_root_count") != len(payload["root"])
                 or stable.get("scalings_sha256") != fixture["scalings_sha256"]):
             raise ValueError("provenance stable semantics are malformed")
-        if set(contract["conditional_digest_deltas"]) != {"manifest_sha256", "ordered_card_inputs_sha256"}:
-            raise ValueError("provenance conditional keys are malformed")
     else:
         rows = fixture["physical_to_chN"]
-        if (not isinstance(rows, list) or len(rows) != len(payload["txt"])
-                or any(not isinstance(row, dict) or set(row) != {"physical_name", "per_era_chN"} for row in rows)):
+        if _per_era_mapping_issues(rows, len(payload["txt"])):
             raise ValueError("per-era mapping is malformed")
     return fixture
 
@@ -167,11 +204,10 @@ def _compare_provenance(fixture, package_root, result, mapping_equal, ordered_eq
         return
     stable = contract["required_stable_semantic_values"]
     reference = contract["reference_values"]
-    optional = {"created_at"}
     known = set(stable) | set(reference) | set(contract["allowed_variable_keys"])
     for key in sorted((set(stable) | set(reference) | {"package_root"}) - set(observed)):
         result["semantic_contract_mismatches"].append({"artifact": path.name, "key": key, "reason": "missing_required_key"})
-    for key in sorted(set(observed) - known - optional):
+    for key in sorted(set(observed) - known):
         result["unexpected_provenance_deltas"].append({"key": key, "reason": "unknown_key", "observed": observed[key]})
     for key, expected in stable.items():
         if key in observed and observed[key] != expected:
@@ -181,7 +217,7 @@ def _compare_provenance(fixture, package_root, result, mapping_equal, ordered_eq
             continue
         if key in contract["allowed_variable_keys"]:
             result["allowed_provenance_deltas"].append({"key": key, "reference": expected, "observed": observed[key]})
-        elif key == "manifest_sha256" and mapping_equal:
+        elif key in ("manifest_sha256", "source_mapping_sha256") and mapping_equal:
             result["allowed_provenance_deltas"].append({"key": key, "reference": expected, "observed": observed[key], "basis": "combined_mapping_semantics_equal"})
         elif key == "ordered_card_inputs_sha256" and ordered_equal and prefix_only:
             result["allowed_provenance_deltas"].append({"key": key, "reference": expected, "observed": observed[key], "basis": "approved_cards_prefix_only"})
@@ -228,10 +264,13 @@ def compare_package(fixture, package_root, physical_to_chN=None):
         if physical_to_chN is None:
             result["semantic_contract_mismatches"].append({"artifact": "physical_to_chN", "reason": "missing_candidate_mapping"})
         else:
-            observed_mapping = {row["physical_name"]: row["per_era_chN"] for row in physical_to_chN}
-            for name in sorted(set(expected_mapping) | set(observed_mapping)):
-                if expected_mapping.get(name) != observed_mapping.get(name):
-                    result["semantic_contract_mismatches"].append({"artifact": "physical_to_chN", "physical_name": name, "expected": expected_mapping.get(name), "observed": observed_mapping.get(name)})
+            issues = _per_era_mapping_issues(physical_to_chN, len(fixture["physical_to_chN"]))
+            result["semantic_contract_mismatches"].extend({"artifact": "physical_to_chN", **issue} for issue in issues)
+            if not issues:
+                observed_mapping = {row["physical_name"]: row["per_era_chN"] for row in physical_to_chN}
+                for name in sorted(set(expected_mapping) | set(observed_mapping)):
+                    if expected_mapping.get(name) != observed_mapping.get(name):
+                        result["semantic_contract_mismatches"].append({"artifact": "physical_to_chN", "physical_name": name, "expected": expected_mapping.get(name), "observed": observed_mapping.get(name)})
         return result
 
     ordered_path = package_root / "ordered_card_inputs.txt"
@@ -273,7 +312,11 @@ def compare_package(fixture, package_root, physical_to_chN=None):
     readme = package_root / "README.md"
     try:
         content = readme.read_text(encoding="utf-8")
-        if 'combineCards.py "${cards[@]}"' not in content or not re.search(r"[Dd]o not use (?:a )?(?:wildcard|glob)", content):
+        normalized = re.sub(r"\s+", " ", content)
+        load_command = re.search(r"\bmapfile\s+-t\s+cards\s*<\s*ordered_card_inputs\.txt\b", normalized)
+        combine_command = re.search(r'\bcombineCards\.py\s+"\$\{cards\[@\]\}"\s*>\s*combinedcard\.txt\b', normalized)
+        if (not load_command or not combine_command or load_command.end() > combine_command.start()
+                or not re.search(r"\b(?:do not|never)\b.{0,100}\b(?:wildcard|glob)\b", normalized, re.IGNORECASE)):
             result["semantic_contract_mismatches"].append({"artifact": "README.md", "reason": "ordered_list_or_glob_contract_missing"})
     except OSError as exc:
         result["semantic_contract_mismatches"].append({"artifact": "README.md", "reason": str(exc)})

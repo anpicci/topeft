@@ -38,15 +38,15 @@ def _combined(tmp_path, cards=False):
             (("run2", "alpha", names[0]), ("run3", "beta", names[1])), 1)
     ]
     _write_json(package / "combined_mapping_manifest.json", {"schema": "TOP26006_v1", "artifact_type": "combined_mapping_manifest", "rows": mapping})
-    (package / "README.md").write_text('mapfile -t cards < ordered_card_inputs.txt\ncombineCards.py "${cards[@]}"\nDo not use a wildcard/glob.\n')
+    (package / "README.md").write_text('mapfile -t cards < ordered_card_inputs.txt\ncombineCards.py "${cards[@]}" > combinedcard.txt\nDo not use a wildcard/glob.\n')
     stable = {"schema": "TOP26006_v1", "artifact_type": "package_provenance", "analysis": "TOP-26-006",
               "packaged_txt_count": 2, "packaged_root_count": 2, "scalings_sha256": _sha(b"scalings"),
-              "source_mapping_sha256": {"run2": "a" * 64, "run3": "b" * 64},
               "source_scalings_sha256": {"run2": "c" * 64, "run3": "d" * 64}}
     reference = {"assembler_commit": "e" * 40, "assembler_source_sha256": "f" * 64,
                  "manifest_sha256": _sha((package / "combined_mapping_manifest.json").read_bytes()),
                  "ordered_card_inputs_sha256": _sha("\n".join(names).encode() + b"\n"),
-                 "package_date": "260923", "package_version": "v1"}
+                 "package_date": "260923", "package_version": "v1",
+                 "source_mapping_sha256": {"run2": "a" * 64, "run3": "b" * 64}}
     provenance = stable | reference | {"package_root": "historical-root"}
     if cards:
         provenance["ordered_card_inputs_sha256"] = _sha((package / "ordered_card_inputs.txt").read_bytes())
@@ -54,7 +54,6 @@ def _combined(tmp_path, cards=False):
     fixture = {
         "fixture_schema": "top26006_datacard_golden_v1", "analysis": "TOP-26-006",
         "reference_role": "development_regression", "package_contract_schema": "TOP26006_v1",
-        "artifact_type_expectations": ["txt_card", "root_template", "scalings", "combined_mapping_manifest", "package_provenance"],
         "payload": {"txt": {key: _sha(value) for key, value in txt.items()},
                     "root": {key: _sha(value) for key, value in root.items()}},
         "scalings_sha256": _sha(b"scalings"),
@@ -64,7 +63,7 @@ def _combined(tmp_path, cards=False):
         "provenance_comparison_contract": {
             "required_stable_semantic_values": stable, "reference_values": reference,
             "allowed_variable_keys": ["package_root", "package_date", "package_version", "created_at", "assembler_commit", "assembler_source_sha256"],
-            "conditional_digest_deltas": {"manifest_sha256": "combined_mapping_semantics_equal", "ordered_card_inputs_sha256": "ordered_card_basenames_equal_with_cards_prefix"}},
+            "conditional_digest_deltas": {"manifest_sha256": "combined_mapping_semantics_equal", "ordered_card_inputs_sha256": "ordered_card_basenames_equal_with_cards_prefix", "source_mapping_sha256": "combined_mapping_semantics_equal"}},
         "target_layout_contract": {"payload_subdirectory": "cards"},
         "target_package_naming_contract": "top26006_combined_package_<date>_vN",
     }
@@ -78,15 +77,17 @@ def _per_era(tmp_path):
     package.mkdir()
     (package / "ttx_multileptons-alpha.txt").write_bytes(b"card")
     (package / "ttx_multileptons-alpha.root").write_bytes(b"root")
+    (package / "ttx_multileptons-beta.txt").write_bytes(b"card-b")
+    (package / "ttx_multileptons-beta.root").write_bytes(b"root-b")
     (package / "selectedWCs.txt").write_bytes(b"wc")
     (package / "scalings.json").write_bytes(b"scale")
-    mapping = [{"physical_name": "alpha", "per_era_chN": "ch1"}]
+    mapping = [{"physical_name": "alpha", "per_era_chN": "ch1"},
+               {"physical_name": "beta", "per_era_chN": "ch2"}]
     fixture = {
         "fixture_schema": "top26006_datacard_golden_v1", "analysis": "TOP-26-006",
         "reference_role": "development_regression", "era": "run2",
-        "artifact_type_expectations": ["txt_card", "root_template", "selected_wcs", "scalings"],
-        "payload": {"txt": {"ttx_multileptons-alpha.txt": _sha(b"card")},
-                    "root": {"ttx_multileptons-alpha.root": _sha(b"root")}},
+        "payload": {"txt": {"ttx_multileptons-alpha.txt": _sha(b"card"), "ttx_multileptons-beta.txt": _sha(b"card-b")},
+                    "root": {"ttx_multileptons-alpha.root": _sha(b"root"), "ttx_multileptons-beta.root": _sha(b"root-b")}},
         "selected_wcs_sha256": _sha(b"wc"), "scalings_sha256": _sha(b"scale"),
         "physical_to_chN": mapping, "target_layout_contract": {"payload_subdirectory": "cards"},
         "target_package_naming_contract": "top26006_run2_package_<date>_vN",
@@ -148,6 +149,72 @@ def test_per_era_mapping_mismatch(tmp_path):
     assert any(row["artifact"] == "physical_to_chN" for row in result["semantic_contract_mismatches"])
 
 
+@pytest.mark.parametrize("replacement,reason", [
+    ({"physical_name": "alpha", "per_era_chN": "ch1"}, "duplicate_physical_name"),
+    ({"physical_name": "alpha", "per_era_chN": "ch2"}, "duplicate_physical_name"),
+    ({"physical_name": "beta", "per_era_chN": "ch1"}, "duplicate_per_era_chN"),
+])
+def test_per_era_duplicate_candidate_identity(tmp_path, replacement, reason):
+    package, fixture_path, mapping = _per_era(tmp_path)
+    mapping[1] = replacement
+    result = compare_package(load_golden_fixture(fixture_path), package, mapping)
+    assert any(row.get("reason") == reason and row.get("index") == 1
+               for row in result["semantic_contract_mismatches"])
+
+
+@pytest.mark.parametrize("candidate", [
+    [{"physical_name": "alpha", "per_era_chN": "ch1"}],
+    [{"physical_name": "alpha", "per_era_chN": "ch1"},
+     {"physical_name": "beta", "per_era_chN": "ch2"},
+     {"physical_name": "gamma", "per_era_chN": "ch3"}],
+    [{"physical_name": "alpha", "per_era_chN": "ch1", "extra": "value"},
+     {"physical_name": "beta", "per_era_chN": "ch2"}],
+    {"alpha": "ch1"},
+])
+def test_per_era_mapping_shape_rejected(tmp_path, candidate):
+    package, fixture_path, _ = _per_era(tmp_path)
+    result = compare_package(load_golden_fixture(fixture_path), package, candidate)
+    assert any(row.get("reason") in ("row_count", "not_list", "malformed_row")
+               for row in result["semantic_contract_mismatches"])
+
+
+@pytest.mark.parametrize("replacement", [
+    {"physical_name": "alpha", "per_era_chN": "ch2"},
+    {"physical_name": "beta", "per_era_chN": "ch1"},
+])
+def test_per_era_fixture_duplicate_identity_rejected(tmp_path, replacement):
+    _, fixture_path, _ = _per_era(tmp_path)
+    fixture = json.loads(fixture_path.read_text())
+    fixture["physical_to_chN"][1] = replacement
+    _write_json(fixture_path, fixture)
+    with pytest.raises(ValueError, match="per-era mapping"):
+        load_golden_fixture(fixture_path)
+
+
+def test_readme_requires_ordered_input_load(tmp_path):
+    package, fixture_path = _combined(tmp_path)
+    (package / "README.md").write_text('combineCards.py "${cards[@]}" > combinedcard.txt\nDo not use a glob.\n')
+    result = compare_package(load_golden_fixture(fixture_path), package)
+    assert any(row["artifact"] == "README.md" for row in result["semantic_contract_mismatches"])
+
+
+def test_readme_accepts_whitespace_variation(tmp_path):
+    package, fixture_path = _combined(tmp_path)
+    (package / "README.md").write_text('mapfile  -t  cards  < ordered_card_inputs.txt\n'
+                                       'combineCards.py   "${cards[@]}"   >  combinedcard.txt\n'
+                                       'Never build from a glob.\n')
+    result = compare_package(load_golden_fixture(fixture_path), package)
+    assert not any(row["artifact"] == "README.md" for row in result["semantic_contract_mismatches"])
+
+
+def test_readme_rejects_reversed_command_order(tmp_path):
+    package, fixture_path = _combined(tmp_path)
+    (package / "README.md").write_text('combineCards.py "${cards[@]}" > combinedcard.txt\n'
+                                       'mapfile -t cards < ordered_card_inputs.txt\nDo not use a glob.\n')
+    result = compare_package(load_golden_fixture(fixture_path), package)
+    assert any(row["artifact"] == "README.md" for row in result["semantic_contract_mismatches"])
+
+
 def test_combined_mapping_mismatch(tmp_path):
     package, fixture_path = _combined(tmp_path)
     path = package / "combined_mapping_manifest.json"
@@ -170,10 +237,14 @@ def test_allowed_provenance_differences_are_reported(tmp_path):
     package, fixture_path = _combined(tmp_path)
     path = package / "package-provenance.json"
     provenance = json.loads(path.read_text())
-    provenance.update({"package_date": "260924", "assembler_commit": "0" * 40, "created_at": "2026-09-24T00:00:00Z"})
+    provenance.update({"package_root": "new-root", "package_date": "260924", "package_version": "v2",
+                       "assembler_commit": "0" * 40, "assembler_source_sha256": "1" * 64,
+                       "created_at": "2026-09-24T00:00:00Z"})
     _write_json(path, provenance)
     result = compare_package(load_golden_fixture(fixture_path), package)
-    assert {row["key"] for row in result["allowed_provenance_deltas"]} >= {"package_root", "package_date", "assembler_commit", "created_at"}
+    assert {row["key"] for row in result["allowed_provenance_deltas"]} >= {
+        "package_root", "package_date", "package_version", "assembler_commit",
+        "assembler_source_sha256", "created_at"}
     assert result["unexpected_provenance_deltas"] == []
 
 
@@ -185,6 +256,39 @@ def test_unexpected_provenance_key_detected(tmp_path):
     _write_json(path, provenance)
     result = compare_package(load_golden_fixture(fixture_path), package)
     assert any(row["key"] == "new_semantics" for row in result["unexpected_provenance_deltas"])
+
+
+@pytest.mark.parametrize("mapping_equal", [True, False])
+def test_source_mapping_digest_requires_equal_semantics(tmp_path, mapping_equal):
+    package, fixture_path = _combined(tmp_path)
+    provenance_path = package / "package-provenance.json"
+    provenance = json.loads(provenance_path.read_text())
+    provenance["source_mapping_sha256"] = {"run2": "0" * 64, "run3": "1" * 64}
+    _write_json(provenance_path, provenance)
+    if not mapping_equal:
+        manifest_path = package / "combined_mapping_manifest.json"
+        manifest = json.loads(manifest_path.read_text())
+        manifest["rows"][0]["per_era_chN"] = "ch9"
+        _write_json(manifest_path, manifest)
+    result = compare_package(load_golden_fixture(fixture_path), package)
+    bucket = "allowed_provenance_deltas" if mapping_equal else "unexpected_provenance_deltas"
+    assert any(row["key"] == "source_mapping_sha256" for row in result[bucket])
+    other = "unexpected_provenance_deltas" if mapping_equal else "allowed_provenance_deltas"
+    assert not any(row["key"] == "source_mapping_sha256" for row in result[other])
+
+
+@pytest.mark.parametrize("mutation", ["allowed_variable_keys", "conditional_digest_deltas"])
+def test_v1_provenance_fixture_contract_is_closed(tmp_path, mutation):
+    _, fixture_path = _combined(tmp_path)
+    fixture = json.loads(fixture_path.read_text())
+    contract = fixture["provenance_comparison_contract"]
+    if mutation == "allowed_variable_keys":
+        contract[mutation].append("new_semantics")
+    else:
+        contract[mutation]["source_mapping_sha256"] = "weaker_basis"
+    _write_json(fixture_path, fixture)
+    with pytest.raises(ValueError, match="provenance key contract"):
+        load_golden_fixture(fixture_path)
 
 
 def test_missing_required_provenance_semantics_detected(tmp_path):
