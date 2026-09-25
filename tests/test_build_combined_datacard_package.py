@@ -69,11 +69,20 @@ def _refresh_hash(output, key, file_name):
     _write_json(provenance_path, provenance)
 
 
+def _assert_certification_fail(output, sources, check_id=None):
+    result = combined.certify_combined_package(output, *sources)
+    assert result["result"] == "fail"
+    assert result["mismatches"]
+    if check_id is not None:
+        assert result["mismatches"][0]["check_id"] == check_id
+    return result
+
+
 def test_build_and_public_certify(tmp_path, sources):
     output = _build(tmp_path, sources)
     result = combined.certify_combined_package(output, *sources)
-    assert result["certified"] is True
-    assert result["card_count"] == 3
+    assert result["result"] == "pass"
+    assert result["observed_counts"]["combined_cards"] == 3
     assert {path.name for path in output.iterdir()} == combined._output_names
     assert not (output / "selectedWCs.txt").exists()
     assert not (output / "combinedcard.txt").exists()
@@ -188,16 +197,14 @@ def test_certifier_rejects_corrupted_output_even_with_updated_metadata(tmp_path,
         manifest["rows"][0]["combined_chN"] = "ch99"
         _write_json(output / "combined_mapping_manifest.json", manifest)
         _refresh_hash(output, "manifest_sha256", "combined_mapping_manifest.json")
-    with pytest.raises(ValueError):
-        combined.certify_combined_package(output, *sources)
+    _assert_certification_fail(output, sources)
 
 
 @pytest.mark.parametrize("target", ["root", "txt", "scalings", "role"])
 def test_certifier_is_bound_to_supplied_sources(tmp_path, sources, target):
     output = _build(tmp_path, sources)
     if target == "role":
-        with pytest.raises(ValueError):
-            combined.certify_combined_package(output, sources[1], sources[0])
+        _assert_certification_fail(output, (sources[1], sources[0]), "source_packages")
         return
     if target == "root":
         path = sources[0] / "cards" / "ttx_multileptons-z.root"
@@ -214,8 +221,7 @@ def test_certifier_is_bound_to_supplied_sources(tmp_path, sources, target):
         provenance = json.loads(provenance_path.read_text())
         provenance["scalings_sha256"] = datacard_packaging.sha256_file(path)
         _write_json(provenance_path, provenance)
-    with pytest.raises(ValueError):
-        combined.certify_combined_package(output, *sources)
+    _assert_certification_fail(output, sources)
 
 
 def test_scaling_writer_keeps_independent_records_and_rejects_duplicates(sources):
@@ -279,3 +285,102 @@ def test_txt_writer_corruption_is_caught_by_independent_certifier(tmp_path, sour
     with pytest.raises(ValueError):
         _build(tmp_path, sources)
     assert not (tmp_path / "combined").exists()
+
+
+def test_post_rename_root_corruption_preserves_uncertified_output(tmp_path, sources, monkeypatch, capsys):
+    original_rename = Path.rename
+    output = tmp_path / "combined"
+
+    def corrupt_after_rename(path, target):
+        renamed = original_rename(path, target)
+        root = next((output / "cards").glob("*.root"))
+        root.write_bytes(root.read_bytes() + b"corrupt")
+        return renamed
+
+    monkeypatch.setattr(Path, "rename", corrupt_after_rename)
+    status = combined.main(["build", "--run2-package", str(sources[0]),
+                            "--run3-package", str(sources[1]), "--output", str(output),
+                            "--analysis", "TOP-26-006", "--package-date", "260925",
+                            "--package-version", "v1"])
+    result = json.loads(capsys.readouterr().out)
+    assert status != 0
+    assert result["state"] == "published_but_not_certified"
+    assert result["post_publication_certification"]["result"] == "fail"
+    assert output.is_dir()
+    assert not (tmp_path / ".combined.staging").exists()
+    _assert_certification_fail(output, sources, "card_payloads")
+
+
+def test_nonfinite_scaling_rejected_with_coherent_hashes(tmp_path, sources):
+    output = _build(tmp_path, sources)
+    source_path = sources[0] / "scalings.json"
+    source_records = json.loads(source_path.read_text())
+    source_records[0]["scaling"][0][0] = float("inf")
+    _write_json(source_path, source_records)
+    source_provenance_path = sources[0] / "package-provenance.json"
+    source_provenance = json.loads(source_provenance_path.read_text())
+    source_provenance["scalings_sha256"] = datacard_packaging.sha256_file(source_path)
+    _write_json(source_provenance_path, source_provenance)
+    combined_path = output / "scalings.json"
+    combined_records = json.loads(combined_path.read_text())
+    combined_records[0]["scaling"][0][0] = float("inf")
+    _write_json(combined_path, combined_records)
+    _refresh_hash(output, "scalings_sha256", "scalings.json")
+    provenance_path = output / "package-provenance.json"
+    provenance = json.loads(provenance_path.read_text())
+    provenance["source_scalings_sha256"]["run2"] = datacard_packaging.sha256_file(source_path)
+    _write_json(provenance_path, provenance)
+    result = _assert_certification_fail(output, sources, "scalings")
+    assert "nonfinite" in result["mismatches"][0]["detail"]
+
+
+@pytest.mark.parametrize("field,value", [
+    ("package_date", "September 25"), ("package_version", "version-one"),
+    ("assembler_commit", "not-a-git-sha"),
+])
+def test_certifier_rejects_invalid_metadata_format(tmp_path, sources, field, value):
+    output = _build(tmp_path, sources)
+    provenance_path = output / "package-provenance.json"
+    provenance = json.loads(provenance_path.read_text())
+    provenance[field] = value
+    _write_json(provenance_path, provenance)
+    _assert_certification_fail(output, sources, "provenance")
+
+
+@pytest.mark.parametrize("reference", ["source", "staging"])
+def test_certifier_rejects_exact_forbidden_readme_reference(tmp_path, sources, reference):
+    output = _build(tmp_path, sources)
+    path = sources[0] if reference == "source" else tmp_path / ".combined.staging"
+    with (output / "README.md").open("a", encoding="utf-8") as readme:
+        readme.write(str(path) + "\n")
+    _assert_certification_fail(output, sources, "consumer_references")
+
+
+def test_certification_report_pass_fail_and_no_overwrite(tmp_path, sources, capsys):
+    output = tmp_path / "combined"
+    build_result = combined.build_combined_package(*sources, output, "TOP-26-006", "260925", "v1")
+    assert build_result["post_publication_certification"]["result"] == "pass"
+    report_path = tmp_path / "certification.json"
+    args = ["certify", "--package-root", str(output), "--run2-package", str(sources[0]),
+            "--run3-package", str(sources[1]), "--report-json", str(report_path)]
+    assert combined.main(args) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert json.loads(report_path.read_text()) == result
+    assert set(result) == {
+        "schema", "result", "package_root", "run2_package", "run3_package",
+        "run2_source_inventory_sha256", "run3_source_inventory_sha256", "observed_counts",
+        "checks", "missing_paths", "extra_paths", "mismatches", "certification_observed_at",
+    }
+    assert len(result["run2_source_inventory_sha256"]) == 64
+    assert all(check["result"] == "pass" for check in result["checks"].values())
+    with pytest.raises(ValueError, match="report path must be absent"):
+        combined.main(args)
+    assert json.loads(report_path.read_text()) == result
+    root = next((output / "cards").glob("*.root"))
+    root.write_bytes(root.read_bytes() + b"corrupt")
+    fail_report = tmp_path / "failed-certification.json"
+    assert combined.main(args[:-1] + [str(fail_report)]) != 0
+    fail_result = json.loads(capsys.readouterr().out)
+    assert fail_result["result"] == "fail"
+    assert fail_result["mismatches"][0]["check_id"] == "card_payloads"
+    assert json.loads(fail_report.read_text()) == fail_result

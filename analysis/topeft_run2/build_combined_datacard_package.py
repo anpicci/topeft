@@ -2,10 +2,15 @@
 
 import argparse
 import copy
+import hashlib
 import json
+import math
+import os
 import re
 import shutil
 import subprocess
+import tempfile
+from datetime import datetime, timezone
 from pathlib import Path
 
 from topeft.modules import datacard_packaging
@@ -30,6 +35,10 @@ _channel_pattern = re.compile(r"ch[1-9][0-9]*\Z")
 _writer_shapes = re.compile(rb"^([ \t]*shapes[ \t]+\S+[ \t]+\S+[ \t]+)(\S+)")
 _verifier_shapes = re.compile(rb"^([ \t]*shapes[ \t]+\S+[ \t]+\S+[ \t]+)(\S+)(.*)\Z", re.DOTALL)
 _sha_pattern = re.compile(r"[0-9a-f]{64}\Z")
+class PublishedButNotCertified(ValueError):
+    def __init__(self, certification_result):
+        self.certification_result = certification_result
+        super().__init__("published_but_not_certified: " + str(certification_result["mismatches"]))
 
 
 def _require(condition, message):
@@ -193,6 +202,40 @@ def _verify_scalings(observed, run2_records, run3_records, mapping):
                  "combined scaling payload differs")
 
 
+def _verify_finite_scalings(records, label):
+    for record in records:
+        _scaling_identity(record)
+        for coefficients in record["scaling"]:
+            _require(isinstance(coefficients, list), f"{label} scaling coefficients are invalid")
+            for coefficient in coefficients:
+                _require(type(coefficient) in (int, float) and math.isfinite(coefficient),
+                         f"{label} scaling coefficient is nonfinite or invalid")
+
+
+def _source_inventory_sha256(source):
+    root = source["root"]
+    paths = [root / name for name in sorted(_source_names - {"cards"})]
+    paths.extend(sorted((root / "cards").iterdir()))
+    rows = [[path.relative_to(root).as_posix(), datacard_packaging.sha256_file(path)]
+            for path in paths]
+    return hashlib.sha256(json.dumps(rows, separators=(",", ":"), ensure_ascii=False).encode("utf-8")).hexdigest()
+
+
+def _scan_forbidden_references(package_root, output, run2_root, run3_root, card_names):
+    staging = output.parent / f".{output.name}.staging"
+    forbidden = {str(run2_root), str(run3_root), str(staging)}
+    if package_root != output:
+        forbidden.add(str(package_root))
+    names = sorted(_output_names - {"cards"})
+    paths = [package_root / name for name in names]
+    paths.extend(package_root / "cards" / name for name in sorted(card_names) if name.endswith(".txt"))
+    for path in paths:
+        raw = path.read_bytes()
+        for reference in forbidden:
+            _require(reference.encode("utf-8") not in raw,
+                     f"consumer text contains forbidden path: {path.relative_to(package_root)}")
+
+
 def _readme(analysis, output):
     return (f"# {analysis} combined Run2+Run3 datacard package\n\n"
             f"Package path: `{output}`\n\n"
@@ -222,21 +265,31 @@ def _manifest(mapping, output):
             "package_root": str(output), "rows": mapping}
 
 
-def certify_combined_package(package_root, run2_package, run3_package, *, expected_output=None):
-    """Certify an existing package against both supplied canonical sources."""
-    package_root = Path(package_root)
-    output = Path(expected_output) if expected_output is not None else package_root
+def _certify_details(package_root, run2_package, run3_package, output, result):
+    """Reopen all decision-relevant source and package content."""
+    checks = result["checks"]
+    result["current_check"] = "source_packages"
     _require(package_root.is_absolute() and _plain_directory(package_root), "combined package root is invalid")
     _require(output.is_absolute(), "expected package path must be absolute")
     run2 = _source_package(run2_package, "run2")
     run3 = _source_package(run3_package, "run3")
     _require(run2["analysis"] == run3["analysis"], "source analyses differ")
-    _require({entry.name for entry in package_root.iterdir()} == _output_names,
-             "combined package top-level inventory differs")
+    result["run2_source_inventory_sha256"] = _source_inventory_sha256(run2)
+    result["run3_source_inventory_sha256"] = _source_inventory_sha256(run3)
+    result["observed_counts"].update(run2_cards=len(run2["mapping"]), run3_cards=len(run3["mapping"]))
+    checks["source_packages"] = {"result": "pass", "evidence": {
+        "run2_cards": len(run2["mapping"]), "run3_cards": len(run3["mapping"])}, "failures": []}
+    result["current_check"] = "combined_layout"
+    observed_names = {entry.name for entry in package_root.iterdir()}
+    result["missing_paths"].extend(sorted(_output_names - observed_names))
+    result["extra_paths"].extend(sorted(observed_names - _output_names))
+    _require(observed_names == _output_names, "combined package top-level inventory differs")
     cards = package_root / "cards"
     _require(_plain_directory(cards), "combined cards directory is invalid")
     for name in _output_names - {"cards"}:
         _require(_plain_file(package_root / name), f"combined metadata member missing: {name}")
+    checks["combined_layout"] = {"result": "pass", "evidence": {"top_level_members": len(observed_names)}, "failures": []}
+    result["current_check"] = "mapping"
     manifest = _read_json(package_root / "combined_mapping_manifest.json")
     _require(isinstance(manifest, dict) and set(manifest) == {"schema", "artifact_type", "package_root", "rows"}
              and manifest["schema"] == "TOP26006_v1"
@@ -245,9 +298,14 @@ def certify_combined_package(package_root, run2_package, run3_package, *, expect
     mapping = manifest["rows"]
     datacard_packaging.verify_combined_mapping(mapping, run2["mapping"], run3["mapping"])
     expected_names = {row[name] for row in mapping for name in ("destination_txt_name", "destination_root_name")}
-    _require({entry.name for entry in cards.iterdir()} == expected_names,
-             "combined cards inventory differs")
+    observed_card_names = {entry.name for entry in cards.iterdir()}
+    result["missing_paths"].extend("cards/" + name for name in sorted(expected_names - observed_card_names))
+    result["extra_paths"].extend("cards/" + name for name in sorted(observed_card_names - expected_names))
+    _require(observed_card_names == expected_names, "combined cards inventory differs")
     _require(all(_plain_file(cards / name) for name in expected_names), "combined card member is not a regular file")
+    result["observed_counts"]["combined_cards"] = len(mapping)
+    checks["mapping"] = {"result": "pass", "evidence": {"rows": len(mapping)}, "failures": []}
+    result["current_check"] = "card_payloads"
     for row in mapping:
         source = run2 if row["era"] == "run2" else run3
         stem = f"{_source_root_prefix}{row['physical_name']}"
@@ -259,29 +317,36 @@ def certify_combined_package(package_root, run2_package, run3_package, *, expect
                  "packaged ROOT bytes differ from source")
         destination_bytes = destination_txt.read_bytes()
         _verify_card(source_txt.read_bytes(), destination_bytes, source_root.name, destination_root.name)
-        _require(str(run2["root"]).encode() not in destination_bytes
-                 and str(run3["root"]).encode() not in destination_bytes
-                 and str(package_root).encode() not in destination_bytes,
-                 "packaged TXT leaks a source or staging path")
+    checks["card_payloads"] = {"result": "pass", "evidence": {"txt": len(mapping), "root": len(mapping)}, "failures": []}
+    result["current_check"] = "scalings"
     scaling_bytes = (package_root / "scalings.json").read_bytes()
-    _require(str(package_root).encode() not in scaling_bytes if package_root != output else True,
-             "combined scalings leak staging path")
     observed_scalings = json.loads(scaling_bytes)
+    _verify_finite_scalings(run2["scalings"], "run2 source")
+    _verify_finite_scalings(run3["scalings"], "run3 source")
+    _verify_finite_scalings(observed_scalings, "combined")
     _verify_scalings(observed_scalings, run2["scalings"], run3["scalings"], mapping)
+    result["observed_counts"]["combined_scalings"] = len(observed_scalings)
+    checks["scalings"] = {"result": "pass", "evidence": {"records": len(observed_scalings)}, "failures": []}
+    result["current_check"] = "ordered_inputs"
     order_bytes = (package_root / "ordered_card_inputs.txt").read_bytes()
     order = order_bytes.decode("utf-8")
     datacard_packaging.verify_ordered_card_inputs(order, mapping)
     _require(order.endswith("\n") and all((package_root / line).is_file() for line in order.splitlines()),
              "ordered card path is missing")
+    checks["ordered_inputs"] = {"result": "pass", "evidence": {"lines": len(order.splitlines())}, "failures": []}
+    result["current_check"] = "provenance"
     provenance = _read_json(package_root / "package-provenance.json")
     _require(isinstance(provenance, dict) and set(provenance) == _provenance_names
              and provenance["schema"] == "TOP26006_v1"
              and provenance["artifact_type"] == "package_provenance"
              and provenance["analysis"] == run2["analysis"]
              and provenance["package_root"] == str(output)
-             and isinstance(provenance["package_date"], str) and bool(provenance["package_date"])
-             and isinstance(provenance["package_version"], str) and bool(provenance["package_version"])
-             and isinstance(provenance["assembler_commit"], str) and bool(provenance["assembler_commit"])
+             and isinstance(provenance["package_date"], str)
+             and re.fullmatch(r"[0-9]{6}", provenance["package_date"]) is not None
+             and isinstance(provenance["package_version"], str)
+             and re.fullmatch(r"v[1-9][0-9]*", provenance["package_version"]) is not None
+             and isinstance(provenance["assembler_commit"], str)
+             and re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", provenance["assembler_commit"]) is not None
              and isinstance(provenance["assembler_source_sha256"], str)
              and _sha_pattern.fullmatch(provenance["assembler_source_sha256"]) is not None,
              "combined provenance identity differs")
@@ -303,18 +368,37 @@ def certify_combined_package(package_root, run2_package, run3_package, *, expect
              and type(provenance["packaged_root_count"]) is int
              and provenance["packaged_txt_count"] == len(mapping)
              and provenance["packaged_root_count"] == len(mapping), "packaged counts differ")
+    checks["provenance"] = {"result": "pass", "evidence": {"declared_txt": provenance["packaged_txt_count"],
+                           "declared_root": provenance["packaged_root_count"]}, "failures": []}
+    result["current_check"] = "consumer_references"
     readme = (package_root / "README.md").read_text(encoding="utf-8")
     for clause in ("cards/", "ordered_card_inputs.txt", "combined_mapping_manifest.json", "scalings.json",
                    f"cd {output}", "mapfile -t cards < ordered_card_inputs.txt",
                    'combineCards.py "${cards[@]}" > combinedcard.txt', "wildcard/glob"):
         _require(clause in readme, f"README omits consumer contract: {clause}")
-    for name in _output_names - {"cards", "scalings.json"}:
-        raw = (package_root / name).read_bytes()
-        _require(str(package_root).encode() not in raw if package_root != output else True,
-                 "consumer metadata leaks staging path")
-    return {"schema": "topeft_combined_source_certification_v1", "package_root": str(output),
-            "source_packages": {"run2": str(run2["root"]), "run3": str(run3["root"])},
-            "card_count": len(mapping), "scaling_record_count": len(observed_scalings), "certified": True}
+    _scan_forbidden_references(package_root, output, run2["root"], run3["root"], expected_names)
+    checks["consumer_references"] = {"result": "pass", "evidence": {"text_members": 5 + len(mapping)}, "failures": []}
+
+
+def certify_combined_package(package_root, run2_package, run3_package, *, expected_output=None):
+    """Return a source-bound PASS or FAIL result from reopened files."""
+    package_root = Path(package_root)
+    output = Path(expected_output) if expected_output is not None else package_root
+    result = {"schema": "topeft_combined_source_certification_v1", "result": "fail",
+              "package_root": str(output), "run2_package": str(run2_package), "run3_package": str(run3_package),
+              "run2_source_inventory_sha256": None, "run3_source_inventory_sha256": None,
+              "observed_counts": {}, "checks": {}, "missing_paths": [], "extra_paths": [],
+              "mismatches": [], "certification_observed_at": datetime.now(timezone.utc).isoformat()}
+    try:
+        _certify_details(package_root, run2_package, run3_package, output, result)
+    except (ValueError, KeyError, TypeError, UnicodeError, OSError) as error:
+        check_id = result["current_check"]
+        result["checks"][check_id] = {"result": "fail", "evidence": {}, "failures": [str(error)]}
+        result["mismatches"].append({"check_id": check_id, "detail": str(error)})
+    else:
+        result["result"] = "pass"
+    result.pop("current_check", None)
+    return result
 
 
 def build_combined_package(run2_package, run3_package, output, analysis, package_date, package_version):
@@ -364,13 +448,33 @@ def build_combined_package(run2_package, run3_package, output, analysis, package
         "packaged_txt_count": len(mapping), "packaged_root_count": len(mapping),
     }
     _write_json(staging / "package-provenance.json", provenance)
-    certify_combined_package(staging, run2["root"], run3["root"], expected_output=output)
+    staging_certification = certify_combined_package(staging, run2["root"], run3["root"], expected_output=output)
+    _require(staging_certification["result"] == "pass",
+             "private staging certification failed: " + str(staging_certification["mismatches"]))
     _require(not output.exists() and not output.is_symlink(), "final output appeared before publication")
     staging.rename(output)
-    _require(_plain_directory(output) and not staging.exists()
-             and _read_json(output / "combined_mapping_manifest.json")["package_root"] == str(output),
-             "publication readback differs")
-    return provenance
+    final_certification = certify_combined_package(output, run2["root"], run3["root"])
+    if final_certification["result"] != "pass":
+        raise PublishedButNotCertified(final_certification)
+    return {"schema": "topeft_combined_package_build_v1", "result": "pass",
+            "package_root": str(output), "post_publication_certification": final_certification}
+
+
+def _write_certification_report(path, result, roots):
+    path = Path(path)
+    _require(path.is_absolute(), "report path must be absolute")
+    _require(all(path != root and root not in path.parents for root in roots),
+             "report path must be outside package roots")
+    temporary_path = None
+    try:
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent,
+                                         prefix=f".{path.name}.", delete=False) as report:
+            temporary_path = Path(report.name)
+            report.write(json.dumps(result, indent=2, sort_keys=True, allow_nan=False) + "\n")
+        os.link(temporary_path, path)
+    finally:
+        if temporary_path is not None:
+            temporary_path.unlink()
 
 
 def main(argv=None):
@@ -387,14 +491,29 @@ def main(argv=None):
     certify.add_argument("--package-root", type=Path, required=True)
     certify.add_argument("--run2-package", type=Path, required=True)
     certify.add_argument("--run3-package", type=Path, required=True)
+    certify.add_argument("--report-json", type=Path)
     args = parser.parse_args(argv)
     if args.command == "build":
-        build_combined_package(args.run2_package, args.run3_package, args.output,
-                               args.analysis, args.package_date, args.package_version)
+        try:
+            result = build_combined_package(args.run2_package, args.run3_package, args.output,
+                                            args.analysis, args.package_date, args.package_version)
+        except PublishedButNotCertified as error:
+            print(json.dumps({"schema": "topeft_combined_package_build_v1", "result": "fail",
+                              "state": "published_but_not_certified", "package_root": str(args.output),
+                              "post_publication_certification": error.certification_result}, sort_keys=True))
+            return 1
     else:
-        print(json.dumps(certify_combined_package(args.package_root, args.run2_package, args.run3_package),
-                         sort_keys=True))
-    return 0
+        roots = (args.package_root, args.run2_package, args.run3_package)
+        if args.report_json is not None:
+            _require(args.report_json.is_absolute() and not args.report_json.exists()
+                     and not args.report_json.is_symlink(), "report path must be absent and absolute")
+            _require(all(args.report_json != root and root not in args.report_json.parents for root in roots),
+                     "report path must be outside package roots")
+        result = certify_combined_package(*roots)
+        if args.report_json is not None:
+            _write_certification_report(args.report_json, result, roots)
+    print(json.dumps(result, sort_keys=True, allow_nan=False))
+    return 0 if result["result"] == "pass" else 1
 
 
 if __name__ == "__main__":
