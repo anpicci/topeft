@@ -62,6 +62,11 @@ def _manifest(output):
     return json.loads((output / "combined_mapping_manifest.json").read_text())
 
 
+def _tree_snapshot(root):
+    return {path.relative_to(root).as_posix(): path.read_bytes() if path.is_file() else b"<directory>"
+            for path in sorted(root.rglob("*"))}
+
+
 def _refresh_hash(output, key, file_name):
     provenance_path = output / "package-provenance.json"
     provenance = json.loads(provenance_path.read_text())
@@ -356,6 +361,43 @@ def test_certifier_rejects_exact_forbidden_readme_reference(tmp_path, sources, r
     _assert_certification_fail(output, sources, "consumer_references")
 
 
+def test_prefix_sharing_sibling_output_is_valid(tmp_path, sources):
+    output = tmp_path / "run2_combined"
+    assert not combined._resolved_trees_overlap(sources[0], output)
+    combined.build_combined_package(*sources, output, "TOP-26-006", "260925", "v1")
+    result = combined.certify_combined_package(output, *sources)
+    assert result["result"] == "pass"
+
+
+def test_report_json_symlink_escape_is_rejected_without_package_mutation(tmp_path, sources, capsys):
+    output = _build(tmp_path, sources)
+    report_link = tmp_path / "reportlink"
+    report_link.symlink_to(output, target_is_directory=True)
+    report_path = report_link / "certification.json"
+    before = _tree_snapshot(output)
+    with pytest.raises(SystemExit) as exc:
+        combined.main(["certify", "--package-root", str(output), "--run2-package", str(sources[0]),
+                       "--run3-package", str(sources[1]), "--report-json", str(report_path)])
+    capsys.readouterr()
+    assert exc.value.code != 0
+    assert not report_path.exists()
+    assert _tree_snapshot(output) == before
+
+
+def test_output_nested_in_run2_is_rejected_before_any_mutation(tmp_path, sources):
+    run2, run3 = sources
+    run2_before = _tree_snapshot(run2)
+    run3_before = _tree_snapshot(run3)
+    output = run2 / "combined"
+    staging = run2 / ".combined.staging"
+    with pytest.raises(ValueError, match="trees must be disjoint"):
+        combined.build_combined_package(run2, run3, output, "TOP-26-006", "260925", "v1")
+    assert not output.exists()
+    assert not staging.exists()
+    assert _tree_snapshot(run2) == run2_before
+    assert _tree_snapshot(run3) == run3_before
+
+
 def test_certification_report_pass_fail_and_no_overwrite(tmp_path, sources, capsys):
     output = tmp_path / "combined"
     build_result = combined.build_combined_package(*sources, output, "TOP-26-006", "260925", "v1")
@@ -373,8 +415,9 @@ def test_certification_report_pass_fail_and_no_overwrite(tmp_path, sources, caps
     }
     assert len(result["run2_source_inventory_sha256"]) == 64
     assert all(check["result"] == "pass" for check in result["checks"].values())
-    with pytest.raises(ValueError, match="report path must be absent"):
+    with pytest.raises(SystemExit) as exc:
         combined.main(args)
+    assert exc.value.code != 0
     assert json.loads(report_path.read_text()) == result
     root = next((output / "cards").glob("*.root"))
     root.write_bytes(root.read_bytes() + b"corrupt")

@@ -46,6 +46,40 @@ def _require(condition, message):
         raise ValueError(message)
 
 
+def _resolved_trees_overlap(first, second):
+    first = Path(first).resolve()
+    second = Path(second).resolve()
+    return first == second or first in second.parents or second in first.parents
+
+
+def _validate_build_path_disjointness(run2_package, run3_package, output, staging):
+    run2_root = Path(run2_package).resolve(strict=True)
+    run3_root = Path(run3_package).resolve(strict=True)
+    output_root = output.parent.resolve(strict=True) / output.name
+    staging_root = staging.parent.resolve(strict=True) / staging.name
+    package_trees = (run2_root, run3_root, output_root, staging_root)
+    for index, first in enumerate(package_trees):
+        for second in package_trees[index + 1:]:
+            _require(not _resolved_trees_overlap(first, second),
+                     "source package, output, and staging trees must be disjoint")
+
+
+def _resolved_report_path(report_path, protected_roots):
+    report_path = Path(report_path)
+    _require(report_path.is_absolute(), "report path must be absolute")
+    _require(report_path.name not in {"", ".", ".."}, "report path must name a file")
+    _require(report_path.parent.is_dir(), "report parent must already exist")
+    resolved_parent = report_path.parent.resolve(strict=True)
+    resolved_report = resolved_parent / report_path.name
+    for protected_root in protected_roots:
+        protected_root = Path(protected_root).resolve()
+        _require(not _resolved_trees_overlap(resolved_report, protected_root),
+                 "report path must be outside protected package roots")
+    _require(not resolved_report.exists() and not resolved_report.is_symlink(),
+             "report path must be absent")
+    return resolved_report
+
+
 def _read_json(path):
     return json.loads(Path(path).read_text(encoding="utf-8"))
 
@@ -232,7 +266,17 @@ def _scan_forbidden_references(package_root, output, run2_root, run3_root, card_
     for path in paths:
         raw = path.read_bytes()
         for reference in forbidden:
-            _require(reference.encode("utf-8") not in raw,
+            reference_bytes = reference.encode("utf-8")
+            offset = raw.find(reference_bytes)
+            matched = False
+            while offset >= 0:
+                end = offset + len(reference_bytes)
+                if end == len(raw) or raw[end:end + 1] == b"/" or not (
+                        raw[end:end + 1].isalnum() or raw[end:end + 1] in (b"_", b"-", b".")):
+                    matched = True
+                    break
+                offset = raw.find(reference_bytes, offset + 1)
+            _require(not matched,
                      f"consumer text contains forbidden path: {path.relative_to(package_root)}")
 
 
@@ -406,6 +450,7 @@ def build_combined_package(run2_package, run3_package, output, analysis, package
     _require(output.is_absolute() and output.name not in {"", ".", ".."}, "output must be absolute")
     _require(_plain_directory(output.parent), "output parent does not exist")
     staging = output.parent / f".{output.name}.staging"
+    _validate_build_path_disjointness(run2_package, run3_package, output, staging)
     _require(not output.exists() and not output.is_symlink(), "final output already exists")
     _require(not staging.exists() and not staging.is_symlink(), "private staging already exists")
     _require(isinstance(analysis, str) and bool(analysis.strip())
@@ -461,10 +506,7 @@ def build_combined_package(run2_package, run3_package, output, analysis, package
 
 
 def _write_certification_report(path, result, roots):
-    path = Path(path)
-    _require(path.is_absolute(), "report path must be absolute")
-    _require(all(path != root and root not in path.parents for root in roots),
-             "report path must be outside package roots")
+    path = _resolved_report_path(path, roots)
     temporary_path = None
     try:
         with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent,
@@ -505,10 +547,10 @@ def main(argv=None):
     else:
         roots = (args.package_root, args.run2_package, args.run3_package)
         if args.report_json is not None:
-            _require(args.report_json.is_absolute() and not args.report_json.exists()
-                     and not args.report_json.is_symlink(), "report path must be absent and absolute")
-            _require(all(args.report_json != root and root not in args.report_json.parents for root in roots),
-                     "report path must be outside package roots")
+            try:
+                args.report_json = _resolved_report_path(args.report_json, roots)
+            except (OSError, ValueError) as error:
+                parser.error(str(error))
         result = certify_combined_package(*roots)
         if args.report_json is not None:
             _write_certification_report(args.report_json, result, roots)
