@@ -110,13 +110,15 @@ def load_golden_fixture(path):
             raise ValueError("provenance contract is malformed")
         stable = contract["required_stable_semantic_values"]
         stable_keys = {"schema", "artifact_type", "analysis", "packaged_txt_count", "packaged_root_count",
-                       "scalings_sha256", "source_scalings_sha256"}
+                       "scalings_sha256"}
         reference_keys = {"assembler_commit", "assembler_source_sha256", "manifest_sha256",
-                          "ordered_card_inputs_sha256", "package_date", "package_version", "source_mapping_sha256"}
+                          "ordered_card_inputs_sha256", "package_date", "package_version", "source_mapping_sha256",
+                          "source_scalings_sha256"}
         variable_keys = {"package_root", "package_date", "package_version", "created_at",
                          "assembler_commit", "assembler_source_sha256"}
         conditional = {"manifest_sha256": "combined_mapping_semantics_equal",
-                       "source_mapping_sha256": "combined_mapping_semantics_equal"}
+                       "source_mapping_sha256": "combined_mapping_semantics_equal",
+                       "source_scalings_sha256": "combined_scalings_exact"}
         if (not isinstance(stable, dict) or set(stable) != stable_keys
                 or not isinstance(contract["reference_values"], dict)
                 or set(contract["reference_values"]) != reference_keys
@@ -174,7 +176,7 @@ def _normalize_mapping(rows):
     return normalized
 
 
-def _compare_provenance(fixture, package_root, result, mapping_equal):
+def _compare_provenance(fixture, package_root, result, mapping_equal, combined_scalings_exact):
     path = Path(package_root) / "package-provenance.json"
     contract = fixture["provenance_comparison_contract"]
     if not path.is_file():
@@ -205,6 +207,8 @@ def _compare_provenance(fixture, package_root, result, mapping_equal):
             result["allowed_provenance_deltas"].append({"key": key, "reference": expected, "observed": observed[key]})
         elif key in ("manifest_sha256", "source_mapping_sha256") and mapping_equal:
             result["allowed_provenance_deltas"].append({"key": key, "reference": expected, "observed": observed[key], "basis": "combined_mapping_semantics_equal"})
+        elif key == "source_scalings_sha256" and combined_scalings_exact:
+            result["allowed_provenance_deltas"].append({"key": key, "reference": expected, "observed": observed[key], "basis": "combined_scalings_exact"})
         else:
             result["unexpected_provenance_deltas"].append({"key": key, "reference": expected, "observed": observed[key]})
     if "package_root" in observed:
@@ -234,11 +238,13 @@ def compare_package(fixture, package_root, physical_to_chN=None):
                 result["payload_mismatches"].append({"kind": kind, "basename": name, "reason": "missing"})
             elif observed[name] != expected[name]:
                 result["payload_mismatches"].append({"kind": kind, "basename": name, "reason": "sha256", "expected": expected[name], "observed": observed[name]})
-    for filename, key in (("scalings.json", "scalings_sha256"),):
-        path = package_root / filename
-        observed = _sha256(path) if path.is_file() else None
-        if observed != fixture[key]:
-            result["payload_mismatches"].append({"kind": filename, "basename": filename, "expected": fixture[key], "observed": observed})
+    scalings_path = package_root / "scalings.json"
+    observed_scalings_sha256 = _sha256(scalings_path) if scalings_path.is_file() else None
+    combined_scalings_exact = observed_scalings_sha256 == fixture["scalings_sha256"]
+    if not combined_scalings_exact:
+        result["payload_mismatches"].append({"kind": "scalings.json", "basename": scalings_path.name,
+                                              "expected": fixture["scalings_sha256"],
+                                              "observed": observed_scalings_sha256})
     if "era" in fixture:
         path = package_root / "selectedWCs.txt"
         observed = _sha256(path) if path.is_file() else None
@@ -305,5 +311,5 @@ def compare_package(fixture, package_root, physical_to_chN=None):
             result["semantic_contract_mismatches"].append({"artifact": "README.md", "reason": "ordered_list_or_glob_contract_missing"})
     except OSError as exc:
         result["semantic_contract_mismatches"].append({"artifact": "README.md", "reason": str(exc)})
-    _compare_provenance(fixture, package_root, result, mapping_equal)
+    _compare_provenance(fixture, package_root, result, mapping_equal, combined_scalings_exact)
     return result

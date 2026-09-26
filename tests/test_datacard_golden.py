@@ -40,13 +40,13 @@ def _combined(tmp_path, cards=True):
     _write_json(package / "combined_mapping_manifest.json", {"schema": "TOP26006_v1", "artifact_type": "combined_mapping_manifest", "rows": mapping})
     (package / "README.md").write_text('mapfile -t cards < ordered_card_inputs.txt\ncombineCards.py "${cards[@]}" > combinedcard.txt\nDo not use a wildcard/glob.\n')
     stable = {"schema": "TOP26006_v1", "artifact_type": "package_provenance", "analysis": "TOP-26-006",
-              "packaged_txt_count": 2, "packaged_root_count": 2, "scalings_sha256": _sha(b"scalings"),
-              "source_scalings_sha256": {"run2": "c" * 64, "run3": "d" * 64}}
+              "packaged_txt_count": 2, "packaged_root_count": 2, "scalings_sha256": _sha(b"scalings")}
     reference = {"assembler_commit": "e" * 40, "assembler_source_sha256": "f" * 64,
                  "manifest_sha256": _sha((package / "combined_mapping_manifest.json").read_bytes()),
                  "ordered_card_inputs_sha256": _sha((package / "ordered_card_inputs.txt").read_bytes()),
                  "package_date": "260924", "package_version": "v1",
-                 "source_mapping_sha256": {"run2": "a" * 64, "run3": "b" * 64}}
+                 "source_mapping_sha256": {"run2": "a" * 64, "run3": "b" * 64},
+                 "source_scalings_sha256": {"run2": "c" * 64, "run3": "d" * 64}}
     provenance = stable | reference | {"package_root": "historical-root"}
     _write_json(package / "package-provenance.json", provenance)
     fixture = {
@@ -61,7 +61,9 @@ def _combined(tmp_path, cards=True):
         "provenance_comparison_contract": {
             "required_stable_semantic_values": stable, "reference_values": reference,
             "allowed_variable_keys": ["package_root", "package_date", "package_version", "created_at", "assembler_commit", "assembler_source_sha256"],
-            "conditional_digest_deltas": {"manifest_sha256": "combined_mapping_semantics_equal", "source_mapping_sha256": "combined_mapping_semantics_equal"}},
+            "conditional_digest_deltas": {"manifest_sha256": "combined_mapping_semantics_equal",
+                                          "source_mapping_sha256": "combined_mapping_semantics_equal",
+                                          "source_scalings_sha256": "combined_scalings_exact"}},
         "target_layout_contract": {"payload_subdirectory": "cards"},
         "target_package_naming_contract": "top26006_combined_package_<date>_vN",
     }
@@ -107,6 +109,57 @@ def test_cards_only_package_passes(tmp_path):
     assert result["payload_mismatches"] == []
     assert result["semantic_contract_mismatches"] == []
     assert result["unexpected_provenance_deltas"] == []
+
+
+def test_accepted_combined_reference_fixture_remains_valid():
+    fixture_path = Path(__file__).parent / "data/datacard_packages/top26006_combined_golden_v1.json"
+    fixture = load_golden_fixture(fixture_path)
+    contract = fixture["provenance_comparison_contract"]
+    assert contract["reference_values"]["source_scalings_sha256"] == {
+        "run2": "789c115afd9838488fcdd2e96705c31c51843e0a45cf2790cc0ecc917d575d47",
+        "run3": "a5709ab85012201a11923499e946842dc2abd8e05d26abfce4a87cd0908123ef",
+    }
+    assert contract["required_stable_semantic_values"]["scalings_sha256"] == fixture["scalings_sha256"]
+
+
+def test_source_scalings_delta_allowed_when_final_combined_scalings_match(tmp_path):
+    package, fixture_path = _combined(tmp_path)
+    provenance_path = package / "package-provenance.json"
+    provenance = json.loads(provenance_path.read_text())
+    provenance["source_scalings_sha256"] = {"run2": "0" * 64, "run3": "1" * 64}
+    _write_json(provenance_path, provenance)
+
+    result = compare_package(load_golden_fixture(fixture_path), package)
+
+    assert result["payload_mismatches"] == []
+    assert result["semantic_contract_mismatches"] == []
+    assert {row["basis"] for row in result["allowed_provenance_deltas"]
+            if row["key"] == "source_scalings_sha256"} == {"combined_scalings_exact"}
+    assert result["unexpected_provenance_deltas"] == []
+
+
+def test_source_scalings_delta_rejected_when_final_combined_scalings_differ(tmp_path):
+    package, fixture_path = _combined(tmp_path)
+    provenance_path = package / "package-provenance.json"
+    provenance = json.loads(provenance_path.read_text())
+    provenance["source_scalings_sha256"] = {"run2": "0" * 64, "run3": "1" * 64}
+    _write_json(provenance_path, provenance)
+    (package / "scalings.json").write_bytes(b"different final scalings")
+
+    result = compare_package(load_golden_fixture(fixture_path), package)
+
+    assert any(row["kind"] == "scalings.json" for row in result["payload_mismatches"])
+    assert any(row["key"] == "source_scalings_sha256"
+               for row in result["unexpected_provenance_deltas"])
+    assert not any(row["key"] == "source_scalings_sha256"
+                   for row in result["allowed_provenance_deltas"])
+
+
+def test_final_combined_scalings_golden_mismatch_remains_hard_failure(tmp_path):
+    package, fixture_path = _combined(tmp_path)
+    (package / "scalings.json").write_bytes(b"different final scalings")
+    result = compare_package(load_golden_fixture(fixture_path), package)
+    assert any(row["kind"] == "scalings.json" for row in result["payload_mismatches"])
 
 
 def test_flat_only_candidate_rejected(tmp_path):

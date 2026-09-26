@@ -3122,7 +3122,8 @@
     ],
     "conditional_digest_deltas": {
       "manifest_sha256": "combined_mapping_semantics_equal",
-      "source_mapping_sha256": "combined_mapping_semantics_equal"
+      "source_mapping_sha256": "combined_mapping_semantics_equal",
+      "source_scalings_sha256": "combined_scalings_exact"
     },
     "reference_values": {
       "assembler_commit": "2bee7689470178e2c8f6f23fca6d5271d9efd69d",
@@ -3134,6 +3135,10 @@
       "source_mapping_sha256": {
         "run2": "f19bc8bab9922019ba2c103195bc429e2d11559f3ba0990251d201d99777f802",
         "run3": "fe2e612884b178ef96128b7211775be98eae171d701a358d613d302d93fd92de"
+      },
+      "source_scalings_sha256": {
+        "run2": "789c115afd9838488fcdd2e96705c31c51843e0a45cf2790cc0ecc917d575d47",
+        "run3": "a5709ab85012201a11923499e946842dc2abd8e05d26abfce4a87cd0908123ef"
       }
     },
     "required_stable_semantic_values": {
@@ -3142,11 +3147,7 @@
       "packaged_root_count": 258,
       "packaged_txt_count": 258,
       "scalings_sha256": "0356fde7e341bcce08753f789508782b6b186771ced539e4d6906ef86999733f",
-      "schema": "TOP26006_v1",
-      "source_scalings_sha256": {
-        "run2": "789c115afd9838488fcdd2e96705c31c51843e0a45cf2790cc0ecc917d575d47",
-        "run3": "a5709ab85012201a11923499e946842dc2abd8e05d26abfce4a87cd0908123ef"
-      }
+      "schema": "TOP26006_v1"
     }
   },
   "readme_operational_contract": {
