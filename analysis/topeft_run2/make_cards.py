@@ -8,7 +8,7 @@ import pickle
 import numpy as np
 
 from topcoffea.modules.utils import regex_match,clean_dir,dict_comp
-from topeft.modules.datacard_tools import *
+import topeft.modules.datacard_tools as datacard_tools
 from topeft.modules.histogram_artifact import write_histogram_artifact
 from topeft.modules.axis_binning import BINNING_MODES
 
@@ -448,7 +448,7 @@ def main():
     if args.condor and args.merge_only:
         parser.error("--merge-only and --condor cannot be used together.")
 
-    merged_hists, merge_report = load_and_merge_histogram_pkls(
+    merged_hists, merge_report = datacard_tools.load_and_merge_histogram_pkls(
         pkl_files,
         require_sumw2=True,
         year_coverage_policy=args.year_coverage_policy,
@@ -463,7 +463,7 @@ def main():
         return
 
     tic = time.time()
-    dc = DatacardMaker(hists=merged_hists,**kwargs)
+    dc = datacard_tools.DatacardMaker(hists=merged_hists,**kwargs)
 
     # convert wc_vals string to a dictionary
     wc_vals = ''.join(wc_vals)
