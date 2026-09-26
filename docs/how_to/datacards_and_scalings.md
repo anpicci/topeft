@@ -10,19 +10,23 @@ run and resume it.
 | Interface | Purpose | Inputs and defaults | Outputs and checks |
 | --- | --- | --- | --- |
 | `make_cards.py` | Merge histogram inputs and select WCs, channels, and variables | Fitting binning, year coverage `warn`, Asimov data, no nuisances or MC-stat opt-in | `DatacardMaker` writes TXT cards, ROOT templates, and scaling records; local or Condor execution |
-| `make_datacard_matrix_manifest.py` | Prepare standard Run 2 or Run 3 production rows | Era, group PKLs, runtime paths, and fresh manifest path | Writes a concrete matrix manifest; does not produce cards |
-| `build_per_era_datacard_package.py build` | Build one Run 2 or Run 3 package | Era, one or more matrix manifests with completed rows, fresh absolute output; default `ALL_CH_LST_SR` channel set | Requires exactly the requested physical targets, checks recorded source files, and writes cards, WCs, scalings, and per-era `chN` |
+| `make_datacard_matrix_manifest.py` | Prepare standard Run 2 or Run 3 production rows | Era, `--input-pkl ROLE=PATH` bindings, runtime paths, and fresh manifest path | Writes a concrete matrix manifest; does not produce cards |
+| `build_per_era_datacard_package.py build` | Build one Run 2 or Run 3 package | Era, one or more matrix manifests with completed rows, and a fresh absolute output | Requires exactly the targets declared by the manifest rows, checks recorded source files, and writes cards, WCs, scalings, and per-era `chN` |
 | `build_combined_datacard_package.py build` | Build a cards-only Run 2 + Run 3 package | Two per-era packages with the same physical target set, fresh absolute output, analysis, package date, and version | Writes the combined mapping, ordered card list, and scalings; checks the package against its inputs; does not run Combine |
 | EFTFit/Combine | Combine cards and construct the statistical model | Packaged cards and scalings plus fit configuration | Creates `combinedcard.txt` and the workspace after package construction |
 
 The region → distribution → binning choices come from repository configuration:
 physical regions and jet populations are defined in `topeft/channels/ch_lst.json`;
-the per-era builder chooses each region's card distribution (`lj0pt`, `ptz`, `ptll`,
-`ptz_wtau`, or `lt`); `topeft/modules/axes.py` supplies processing/fitting
+the standard matrix profile assigns each region's card distribution (`lj0pt`,
+`ptz`, `ptll`, `ptz_wtau`, or `lt`); `topeft/modules/axes.py` supplies processing/fitting
 edges. A matrix manifest records the selected production rows; it does not
 redefine the region or binning configuration.
 
-## Create individual cards and templates
+## Path 1: create cards and templates directly
+
+This path needs PKLs and `make_cards.py`, with no matrix manifest. It suits
+individual or interactive card production. Per-era packaging uses the matrix
+workflow described below.
 
 From `analysis/topeft_run2`:
 
@@ -65,7 +69,7 @@ exist as histogram families in the merged input.
 - Choose processing or fitting edges through `--binning`; change definitions at
   `topeft/modules/axes.py`, following the [binning guide](flexible_binning.md).
 - Use `--miss-parton-file` and `--sr-registry` to select existing supported
-  configuration. Do not duplicate payload or registry data in an operator
+  configuration. Do not duplicate payload or registry data in a local
   wrapper.
 - `--rate-syst-json` overrides the run-era rate-systematics JSON path. An
   explicit value is forwarded to `DatacardMaker` as `rate_systs_path`; when it
@@ -105,19 +109,22 @@ Card changes can affect template shapes, nuisance content, WC selection, the
 preselected scaling records, and every later EFT fit. Validate the card/template
 pair together rather than checking the text card alone.
 
-## Run a datacard matrix resumably
+## Path 2: run a datacard matrix resumably
 
-For the standard Run 2 or Run 3 rows, create a manifest from the four PKL
-groups rather than writing the channel/distribution matrix by hand. From the
-repository root, substitute the paths for the selected era:
+For standard multi-row production and packaging, bind each input role in the
+selected era's profile to a new PKL. Run 2 uses `block1` through `block5`;
+Run 3 uses `2l_mixed`, `3l_m_offz`, `3l_p_offz`, `3l_onz_tau`, and `3l_fwd`.
+These roles reflect the PKL blocks supplied to the standard rows. From the
+repository root, a Run 3 invocation is:
 
 ```bash
 python analysis/topeft_run2/make_datacard_matrix_manifest.py \
   --era run3 \
-  --mixed-pkl /absolute/path/to/mixed.pkl.gz \
-  --offz-pkl /absolute/path/to/offz.pkl.gz \
-  --onz-tau-pkl /absolute/path/to/onz-tau.pkl.gz \
-  --fwd-pkl /absolute/path/to/fwd.pkl.gz \
+  --input-pkl 2l_mixed=/absolute/path/to/2l-mixed.pkl.gz \
+  --input-pkl 3l_m_offz=/absolute/path/to/3l-m-offz.pkl.gz \
+  --input-pkl 3l_p_offz=/absolute/path/to/3l-p-offz.pkl.gz \
+  --input-pkl 3l_onz_tau=/absolute/path/to/3l-onz-tau.pkl.gz \
+  --input-pkl 3l_fwd=/absolute/path/to/3l-fwd.pkl.gz \
   --python-executable /absolute/path/to/python \
   --missing-parton-file /absolute/path/to/missing-parton.root \
   --runtime-contract-id run3-cards-001 \
@@ -126,15 +133,18 @@ python analysis/topeft_run2/make_datacard_matrix_manifest.py \
   --manifest-output /absolute/path/to/run3-matrix.json
 ```
 
-Use `--era run2` and the corresponding Run 2 PKLs and missing-parton file for
-Run 2. The helper reads the physical channels and distribution choices from
-`ch_lst.json`, selects the era's years, and writes the nine standard rows.
+For Run 2, use `--era run2`, five `--input-pkl` bindings named `block1` through
+`block5`, and the Run 2 missing-parton file. The helper combines the maintained
+channel registry with `datacard_matrix_profiles.json`, selects the era's years,
+and writes 11 standard rows for the full fit.
 It records the selected Python interpreter and hashes `make_cards.py`; repeat
 `--runtime-file` for other files to include in the runner's runtime check.
-The manifest path must be new. A restricted fit can repeat
-`--physical-target <channel>_<distribution>` for each requested target; only
-PKL groups used by those rows are then required. Use the same target selection
-when building the per-era package.
+The manifest path must be new. For a maintained restricted fit, use
+`--channel-set-key OFFZ_SPLIT_CH_LST_SR`. For a one-off subset, repeat
+`--physical-target <channel>_<distribution>` as an advanced generator option.
+Only PKL roles used by the selected rows are required. Make the same physical
+subset in the Run 2 and Run 3 manifests before running either matrix: Run 2
+manifest X and Run 3 manifest X produce packages with the same surface X.
 
 The manifest uses the `topeft_datacard_matrix_v2` schema. Each row records its
 input PKL, literal channel arguments, distribution, years, output paths,
@@ -156,8 +166,9 @@ absolute directory, so it does not depend on the checkout location or the
 caller's current working directory. It prefers `python` and falls back to
 `python3` for the runner engine bootstrap.
 
-For a long run, a named `tmux` session lets the operator detach without
-terminating the runner. Inspect `--plan-only` and
+Tip: A persistent terminal session such as `tmux` can be useful for
+long-running jobs that should continue after the terminal disconnects.
+Inspect `--plan-only` and
 `--status` first, and keep the manifest unchanged during an
 attempt. The runner validates the schema and runtime fingerprints before plan
 or execution, holds one OS advisory lock for a mutating run, and directly runs
@@ -211,7 +222,7 @@ The steps are:
 
 ## Build per-era packages
 
-`make_cards.py` or the resumable runner produces individual TXT/ROOT pairs
+The resumable runner produces individual TXT/ROOT pairs
 and row-local `selectedWCs.txt` and `scalings-preselect.json`. The last row's
 shared metadata files are not a complete era package. Supply the completed
 matrix-v2 manifests to the per-era builder; repeat
@@ -227,23 +238,22 @@ python analysis/topeft_run2/build_per_era_datacard_package.py build \
 ```
 
 Repeat with `--era run3`, its completed manifest(s), and a distinct fresh
-output. The builder defaults to the `ALL_CH_LST_SR` channel set in
-`topeft/channels/ch_lst.json`; `--channel-registry` and
-`--channel-set-key` select an alternative channel set. It rechecks
-receipt-bound source files and exact card/template pairs, assigns deterministic
+output. The builder takes its requested physical targets from the supplied
+manifest rows. It rechecks receipt-bound source files and exact card/template
+pairs, assigns deterministic
 per-era `chN` labels, consolidates selected WCs and scaling records, and
 publishes `cards/`, `selectedWCs.txt`, `scalings.json`,
 `physical_to_chN.json`, and `package-provenance.json`. Duplicate scaling
 identities are rejected. `combinedcard.txt` is not built here.
 
-For a restricted fit, repeat `--physical-target` with exactly the same
-physical targets selected for manifest generation. The builder requires the
-completed rows to provide exactly the requested set. On a mismatch it lists
-missing and extra targets separately. For a missing target present in a
+For a restricted fit, select the same physical subset in each era's manifest.
+Run the two manifests, then build each package without repeating the selection.
+The builder requires the completed rows to provide exactly the manifest-declared
+set. On a mismatch it lists missing and extra targets separately. For a missing target present in a
 supplied manifest, it names the manifest and row and prints the runner's
 `--status` and resume commands. Check status before deciding whether to resume;
-the builder never runs producer rows. If no supplied manifest contains the
-target, generate or supply one that does.
+the builder never runs producer rows.
+The combined builder accepts X with X and rejects X with a different subset Y.
 
 ## Build and consume a combined Run 2 + Run 3 package
 

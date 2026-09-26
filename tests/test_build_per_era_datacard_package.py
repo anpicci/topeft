@@ -149,10 +149,8 @@ def test_partial_manifest_and_later_success(tmp_path):
     assert hashes == [hashlib.sha256(path.read_bytes()).hexdigest() for path in (plan, later)]
 
 
-def test_cli_missing_target_reports_matrix_row_and_runner_commands(tmp_path, monkeypatch):
+def test_cli_missing_target_reports_matrix_row_and_runner_commands(tmp_path):
     plan, _ = _partial_manifest(tmp_path)
-    monkeypatch.setattr(builder, "_canonical_physical_names",
-                        lambda registry, key: ["alpha_ptz", "beta_ptz"])
     output = tmp_path / "package"
     with pytest.raises(ValueError) as exc:
         builder.main(["build", "--era", "run2", "--matrix-manifest", str(plan),
@@ -166,26 +164,25 @@ def test_cli_missing_target_reports_matrix_row_and_runner_commands(tmp_path, mon
     assert not output.exists()
 
 
-def test_cli_distinguishes_target_without_row_and_extra_target(tmp_path, monkeypatch):
+def test_cli_uses_only_manifest_surface_for_restricted_package(tmp_path):
     first, _, _, _ = _manifest_receipt(tmp_path / "first", "unit_01", "alpha")
-    second, _, _, _ = _manifest_receipt(tmp_path / "second", "unit_02", "beta")
-    monkeypatch.setattr(builder, "_canonical_physical_names",
-                        lambda registry, key: ["alpha_ptz", "beta_ptz", "gamma_ptz"])
     output = tmp_path / "package"
-    with pytest.raises(ValueError) as missing:
+    assert builder.main(["build", "--era", "run2", "--matrix-manifest", str(first),
+                         "--output", str(output), "--analysis", "TOP-26-006"]) == 0
+    assert json.loads((output / "physical_to_chN.json").read_text()) == [
+        {"physical_name": "alpha_ptz", "per_era_chN": "ch1"}]
+    with pytest.raises(SystemExit):
         builder.main(["build", "--era", "run2", "--matrix-manifest", str(first),
                       "--output", str(output), "--analysis", "TOP-26-006",
-                      "--physical-target", "gamma_ptz"])
-    assert "gamma_ptz: no row in the supplied matrix manifests" in str(missing.value)
-    assert "extra=['alpha_ptz']" in str(missing.value)
-    assert "--status" not in str(missing.value)
-    with pytest.raises(ValueError) as extra:
-        builder.main(["build", "--era", "run2", "--matrix-manifest", str(first),
-                      "--matrix-manifest", str(second), "--output", str(output),
-                      "--analysis", "TOP-26-006", "--physical-target", "alpha_ptz"])
-    assert "missing=[]" in str(extra.value)
-    assert "extra=['beta_ptz']" in str(extra.value)
-    assert not output.exists()
+                      "--physical-target", "alpha_ptz"])
+    assert output.is_dir()
+
+
+def test_duplicate_manifest_target_blocks_before_packaging(tmp_path):
+    first, _, _, _ = _manifest_receipt(tmp_path / "first", "unit_01", "alpha")
+    second, _, _, _ = _manifest_receipt(tmp_path / "second", "unit_02", "alpha")
+    with pytest.raises(ValueError, match="duplicate manifest physical target"):
+        builder._declared_manifest_surface([first, second], "run2")
 
 
 def test_existing_malformed_receipt_fails_closed(tmp_path):

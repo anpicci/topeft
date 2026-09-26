@@ -28,16 +28,16 @@ The maintained high-to-low production path is `run_cr.sh` -> `fullR3_run.sh`
 `build_combined_datacard_package.py` perform distinct downstream tasks; they
 are not alternate processor entry points. The builders check and package
 completed producer rows by era, then assemble and check the cards-only combined
-package. The manifest helper writes standard Run 2 or Run 3 rows from the
-selected PKLs; the runner executes them and writes receipts. The per-era
-builder reports missing or extra requested physical targets before publishing.
+package. For direct card work, `make_cards.py` takes PKLs and writes cards,
+templates, selected WCs, and preselection scalings without a manifest. For
+resumable multi-row production, the manifest helper binds the Run 2 or Run 3
+profile's five input roles to current PKLs; the runner executes its rows and
+writes receipts. The per-era builder derives its requested physical targets
+from those manifest rows and reports missing or extra completions before
+publishing.
 The combined builder requires matching physical target sets across eras;
 matching restricted subsets are supported. Its `ordered_card_inputs.txt`
 lists cards in combination order.
-
-Developer note: `run_make_cards_run3_yawen_matrix.sh` contains fixed inputs and
-paths. Use `make_cards.py` for direct card tasks or the manifest helper and
-resumable runner for new multi-row production.
 
 `fullR2_run.sh` and the `--set-up-top22006` card topology are retained for
 historical TOP-22-006 reproduction. Their support boundary is documented

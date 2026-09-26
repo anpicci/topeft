@@ -204,6 +204,21 @@ def _selected_physical_names(channel_registry, channel_set_key, selected_targets
     return sorted(requested)
 
 
+def _declared_manifest_surface(manifest_paths, era):
+    declared = set()
+    for path in manifest_paths:
+        manifest, _ = matrix_runner.load_manifest(Path(path))
+        for row in manifest["rows"]:
+            if row["era"] != era:
+                continue
+            for channel in row["physical_channels"]:
+                target = _physical_name(channel, row["distribution"])
+                _require(target not in declared, f"duplicate manifest physical target: {target}")
+                declared.add(target)
+    _require(bool(declared), f"no selected {era} matrix targets")
+    return sorted(declared)
+
+
 def _target_coverage_message(manifest_paths, era, requested, units):
     observed = {name for unit in units for name in unit["physical_targets"]}
     missing = sorted(set(requested) - observed)
@@ -375,14 +390,9 @@ def main(argv=None):
     build.add_argument("--matrix-manifest", type=Path, action="append", required=True)
     build.add_argument("--output", type=Path, required=True)
     build.add_argument("--analysis", required=True)
-    build.add_argument("--channel-registry", type=Path,
-                       default=Path(__file__).resolve().parents[2] / "topeft/channels/ch_lst.json")
-    build.add_argument("--channel-set-key", default="ALL_CH_LST_SR")
-    build.add_argument("--physical-target", action="append", default=[],
-                       help="Repeat for an explicit subset of physical <channel>_<distribution> targets")
     args = parser.parse_args(argv)
     units, manifest_hashes = _resolve_v2_manifest_units(args.matrix_manifest, args.era, allow_empty=True)
-    physical_names = _selected_physical_names(args.channel_registry, args.channel_set_key, args.physical_target)
+    physical_names = _declared_manifest_surface(args.matrix_manifest, args.era)
     coverage_message = _target_coverage_message(args.matrix_manifest, args.era, physical_names, units)
     _require(coverage_message is None, coverage_message)
     build_per_era_package_from_units(args.era, args.analysis, physical_names, units,

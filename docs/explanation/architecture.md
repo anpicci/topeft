@@ -337,7 +337,7 @@ file, channel and variable selections, Wilson-coefficient choices, binning and
 coverage policy, and card options. It produces individual text/ROOT card-
 template pairs and `scalings-preselect.json`. In the normal selection path it
 also writes `selectedWCs.txt`. With `--use-selected`, it reads the supplied JSON
-but does not copy that file into the output directory, so the operator must
+but does not copy that file into the output directory, so the analyst must
 place the reviewed selection there before finalization.
 
 **Owns.** It owns CLI input resolution, merge validation, selection, card
@@ -349,8 +349,9 @@ ordering, card combination, or workspace construction.
 ### Standard matrix manifest and runner
 
 `make_datacard_matrix_manifest.py` derives standard Run 2 or Run 3 rows from
-`ch_lst.json` and caller-supplied PKL and runtime paths. It writes a concrete
-manifest without executing card production. The resumable matrix runner reads
+`datacard_matrix_profiles.json`, `ch_lst.json`, and caller-supplied PKL role
+bindings and runtime paths. It selects any restricted physical surface here
+and writes a concrete manifest without executing card production. The resumable matrix runner reads
 the manifest, checks its runtime and row outputs, and writes successful row
 receipts. It provides status and resume commands; the package builder does not
 manage row execution state. Direct `make_cards.py` use bypasses the matrix.
@@ -400,11 +401,11 @@ completed matrix rows into one Run 2 or Run 3 package.
 
 **Consumes and produces.** It rechecks receipt-bound card/template pairs and
 metadata snapshots, then publishes `cards/`, `selectedWCs.txt`,
-`scalings.json`, `physical_to_chN.json`, and provenance. The selected
+`scalings.json`, `physical_to_chN.json`, and provenance. The manifest-declared
 physical names determine the sorted per-era `chN` mapping. Scaling rows keep
 their producer-owned payload while their channel label follows that mapping.
-An explicit target selection permits a restricted package. Missing and extra
-targets prevent publication; missing targets are mapped to supplied manifest
+Restricted manifests permit restricted packages without another target
+selector. Missing and extra targets prevent publication; missing targets are mapped to supplied manifest
 rows and the runner's status and resume commands are shown for recovery.
 
 **Does not produce.** It does not combine eras, build `combinedcard.txt`, or

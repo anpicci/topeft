@@ -104,17 +104,22 @@ incompatibility.
 `topeft_datacard_matrix_v2` JSON manifest. Required options are
 `--era {run2,run3}`, `--manifest-output`, `--output-root`, `--control-root`,
 `--python-executable`, `--missing-parton-file`, and
-`--runtime-contract-id`. The standard full set also requires the four input
-groups `--mixed-pkl`, `--offz-pkl`, `--onz-tau-pkl`, and `--fwd-pkl`.
+`--runtime-contract-id`. Repeat `--input-pkl ROLE=PATH` to bind the selected
+profile's current PKL blocks. A full Run 2 manifest requires `block1`,
+`block2`, `block3`, `block4`, and `block5`; a full Run 3 manifest requires
+`2l_mixed`, `3l_m_offz`, `3l_p_offz`, `3l_onz_tau`, and `3l_fwd`.
 `--make-cards-path` defaults to this checkout's `make_cards.py`;
 `--working-directory` defaults to the repository root; `--attempt-id`
 defaults to `attempt_01`. Repeat `--runtime-file` to hash additional runtime
-files. Repeat `--physical-target <channel>_<distribution>` to produce only
-rows for an explicit subset, supplying the PKL groups those rows use.
+files. `--channel-set-key` defaults to `ALL_CH_LST_SR` and selects a maintained
+channel set. As an advanced optional filter, repeat
+`--physical-target <channel>_<distribution>` to produce an exact one-off
+subset. Supply the PKL roles used by the selected rows.
 
-Physical targets and their distributions come from `ch_lst.json` through
-`ALL_CH_LST_SR`. The helper writes the standard nine row groups for a full
-manifest, with Run 2 years `UL16APV UL16 UL17 UL18` or Run 3 years
+Physical targets and their distributions come from
+`datacard_matrix_profiles.json`, checked against `ch_lst.json`. The helper
+writes 11 standard rows for a full manifest, with Run 2 years
+`UL16APV UL16 UL17 UL18` or Run 3 years
 `2022 2022EE 2023 2023BPix`. Input files and runtime paths must exist;
 manifest, output, and control paths must be absolute, and the manifest must
 not already exist. The helper creates neither cards nor receipts.
@@ -130,20 +135,18 @@ requirement.
 `analysis/topeft_run2/build_per_era_datacard_package.py build` builds a
 Run 2 or Run 3 package. Required options are
 `--era {run2,run3}`, repeatable `--matrix-manifest`, fresh absolute
-`--output`, and `--analysis`. Optional `--channel-registry` defaults to
-`topeft/channels/ch_lst.json`; `--channel-set-key` defaults to
-`ALL_CH_LST_SR`. Repeat `--physical-target` to request an exact restricted
-set from that channel registry. The inputs are matrix manifests with receipts
-for source card/template pairs and metadata snapshots. The builder checks the
+`--output`, and `--analysis`. The requested target surface is the union of the
+supplied manifest rows. There is no separate per-era target selector. The
+inputs are matrix manifests with receipts for source card/template pairs and
+metadata snapshots. The builder checks the
 recorded source files, requires the completed rows to provide exactly the
 requested physical targets, rejects duplicate scaling identities, and assigns
 deterministic per-era `chN` labels.
 
-For missing targets, the error identifies each applicable manifest and row ID
-and prints the runner's read-only `--status` and normal resume commands as
-guidance. A missing target with no row in the supplied manifests is identified
-separately; the caller must provide a manifest containing that target. Extra
-completed targets are listed separately. No final package is published on a
+For missing manifest-declared targets, the error identifies each applicable
+manifest and row ID and prints the runner's read-only `--status` and normal
+resume commands as guidance. Extra completed targets are listed separately.
+No final package is published on a
 coverage mismatch, and the builder does not execute the runner.
 
 The published package contains only `cards/`, `selectedWCs.txt`,
@@ -217,6 +220,7 @@ See [flexible binning](flexible_binning.md) and
 
 - `analysis/topeft_run2/make_cards.py`
 - `analysis/topeft_run2/make_datacard_matrix_manifest.py`
+- `analysis/topeft_run2/datacard_matrix_profiles.json`
 - `analysis/topeft_run2/datacard_matrix_runner.py`
 - `analysis/topeft_run2/build_per_era_datacard_package.py`
 - `analysis/topeft_run2/build_combined_datacard_package.py`

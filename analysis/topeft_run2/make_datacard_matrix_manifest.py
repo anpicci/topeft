@@ -9,39 +9,36 @@ from analysis.topeft_run2 import build_per_era_datacard_package as per_era
 from analysis.topeft_run2 import datacard_matrix_runner as runner
 
 
-_years = {
-    "run2": ["UL16APV", "UL16", "UL17", "UL18"],
-    "run3": ["2022", "2022EE", "2023", "2023BPix"],
-}
-_row_order = [
-    ("mixed_01", "mixed", "lj0pt"),
-    ("mixed_02", "mixed", "lt"),
-    ("mixed_03", "mixed", "ptz"),
-    ("mixed_04", "mixed", "ptz_wtau"),
-    ("3l_offz_01", "offz", "lj0pt"),
-    ("3l_offz_02", "offz", "ptll"),
-    ("3l_onz_tau_01", "onz_tau", "lj0pt"),
-    ("3l_onz_tau_02", "onz_tau", "ptz"),
-    ("3l_fwd_01", "fwd", "lt"),
-]
 _card_prefix = "ttx_multileptons-"
 _repository_root = Path(__file__).resolve().parents[2]
 _registry = _repository_root / "topeft/channels/ch_lst.json"
+_profile_path = Path(__file__).with_name("datacard_matrix_profiles.json")
 
 
-def _physical_row(physical_name):
-    for distribution in ("ptz_wtau", "lj0pt", "ptll", "ptz", "lt"):
-        suffix = "_" + distribution
-        if physical_name.endswith(suffix):
-            channel = physical_name[:-len(suffix)]
-            if channel.startswith("3l_") and "fwd" in channel:
-                return "fwd", distribution, channel
-            if distribution == "ptll" or channel.startswith(("3l_m_offZ_", "3l_p_offZ_")):
-                return "offz", distribution, channel
-            if channel.startswith(("3l_onZ_", "3l_1tau_")):
-                return "onz_tau", distribution, channel
-            return "mixed", distribution, channel
-    raise ValueError(f"unsupported physical target distribution: {physical_name}")
+def _load_profile(era):
+    profile = json.loads(_profile_path.read_text(encoding="utf-8"))
+    if profile.get("schema") != "topeft_datacard_matrix_profiles_v1":
+        raise ValueError("unsupported datacard matrix profile schema")
+    years = profile["eras"][era]["years"]
+    rows = profile["rows"]
+    targets = [f"{channel}_{row['distribution']}" for row in rows
+               for channel in row["physical_channels"]]
+    available = per_era._canonical_physical_names(_registry, "ALL_CH_LST_SR")
+    if len(targets) != len(set(targets)) or set(targets) != set(available):
+        raise ValueError("standard matrix profile differs from ALL_CH_LST_SR")
+    if len({row["row_number"] for row in rows}) != len(rows):
+        raise ValueError("duplicate standard matrix row number")
+    return years, rows, set(targets)
+
+
+def _input_bindings(values, allowed_roles):
+    bindings = {}
+    for value in values:
+        role, separator, path = value.partition("=")
+        if not separator or not path or role not in allowed_roles or role in bindings:
+            raise ValueError(f"invalid or duplicate --input-pkl binding: {value}")
+        bindings[role] = path
+    return bindings
 
 
 def _runtime_path(value, label, *, executable=False):
@@ -80,24 +77,26 @@ def make_manifest(args):
         "fingerprints": fingerprints,
     }
     runner.validate_runtime(runtime)
-    physical_names = per_era._selected_physical_names(_registry, "ALL_CH_LST_SR", args.physical_target)
-    grouped = {(group, distribution): [] for _, group, distribution in _row_order}
-    for name in physical_names:
-        group, distribution, channel = _physical_row(name)
-        if (group, distribution) not in grouped:
-            raise ValueError(f"physical target has no standard matrix row: {name}")
-        grouped[group, distribution].append(channel)
-    inputs = {"mixed": args.mixed_pkl, "offz": args.offz_pkl,
-              "onz_tau": args.onz_tau_pkl, "fwd": args.fwd_pkl}
+    years, profile_rows, profile_targets = _load_profile(args.era)
+    physical_names = per_era._selected_physical_names(
+        _registry, args.channel_set_key, args.physical_target)
+    if not set(physical_names) <= profile_targets:
+        raise ValueError("selected channel set contains targets outside the standard profile")
+    selected = set(physical_names)
+    roles = {row["input_roles"][args.era] for row in profile_rows}
+    inputs = _input_bindings(args.input_pkl, roles)
     rows = []
-    for row_id, group, distribution in _row_order:
-        channels = grouped[group, distribution]
+    for profile_row in profile_rows:
+        row_id = f"{args.era}_{profile_row['row_number']:02d}"
+        distribution = profile_row["distribution"]
+        channels = [channel for channel in profile_row["physical_channels"]
+                    if f"{channel}_{distribution}" in selected]
         if not channels:
             continue
-        input_value = inputs[group]
-        if input_value is None:
-            raise ValueError(f"{group} PKL is required for row {row_id}")
-        input_pkl = _runtime_path(input_value, f"{group}_pkl")
+        role = profile_row["input_roles"][args.era]
+        if role not in inputs:
+            raise ValueError(f"{role} PKL is required for row {row_id}")
+        input_pkl = _runtime_path(inputs[role], f"{role}_pkl")
         row_output = output_root / row_id
         merge_report = control_root / "merge_reports" / f"{row_id}__{args.attempt_id}.json"
         snapshot = control_root / "snapshots" / f"{row_id}__{args.attempt_id}"
@@ -108,16 +107,16 @@ def make_manifest(args):
             "--out-dir", str(row_output), "--var-lst", distribution,
             "--ch-lst", *channels,
             "--do-nuisance", "--do-mc-stat", "--skip-selected-wcs-check",
-            "--year-coverage-policy", "warn", "--year", *_years[args.era],
-            "--miss-parton-file", str(missing_parton), "--sr-registry", "ALL_CH_LST_SR",
+            "--year-coverage-policy", "warn", "--year", *years,
+            "--miss-parton-file", str(missing_parton), "--sr-registry", args.channel_set_key,
             "--merge-report", str(merge_report),
         ]
         rows.append({
             "row_id": row_id, "attempt_id": args.attempt_id, "era": args.era,
             "working_directory": str(working_directory), "input_pkl": str(input_pkl),
             "output_root": str(row_output), "distribution": distribution,
-            "physical_channels": channels, "years": _years[args.era],
-            "missing_parton_path": str(missing_parton), "sr_registry": "ALL_CH_LST_SR",
+            "physical_channels": channels, "years": years,
+            "missing_parton_path": str(missing_parton), "sr_registry": args.channel_set_key,
             "merge_report_path": str(merge_report), "snapshot_directory": str(snapshot),
             "log_path": str(log), "expected_output_paths": expected_outputs,
             "producer_args": producer_args,
@@ -135,14 +134,14 @@ def make_manifest(args):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--era", choices=tuple(_years), required=True)
+    parser.add_argument("--era", choices=("run2", "run3"), required=True)
     parser.add_argument("--manifest-output", type=Path, required=True)
     parser.add_argument("--output-root", type=Path, required=True)
     parser.add_argument("--control-root", type=Path, required=True)
-    parser.add_argument("--mixed-pkl", type=Path)
-    parser.add_argument("--offz-pkl", type=Path)
-    parser.add_argument("--onz-tau-pkl", type=Path)
-    parser.add_argument("--fwd-pkl", type=Path)
+    parser.add_argument("--input-pkl", action="append", default=[], metavar="ROLE=PATH",
+                        help="Bind each selected profile input role to a current PKL")
+    parser.add_argument("--channel-set-key", default="ALL_CH_LST_SR",
+                        help="Maintained channel set in topeft/channels/ch_lst.json")
     parser.add_argument("--python-executable", type=Path, required=True)
     parser.add_argument("--make-cards-path", type=Path,
                         default=_repository_root / "analysis/topeft_run2/make_cards.py")
@@ -150,7 +149,7 @@ def main(argv=None):
     parser.add_argument("--runtime-contract-id", required=True)
     parser.add_argument("--runtime-file", type=Path, action="append", default=[])
     parser.add_argument("--physical-target", action="append", default=[],
-                        help="Repeat for a restricted physical <channel>_<distribution> set")
+                        help="Advanced: repeat to filter the selected profile to exact physical targets")
     parser.add_argument("--attempt-id", default="attempt_01")
     parser.add_argument("--working-directory", type=Path, default=_repository_root)
     args = parser.parse_args(argv)

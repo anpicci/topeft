@@ -27,7 +27,7 @@ than treating an option table as a recipe.
 | [Sumw2 policy](sumw2.md) | Modes, default, selectors, resolved policy, companion naming, provenance, and failure conditions |
 | [Flexible binning](flexible_binning.md) | Processing and fitting schemas, family defaults, exact channel-name overrides, and exact aggregation |
 | [Plotting](plotting.md) | Wrapper/direct-CLI defaults, configuration owners, binning views, and output controls |
-| [Datacards and scalings](datacards_and_scalings.md) | Card CLI, standard matrix manifest and runner, per-era and combined package interfaces, outputs, and channel mappings |
+| [Datacards and scalings](datacards_and_scalings.md) | Manifest-free direct card CLI; input-role matrix profiles, runner, per-era and combined package interfaces, outputs, and channel mappings |
 | [Specialist interfaces](specialist_interfaces.md) | Artifact inspection and developer-facing interfaces that support focused maintenance work |
 | [B-tag scale-factor payloads](btag_scale_factor_payloads.md) | Packaged UL files, current consumers, and provenance limits |
 | [Missing-parton payloads](missing_parton_payloads.md) | Installed Run 2/Run 3 payload schema, selection, overrides, compatibility, and test authority |
@@ -48,7 +48,9 @@ than treating an option table as a recipe.
   `make_datacard_matrix_manifest.py`, `run_datacard_matrix_resumable.sh`,
   `build_per_era_datacard_package.py`, and
   `build_combined_datacard_package.py` in
-  [datacards and scalings](datacards_and_scalings.md).
+  [datacards and scalings](datacards_and_scalings.md). Direct `make_cards.py`
+  production needs no manifest; matrix manifests select the per-era package
+  surface, and combined packages require the same physical surface in both eras.
 - Inspection: `inspect_histeft_pkl.py` in
   [specialist interfaces](specialist_interfaces.md).
 

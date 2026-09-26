@@ -55,14 +55,15 @@ sample JSONs / sample cfg
     -> run_data_driven.py
     -> transformed nonprompt PKL + metadata sidecar
     -> plotting and validation
-    -> make_cards.py for a direct task, or a standard matrix manifest + resumable runner
-    -> individual cards/templates + selectedWCs.txt + scalings-preselect.json
-    -> build_per_era_datacard_package.py build (Run 2 and Run 3)
-    -> per-era packages
-    -> build_combined_datacard_package.py build
-    -> cards-only combined package
-    -> ordered_card_inputs.txt
-    -> EFTFit / Combine
+    -> direct path: make_cards.py
+       -> individual cards/templates + selectedWCs.txt + scalings-preselect.json
+    -> matrix path: standard profile + manifest -> resumable runner + receipts
+       -> individual cards/templates + metadata snapshots
+       -> build_per_era_datacard_package.py build (Run 2 and Run 3)
+       -> per-era packages with the same physical target set
+       -> build_combined_datacard_package.py build
+       -> cards-only combined package + ordered_card_inputs.txt
+       -> EFTFit / Combine
 ```
 
 The arrows describe responsibility and data flow, not one monolithic command.
@@ -204,15 +205,16 @@ you what each actor owns and, equally importantly, what it does not own.
   process-global number.
 
 - **Datacard matrix.** For multi-row production,
-  `make_datacard_matrix_manifest.py` takes the era, PKL groups, and runtime
-  paths and writes the standard rows. The resumable runner produces cards and
+  `make_datacard_matrix_manifest.py` takes the era, current PKL role bindings,
+  and runtime paths and writes the standard rows. The resumable runner produces cards and
   successful row receipts. A direct `make_cards.py` task needs no manifest.
 
 - **Per-era package builder.** `build_per_era_datacard_package.py build`
   reads matrix manifests and completed row receipts and checks their producer
   artifacts. It assigns the physical-to-`chN` map and writes each
   era's cards/templates, selected WCs, scalings, mapping, and provenance. It
-  reports missing and extra requested targets before publishing.
+  compares the manifest-declared targets with completed receipts before
+  publishing.
 
 - **Combined package builder.** `build_combined_datacard_package.py build`
   reads Run 2 and Run 3 packages with matching physical target sets. It derives
@@ -431,12 +433,16 @@ EFT content, and writes:
 - `selectedWCs.txt`;
 - `scalings-preselect.json`.
 
-For one direct card task, no matrix manifest is needed. For the standard
-multi-row path, supply the four PKL groups to
+For one direct card task, `PKL(s) -> make_cards.py -> cards, templates,
+selectedWCs.txt, scalings-preselect.json` needs no matrix manifest. For the
+resumable multi-row and packaging path, supply five current PKL role bindings
+with repeatable `--input-pkl ROLE=PATH` to
 `make_datacard_matrix_manifest.py` with `--era run2` or `--era run3`, the
 Python executable, missing-parton file, runtime identifier, and fresh
 manifest/output/control paths. The helper fills the standard channel and
-distribution rows. Run the manifest through
+distribution rows. Run 2 roles are `block1` through `block5`; Run 3 roles are
+`2l_mixed`, `3l_m_offz`, `3l_p_offz`, `3l_onz_tau`, and `3l_fwd`.
+Run the manifest through
 `run_datacard_matrix_resumable.sh`; the runner writes receipts for completed
 rows. Inspect the producer artifacts before packaging. Use the
 [datacard/scaling how-to](../how_to/datacards_and_scalings.md) for selection and
@@ -458,14 +464,14 @@ python analysis/topeft_run2/build_per_era_datacard_package.py build \
 ```
 
 Repeat for Run 3 with `--era run3`, its completed manifest(s), and a different
-output. The builder defaults to `ALL_CH_LST_SR` from `ch_lst.json`. It
-rechecks source cards/templates and snapshots, then publishes `cards/`,
+output. The builder derives its requested surface from the supplied manifest
+rows. It rechecks source cards/templates and snapshots, then publishes `cards/`,
 `selectedWCs.txt`, `scalings.json`, `physical_to_chN.json`, and provenance.
-For a restricted fit, use the same repeatable `--physical-target` selections
-in manifest generation and per-era packaging. If a requested target is
-missing, the builder reports its manifest row and prints the runner's status
-and resume commands. A target absent from every supplied manifest needs a
-manifest that defines it; extra completed targets are reported separately.
+For a restricted fit, select subset X in each era's manifest using a maintained
+`--channel-set-key` or the advanced generator-only `--physical-target` filter.
+Build the Run 2 and Run 3 packages without selecting X again. If a manifest
+target is missing, the builder reports its manifest row and prints the runner's status
+and resume commands; extra completed targets are reported separately.
 
 ## 9. Build the combined package and cross the EFTFit/Combine boundary
 

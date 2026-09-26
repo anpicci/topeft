@@ -12,14 +12,14 @@ and Combine.
 channel, plus row-local `selectedWCs.txt` and
 `scalings-preselect.json`. It can be used directly without a matrix manifest.
 For standard multi-row production, `make_datacard_matrix_manifest.py` selects
-Run 2 or Run 3 rows from the channel registry and caller-supplied PKLs. The
-resumable runner reads that manifest and writes successful row receipts and
+Run 2 or Run 3 rows from the maintained profile and channel registry and binds
+them to caller-supplied PKLs. The resumable runner reads that manifest and writes successful row receipts and
 metadata snapshots. Its final shared metadata files are not a complete era
 package.
 
 `build_per_era_datacard_package.py build` reads matrix manifests and completed
-row receipts for one era. It requires exactly the requested physical target
-set and reports missing targets with their manifest rows and runner commands;
+row receipts for one era. It requires exactly the manifest-declared physical
+target set and reports missing targets with their manifest rows and runner commands;
 an extra target also prevents publication. It checks the source files recorded
 in the receipts, copies the selected card/template pairs, consolidates selected
 WCs and scaling records, and writes the deterministic physical-to-`chN`
@@ -31,7 +31,8 @@ Multiple upstream PKLs may contribute before that datacard identity is formed.
 
 `build_combined_datacard_package.py build` reads the two per-era package
 directories. The physical target sets in their mappings must match, including
-for restricted fits; the local `chN` labels can differ. It derives the combined
+for restricted fits selected in each era's manifest; the local `chN` labels can
+differ. It derives the combined
 mapping and scaling-channel labels, copies cards/templates, and checks the
 cards-only package against its inputs.
 The result includes `combined_mapping_manifest.json`, `scalings.json`,
