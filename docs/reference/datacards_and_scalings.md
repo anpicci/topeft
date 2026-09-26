@@ -98,6 +98,33 @@ labels, unresolved sparse axes that would duplicate ROOT template names,
 invalid exact rebinning, missing/mismatched shape pairs, and payload/registry
 incompatibility.
 
+## Datacard matrix manifest and runner
+
+`analysis/topeft_run2/make_datacard_matrix_manifest.py` writes a new
+`topeft_datacard_matrix_v2` JSON manifest. Required options are
+`--era {run2,run3}`, `--manifest-output`, `--output-root`, `--control-root`,
+`--python-executable`, `--missing-parton-file`, and
+`--runtime-contract-id`. The standard full set also requires the four input
+groups `--mixed-pkl`, `--offz-pkl`, `--onz-tau-pkl`, and `--fwd-pkl`.
+`--make-cards-path` defaults to this checkout's `make_cards.py`;
+`--working-directory` defaults to the repository root; `--attempt-id`
+defaults to `attempt_01`. Repeat `--runtime-file` to hash additional runtime
+files. Repeat `--physical-target <channel>_<distribution>` to produce only
+rows for an explicit subset, supplying the PKL groups those rows use.
+
+Physical targets and their distributions come from `ch_lst.json` through
+`ALL_CH_LST_SR`. The helper writes the standard nine row groups for a full
+manifest, with Run 2 years `UL16APV UL16 UL17 UL18` or Run 3 years
+`2022 2022EE 2023 2023BPix`. Input files and runtime paths must exist;
+manifest, output, and control paths must be absolute, and the manifest must
+not already exist. The helper creates neither cards nor receipts.
+
+`run_datacard_matrix_resumable.sh --plan-only MANIFEST` checks the plan;
+`--status MANIFEST` reports row state without running cards; passing
+`MANIFEST` runs or resumes eligible rows. The runner writes receipts after
+checking declared outputs. Direct `make_cards.py` production has no manifest
+requirement.
+
 ## Per-era package interface
 
 `analysis/topeft_run2/build_per_era_datacard_package.py build` builds a
@@ -105,11 +132,19 @@ Run 2 or Run 3 package. Required options are
 `--era {run2,run3}`, repeatable `--matrix-manifest`, fresh absolute
 `--output`, and `--analysis`. Optional `--channel-registry` defaults to
 `topeft/channels/ch_lst.json`; `--channel-set-key` defaults to
-`ALL_CH_LST_SR`. The inputs are completed matrix-v2 manifests with receipts
+`ALL_CH_LST_SR`. Repeat `--physical-target` to request an exact restricted
+set from that channel registry. The inputs are matrix manifests with receipts
 for source card/template pairs and metadata snapshots. The builder checks the
-recorded source files, requires complete physical-channel coverage,
-rejects duplicate scaling identities, and assigns deterministic per-era
-`chN` labels.
+recorded source files, requires the completed rows to provide exactly the
+requested physical targets, rejects duplicate scaling identities, and assigns
+deterministic per-era `chN` labels.
+
+For missing targets, the error identifies each applicable manifest and row ID
+and prints the runner's read-only `--status` and normal resume commands as
+guidance. A missing target with no row in the supplied manifests is identified
+separately; the caller must provide a manifest containing that target. Extra
+completed targets are listed separately. No final package is published on a
+coverage mismatch, and the builder does not execute the runner.
 
 The published package contains only `cards/`, `selectedWCs.txt`,
 `scalings.json`, `physical_to_chN.json`, and
@@ -128,7 +163,11 @@ Run 2 and Run 3 per-era package directories. It requires
 `--run2-package`, `--run3-package`, a fresh absolute `--output`,
 `--analysis`, `--package-date` in `YYMMDD` form, and
 `--package-version` in `vN` form. Both sources must have the same
-analysis identity. The builder derives the combined channel mapping, copies
+analysis identity and the same set of physical targets from their
+`physical_to_chN.json` mappings. Their local `chN` labels need not match.
+Matching restricted subsets are valid. A mismatch reports
+`missing_from_run2` and `missing_from_run3` before copying or publishing.
+The builder derives the combined channel mapping, copies
 cards/templates, relabels scaling channels, and checks both the staged and
 published packages against their inputs.
 
@@ -177,12 +216,15 @@ See [flexible binning](flexible_binning.md) and
 ## Source and test authority
 
 - `analysis/topeft_run2/make_cards.py`
+- `analysis/topeft_run2/make_datacard_matrix_manifest.py`
+- `analysis/topeft_run2/datacard_matrix_runner.py`
 - `analysis/topeft_run2/build_per_era_datacard_package.py`
 - `analysis/topeft_run2/build_combined_datacard_package.py`
 - `topeft/modules/datacard_tools.py`
 - `topeft/modules/datacard_packaging.py`
 - `tests/test_build_per_era_datacard_package.py`
 - `tests/test_build_combined_datacard_package.py`
+- `tests/test_make_datacard_matrix_manifest.py`
 - `tests/test_make_cards_multi_pkl.py`
 - `tests/test_datacard_late_rebin.py`
 - `tests/test_datacard_tools_selective_sumw2.py`

@@ -3,15 +3,16 @@
 `analysis/topeft_run2/make_cards.py` produces cards directly from one or more
 compatible histogram PKLs—normally the nonprompt-transformed products—and
 writes individual text cards, ROOT template files, `selectedWCs.txt`, and
-`scalings-preselect.json`. For multiple production
-rows, use `analysis/topeft_run2/run_datacard_matrix_resumable.sh` to run and
-resume the matrix.
+`scalings-preselect.json`. For multiple production rows, generate a matrix
+manifest and use `analysis/topeft_run2/run_datacard_matrix_resumable.sh` to
+run and resume it.
 
 | Interface | Purpose | Inputs and defaults | Outputs and checks |
 | --- | --- | --- | --- |
 | `make_cards.py` | Merge histogram inputs and select WCs, channels, and variables | Fitting binning, year coverage `warn`, Asimov data, no nuisances or MC-stat opt-in | `DatacardMaker` writes TXT cards, ROOT templates, and scaling records; local or Condor execution |
-| `build_per_era_datacard_package.py build` | Build one Run 2 or Run 3 package | Era, one or more completed matrix-v2 manifests, fresh absolute output; default `ALL_CH_LST_SR` channel set | Checks recorded source files, copies card/template pairs, consolidates WCs and scalings, and assigns per-era `chN` |
-| `build_combined_datacard_package.py build` | Build a cards-only Run 2 + Run 3 package | Two per-era package directories, fresh absolute output, analysis, package date, and version | Writes the combined mapping, ordered card list, and scalings; checks the package against its inputs; does not run Combine |
+| `make_datacard_matrix_manifest.py` | Prepare standard Run 2 or Run 3 production rows | Era, group PKLs, runtime paths, and fresh manifest path | Writes a concrete matrix manifest; does not produce cards |
+| `build_per_era_datacard_package.py build` | Build one Run 2 or Run 3 package | Era, one or more matrix manifests with completed rows, fresh absolute output; default `ALL_CH_LST_SR` channel set | Requires exactly the requested physical targets, checks recorded source files, and writes cards, WCs, scalings, and per-era `chN` |
+| `build_combined_datacard_package.py build` | Build a cards-only Run 2 + Run 3 package | Two per-era packages with the same physical target set, fresh absolute output, analysis, package date, and version | Writes the combined mapping, ordered card list, and scalings; checks the package against its inputs; does not run Combine |
 | EFTFit/Combine | Combine cards and construct the statistical model | Packaged cards and scalings plus fit configuration | Creates `combinedcard.txt` and the workspace after package construction |
 
 The region → distribution → binning choices come from repository configuration:
@@ -106,56 +107,41 @@ pair together rather than checking the text card alone.
 
 ## Run a datacard matrix resumably
 
-The runner accepts an ordered JSON manifest. Define the physics matrix before
-running it. Each row records its logical and attempt IDs, era,
-working directory, input PKL, output root, distribution, literal physical
-channel argv, years, missing-parton path, SR registry, row-specific merge
-report, immutable snapshot/log destinations, expected output paths, and exact
-`make_cards.py` argv. The manifest also selects a control root and advisory-lock
-path. Use attempt-specific log, snapshot, merge-report, and expected-output
-paths.
+For the standard Run 2 or Run 3 rows, create a manifest from the four PKL
+groups rather than writing the channel/distribution matrix by hand. From the
+repository root, substitute the paths for the selected era:
 
-The schema is `topeft_datacard_matrix_v2`. Its `runtime_contract` names the
-absolute Python executable and `make_cards.py` path and records hashes for
-the selected runtime files. The runner checks those paths and hashes before
-execution; the manifest author chooses the file set.
-
-```json
-{
-  "schema": "topeft_datacard_matrix_v2",
-  "control_root": "/path/to/runner-control",
-  "lock_path": "/path/to/runner-control/runner.lock",
-  "runtime_contract": {
-    "contract_id": "run3-runtime-001",
-    "python_executable": "/absolute/path/to/python",
-    "make_cards_path": "/absolute/path/to/topeft/analysis/topeft_run2/make_cards.py",
-    "fingerprints": [{"path": "/absolute/path/to/runtime-file", "sha256": "<lowercase-sha256>"}]
-  },
-  "rows": [{
-    "row_id": "run3_01",
-    "attempt_id": "attempt_01",
-    "era": "run3",
-    "working_directory": "/path/to/topeft",
-    "input_pkl": "/path/to/input.pkl.gz",
-    "output_root": "/path/to/cards/run3",
-    "distribution": "lj0pt",
-    "physical_channels": ["physical_channel_a", "physical_channel_b"],
-    "years": ["2022", "2022EE", "2023", "2023BPix"],
-    "missing_parton_path": "/absolute/path/to/missing_parton_run3.root",
-    "sr_registry": "ALL_CH_LST_SR",
-    "merge_report_path": "/path/to/row-logs/run3_01/merge_report.json",
-    "snapshot_directory": "/path/to/runner-control/snapshots/run3_01_attempt_01",
-    "log_path": "/path/to/row-logs/run3_01/row.log",
-    "expected_output_paths": ["/path/to/cards/run3/card.txt", "/path/to/cards/run3/card.root"],
-    "producer_args": ["--out-dir", "/path/to/cards/run3", "--var-lst", "lj0pt", "--ch-lst", "physical_channel_a", "physical_channel_b", "--year", "2022", "2022EE", "2023", "2023BPix", "--miss-parton-file", "/absolute/path/to/missing_parton_run3.root", "--sr-registry", "ALL_CH_LST_SR", "--merge-report", "/path/to/row-logs/run3_01/merge_report.json"]
-  }]
-}
+```bash
+python analysis/topeft_run2/make_datacard_matrix_manifest.py \
+  --era run3 \
+  --mixed-pkl /absolute/path/to/mixed.pkl.gz \
+  --offz-pkl /absolute/path/to/offz.pkl.gz \
+  --onz-tau-pkl /absolute/path/to/onz-tau.pkl.gz \
+  --fwd-pkl /absolute/path/to/fwd.pkl.gz \
+  --python-executable /absolute/path/to/python \
+  --missing-parton-file /absolute/path/to/missing-parton.root \
+  --runtime-contract-id run3-cards-001 \
+  --output-root /absolute/path/to/row-outputs \
+  --control-root /absolute/path/to/runner-control \
+  --manifest-output /absolute/path/to/run3-matrix.json
 ```
 
-All paths are absolute. `input_pkl` is structural, not searched for in an
-argument list. For a row, the literal producer argv is exactly
-`[python_executable, make_cards_path, input_pkl, *producer_args]`; each physical
-channel remains one argv element.
+Use `--era run2` and the corresponding Run 2 PKLs and missing-parton file for
+Run 2. The helper reads the physical channels and distribution choices from
+`ch_lst.json`, selects the era's years, and writes the nine standard rows.
+It records the selected Python interpreter and hashes `make_cards.py`; repeat
+`--runtime-file` for other files to include in the runner's runtime check.
+The manifest path must be new. A restricted fit can repeat
+`--physical-target <channel>_<distribution>` for each requested target; only
+PKL groups used by those rows are then required. Use the same target selection
+when building the per-era package.
+
+The manifest uses the `topeft_datacard_matrix_v2` schema. Each row records its
+input PKL, literal channel arguments, distribution, years, output paths,
+`make_cards.py` arguments, and log/snapshot locations. The runner checks the
+declared runtime files before execution and writes successful row receipts;
+the analyst does not create receipt files. Direct `make_cards.py` use does not
+require a matrix manifest.
 
 A minimal invocation is:
 
@@ -170,8 +156,8 @@ absolute directory, so it does not depend on the checkout location or the
 caller's current working directory. It prefers `python` and falls back to
 `python3` for the runner engine bootstrap.
 
-Run long, manually authorized executions in a named `tmux` session so the
-operator can detach without terminating the runner. Inspect `--plan-only` and
+For a long run, a named `tmux` session lets the operator detach without
+terminating the runner. Inspect `--plan-only` and
 `--status` first, and keep the manifest unchanged during an
 attempt. The runner validates the schema and runtime fingerprints before plan
 or execution, holds one OS advisory lock for a mutating run, and directly runs
@@ -235,7 +221,7 @@ builder command from the repository root:
 ```bash
 python analysis/topeft_run2/build_per_era_datacard_package.py build \
   --era run2 \
-  --matrix-manifest /path/to/run2-matrix-v2.json \
+  --matrix-manifest /absolute/path/to/run2-matrix.json \
   --output /absolute/path/to/new-run2-package \
   --analysis TOP-26-006
 ```
@@ -250,9 +236,21 @@ publishes `cards/`, `selectedWCs.txt`, `scalings.json`,
 `physical_to_chN.json`, and `package-provenance.json`. Duplicate scaling
 identities are rejected. `combinedcard.txt` is not built here.
 
+For a restricted fit, repeat `--physical-target` with exactly the same
+physical targets selected for manifest generation. The builder requires the
+completed rows to provide exactly the requested set. On a mismatch it lists
+missing and extra targets separately. For a missing target present in a
+supplied manifest, it names the manifest and row and prints the runner's
+`--status` and resume commands. Check status before deciding whether to resume;
+the builder never runs producer rows. If no supplied manifest contains the
+target, generate or supply one that does.
+
 ## Build and consume a combined Run 2 + Run 3 package
 
-Use the Run 2 and Run 3 per-era package directories as inputs. Run the
+Use the Run 2 and Run 3 per-era package directories as inputs. They must
+contain the same set of physical channel/distribution targets; matching
+restricted subsets are allowed. A mismatch reports the targets missing from
+each era before publishing a combined package. Run the
 combined builder from the repository root. It derives the mapping and card
 order from their mappings, copies ROOT templates, updates only the card
 template reference, and relabels scaling channels. It checks the staged and
@@ -298,7 +296,9 @@ follow in EFTFit/Combine.
 | selected variable/channel absent | inspect the merged histogram axes and source registry; a regex cannot create missing content |
 | fitting edges not exactly representable | correct the fitting-bin definition or produce compatible processing-binned PKLs |
 | selected-WC mismatch | review the new selection and reference before rerunning |
-| per-era builder missing card/template | reproduce that physical channel/distribution pair; do not let packaging hide an incomplete set |
+| per-era builder missing physical target | inspect the reported manifest row with the displayed runner `--status` command; resume through the runner when appropriate, or supply a manifest defining the target |
+| per-era builder unexpected physical target | use the matching requested target set or correct the supplied manifests before packaging |
+| combined builder unequal physical targets | select or rebuild both era packages with the same physical channel/distribution set |
 | preselect scaling has no selected physical label | determine whether the process intentionally has no external EFT morph or the producer output is incomplete |
 | destination already exists | choose a fresh package directory; there is no supported resume/merge behavior |
 

@@ -55,7 +55,7 @@ sample JSONs / sample cfg
     -> run_data_driven.py
     -> transformed nonprompt PKL + metadata sidecar
     -> plotting and validation
-    -> make_cards.py
+    -> make_cards.py for a direct task, or a standard matrix manifest + resumable runner
     -> individual cards/templates + selectedWCs.txt + scalings-preselect.json
     -> build_per_era_datacard_package.py build (Run 2 and Run 3)
     -> per-era packages
@@ -203,14 +203,20 @@ you what each actor owns and, equally importantly, what it does not own.
   the final fit. Its payload must be filtered and relabeled, not replaced by a
   process-global number.
 
+- **Datacard matrix.** For multi-row production,
+  `make_datacard_matrix_manifest.py` takes the era, PKL groups, and runtime
+  paths and writes the standard rows. The resumable runner produces cards and
+  successful row receipts. A direct `make_cards.py` task needs no manifest.
+
 - **Per-era package builder.** `build_per_era_datacard_package.py build`
-  reads completed matrix-v2 manifests and checks their recorded producer
+  reads matrix manifests and completed row receipts and checks their producer
   artifacts. It assigns the physical-to-`chN` map and writes each
-  era's cards/templates, selected WCs, scalings, mapping, and provenance.
+  era's cards/templates, selected WCs, scalings, mapping, and provenance. It
+  reports missing and extra requested targets before publishing.
 
 - **Combined package builder.** `build_combined_datacard_package.py build`
-  reads the Run 2 and Run 3 per-era packages. It derives the combined
-  mapping, creates `ordered_card_inputs.txt`, and checks the cards-only
+  reads Run 2 and Run 3 packages with matching physical target sets. It derives
+  the combined mapping, creates `ordered_card_inputs.txt`, and checks the cards-only
   package against both inputs. It does not run Combine or construct a workspace.
 
 - **Physical channel to `chN` mapping.** The per-era builder sorts the
@@ -425,23 +431,28 @@ EFT content, and writes:
 - `selectedWCs.txt`;
 - `scalings-preselect.json`.
 
-Inspect the producer artifacts before packaging. The campaign-specific matrix
-wrappers are archival operator records, not supported replacements for the
-direct CLI. Use the
+For one direct card task, no matrix manifest is needed. For the standard
+multi-row path, supply the four PKL groups to
+`make_datacard_matrix_manifest.py` with `--era run2` or `--era run3`, the
+Python executable, missing-parton file, runtime identifier, and fresh
+manifest/output/control paths. The helper fills the standard channel and
+distribution rows. Run the manifest through
+`run_datacard_matrix_resumable.sh`; the runner writes receipts for completed
+rows. Inspect the producer artifacts before packaging. Use the
 [datacard/scaling how-to](../how_to/datacards_and_scalings.md) for selection and
 extension procedures and the
 [reference](../reference/datacards_and_scalings.md) for exact artifact fields.
 
 ## 8. Build the Run 2 and Run 3 packages
 
-After reviewing the completed matrix-v2 manifests and producer artifacts,
-build each era into a fresh absolute output directory. From the repository
-root, for Run 2:
+After reviewing the matrix manifests, successful row receipts, and producer
+artifacts, build each era into a fresh absolute output directory. From the
+repository root, for Run 2:
 
 ```bash
 python analysis/topeft_run2/build_per_era_datacard_package.py build \
   --era run2 \
-  --matrix-manifest /path/to/run2-matrix-v2.json \
+  --matrix-manifest /absolute/path/to/run2-matrix.json \
   --output /absolute/path/to/new-run2-package \
   --analysis TOP-26-006
 ```
@@ -450,10 +461,18 @@ Repeat for Run 3 with `--era run3`, its completed manifest(s), and a different
 output. The builder defaults to `ALL_CH_LST_SR` from `ch_lst.json`. It
 rechecks source cards/templates and snapshots, then publishes `cards/`,
 `selectedWCs.txt`, `scalings.json`, `physical_to_chN.json`, and provenance.
+For a restricted fit, use the same repeatable `--physical-target` selections
+in manifest generation and per-era packaging. If a requested target is
+missing, the builder reports its manifest row and prints the runner's status
+and resume commands. A target absent from every supplied manifest needs a
+manifest that defines it; extra completed targets are reported separately.
 
 ## 9. Build the combined package and cross the EFTFit/Combine boundary
 
-Use the two per-era package directories. From the repository root:
+Use two per-era packages with the same physical channel/distribution target
+set. Matching restricted subsets are supported. The builder rejects unequal
+sets and lists what is missing from each era before publishing. From the
+repository root:
 
 ```bash
 python analysis/topeft_run2/build_combined_datacard_package.py build \

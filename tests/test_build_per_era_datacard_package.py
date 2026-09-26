@@ -149,6 +149,45 @@ def test_partial_manifest_and_later_success(tmp_path):
     assert hashes == [hashlib.sha256(path.read_bytes()).hexdigest() for path in (plan, later)]
 
 
+def test_cli_missing_target_reports_matrix_row_and_runner_commands(tmp_path, monkeypatch):
+    plan, _ = _partial_manifest(tmp_path)
+    monkeypatch.setattr(builder, "_canonical_physical_names",
+                        lambda registry, key: ["alpha_ptz", "beta_ptz"])
+    output = tmp_path / "package"
+    with pytest.raises(ValueError) as exc:
+        builder.main(["build", "--era", "run2", "--matrix-manifest", str(plan),
+                      "--output", str(output), "--analysis", "TOP-26-006"])
+    message = str(exc.value)
+    runner_command = "analysis/topeft_run2/run_datacard_matrix_resumable.sh"
+    assert "missing=['beta_ptz']" in message
+    assert f"beta_ptz: manifest={plan}, row_id=unit_02" in message
+    assert f"{runner_command} --status {plan}" in message
+    assert f"{runner_command} {plan}" in message
+    assert not output.exists()
+
+
+def test_cli_distinguishes_target_without_row_and_extra_target(tmp_path, monkeypatch):
+    first, _, _, _ = _manifest_receipt(tmp_path / "first", "unit_01", "alpha")
+    second, _, _, _ = _manifest_receipt(tmp_path / "second", "unit_02", "beta")
+    monkeypatch.setattr(builder, "_canonical_physical_names",
+                        lambda registry, key: ["alpha_ptz", "beta_ptz", "gamma_ptz"])
+    output = tmp_path / "package"
+    with pytest.raises(ValueError) as missing:
+        builder.main(["build", "--era", "run2", "--matrix-manifest", str(first),
+                      "--output", str(output), "--analysis", "TOP-26-006",
+                      "--physical-target", "gamma_ptz"])
+    assert "gamma_ptz: no row in the supplied matrix manifests" in str(missing.value)
+    assert "extra=['alpha_ptz']" in str(missing.value)
+    assert "--status" not in str(missing.value)
+    with pytest.raises(ValueError) as extra:
+        builder.main(["build", "--era", "run2", "--matrix-manifest", str(first),
+                      "--matrix-manifest", str(second), "--output", str(output),
+                      "--analysis", "TOP-26-006", "--physical-target", "alpha_ptz"])
+    assert "missing=[]" in str(extra.value)
+    assert "extra=['beta_ptz']" in str(extra.value)
+    assert not output.exists()
+
+
 def test_existing_malformed_receipt_fails_closed(tmp_path):
     plan, _ = _partial_manifest(tmp_path)
     manifest, _ = runner.load_manifest(plan)

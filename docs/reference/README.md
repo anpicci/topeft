@@ -27,7 +27,7 @@ than treating an option table as a recipe.
 | [Sumw2 policy](sumw2.md) | Modes, default, selectors, resolved policy, companion naming, provenance, and failure conditions |
 | [Flexible binning](flexible_binning.md) | Processing and fitting schemas, family defaults, exact channel-name overrides, and exact aggregation |
 | [Plotting](plotting.md) | Wrapper/direct-CLI defaults, configuration owners, binning views, and output controls |
-| [Datacards and scalings](datacards_and_scalings.md) | Card CLI, `DatacardMaker`, per-era and combined package builders, outputs, and channel mappings |
+| [Datacards and scalings](datacards_and_scalings.md) | Card CLI, standard matrix manifest and runner, per-era and combined package interfaces, outputs, and channel mappings |
 | [Specialist interfaces](specialist_interfaces.md) | Artifact inspection and developer-facing interfaces that support focused maintenance work |
 | [B-tag scale-factor payloads](btag_scale_factor_payloads.md) | Packaged UL files, current consumers, and provenance limits |
 | [Missing-parton payloads](missing_parton_payloads.md) | Installed Run 2/Run 3 payload schema, selection, overrides, compatibility, and test authority |
@@ -45,6 +45,7 @@ than treating an option table as a recipe.
 - Plotting: `run_plotter.sh` and `make_cr_and_sr_plots.py` in
   [plotting](plotting.md).
 - Cards and scaling packages: `make_cards.py`,
+  `make_datacard_matrix_manifest.py`, `run_datacard_matrix_resumable.sh`,
   `build_per_era_datacard_package.py`, and
   `build_combined_datacard_package.py` in
   [datacards and scalings](datacards_and_scalings.md).

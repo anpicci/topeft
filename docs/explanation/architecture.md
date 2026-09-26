@@ -329,8 +329,8 @@ Both use the same resolver so a copied bin table cannot drift. See
 
 ### `make_cards.py`
 
-**Why it exists.** This is the direct supported card-production CLI; there is
-no maintained general campaign card wrapper.
+**Why it exists.** This is the direct card-production CLI. The matrix runner
+uses it for resumable multi-row production.
 
 **Consumes and produces.** It consumes positional coherent PKLs or one list
 file, channel and variable selections, Wilson-coefficient choices, binning and
@@ -345,6 +345,15 @@ configuration, and invocation of `DatacardMaker`.
 
 **Does not own.** It does not own campaign matrix provenance, final `chN`
 ordering, card combination, or workspace construction.
+
+### Standard matrix manifest and runner
+
+`make_datacard_matrix_manifest.py` derives standard Run 2 or Run 3 rows from
+`ch_lst.json` and caller-supplied PKL and runtime paths. It writes a concrete
+manifest without executing card production. The resumable matrix runner reads
+the manifest, checks its runtime and row outputs, and writes successful row
+receipts. It provides status and resume commands; the package builder does not
+manage row execution state. Direct `make_cards.py` use bypasses the matrix.
 
 ### `datacard_tools` and `DatacardMaker`
 
@@ -387,13 +396,16 @@ owned through finalization.
 ### Per-era package builder
 
 **Why it exists.** `build_per_era_datacard_package.py build` assembles the
-completed matrix-v2 rows into one Run 2 or Run 3 package.
+completed matrix rows into one Run 2 or Run 3 package.
 
 **Consumes and produces.** It rechecks receipt-bound card/template pairs and
 metadata snapshots, then publishes `cards/`, `selectedWCs.txt`,
 `scalings.json`, `physical_to_chN.json`, and provenance. The selected
 physical names determine the sorted per-era `chN` mapping. Scaling rows keep
 their producer-owned payload while their channel label follows that mapping.
+An explicit target selection permits a restricted package. Missing and extra
+targets prevent publication; missing targets are mapped to supplied manifest
+rows and the runner's status and resume commands are shown for recovery.
 
 **Does not produce.** It does not combine eras, build `combinedcard.txt`, or
 construct a workspace.
@@ -401,8 +413,10 @@ construct a workspace.
 ### Combined package builder
 
 `build_combined_datacard_package.py build` reads the Run 2 and Run 3
-packages. It derives the cross-era mapping, copies card/template
-pairs, relabels scaling channels, and checks the cards-only combined
+packages. Their physical target sets must match, including when both use a
+restricted subset. The builder compares physical names rather than era-local
+`chN` labels and rejects a mismatch before publication. It derives the
+cross-era mapping, copies card/template pairs, relabels scaling channels, and checks the cards-only combined
 package. `combined_mapping_manifest.json` records the mapping;
 `ordered_card_inputs.txt` lists cards in combination order. The generated
 README loads that list with `mapfile -t cards < ordered_card_inputs.txt`

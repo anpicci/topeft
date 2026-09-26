@@ -139,6 +139,17 @@ def _source_package(root, era):
             "analysis": provenance["analysis"]}
 
 
+def _require_matching_physical_surface(run2, run3):
+    run2_names = {row["physical_name"] for row in run2["mapping"]}
+    run3_names = {row["physical_name"] for row in run3["mapping"]}
+    missing_from_run2 = sorted(run3_names - run2_names)
+    missing_from_run3 = sorted(run2_names - run3_names)
+    _require(not missing_from_run2 and not missing_from_run3,
+             "Run 2 and Run 3 packages must contain the same physical targets; "
+             f"missing_from_run2={missing_from_run2}, missing_from_run3={missing_from_run3}. "
+             "Rebuild or select both era packages with the same physical channel and distribution set")
+
+
 def _scaling_identity(record):
     _require(isinstance(record, dict) and {"channel", "process", "parameters", "scaling"} <= set(record),
              "incomplete scaling record")
@@ -317,6 +328,7 @@ def _certify_details(package_root, run2_package, run3_package, output, result):
     _require(output.is_absolute(), "expected package path must be absolute")
     run2 = _source_package(run2_package, "run2")
     run3 = _source_package(run3_package, "run3")
+    _require_matching_physical_surface(run2, run3)
     _require(run2["analysis"] == run3["analysis"], "source analyses differ")
     result["run2_source_inventory_sha256"] = _source_inventory_sha256(run2)
     result["run3_source_inventory_sha256"] = _source_inventory_sha256(run3)
@@ -459,6 +471,7 @@ def build_combined_package(run2_package, run3_package, output, analysis, package
              "invalid package metadata")
     run2 = _source_package(run2_package, "run2")
     run3 = _source_package(run3_package, "run3")
+    _require_matching_physical_surface(run2, run3)
     _require(run2["analysis"] == run3["analysis"] == analysis, "source analysis differs")
     mapping = datacard_packaging.build_combined_mapping(run2["mapping"], run3["mapping"])
     combined_scalings = _combine_scalings(run2["scalings"], run3["scalings"], mapping)

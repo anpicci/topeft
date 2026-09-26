@@ -4,6 +4,7 @@ import argparse
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 from pathlib import Path
@@ -59,8 +60,8 @@ def _physical_name(channel, distribution):
     return name
 
 
-def _resolve_v2_manifest_units(manifest_paths, era, *, verify_source_files=True):
-    """Resolve selected current-v2 rows; identity-only readback is for qualification."""
+def _resolve_v2_manifest_units(manifest_paths, era, *, verify_source_files=True, allow_empty=False):
+    """Resolve completed matrix rows and their successful row receipts."""
     _require(era in {"run2", "run3"}, "invalid requested era")
     _require(bool(manifest_paths), "at least one matrix manifest is required")
     units = []
@@ -150,7 +151,7 @@ def _resolve_v2_manifest_units(manifest_paths, era, *, verify_source_files=True)
             })
             unit_ids.add(unit_id)
             covered.update(names)
-    _require(bool(units), f"no selected complete {era} units")
+    _require(bool(units) or allow_empty, f"no selected complete {era} units")
     return units, hashes
 
 
@@ -190,6 +191,50 @@ def _canonical_physical_names(channel_registry, channel_set_key):
                 names.append(_physical_name(f"{channel}_{jet}j", distribution))
     _require(len(names) == len(set(names)), "duplicate registry target")
     return sorted(names)
+
+
+def _selected_physical_names(channel_registry, channel_set_key, selected_targets):
+    available = _canonical_physical_names(channel_registry, channel_set_key)
+    if not selected_targets:
+        return available
+    requested = set(selected_targets)
+    _require(len(requested) == len(selected_targets), "duplicate requested physical target")
+    _require(requested <= set(available),
+             f"requested physical target is outside the channel set: {sorted(requested - set(available))}")
+    return sorted(requested)
+
+
+def _target_coverage_message(manifest_paths, era, requested, units):
+    observed = {name for unit in units for name in unit["physical_targets"]}
+    missing = sorted(set(requested) - observed)
+    extra = sorted(observed - set(requested))
+    if not missing and not extra:
+        return None
+    lines = [f"{era} physical target set differs: missing={missing}, extra={extra}"]
+    rows_by_target = {}
+    for path in manifest_paths:
+        manifest, _ = matrix_runner.load_manifest(Path(path))
+        for row in manifest["rows"]:
+            if row["era"] != era:
+                continue
+            for channel in row["physical_channels"]:
+                target = _physical_name(channel, row["distribution"])
+                rows_by_target.setdefault(target, []).append((path, row["row_id"]))
+    relevant_manifests = set()
+    for target in missing:
+        rows = rows_by_target.get(target, [])
+        if not rows:
+            lines.append(f"{target}: no row in the supplied matrix manifests; supply or generate a manifest containing this target")
+            continue
+        for path, row_id in rows:
+            lines.append(f"{target}: manifest={path}, row_id={row_id}")
+            relevant_manifests.add(str(path))
+    runner = "analysis/topeft_run2/run_datacard_matrix_resumable.sh"
+    for path in sorted(relevant_manifests):
+        quoted = shlex.quote(path)
+        lines.append(f"Check row status: {runner} --status {quoted}")
+        lines.append(f"Resume with the runner after reviewing status: {runner} {quoted}")
+    return "\n".join(lines)
 
 
 def _validate_units(units, era, physical_names):
@@ -333,9 +378,13 @@ def main(argv=None):
     build.add_argument("--channel-registry", type=Path,
                        default=Path(__file__).resolve().parents[2] / "topeft/channels/ch_lst.json")
     build.add_argument("--channel-set-key", default="ALL_CH_LST_SR")
+    build.add_argument("--physical-target", action="append", default=[],
+                       help="Repeat for an explicit subset of physical <channel>_<distribution> targets")
     args = parser.parse_args(argv)
-    units, manifest_hashes = _resolve_v2_manifest_units(args.matrix_manifest, args.era)
-    physical_names = _canonical_physical_names(args.channel_registry, args.channel_set_key)
+    units, manifest_hashes = _resolve_v2_manifest_units(args.matrix_manifest, args.era, allow_empty=True)
+    physical_names = _selected_physical_names(args.channel_registry, args.channel_set_key, args.physical_target)
+    coverage_message = _target_coverage_message(args.matrix_manifest, args.era, physical_names, units)
+    _require(coverage_message is None, coverage_message)
     build_per_era_package_from_units(args.era, args.analysis, physical_names, units,
                                      args.output, manifest_hashes)
     return 0

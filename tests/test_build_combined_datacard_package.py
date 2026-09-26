@@ -49,7 +49,7 @@ def _source(tmp_path, era, names):
 
 @pytest.fixture
 def sources(tmp_path):
-    return (_source(tmp_path, "run2", ["z", "a"]), _source(tmp_path, "run3", ["b"]))
+    return (_source(tmp_path, "run2", ["z", "a"]), _source(tmp_path, "run3", ["z", "a"]))
 
 
 def _build(tmp_path, sources):
@@ -87,7 +87,7 @@ def test_build_and_public_certify(tmp_path, sources):
     output = _build(tmp_path, sources)
     result = combined.certify_combined_package(output, *sources)
     assert result["result"] == "pass"
-    assert result["observed_counts"]["combined_cards"] == 3
+    assert result["observed_counts"]["combined_cards"] == 4
     assert {path.name for path in output.iterdir()} == combined._output_names
     assert not (output / "selectedWCs.txt").exists()
     assert not (output / "combinedcard.txt").exists()
@@ -97,9 +97,11 @@ def test_build_and_public_certify(tmp_path, sources):
     assert [(row["era"], row["physical_name"], row["per_era_chN"], row["combined_chN"])
             for row in rows] == [("run2", "z", "ch1", "ch1"),
                                  ("run2", "a", "ch2", "ch2"),
-                                 ("run3", "b", "ch1", "ch3")]
+                                 ("run3", "z", "ch1", "ch3"),
+                                 ("run3", "a", "ch2", "ch4")]
     assert [row["destination_txt_name"] for row in rows] == [
-        "Run2_ttx_multileptons-z.txt", "Run2_ttx_multileptons-a.txt", "Run3_ttx_multileptons-b.txt"]
+        "Run2_ttx_multileptons-z.txt", "Run2_ttx_multileptons-a.txt",
+        "Run3_ttx_multileptons-z.txt", "Run3_ttx_multileptons-a.txt"]
     order = (output / "ordered_card_inputs.txt").read_text().splitlines()
     assert order == ["cards/" + row["destination_txt_name"] for row in rows]
     for row in rows:
@@ -113,8 +115,8 @@ def test_build_and_public_certify(tmp_path, sources):
             f"{stem}.root".encode(), row["destination_root_name"].encode(), 1)
         assert f"bin_{row['physical_name']}".encode() in destination_bytes
     scalings = json.loads((output / "scalings.json").read_text())
-    assert [record["channel"] for record in scalings] == ["ch1", "ch2", "ch3"]
-    assert [record["extra"]["nested"][0] for record in scalings] == ["run2", "run2", "run3"]
+    assert [record["channel"] for record in scalings] == ["ch1", "ch2", "ch3", "ch4"]
+    assert [record["extra"]["nested"][0] for record in scalings] == ["run2", "run2", "run3", "run3"]
     provenance = json.loads((output / "package-provenance.json").read_text())
     assert provenance["package_root"] == manifest["package_root"] == str(output)
     assert str(tmp_path / ".combined.staging") not in (output / "README.md").read_text()
@@ -122,6 +124,27 @@ def test_build_and_public_certify(tmp_path, sources):
     assert "mapfile -t cards < ordered_card_inputs.txt" in readme
     assert 'combineCards.py "${cards[@]}" > combinedcard.txt' in readme
     assert "wildcard/glob" in readme
+
+
+def test_equal_restricted_surface_is_allowed(tmp_path):
+    sources = (_source(tmp_path, "run2", ["z"]), _source(tmp_path, "run3", ["z"]))
+    output = _build(tmp_path, sources)
+    assert combined.certify_combined_package(output, *sources)["result"] == "pass"
+    assert [(row["era"], row["physical_name"]) for row in _manifest(output)["rows"]] == [
+        ("run2", "z"), ("run3", "z")]
+
+
+def test_unequal_physical_surfaces_fail_before_publication(tmp_path):
+    sources = (_source(tmp_path, "run2", ["z", "a"]),
+               _source(tmp_path, "run3", ["z", "b"]))
+    with pytest.raises(ValueError) as exc:
+        _build(tmp_path, sources)
+    message = str(exc.value)
+    assert "missing_from_run2=['b']" in message
+    assert "missing_from_run3=['a']" in message
+    assert "same physical" in message
+    assert not (tmp_path / "combined").exists()
+    assert not (tmp_path / ".combined.staging").exists()
 
 
 def test_cli_surface():
