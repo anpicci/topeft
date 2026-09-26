@@ -57,8 +57,11 @@ sample JSONs / sample cfg
     -> plotting and validation
     -> make_cards.py
     -> individual cards/templates + selectedWCs.txt + scalings-preselect.json
-    -> datacards_post_processing.py
-    -> selected cards/templates + selectedWCs.txt + scalings.json
+    -> build_per_era_datacard_package.py build (Run 2 and Run 3)
+    -> canonical per-era packages
+    -> build_combined_datacard_package.py build
+    -> source-certified cards-only combined package
+    -> ordered_card_inputs.txt
     -> EFTFit / Combine
 ```
 
@@ -200,20 +203,20 @@ you what each actor owns and, equally importantly, what it does not own.
   the final fit. Its payload must be filtered and relabeled, not replaced by a
   process-global number.
 
-- **`datacards_post_processing.py`.** This topology/scaling finalizer consumes
-  a datacard directory that already contains individual pairs,
-  `selectedWCs.txt`, and `scalings-preselect.json`. With one topology selector,
-  it copies the selected pairs and WCs, derives a deterministic channel order,
-  relabels matching scaling records, and writes `scalings.json`. It does not
-  read or create `combinedcard.txt`. See
-  [finalize scalings](../how_to/datacards_and_scalings.md#finalize-the-current-full-topology).
+- **Per-era package builder.** `build_per_era_datacard_package.py build`
+  consumes validated matrix-v2 completions and receipt-bound producer
+  artifacts. It assigns the physical-to-`chN` map and publishes each
+  era's cards/templates, selected WCs, scalings, mapping, and provenance.
 
-- **Physical channel to `chN` mapping.** Before finalization, a channel has a
-  physics-facing name that encodes its category and final distribution. The
-  finalizer sorts the selected physical names and assigns `ch1`, `ch2`, and so
-  on. This makes the scaling namespace deterministic and aligned with later
-  card combination. It is a mapping, not a loss of the physical meaning
-  carried by the selected card/template names.
+- **Combined package builder.** `build_combined_datacard_package.py build`
+  consumes the Run 2 and Run 3 per-era package roots. It derives the combined
+  mapping, creates `ordered_card_inputs.txt`, and source-certifies a
+  cards-only package. It does not run Combine or construct a workspace.
+
+- **Physical channel to `chN` mapping.** The per-era builder sorts the
+  selected physical names and assigns `ch1`, `ch2`, and so on. The
+  combined builder derives the cross-era mapping from the two package roots.
+  The mapping preserves each card's physical meaning.
 
 - **`scalings.json`.** This is the selected, ordered EFT-scaling payload. Each
   retained record preserves its producer-owned process, coefficient, and bin
@@ -223,9 +226,9 @@ you what each actor owns and, equally importantly, what it does not own.
 
 - **EFTFit and Combine.** These downstream tools own individual-card
   combination, `combinedcard.txt`, workspace construction, and statistical
-  inference. They consume the selected cards/templates, `selectedWCs.txt`, and
-  compatible `scalings.json`. Correction-lib does not own those downstream
-  operations. See [the handoff explanation](../explanation/datacards_and_eftfit.md).
+  inference. They consume the combined package's ordered cards/templates and
+  compatible `scalings.json`; fit configuration owns WC population. See
+  [the handoff explanation](../explanation/datacards_and_eftfit.md).
 
 ## 3. Choose one of the three production routes
 
@@ -422,50 +425,60 @@ EFT content, and writes:
 - `selectedWCs.txt`;
 - `scalings-preselect.json`.
 
-Inspect this directory before finalization. The campaign-specific matrix
+Inspect the producer artifacts before packaging. The campaign-specific matrix
 wrappers are archival operator records, not supported replacements for the
 direct CLI. Use the
 [datacard/scaling how-to](../how_to/datacards_and_scalings.md) for selection and
 extension procedures and the
 [reference](../reference/datacards_and_scalings.md) for exact artifact fields.
 
-## 8. Select the final topology and write `scalings.json`
+## 8. Build the Run 2 and Run 3 packages
 
-For the full current analysis topology:
+After the matrix-v2 completion manifests and producer artifacts are accepted,
+build each era into a fresh absolute output directory. From the repository
+root, for Run 2:
 
 ```bash
-python datacards_post_processing.py /absolute/path/to/cards -a
+python analysis/topeft_run2/build_per_era_datacard_package.py build \
+  --era run2 \
+  --matrix-manifest /path/to/accepted-run2-matrix-v2.json \
+  --output /absolute/path/to/new-run2-package \
+  --analysis TOP-26-006
 ```
 
-The directory must already contain the individual cards/templates,
-`selectedWCs.txt`, and `scalings-preselect.json`. The `-a` selector reads the
-full topology from `topeft/channels/ch_lst.json`. The finalizer derives each
-physical card-channel name, sorts the selected names, maps them to `ch1`,
-`ch2`, and so on, and writes a selected output directory.
+Repeat for Run 3 with `--era run3`, its accepted manifest(s), and a different
+output. The builder defaults to `ALL_CH_LST_SR` from `ch_lst.json`. It
+rechecks source cards/templates and snapshots, then publishes `cards/`,
+`selectedWCs.txt`, `scalings.json`, `physical_to_chN.json`, and provenance.
+The predecessor `datacards_post_processing.py -a` procedure is not the
+current package handoff.
 
-Every matching scaling record keeps its producer-owned process, parameter,
-coefficient, and bin payload; only its channel label becomes the deterministic
-`chN`. The final file is `scalings.json`. The historically named
-`ptz-lj0pt_withSys` directory does not imply that every selected channel uses
-`ptz` or `lj0pt`.
+## 9. Build the combined package and cross the EFTFit/Combine boundary
 
-## 9. Cross the EFTFit/Combine boundary
+Use the two accepted per-era package roots. From the repository root:
 
-Carry the complete selected directory across the repository boundary:
+```bash
+python analysis/topeft_run2/build_combined_datacard_package.py build \
+  --run2-package /absolute/path/to/run2-package \
+  --run3-package /absolute/path/to/run3-package \
+  --output /absolute/path/to/new-combined-package \
+  --analysis TOP-26-006 \
+  --package-date YYMMDD \
+  --package-version v1
+```
 
-- individual text cards and ROOT templates;
-- `selectedWCs.txt`;
-- final `scalings.json`.
-
-EFTFit later combines the individual cards, creates `combinedcard.txt`, and
-constructs the workspace used by Combine. Therefore `combinedcard.txt` is
-neither an input nor an output of `datacards_post_processing.py`. A final
-scaling record is interpreted for one `chN`/process/bin combination; an absent
-record means no external EFT morph for that exact channel/process.
+The combined builder publishes and source-certifies cards, scalings, mapping,
+`ordered_card_inputs.txt`, provenance, and a README. It does not create
+`combinedcard.txt`. In a later consumer session, follow that README from
+the package root: load `ordered_card_inputs.txt` with
+`mapfile -t cards < ordered_card_inputs.txt`, then run
+`combineCards.py "${cards[@]}" > combinedcard.txt`. The ordered list, not a
+shell glob, fixes the current card order. EFTFit/Combine then owns the combined
+card and workspace. A missing exact channel/process scaling record means no
+external EFT morph for that pair.
 
 Read [the datacard and EFTFit boundary](../explanation/datacards_and_eftfit.md)
-before diagnosing a channel-order or workspace mismatch. This repository does
-not own a universal copy-paste EFTFit command.
+before diagnosing a channel-order or workspace mismatch.
 
 ## 10. Where to continue
 

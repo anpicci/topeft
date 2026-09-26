@@ -9,89 +9,51 @@ Combine later combine those cards and construct the workspace.
 ## Artifact sequence
 
 `make_cards.py` writes one text card and ROOT template per selected physical
-channel, plus row-local `selectedWCs.txt` and `scalings-preselect.json`. When a
-campaign is split into rows, each successful row's metadata must be snapshotted
-and bound to its execution receipt; the shared files left by the last row are
-not a consolidated era payload.
+channel, plus row-local `selectedWCs.txt` and
+`scalings-preselect.json`. The resumable matrix producer records row
+completions, receipts, and metadata snapshots. Its final shared metadata
+files are not a complete era package.
 
-`consolidate_datacard_metadata.py` assembles one era from an explicit accepted
-successful-unit registry. It preserves producer scaling records, rejects a
-duplicate physical-channel/process identity, and forms the deterministic
-process-to-WC union. Multiple upstream PKLs may contribute before a physical
-datacard identity is formed, but the datacard layer has exactly one logical
-`(physical_channel, process)` instance within each era. A duplicate there is a
-contract violation, not a merge case. The atomically published result contains
-`scalings-preselect.json`, `selectedWCs.txt`, and
-`consolidation-provenance.json`; the consolidator is not the finalizer and does
-not produce `scalings.json`.
+`build_per_era_datacard_package.py build` consumes validated matrix-v2
+completions for one era. It rechecks receipt-bound sources, copies the selected
+card/template pairs, consolidates selected WCs and scaling records, and writes
+the deterministic physical-to-`chN` mapping. Each Run 2 or Run 3 package
+contains `cards/`, `selectedWCs.txt`, `scalings.json`,
+`physical_to_chN.json`, and provenance. A duplicate
+`(physical_channel, process)` scaling identity is a contract violation.
+Multiple upstream PKLs may contribute before that datacard identity is formed.
 
-`datacards_post_processing.py <datacard_dir> -a` selects the current full
-topology from `ch_lst.json`. It sorts physical channel names deterministically,
-maps them to `ch1`, `ch2`, and so on, copies the selected individual artifacts,
-and relabels every matching scaling record while preserving its other fields.
-The result is `scalings.json`.
+`build_combined_datacard_package.py build` consumes the two per-era package
+roots. It derives the combined mapping and scaling-channel labels, copies
+cards/templates, and source-certifies a cards-only package. The result includes
+`combined_mapping_manifest.json`, `scalings.json`,
+`ordered_card_inputs.txt`, provenance, and a consumer README. It does not
+produce a combined `selectedWCs.txt` or `combinedcard.txt`.
 
 ## Repository boundary
 
-`combinedcard.txt` is neither an input nor an output of the finalizer. It is
-created later when EFTFit/Combine combines the individual cards. The shared
-contract is the deterministic physical-channel order and the compatible set of
-individual cards, templates, selected Wilson coefficients, and final scaling
-records.
+`ordered_card_inputs.txt` is the current card-order authority. From the
+combined package root, the later consumer follows the generated README:
 
-A missing final scaling record means that exact channel/process pair has no
-external EFT morph. It is not a process-wide fallback or normalization.
+```bash
+mapfile -t cards < ordered_card_inputs.txt
+combineCards.py "${cards[@]}" > combinedcard.txt
+```
 
-The campaign-specific `run_make_cards_run3_yawen_matrix.sh` is a DATACARD023
-archival operator record. It does not own the durable region-to-distribution
-mapping or define a supported current wrapper. Changing, generalizing, moving,
-or deleting that runnable script requires a separate source-control decision.
+EFTFit and Combine own the combined card and workspace. A missing final
+scaling record means the exact channel/process pair has no external EFT morph;
+it is not a process-wide fallback or normalization. Filesystem order and the
+historical `ttx_multileptons-*.txt` shell glob do not define the mapping.
 
-After separate Run 2 and Run 3 finalization, any cross-era renaming, channel
-shift, combined scaling assembly, or combined-card construction is another
-packaging/consumer boundary. `datacards_post_processing.py` does not combine
-the eras. EFTFit and Combine remain outside `topeft` ownership; they are not
-validators for producer metadata consolidation.
-Run 2 and Run 3 remain separate namespaces until that later combined-package
-boundary; neither consolidated JSON position nor filesystem ordering defines
-combined channel identity.
-
-The maintained combined-package assembler consumes one explicit 258-row
-`TOP26006_v1` manifest with `artifact_type` set to
-`combined_mapping_manifest` and the durable
-`source_per_era_package_root` field. It keeps Run 2 `ch1..ch129`, maps Run 3
-per-era `ch1..ch129` to combined `ch130..ch258`, prefixes packaged
-card/template filenames by era, and updates only each card's ROOT template
-reference. Individual card `bin_*` identities remain physical. The manifest
-supplies the ordered card list, so the later consumer invocation uses
-`ordered_card_inputs.txt` instead of the historical
-`ttx_multileptons-*.txt` shell glob. That ordered-input convention is new
-TOP-26-006 hardening, not an Andrew-authored mechanism. A combined
-`selectedWCs.txt` is outside this packaging boundary. Current fresh cards are
-valid package inputs as-is; nuisance convention migration is separately owned
-and does not gate package publication.
-
-## Consumer metadata and independent certification
-
-The build manifest needs source paths and hashes so the assembler can copy and
-relabel individual artifacts. A consumer package should not expose that
-internal build provenance. The maintained finalizer projects it into a consumer
-manifest that preserves physical identity, channel labels, order, and
-destination names while omitting source paths. Consumer provenance retains
-useful content hashes without treating diagnostics as package semantics.
-
-Card order and scaling channels share the manifest as their authority.
-Filesystem enumeration and shell globs can happen to be stable in one run but
-do not define semantic identity. `ordered_card_inputs.txt` is the consumer
-ordered projection of the manifest and is the input for later card combination.
-
-Independent certification is separate from the assembler. It reconstructs the
-permitted `shapes` filename substitution, compares ROOT copies byte for byte,
-verifies order, rebuilds scaling identities by channel and process, and rejects
-forbidden consumer outputs. This establishes the datacard/template/scaling
-boundary; it does not construct a workspace or run EFTFit or Combine.
-Wilson-coefficient population for a workspace is fit configuration work, so a
-combined `selectedWCs.txt` remains outside this package boundary.
+The older `consolidate_datacard_metadata.py`,
+`datacards_post_processing.py`,
+`assemble_combined_datacard_package.py`, and
+`finalize_combined_datacard_package.py` describe predecessor packaging
+procedures. They remain separate source surfaces; their retirement status is
+not decided here. The campaign-specific
+`run_make_cards_run3_yawen_matrix.sh` is a DATACARD023 archival operator
+record. Nuisance convention migration is separately owned and does not
+change this packaging boundary.
 
 See the [card and scaling how-to](../how_to/datacards_and_scalings.md) and the
 [artifact reference](../reference/datacards_and_scalings.md).

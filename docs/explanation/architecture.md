@@ -384,39 +384,44 @@ topology selection. Multiple records for a physical channel/process may be
 valid. Their process, parameters, and coefficient payload remain producer-
 owned through finalization.
 
-### `datacards_post_processing.py`
+### Canonical per-era package builder
 
-**Why it exists.** The finalizer selects one declared topology and establishes
-the deterministic namespace shared with the later EFTFit/Combine card order.
+**Why it exists.** `build_per_era_datacard_package.py build` turns
+validated matrix-v2 completions into one source-bound Run 2 or Run 3 package.
 
-**Consumes and produces.** It consumes a datacard directory already containing
-individual cards/templates, `selectedWCs.txt`, and `scalings-preselect.json`,
-plus exactly one topology selector. With `-a` it uses the full current topology
-from `ch_lst.json`. It creates the selected output subdirectory and writes
-`scalings.json`.
+**Consumes and produces.** It rechecks receipt-bound card/template pairs and
+metadata snapshots, then publishes `cards/`, `selectedWCs.txt`,
+`scalings.json`, `physical_to_chN.json`, and provenance. The selected
+physical names determine the sorted per-era `chN` mapping. Scaling rows keep
+their producer-owned payload while their channel label follows that mapping.
 
-**Owns.** It owns physical category-to-distribution predicates, sorted physical
-channel ordering, `ch1`, `ch2`, … assignment, selected-file copying, scaling-
-row filtering, and channel relabeling.
+**Does not own.** It does not combine eras, build `combinedcard.txt`, or
+construct a workspace. The predecessor `datacards_post_processing.py`
+topology finalizer is a separate earlier procedure, not the canonical
+per-era package owner.
 
-**Does not own.** It neither reads nor creates `combinedcard.txt`; it does not
-combine cards or build a workspace.
+### Canonical combined package builder
 
-### Physical channel to `chN` mapping and `scalings.json`
-
-The finalizer sorts selected physical channel names and maps the item at index
-`i` to `ch{i+1}`. Every matching scaling record keeps all producer-owned fields
-except `channel`, which is relabeled. A missing final record means no external
-EFT morph for that exact channel/process.
+`build_combined_datacard_package.py build` consumes the accepted Run 2 and
+Run 3 package roots. It derives the cross-era mapping, copies card/template
+pairs, relabels scaling channels, and source-certifies a cards-only combined
+package. `combined_mapping_manifest.json` records the mapping;
+`ordered_card_inputs.txt` records the downstream card order. The generated
+README loads that list with `mapfile -t cards < ordered_card_inputs.txt`
+before `combineCards.py "${cards[@]}" > combinedcard.txt` in a later
+consumer session. Shell-glob ordering is historical, not the current
+authority. A missing exact channel/process scaling record means no external
+EFT morph for that pair.
 
 ### EFTFit and Combine
 
 **Why they exist.** EFTFit and Combine own the statistical-model boundary after
-`topeft` has produced and finalized its individual inputs.
+`topeft` has built and certified the combined package.
 
-**Consumes and produces.** They consume the selected individual cards and
-templates, `selectedWCs.txt`, and compatible ordered `scalings.json`; they later
-combine cards, create `combinedcard.txt`, and construct the workspace.
+**Consumes and produces.** They consume the combined package's ordered cards
+and templates and compatible `scalings.json`; fit configuration owns WC
+population. They later combine cards, create `combinedcard.txt`, and
+construct the workspace.
 
 **Owns and does not own.** They own card combination and workspace/likelihood
 construction. `topeft` does not define a current copy-paste external command,

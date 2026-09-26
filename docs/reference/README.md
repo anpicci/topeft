@@ -44,8 +44,9 @@ than treating an option table as a recipe.
   [histogram artifacts](histogram_artifacts.md).
 - Plotting: `run_plotter.sh` and `make_cr_and_sr_plots.py` in
   [plotting](plotting.md).
-- Cards and scaling finalization: `make_cards.py` and
-  `datacards_post_processing.py` in
+- Cards and scaling packages: `make_cards.py`,
+  `build_per_era_datacard_package.py`, and
+  `build_combined_datacard_package.py` in
   [datacards and scalings](datacards_and_scalings.md).
 - Inspection: `inspect_histeft_pkl.py` in
   [specialist interfaces](specialist_interfaces.md).

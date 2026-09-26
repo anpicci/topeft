@@ -98,174 +98,69 @@ labels, unresolved sparse axes that would duplicate ROOT template names,
 invalid exact rebinning, missing/mismatched shape pairs, and payload/registry
 incompatibility.
 
-## Metadata consolidation
+## Canonical per-era package interface
 
-`analysis/topeft_run2/consolidate_datacard_metadata.py` is the maintained
-one-era assembly interface for row-split production. Its CLI requires
-`--registry`, `--era {run2,run3}`, and a new `--output-dir`.
+`analysis/topeft_run2/build_per_era_datacard_package.py build` is the
+current Run 2 or Run 3 package owner. Required options are
+`--era {run2,run3}`, repeatable `--matrix-manifest`, fresh absolute
+`--output`, and `--analysis`. Optional `--channel-registry` defaults to
+`topeft/channels/ch_lst.json`; `--channel-set-key` defaults to
+`ALL_CH_LST_SR`. The inputs are validated matrix-v2 completions with
+receipt-bound source card/template pairs and metadata snapshots. The builder
+rechecks their source identities, requires complete physical-channel coverage,
+rejects duplicate scaling identities, and assigns deterministic per-era
+`chN` labels.
 
-The registry schema is `topeft_successful_metadata_units_v1`. It must be marked
-accepted and contain an explicit `units` list. Each selected unit supplies:
+The published package contains only `cards/`, `selectedWCs.txt`,
+`scalings.json`, `physical_to_chN.json`, and
+`package-provenance.json`. It does not contain
+`scalings-preselect.json` or `combinedcard.txt`. The builder writes and
+verifies a private sibling staging tree, then publishes to a previously absent
+output directory. The per-era scaling payload preserves producer-owned fields
+while using the package mapping for the channel label; an absent exact
+channel/process record means no external EFT morph for that pair.
 
-- `era`, `execution_unit_id`, and `attempt_id`;
-- `receipt_path` and `receipt_sha256`;
-- `scalings_snapshot_path` and `scalings_snapshot_sha256`;
-- `selectedWCs_snapshot_path` and `selectedWCs_snapshot_sha256`;
-- `owned_scientific_target_identities`, expressed as era, physical channel,
-  and distribution.
+`consolidate_datacard_metadata.py` and
+`datacards_post_processing.py` expose predecessor metadata-consolidation
+and topology-selection procedures. Their direct interfaces and tests remain
+in the repository; they do not define the current canonical per-era package
+handoff. The historical `ptz-lj0pt_withSys` directory label and
+`-s` TOP-22-006 topology selector belong to that earlier workflow.
 
-The tool does no filesystem discovery. It filters the explicit list to one
-era, rejects repeated execution-unit identities, rechecks all declared hashes,
-and requires each scaling record's physical `<channel>_<distribution>` label
-to belong to that unit. Scaling identity is `(channel, process)`; any duplicate
-across the selected fragments is an error rather than a deduplication request.
-Multiple upstream PKLs may contribute before one physical datacard identity is
-formed, but the consolidated datacard layer has exactly one logical
-`(physical_channel, process)` instance per era. Run 2 and Run 3 are separate
-namespaces at this boundary.
+## Canonical combined package interface
 
-Each scaling record requires a non-empty string `channel`, a non-empty string
-`process`, a `list[str]` `parameters` value, and a two-dimensional list of
-finite numeric `scaling` values. The consolidator intentionally does not
-enforce parameter order or count, coefficient-vector dimensions, bin-vector
-dimensions, or cross-era WC-basis equality.
+`analysis/topeft_run2/build_combined_datacard_package.py build` consumes
+validated Run 2 and Run 3 per-era package roots. It requires
+`--run2-package`, `--run3-package`, a fresh absolute `--output`,
+`--analysis`, `--package-date` in `YYMMDD` form, and
+`--package-version` in `vN` form. Both sources must have the same
+analysis identity. The builder derives the combined channel mapping, copies
+cards/templates, relabels scaling channels, and source-certifies its staged
+and published output.
 
-Scaling records are emitted unchanged in explicit registry/fragment order.
-`selectedWCs.txt` remains a JSON object. Its process-to-WC values are the
-first-seen union over that same explicit order, while JSON object keys use the
-stable serializer ordering. The output representation is therefore byte
-deterministic for identical explicit inputs. The tool writes only
-`scalings-preselect.json`, `selectedWCs.txt`, and
-`consolidation-provenance.json`. It writes and reads back the complete result
-in a temporary sibling directory before atomically publishing the requested
-directory. It refuses an existing output directory, and a failed write leaves
-the requested directory absent. Publication assumes one writer per requested
-output path; concurrent same-path writers are unsupported. The temporary
-sibling uses ordinary directory creation permissions under the process umask
-and parent filesystem inheritance, and is removed after success or failure.
-The provenance file identifies the input
-registry and hash, consumed unit/snapshot hashes, payload filenames and hashes,
-semantic key, duplicate policy, selected-WC union policy, and maintained tool
-source identity.
+The cards-only package contains `cards/`, `scalings.json`,
+`combined_mapping_manifest.json`, `ordered_card_inputs.txt`,
+`package-provenance.json`, and `README.md`. It contains neither
+`combinedcard.txt` nor a combined `selectedWCs.txt`. The generated README
+uses `ordered_card_inputs.txt` as the consumer card-order authority:
 
-This interface does not validate or alter parameter bases, parameter order,
-coefficient-vector dimensions, bin counts, numerical physics content,
-card/template physics, or process semantics. Those remain producer or
-separately authorized validation responsibilities. It also does not run the
-finalizer or produce `scalings.json`.
+```bash
+mapfile -t cards < ordered_card_inputs.txt
+combineCards.py "${cards[@]}" > combinedcard.txt
+```
 
-## Scaling finalization
+This command belongs to a later consumer session run from the package root;
+the builder does not run Combine or create the combined card. The `certify`
+subcommand reads an existing package against `--run2-package` and
+`--run3-package`, with required `--package-root` and optional
+`--report-json`. It does not mutate the package.
 
-For `datacards_post_processing.py DATACARD_DIR -a`:
-
-1. `ALL_CH_LST_SR` in `topeft/channels/ch_lst.json` selects the full current
-   topology.
-2. Source predicates map each physical category to `lj0pt`, `ptz`, `ptll`,
-   `ptz_wtau`, or `lt`.
-3. Physical names are sorted into `CATSELECTED`.
-4. `CATSELECTED[i]` maps deterministically to `ch{i+1}`.
-5. Matching cards/templates and `selectedWCs.txt` are copied to the selected
-   output directory.
-6. Every matching scaling record retains all producer-owned fields except
-   `channel`, which becomes the corresponding `chN`; unmatched records are
-   removed.
-7. The selected records are written as `scalings.json`.
-
-The historical output-directory label `ptz-lj0pt_withSys` does not imply that
-all categories use only those observables. `combinedcard.txt` is neither an
-input nor an output of this finalizer. EFTFit later combines the individual
-cards and creates the combined card/workspace using compatible `chN` ordering.
-A missing final record means no external EFT morph for that exact
-channel/process.
-
-### Finalizer CLI and artifact schemas
-
-`datacards_post_processing.py` is public supported. Its required positional
-argument is a directory already containing the individual cards/templates,
-`selectedWCs.txt`, and `scalings-preselect.json`. Exactly one topology selector
-is required: TOP-22 reproduction (`-s`), off-Z split (`-z`), tau (`-t`),
-forward (`-f`), or current all-analysis (`-a`). `--check-condor-logs` is an
-independent diagnostic flag, not a topology selector. For current TOP-26-006
-production, `-a` selects `ALL_CH_LST_SR`; `-s` remains historical.
-
-The command reads the directory and registry, creates the fixed selected-output
-subdirectory, copies matching `.txt`/`.root` files plus `selectedWCs.txt`, and
-writes `scalings.json`. A pre-existing output directory, missing required
-inputs, or selector-count error fails. Post-copy count checks are
-selector-specific: `-s` requires 43 text and 43 ROOT files, `-z` requires 75 of
-each, `-t` requires 60 of each, and `-a` requires 129 of each. Every selector
-requires text/ROOT symmetry; `-f` deliberately has no hard-coded exact total.
-The text and ROOT diagnostics report their independent observed counts. The
-finalizer returns process status rather than a library object.
-
-`scalings-preselect.json` and `scalings.json` are JSON arrays. Each producer
-record has:
-
-- `channel`: physical `<category>_<distribution>` before finalization, then
-  deterministic `chN` afterward;
-- `process`: card process name, normally `<process>_sm` for EFT signals;
-- `parameters`: ordered Combine-style parameter specifications beginning with
-  `cSM[1]`;
-- `scaling`: producer-owned per-bin coefficient payload, with underflow removed
-  by `DatacardMaker`.
-
-The finalizer changes only `channel` and filters unselected records; it must not
-recompute `parameters` or `scaling`. Duplicate records for the same physical
-channel/process must already have failed at per-era consolidation and are not a
-finalizer merge case. Consumers must interpret a missing exact channel/process
-record as absence of an external morph, not as a request to borrow another
-process's record.
-
-## Combined package interface
-
-`analysis/topeft_run2/assemble_combined_datacard_package.py` consumes a
-`TOP26006_v1` JSON manifest with `artifact_type` set to
-`combined_mapping_manifest`, an exact manifest-derived
-`ordered_card_inputs.txt`, and a new output root. Its CLI requires
-`--manifest`, `--ordered-card-inputs`, and `--output-root`. The manifest uses
-`source_per_era_package_root`, binds per-era mapping/scaling source hashes,
-and has one row per packaged target. Each row binds physical identity, per-era `chN`,
-combined `chN`, order index, source TXT/ROOT paths, destination names, and the
-expected packaged template reference.
-
-For the current two-era mapping, Run 2 keeps its per-era index and Run 3 uses
-the declared Run-2 cardinality as its offset. Destination names are `Run2_` or `Run3_` plus
-the source basename. The tool verifies unique domains and paths, copies each
-ROOT unchanged, edits only the exact shapes-file token in each TXT card, and
-changes only `channel` in each scaling record. It rejects missing or ambiguous
-card/template references, duplicate scaling identities, stale ordered input,
-and an existing final output root. It writes package provenance and a README,
-then publishes from a complete temporary sibling directory by rename. This
-assumes one writer per output path and ordinary parent filesystem permissions.
-
-The tool does not create `combinedcard.txt`, run Combine/EFTFit, decide
-nuisance names, or create a combined `selectedWCs.txt`. Current fresh cards
-are valid package inputs as-is; nuisance convention migration is separately
-owned and does not gate package publication.
-
-## Consumer package finalization contract
-
-`analysis/topeft_run2/finalize_combined_datacard_package.py` is the maintained
-consumer finalizer/certifier. Its durable constants are `TOP26006_v1`,
-`combined_mapping_manifest`, `package_provenance`, the metadata filenames,
-`scalings.json`, and `ordered_card_inputs.txt`; package paths, dates, versions,
-counts, source roots, and assembler commits are runtime input or derived from
-the manifest.
-
-`sanitize` requires `--package-root`, `--diagnostics-dir`, `--analysis`,
-`--package-version`, `--package-date`, and `--assembler-commit`. It creates
-`package_before_after_inventory.json` and an
-`internal_pre_sanitization_metadata/` copy of the original metadata. The
-consumer manifest has `schema`, `artifact_type`, `package_root`, and `rows`.
-Each row contains `era`, `physical_name`, `per_era_chN`, `combined_chN`,
-`combined_order_index`, `destination_txt_name`, and `destination_root_name`.
-Consumer provenance uses neutral package identity and hashes, not source paths.
-
-`certify` requires `--package-root`, `--build-manifest`, and
-`--diagnostics-dir`; repeated `--forbid-token` and `--forbid-regex` extend its
-stable internal-reference scan. It uses the internal build manifest for source
-paths, writes `package_file_certification.csv`, `internal_reference_scan.json`,
-and `combined_package_certification.json`, and does not modify the package.
+`assemble_combined_datacard_package.py` and
+`finalize_combined_datacard_package.py` implement predecessor explicit-manifest
+assembly and separate sanitize/certify procedures. They remain source and
+test surfaces for a separate retirement decision, not the owner of the
+current combined-builder contract. Their existence does not establish that
+they are removed or unsupported.
 
 ## Developer surfaces
 
@@ -281,7 +176,7 @@ and `combined_package_certification.json`, and does not modify the package.
 | `DatacardMaker.get_selected_wcs` | Family and optional exact channel subset → process→WC sets | Inspects signal coefficient terms in fitting bins, ignoring flow, using class tolerance and optional WC restriction. No files written. |
 | `DatacardMaker.make_scalings_json` | Existing record list, physical channel, family, process, WC names, scaling array → same appended list | Emits physical `<channel>_<family>`, `<process>_sm`, formatted parameters, and per-bin scaling excluding underflow. |
 | `DatacardMaker.analyze` | Family, channel, selected-WC map, negative-bin policy, WC values → card result/`None` | Writes `ttx_multileptons-{channel}_{family}.txt/.root`, appends scaling records, applies fitting view to nominal and sumw2, and validates physical scaling edges. Unknown family/channel currently reports and returns `None`; deeper contract failures raise. |
-| `consolidate_datacard_metadata.consolidate_metadata` | Successful-unit registry path, era, new output directory → provenance summary | Reopens only explicit receipt-bound sources, validates the minimum scaling-record structure, rejects duplicate semantic identities, and atomically writes deterministic per-era preselect/WC metadata plus provenance; it never finalizes or combines cards. |
+| `build_per_era_datacard_package.build_per_era_package_from_units` | Era, analysis, physical names, validated units, output, source manifest hashes → provenance | Builds and verifies one source-bound per-era package; the CLI owns matrix-v2 completion resolution. |
 | `topeft/channels/ch_lst.json` | Developer-facing configuration registry | Owns named topology blocks and physical channel/jet membership. Different consumers select explicit blocks; it is not a global claim that every block is current analysis scope. |
 
 `DatacardMaker` extension points are the maintained process/systematic
@@ -295,10 +190,12 @@ See [flexible binning](flexible_binning.md) and
 ## Source and test authority
 
 - `analysis/topeft_run2/make_cards.py`
-- `analysis/topeft_run2/consolidate_datacard_metadata.py`
+- `analysis/topeft_run2/build_per_era_datacard_package.py`
+- `analysis/topeft_run2/build_combined_datacard_package.py`
 - `topeft/modules/datacard_tools.py`
-- `analysis/topeft_run2/datacards_post_processing.py`
-- `tests/test_datacard_metadata_consolidation.py`
+- `topeft/modules/datacard_packaging.py`
+- `tests/test_build_per_era_datacard_package.py`
+- `tests/test_build_combined_datacard_package.py`
 - `tests/test_make_cards_multi_pkl.py`
 - `tests/test_datacard_late_rebin.py`
 - `tests/test_datacard_tools_selective_sumw2.py`
