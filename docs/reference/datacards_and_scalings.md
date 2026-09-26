@@ -29,7 +29,7 @@ are:
 
 | Group | Type/default/accepted values | Contract |
 | --- | --- | --- |
-| Histogram input | Zero or more positional paths or one `--pkl-list-file`; exactly one source form after resolution | All inputs are sidecar-validated and merged with required sumw2. `--merge-only` stops after this gate; optional cache/report outputs preserve derived evidence. |
+| Histogram input | Zero or more positional paths or one `--pkl-list-file`; exactly one source form after resolution | All inputs are sidecar-validated and merged with required sumw2. `--merge-only` stops after these checks; optional cache/report outputs retain merge diagnostics. |
 | Output/selection | `--out-dir .`; repeatable variables/channels; optional ignore/drop lists | `--ch-lst` patterns are regex selectors over physical channel names. This is distinct from exact fitting override keys. |
 | Years/coverage | Optional supported year list; coverage `warn`, `error`, or `off`, default `warn` | Mixed input identities and structural year gaps follow the selected fail/warn policy. |
 | Binning | `fitting` or `processing`, default `fitting` | Fitting performs exact late aggregation per selected physical channel. |
@@ -98,69 +98,56 @@ labels, unresolved sparse axes that would duplicate ROOT template names,
 invalid exact rebinning, missing/mismatched shape pairs, and payload/registry
 incompatibility.
 
-## Canonical per-era package interface
+## Per-era package interface
 
-`analysis/topeft_run2/build_per_era_datacard_package.py build` is the
-current Run 2 or Run 3 package owner. Required options are
+`analysis/topeft_run2/build_per_era_datacard_package.py build` builds a
+Run 2 or Run 3 package. Required options are
 `--era {run2,run3}`, repeatable `--matrix-manifest`, fresh absolute
 `--output`, and `--analysis`. Optional `--channel-registry` defaults to
 `topeft/channels/ch_lst.json`; `--channel-set-key` defaults to
-`ALL_CH_LST_SR`. The inputs are validated matrix-v2 completions with
-receipt-bound source card/template pairs and metadata snapshots. The builder
-rechecks their source identities, requires complete physical-channel coverage,
+`ALL_CH_LST_SR`. The inputs are completed matrix-v2 manifests with receipts
+for source card/template pairs and metadata snapshots. The builder checks the
+recorded source files, requires complete physical-channel coverage,
 rejects duplicate scaling identities, and assigns deterministic per-era
 `chN` labels.
 
 The published package contains only `cards/`, `selectedWCs.txt`,
 `scalings.json`, `physical_to_chN.json`, and
-`package-provenance.json`. It does not contain
+`package-provenance.json`. The provenance records the source manifest hashes,
+builder identity, and output hashes. The package does not contain
 `scalings-preselect.json` or `combinedcard.txt`. The builder writes and
 verifies a private sibling staging tree, then publishes to a previously absent
 output directory. The per-era scaling payload preserves producer-owned fields
 while using the package mapping for the channel label; an absent exact
 channel/process record means no external EFT morph for that pair.
 
-`consolidate_datacard_metadata.py` and
-`datacards_post_processing.py` expose predecessor metadata-consolidation
-and topology-selection procedures. Their direct interfaces and tests remain
-in the repository; they do not define the current canonical per-era package
-handoff. The historical `ptz-lj0pt_withSys` directory label and
-`-s` TOP-22-006 topology selector belong to that earlier workflow.
-
-## Canonical combined package interface
+## Combined package interface
 
 `analysis/topeft_run2/build_combined_datacard_package.py build` consumes
-validated Run 2 and Run 3 per-era package roots. It requires
+Run 2 and Run 3 per-era package directories. It requires
 `--run2-package`, `--run3-package`, a fresh absolute `--output`,
 `--analysis`, `--package-date` in `YYMMDD` form, and
 `--package-version` in `vN` form. Both sources must have the same
 analysis identity. The builder derives the combined channel mapping, copies
-cards/templates, relabels scaling channels, and source-certifies its staged
-and published output.
+cards/templates, relabels scaling channels, and checks both the staged and
+published packages against their inputs.
 
 The cards-only package contains `cards/`, `scalings.json`,
 `combined_mapping_manifest.json`, `ordered_card_inputs.txt`,
 `package-provenance.json`, and `README.md`. It contains neither
 `combinedcard.txt` nor a combined `selectedWCs.txt`. The generated README
-uses `ordered_card_inputs.txt` as the consumer card-order authority:
+lists the cards in `ordered_card_inputs.txt` for combination in that order:
 
 ```bash
 mapfile -t cards < ordered_card_inputs.txt
 combineCards.py "${cards[@]}" > combinedcard.txt
 ```
 
-This command belongs to a later consumer session run from the package root;
+Run this command from the combined package directory;
 the builder does not run Combine or create the combined card. The `certify`
 subcommand reads an existing package against `--run2-package` and
 `--run3-package`, with required `--package-root` and optional
 `--report-json`. It does not mutate the package.
-
-`assemble_combined_datacard_package.py` and
-`finalize_combined_datacard_package.py` implement predecessor explicit-manifest
-assembly and separate sanitize/certify procedures. They remain source and
-test surfaces for a separate retirement decision, not the owner of the
-current combined-builder contract. Their existence does not establish that
-they are removed or unsupported.
 
 ## Developer surfaces
 
@@ -176,7 +163,7 @@ they are removed or unsupported.
 | `DatacardMaker.get_selected_wcs` | Family and optional exact channel subset → process→WC sets | Inspects signal coefficient terms in fitting bins, ignoring flow, using class tolerance and optional WC restriction. No files written. |
 | `DatacardMaker.make_scalings_json` | Existing record list, physical channel, family, process, WC names, scaling array → same appended list | Emits physical `<channel>_<family>`, `<process>_sm`, formatted parameters, and per-bin scaling excluding underflow. |
 | `DatacardMaker.analyze` | Family, channel, selected-WC map, negative-bin policy, WC values → card result/`None` | Writes `ttx_multileptons-{channel}_{family}.txt/.root`, appends scaling records, applies fitting view to nominal and sumw2, and validates physical scaling edges. Unknown family/channel currently reports and returns `None`; deeper contract failures raise. |
-| `build_per_era_datacard_package.build_per_era_package_from_units` | Era, analysis, physical names, validated units, output, source manifest hashes → provenance | Builds and verifies one source-bound per-era package; the CLI owns matrix-v2 completion resolution. |
+| `build_per_era_datacard_package.build_per_era_package_from_units` | Era, analysis, physical names, validated units, output, source manifest hashes → provenance | Builds and verifies one per-era package from the supplied units; the CLI resolves matrix-v2 completions. |
 | `topeft/channels/ch_lst.json` | Developer-facing configuration registry | Owns named topology blocks and physical channel/jet membership. Different consumers select explicit blocks; it is not a global claim that every block is current analysis scope. |
 
 `DatacardMaker` extension points are the maintained process/systematic

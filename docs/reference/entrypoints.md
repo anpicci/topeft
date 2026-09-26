@@ -15,8 +15,8 @@ layer retains. It is a lookup page, not a production recipe. See the
 | `analysis/topeft_run2/run_plotter.sh` | Maintained plotting wrapper | Readable PKL, output directory, and years | Forwards to the direct plotter; can infer CR/SR from the filename; dry-run prints the resolved command without creating the output directory | Rejects missing inputs/years; the direct plotter owns artifact and metadata validation |
 | `analysis/topeft_run2/make_cr_and_sr_plots.py` | Direct plotting CLI | Repeatable `-f` inputs or a list file, output, years, and plot controls | Processing binning; merged channels; one worker; year coverage `warn` | Rejects incoherent artifacts, ambiguous channel authority, invalid binning, and mixed Run 2/Run 3 inputs |
 | `analysis/topeft_run2/make_cards.py` | Direct card CLI | Positional PKLs or a list file, variables/channels, and card controls | Fitting binning; year coverage `warn`; Asimov data | Rejects incoherent artifacts, invalid exact aggregation, incomplete shape pairs, and selected-WC/coverage failures according to options |
-| `analysis/topeft_run2/build_per_era_datacard_package.py` | Canonical per-era package builder | `build` with era, repeatable matrix-v2 manifests, fresh absolute output, and analysis | Cards, selected WCs, scalings, physical-to-`chN` mapping, and provenance | Rejects invalid completions, source identity or coverage mismatch, duplicate scaling identities, and output collisions |
-| `analysis/topeft_run2/build_combined_datacard_package.py` | Canonical combined package builder and certifier | `build` with Run 2/Run 3 package roots, fresh absolute output, analysis, date, and version; `certify` reads an existing package | Cards-only source-bound package with mapping, scalings, ordered card inputs, provenance, and README | Rejects source/package mismatch, forbidden consumer content, and failed post-publication certification |
+| `analysis/topeft_run2/build_per_era_datacard_package.py` | Per-era package builder | `build` with era, repeatable matrix-v2 manifests, fresh absolute output, and analysis | Cards, selected WCs, scalings, physical-to-`chN` mapping, and provenance | Rejects invalid completions, source identity or coverage mismatch, duplicate scaling identities, and output collisions |
+| `analysis/topeft_run2/build_combined_datacard_package.py` | Combined package builder and checker | `build` with Run 2/Run 3 package directories, fresh absolute output, analysis, date, and version; `certify` checks an existing package | Cards-only package with mapping, scalings, ordered card inputs, provenance, and README | Rejects source/package mismatch, forbidden content, and failed checks after writing the package |
 
 All rows above are `public_supported`. The executable file and its usage/parser
 block are signature authority. Normal success is exit status 0; parser,
@@ -126,26 +126,13 @@ requested output directory; normal execution creates it immediately before
 launching the plotter.
 `make_cards.py` is already the direct supported card interface and delegates
 card/template construction to `topeft.modules.datacard_tools.DatacardMaker`.
-`build_per_era_datacard_package.py` packages validated producer rows for
-one era; `build_combined_datacard_package.py` builds and certifies the
-combined package from the two per-era roots. The predecessor
-`datacards_post_processing.py` direct finalizer remains in the source tree
-but is not the canonical TOP-26-006 package owner.
+`build_per_era_datacard_package.py` checks and packages completed producer
+rows for one era; `build_combined_datacard_package.py` builds the combined
+package from the two per-era directories and checks it against those inputs.
 
 See [production configuration](production_configuration.md),
 [plotting](plotting.md), and
 [datacards and scalings](datacards_and_scalings.md) for exact owned contracts.
-
-## Operator records
-
-Scripts with campaign, date, site, user, or immutable evidence identifiers in
-their names are not supported merely because they are executable. In
-particular, `run_make_cards_run3_yawen_matrix.sh` is a DATACARD023-qualified
-operator record with fixed local paths, branch and input hashes, and a recorded
-off-Z input that predates the required `ptll` schema. It is useful archival
-evidence, but it is not a reusable current card entrypoint. The durable
-region-to-distribution contract belongs to [flexible binning](flexible_binning.md)
-and its source/test authorities.
 
 ## Signature and validation authority
 

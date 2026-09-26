@@ -58,9 +58,9 @@ sample JSONs / sample cfg
     -> make_cards.py
     -> individual cards/templates + selectedWCs.txt + scalings-preselect.json
     -> build_per_era_datacard_package.py build (Run 2 and Run 3)
-    -> canonical per-era packages
+    -> per-era packages
     -> build_combined_datacard_package.py build
-    -> source-certified cards-only combined package
+    -> cards-only combined package
     -> ordered_card_inputs.txt
     -> EFTFit / Combine
 ```
@@ -204,14 +204,14 @@ you what each actor owns and, equally importantly, what it does not own.
   process-global number.
 
 - **Per-era package builder.** `build_per_era_datacard_package.py build`
-  consumes validated matrix-v2 completions and receipt-bound producer
-  artifacts. It assigns the physical-to-`chN` map and publishes each
+  reads completed matrix-v2 manifests and checks their recorded producer
+  artifacts. It assigns the physical-to-`chN` map and writes each
   era's cards/templates, selected WCs, scalings, mapping, and provenance.
 
 - **Combined package builder.** `build_combined_datacard_package.py build`
-  consumes the Run 2 and Run 3 per-era package roots. It derives the combined
-  mapping, creates `ordered_card_inputs.txt`, and source-certifies a
-  cards-only package. It does not run Combine or construct a workspace.
+  reads the Run 2 and Run 3 per-era packages. It derives the combined
+  mapping, creates `ordered_card_inputs.txt`, and checks the cards-only
+  package against both inputs. It does not run Combine or construct a workspace.
 
 - **Physical channel to `chN` mapping.** The per-era builder sorts the
   selected physical names and assigns `ch1`, `ch2`, and so on. The
@@ -434,28 +434,26 @@ extension procedures and the
 
 ## 8. Build the Run 2 and Run 3 packages
 
-After the matrix-v2 completion manifests and producer artifacts are accepted,
+After reviewing the completed matrix-v2 manifests and producer artifacts,
 build each era into a fresh absolute output directory. From the repository
 root, for Run 2:
 
 ```bash
 python analysis/topeft_run2/build_per_era_datacard_package.py build \
   --era run2 \
-  --matrix-manifest /path/to/accepted-run2-matrix-v2.json \
+  --matrix-manifest /path/to/run2-matrix-v2.json \
   --output /absolute/path/to/new-run2-package \
   --analysis TOP-26-006
 ```
 
-Repeat for Run 3 with `--era run3`, its accepted manifest(s), and a different
+Repeat for Run 3 with `--era run3`, its completed manifest(s), and a different
 output. The builder defaults to `ALL_CH_LST_SR` from `ch_lst.json`. It
 rechecks source cards/templates and snapshots, then publishes `cards/`,
 `selectedWCs.txt`, `scalings.json`, `physical_to_chN.json`, and provenance.
-The predecessor `datacards_post_processing.py -a` procedure is not the
-current package handoff.
 
 ## 9. Build the combined package and cross the EFTFit/Combine boundary
 
-Use the two accepted per-era package roots. From the repository root:
+Use the two per-era package directories. From the repository root:
 
 ```bash
 python analysis/topeft_run2/build_combined_datacard_package.py build \
@@ -467,15 +465,14 @@ python analysis/topeft_run2/build_combined_datacard_package.py build \
   --package-version v1
 ```
 
-The combined builder publishes and source-certifies cards, scalings, mapping,
+The combined builder writes and checks cards, scalings, mapping,
 `ordered_card_inputs.txt`, provenance, and a README. It does not create
-`combinedcard.txt`. In a later consumer session, follow that README from
-the package root: load `ordered_card_inputs.txt` with
+`combinedcard.txt`. From the combined package directory, follow that README:
+load `ordered_card_inputs.txt` with
 `mapfile -t cards < ordered_card_inputs.txt`, then run
-`combineCards.py "${cards[@]}" > combinedcard.txt`. The ordered list, not a
-shell glob, fixes the current card order. EFTFit/Combine then owns the combined
-card and workspace. A missing exact channel/process scaling record means no
-external EFT morph for that pair.
+`combineCards.py "${cards[@]}" > combinedcard.txt`. The list determines the
+card order. EFTFit/Combine then constructs the workspace and fit. A missing
+exact channel/process scaling record means no external EFT morph for that pair.
 
 Read [the datacard and EFTFit boundary](../explanation/datacards_and_eftfit.md)
 before diagnosing a channel-order or workspace mismatch.
@@ -499,9 +496,6 @@ following the operating links below.
   [reference index](../reference/README.md).
 - To understand why responsibilities are separated, use the
   [explanation map](../README.md#explanation).
-- For the published predecessor rather than the current workflow, use the
-  explicitly [historical TOP-22-006 guide](../how_to/historical/top_22_006.md).
-
 ## Current production example
 
 For maintained source production, choose an explicit public profile such as

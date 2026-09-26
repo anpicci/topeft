@@ -1,8 +1,8 @@
 # Analysis entry-point directory
 
-This directory contains current and historical analysis executables. It is a
-source-location map, not a second user manual. The canonical documentation
-starts at [`docs/README.md`](../../docs/README.md).
+This directory contains current and historical analysis executables. For usage,
+configuration, and output details, start at
+[`docs/README.md`](../../docs/README.md).
 
 For current TOP-26-006 work:
 
@@ -24,10 +24,13 @@ The maintained high-to-low production path is `run_cr.sh` -> `fullR3_run.sh`
 -> `run_analysis.py` -> `AnalysisProcessor`. `run_data_driven.py`,
 `run_plotter.sh`/`make_cr_and_sr_plots.py`, `make_cards.py`, the resumable
 datacard matrix runner, `build_per_era_datacard_package.py`, and
-`build_combined_datacard_package.py` own distinct downstream stages; they
-are not alternate processor entry points. The builders package validated
-producer rows per era, then build and source-certify the cards-only combined
-package. Its `ordered_card_inputs.txt` fixes downstream card order.
+`build_combined_datacard_package.py` perform distinct downstream tasks; they
+are not alternate processor entry points. The builders check and package
+completed producer rows by era, then assemble and check the cards-only combined
+package. Its `ordered_card_inputs.txt` lists cards in combination order.
+
+`run_make_cards_run3_yawen_matrix.sh` contains fixed campaign inputs and paths;
+use `make_cards.py` or the resumable matrix runner for new card production.
 
 `fullR2_run.sh` and the `--set-up-top22006` card topology are retained for
 historical TOP-22-006 reproduction. Their support boundary is documented

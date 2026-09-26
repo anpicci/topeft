@@ -384,10 +384,10 @@ topology selection. Multiple records for a physical channel/process may be
 valid. Their process, parameters, and coefficient payload remain producer-
 owned through finalization.
 
-### Canonical per-era package builder
+### Per-era package builder
 
-**Why it exists.** `build_per_era_datacard_package.py build` turns
-validated matrix-v2 completions into one source-bound Run 2 or Run 3 package.
+**Why it exists.** `build_per_era_datacard_package.py build` assembles the
+completed matrix-v2 rows into one Run 2 or Run 3 package.
 
 **Consumes and produces.** It rechecks receipt-bound card/template pairs and
 metadata snapshots, then publishes `cards/`, `selectedWCs.txt`,
@@ -395,32 +395,29 @@ metadata snapshots, then publishes `cards/`, `selectedWCs.txt`,
 physical names determine the sorted per-era `chN` mapping. Scaling rows keep
 their producer-owned payload while their channel label follows that mapping.
 
-**Does not own.** It does not combine eras, build `combinedcard.txt`, or
-construct a workspace. The predecessor `datacards_post_processing.py`
-topology finalizer is a separate earlier procedure, not the canonical
-per-era package owner.
+**Does not produce.** It does not combine eras, build `combinedcard.txt`, or
+construct a workspace.
 
-### Canonical combined package builder
+### Combined package builder
 
-`build_combined_datacard_package.py build` consumes the accepted Run 2 and
-Run 3 package roots. It derives the cross-era mapping, copies card/template
-pairs, relabels scaling channels, and source-certifies a cards-only combined
+`build_combined_datacard_package.py build` reads the Run 2 and Run 3
+packages. It derives the cross-era mapping, copies card/template
+pairs, relabels scaling channels, and checks the cards-only combined
 package. `combined_mapping_manifest.json` records the mapping;
-`ordered_card_inputs.txt` records the downstream card order. The generated
+`ordered_card_inputs.txt` lists cards in combination order. The generated
 README loads that list with `mapfile -t cards < ordered_card_inputs.txt`
-before `combineCards.py "${cards[@]}" > combinedcard.txt` in a later
-consumer session. Shell-glob ordering is historical, not the current
-authority. A missing exact channel/process scaling record means no external
+before `combineCards.py "${cards[@]}" > combinedcard.txt` from the package
+directory. A missing exact channel/process scaling record means no external
 EFT morph for that pair.
 
 ### EFTFit and Combine
 
-**Why they exist.** EFTFit and Combine own the statistical-model boundary after
-`topeft` has built and certified the combined package.
+**Why they exist.** EFTFit and Combine combine the packaged cards and construct
+the statistical model after `topeft` has built the combined package.
 
 **Consumes and produces.** They consume the combined package's ordered cards
-and templates and compatible `scalings.json`; fit configuration owns WC
-population. They later combine cards, create `combinedcard.txt`, and
+and templates and compatible `scalings.json`; fit configuration determines the
+WC population. They combine cards, create `combinedcard.txt`, and
 construct the workspace.
 
 **Owns and does not own.** They own card combination and workspace/likelihood
@@ -443,19 +440,6 @@ making `topcoffea` the owner of `topeft` cards, axes, or workflows.
 This documentation describes the current `topeft` side of that boundary. It
 does not change or restate `topcoffea` APIs and it does not introduce a second
 registry for cross-repository state.
-
-## Current and historical automation
-
-Current TOP-26-006 workflows use the supported entrypoints described above.
-Historical TOP-22-006 procedures live only under
-[`docs/how_to/historical`](../how_to/historical/README.md).
-
-`run_make_cards_run3_yawen_matrix.sh` is a DATACARD023 archival operator
-record: it binds site/user paths, an exact campaign matrix, hashes, branch and
-environment assumptions, and an input that predates the final `ptll` schema.
-It is not a maintained public wrapper or a second region/binning authority.
-This documentation may classify it, but moving, deleting, generalizing, or
-requalifying the runnable script is a separate source-control decision.
 
 ## Portable production boundary
 
