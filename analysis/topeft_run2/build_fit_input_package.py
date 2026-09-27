@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Wrap one combined datacard package with an exact TOP-26-006 fit config."""
+"""Project a combined datacard package and fit config into portable inputs."""
 
 from __future__ import annotations
 
@@ -10,34 +10,31 @@ import os
 import re
 import shutil
 import stat
-import subprocess
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 
 import yaml
 
-
 _analysis = "TOP-26-006"
 _schema = "TOP26006_fit_input_v1"
-_config_relative_path = "topeft/params/fits/TOP_26_006.yml"
-_top_level = {
-    "cards", "scalings.json", "ordered_card_inputs.txt",
-    "combined_mapping_manifest.json", "package-provenance.json", "README.md",
-}
 _metadata_hashes = {
     "scalings.json": "scalings_sha256",
     "ordered_card_inputs.txt": "ordered_card_inputs_sha256",
     "combined_mapping_manifest.json": "manifest_sha256",
 }
-_downstream_name = re.compile(
-    r"^(?:combinedcard\.txt|workspace(?:[^/]*)\.root|higgsCombine.*\.root|"
-    r"fitDiagnostics.*|multidimfit.*|combine(?:harvester|impact).*|"
-    r"impacts?.*|toys?.*|gof.*|goodness.*|wilks.*|coverage.*|"
-    r"selectedWCs\.txt|ModelConfig.*|autoMCStats.*)$", re.IGNORECASE,
+_source_top = set(_metadata_hashes) | {"cards", "package-provenance.json"}
+_excluded_card_names = {"combinedcard.txt", "selectedWCs.txt"}
+_mapping_fields = (
+    "era", "physical_name", "per_era_chN", "combined_chN",
+    "combined_order_index", "destination_txt_name", "destination_root_name",
+)
+_provenance_fields = (
+    "package_version", "package_date", "assembler_commit", "assembler_source_sha256",
+    "source_mapping_sha256", "source_scalings_sha256",
 )
 
 
 class FitInputError(ValueError):
-    """A source or destination violates the portable package contract."""
+    """A selected input or destination violates the fit-input contract."""
 
 
 def _require(condition: bool, message: str) -> None:
@@ -72,35 +69,43 @@ def _overlap(first: Path, second: Path) -> bool:
     return first == second or first in second.parents or second in first.parents
 
 
+def _read_regular_bytes(path: Path) -> bytes:
+    _require(_regular_file(path), f"missing or non-regular input: {path}")
+    with os.fdopen(os.open(path, os.O_RDONLY | os.O_NOFOLLOW), "rb") as stream:
+        _require(stat.S_ISREG(os.fstat(stream.fileno()).st_mode),
+                 f"input changed type: {path}")
+        return stream.read()
+
+
 def _source_members(package: Path) -> list[str]:
     _require(_plain_dir(package), "combined package must be a plain directory")
     top = {entry.name for entry in package.iterdir()}
-    _require(top == _top_level, "combined package top-level structure is invalid")
+    _require(_source_top <= top <= _source_top | {"README.md"},
+             "combined package top-level structure is invalid")
     _require(_plain_dir(package / "cards"), "cards must be a plain directory")
+    for name in _source_top - {"cards"}:
+        _require(_regular_file(package / name), f"non-regular source metadata: {name}")
     members = []
-    for root, dirs, files in os.walk(package, followlinks=False):
-        for name in sorted(dirs):
+    for root, dirs, files in os.walk(package / "cards", followlinks=False):
+        for name in dirs:
+            _require(_plain_dir(Path(root) / name), f"non-regular card directory: {name}")
+        for name in files:
             path = Path(root) / name
-            _require(_plain_dir(path), f"non-regular directory: {path}")
-            _require(not _downstream_name.fullmatch(name), f"forbidden artifact: {name}")
-        for name in sorted(files):
-            path = Path(root) / name
-            _require(_regular_file(path), f"non-regular or symlink member: {path}")
-            _require(not _downstream_name.fullmatch(name), f"forbidden artifact: {name}")
+            _require(_regular_file(path), f"non-regular card member: {path}")
+            _require(name not in _excluded_card_names, f"downstream-owned card artifact: {name}")
             members.append(path.relative_to(package).as_posix())
     members.sort()
-    _require(any(name.startswith("cards/") for name in members), "cards is empty")
+    _require(bool(members), "cards is empty")
     return members
 
 
-def _read_metadata(package: Path, members: list[str]) -> None:
-    member_set = set(members)
+def _source_contract(package: Path, members: list[str]) -> tuple[list[dict[str, object]], dict[str, object]]:
     try:
-        provenance = json.loads((package / "package-provenance.json").read_text(encoding="utf-8"))
-        mapping = json.loads((package / "combined_mapping_manifest.json").read_text(encoding="utf-8"))
-        json.loads((package / "scalings.json").read_text(encoding="utf-8"))
-        ordered = (package / "ordered_card_inputs.txt").read_text(encoding="utf-8").splitlines()
-    except (OSError, UnicodeError, json.JSONDecodeError) as error:
+        provenance = json.loads(_read_regular_bytes(package / "package-provenance.json"))
+        mapping = json.loads(_read_regular_bytes(package / "combined_mapping_manifest.json"))
+        json.loads(_read_regular_bytes(package / "scalings.json"))
+        ordered = _read_regular_bytes(package / "ordered_card_inputs.txt").decode("utf-8").splitlines()
+    except (UnicodeError, json.JSONDecodeError) as error:
         raise FitInputError(f"invalid combined package metadata: {error}") from error
     _require(isinstance(provenance, dict) and provenance.get("schema") == "TOP26006_v1"
              and provenance.get("artifact_type") == "package_provenance"
@@ -109,28 +114,54 @@ def _read_metadata(package: Path, members: list[str]) -> None:
              and mapping.get("artifact_type") == "combined_mapping_manifest"
              and isinstance(mapping.get("rows"), list) and bool(mapping["rows"]),
              "combined mapping metadata is invalid")
-    _require(bool(ordered) and len(ordered) == len(set(ordered)), "ordered card inputs missing or duplicate")
+    _require(bool(ordered) and len(ordered) == len(set(ordered)),
+             "ordered card inputs missing or duplicate")
+    member_set = set(members)
     for entry in ordered:
-        path = PurePosixPath(entry)
-        _require(entry and "\\" not in entry and not path.is_absolute()
-                 and path.parts[0] == "cards" and len(path.parts) > 1
-                 and all(part not in {".", ".."} for part in entry.split("/"))
-                 and entry in member_set and entry.endswith(".txt"),
+        _require(bool(re.fullmatch(r"cards/[^/\\]+\.txt", entry)) and entry in member_set,
                  f"invalid ordered card entry: {entry}")
     for name, field in _metadata_hashes.items():
         expected = provenance.get(field)
-        _require(isinstance(expected, str) and re.fullmatch(r"[0-9a-f]{64}", expected),
+        _require(isinstance(expected, str) and bool(re.fullmatch(r"[0-9a-f]{64}", expected)),
                  f"missing declared metadata hash: {field}")
-        _require(_sha256_bytes((package / name).read_bytes()) == expected,
+        _require(_sha256_bytes(_read_regular_bytes(package / name)) == expected,
                  f"declared metadata hash mismatch: {name}")
+    rows = mapping["rows"]
+    _require(len(rows) == len(ordered), "mapping and ordered card counts differ")
+    projected = []
+    for index, (row, entry) in enumerate(zip(rows, ordered), start=1):
+        _require(isinstance(row, dict) and all(field in row for field in _mapping_fields),
+                 f"mapping row {index} lacks consumer fields")
+        _require(row["combined_order_index"] == index
+                 and row["destination_txt_name"] == entry.removeprefix("cards/")
+                 and isinstance(row["destination_root_name"], str)
+                 and f"cards/{row['destination_root_name']}" in member_set
+                 and all(isinstance(row[field], str) and bool(row[field])
+                         for field in _mapping_fields if field != "combined_order_index"),
+                 f"mapping row {index} disagrees with ordered card inputs")
+        projected.append({field: row[field] for field in _mapping_fields})
+    source_provenance = {}
+    for field in _provenance_fields:
+        value = provenance.get(field)
+        if field in {"package_version", "package_date"}:
+            valid = isinstance(value, str) and bool(re.fullmatch(r"[A-Za-z0-9_.-]+", value))
+        elif field == "assembler_commit":
+            valid = isinstance(value, str) and bool(re.fullmatch(r"[0-9a-f]{40}", value))
+        elif field == "assembler_source_sha256":
+            valid = isinstance(value, str) and bool(re.fullmatch(r"[0-9a-f]{64}", value))
+        else:
+            valid = isinstance(value, dict) and all(
+                key in {"run2", "run3"} and isinstance(digest, str)
+                and bool(re.fullmatch(r"[0-9a-f]{64}", digest))
+                for key, digest in value.items()
+            )
+        if valid:
+            source_provenance[field] = value
+    return projected, source_provenance
 
 
-def _config_identity(source_repo: Path, config: Path) -> tuple[bytes, str]:
-    _require(_plain_dir(source_repo / ".git"), "source repository Git directory is missing")
-    _require(config.resolve() == (source_repo / _config_relative_path).resolve(),
-             "fit config must be the declared source repository path")
-    _require(_regular_file(config), "fit config is missing or not a regular file")
-    content = config.read_bytes()
+def _config_bytes(config: Path) -> bytes:
+    content = _read_regular_bytes(config)
     try:
         parsed = yaml.safe_load(content)
     except (yaml.YAMLError, UnicodeError) as error:
@@ -141,26 +172,14 @@ def _config_identity(source_repo: Path, config: Path) -> tuple[bytes, str]:
              and bool(parsed["wc_population"]["scientific"])
              and isinstance(parsed.get("wc_ranges"), dict) and bool(parsed["wc_ranges"]),
              "fit config lacks required analysis, WC population, or ranges")
-    try:
-        commit = subprocess.run(
-            ["git", "-C", str(source_repo), "rev-parse", "HEAD"],
-            check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-        ).stdout.decode("ascii").strip()
-        committed = subprocess.run(
-            ["git", "-C", str(source_repo), "show", f"{commit}:{_config_relative_path}"],
-            check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-        ).stdout
-    except (OSError, subprocess.CalledProcessError, UnicodeError) as error:
-        raise FitInputError("cannot verify fit config source Git commit") from error
-    _require(committed == content, "fit config bytes differ from source Git commit")
-    return content, commit
+    return content
 
 
 def _copy_and_hash(source: Path, destination: Path) -> dict[str, object]:
     digest = hashlib.sha256()
     size = 0
-    source_fd = os.open(source, os.O_RDONLY | os.O_NOFOLLOW)
-    with os.fdopen(source_fd, "rb") as input_stream, destination.open("xb") as output_stream:
+    with os.fdopen(os.open(source, os.O_RDONLY | os.O_NOFOLLOW), "rb") as input_stream, \
+            destination.open("xb") as output_stream:
         _require(stat.S_ISREG(os.fstat(input_stream.fileno()).st_mode),
                  f"source member changed type: {source}")
         for block in iter(lambda: input_stream.read(1024 * 1024), b""):
@@ -180,21 +199,50 @@ def _hash_file(path: Path) -> dict[str, object]:
     return {"size_bytes": size, "sha256": digest.hexdigest()}
 
 
-def build_fit_input_package(package: Path, source_repo: Path, output: Path) -> dict[str, object]:
-    package, source_repo, output = Path(package), Path(source_repo), Path(output)
-    config = source_repo / _config_relative_path
+def _readme() -> str:
+    return (
+        "# TOP-26-006 fit input package\n\n"
+        "`datacards/ordered_card_inputs.txt` is the sole card-order authority. "
+        "Its order must stay aligned with `datacards/scalings.json` and the "
+        "manifest channel mapping. Never discover cards with a wildcard or glob.\n\n"
+        "EFTFit materializes a writable cards directory containing copies of "
+        "`datacards/cards/**`, including the ROOT templates. It reads the order "
+        "file, validates every line as exactly `cards/<name>.txt`, removes only "
+        "the leading `cards/` in memory, and preserves the order. Then, from "
+        "inside that writable cards directory, EFTFit executes:\n\n"
+        "```bash\n"
+        "combineCards.py \"${ordered_basenames[@]}\" > combinedcard.txt\n"
+        "```\n\n"
+        "`ordered_basenames` is the ordered array obtained by that validation "
+        "and prefix removal. `combinedcard.txt` is co-located with individual "
+        "cards and ROOT templates in the EFTFit-owned writable cards directory. "
+        "TOPEFT documents this command but does not execute it or create the "
+        "combined card. EFTFit also owns workspaces and all Combine and "
+        "CombineHarvester products. `config/TOP_26_006.yml` is the package-local "
+        "fit configuration; any selectedWCs.txt is derived downstream.\n"
+    )
+
+
+def build_fit_input_package(
+    package: Path, fit_config: Path, output: Path, *,
+    package_build_topeft_commit: str | None = None,
+    t0_topeft_commit: str | None = None,
+    t0_topcoffea_commit: str | None = None,
+) -> dict[str, object]:
+    package, fit_config, output = Path(package), Path(fit_config), Path(output)
     staging = output.parent / f".{output.name}.staging"
     _require(output.is_absolute() and output.name not in {"", ".", ".."}, "output must be absolute")
     _require(_plain_dir(output.parent), "output parent must be a plain existing directory")
     _require(not output.exists() and not output.is_symlink(), "output already exists")
     _require(not staging.exists() and not staging.is_symlink(), "staging already exists")
-    for first, second in ((package, config), (package, output), (package, staging),
-                          (config, output), (config, staging), (staging, output)):
+    for first, second in ((package, fit_config), (package, output), (package, staging),
+                          (fit_config, output), (fit_config, staging), (staging, output)):
         _require(not _overlap(first, second), "source, config, staging, and output must not overlap")
-    members = _source_members(package)
-    _read_metadata(package, members)
-    config_bytes, commit = _config_identity(source_repo, config)
-    staging.mkdir()
+    card_members = _source_members(package)
+    mapping_rows, source_provenance = _source_contract(package, card_members)
+    config_content = _config_bytes(fit_config)
+    members = sorted(card_members + ["ordered_card_inputs.txt", "scalings.json"])
+    staging.mkdir(mode=0o700)
     try:
         datacards = staging / "datacards"
         datacards.mkdir()
@@ -202,41 +250,39 @@ def build_fit_input_package(package: Path, source_repo: Path, output: Path) -> d
         for relative in members:
             destination = datacards / relative
             destination.parent.mkdir(parents=True, exist_ok=True)
-            source_inventory.append({"path": relative, **_copy_and_hash(package / relative, destination)})
+            source_inventory.append({"path": f"datacards/{relative}",
+                                     **_copy_and_hash(package / relative, destination)})
         config_destination = staging / "config" / "TOP_26_006.yml"
         config_destination.parent.mkdir()
-        config_destination.write_bytes(config_bytes)
+        config_destination.write_bytes(config_content)
         destination_inventory = [
-            {"path": relative, **_hash_file(datacards / relative)} for relative in members
+            {"path": f"datacards/{relative}", **_hash_file(datacards / relative)}
+            for relative in members
         ]
         _require(source_inventory == destination_inventory, "datacard copy identity mismatch")
-        _read_metadata(datacards, members)
-        _require(_sha256_bytes(config_bytes) == _hash_file(config_destination)["sha256"],
+        config_sha = _sha256_bytes(config_content)
+        _require(config_sha == _hash_file(config_destination)["sha256"],
                  "fit config copy identity mismatch")
-        content_sha256 = _sha256_bytes(_json_bytes(source_inventory))
         manifest = {
             "schema": _schema, "artifact_type": "fit_input_manifest", "analysis": _analysis,
-            "datacards": {"path": "datacards", "content_sha256": content_sha256,
-                          "files": source_inventory},
-            "fit_config": {"path": "config/TOP_26_006.yml",
-                           "sha256": _sha256_bytes(config_bytes),
-                           "source_repository": "topeft",
-                           "source_repo_relative_path": _config_relative_path,
-                           "source_git_commit": commit},
+            "datacards": {
+                "cards_path": "datacards/cards",
+                "ordered_card_inputs_path": "datacards/ordered_card_inputs.txt",
+                "scalings_path": "datacards/scalings.json",
+                "input_snapshot_sha256": _sha256_bytes(_json_bytes(source_inventory)),
+                "files": source_inventory,
+                "channel_mapping": {"rows": mapping_rows},
+            },
+            "fit_config": {"path": "config/TOP_26_006.yml", "sha256": config_sha},
+            "provenance": {
+                "package_build": {"topeft_commit": package_build_topeft_commit},
+                "upstream_t0": {"topeft_commit": t0_topeft_commit,
+                                "topcoffea_commit": t0_topcoffea_commit},
+                "source_datacard_package": source_provenance,
+            },
         }
         (staging / "fit-input-manifest.json").write_bytes(_json_bytes(manifest))
-        (staging / "README.md").write_text(
-            "# TOP-26-006 fit input package\n\n"
-            "Use `datacards/ordered_card_inputs.txt` as the ordered card entry point. "
-            "Resolve its entries relative to `datacards/`. `config/TOP_26_006.yml` "
-            "is the scientific WC authority. The manifest binds both inputs by content. "
-            "Source repository and historical package paths in provenance are archival, "
-            "not runtime locators.\n\n"
-            "EFTFit owns all Combine and CombineHarvester products, including combined "
-            "cards, workspaces, inventories, fits, impacts, toys, GOF, Wilks, and coverage. "
-            "Derive any selectedWCs.txt downstream from this package-local config.\n",
-            encoding="utf-8",
-        )
+        (staging / "README.md").write_text(_readme(), encoding="utf-8")
         _require(not output.exists() and not output.is_symlink(), "output appeared before publication")
         staging.rename(output)
         return manifest
@@ -248,12 +294,20 @@ def build_fit_input_package(package: Path, source_repo: Path, output: Path) -> d
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--combined-package", type=Path, required=True)
-    parser.add_argument("--source-repo", type=Path, default=Path(__file__).resolve().parents[2])
+    parser.add_argument("--fit-config", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--package-build-topeft-commit")
+    parser.add_argument("--t0-topeft-commit")
+    parser.add_argument("--t0-topcoffea-commit")
     args = parser.parse_args(argv)
-    manifest = build_fit_input_package(args.combined_package, args.source_repo, args.output)
-    print(json.dumps({"output": str(args.output), "datacards_content_sha256":
-                      manifest["datacards"]["content_sha256"]}, sort_keys=True))
+    manifest = build_fit_input_package(
+        args.combined_package, args.fit_config, args.output,
+        package_build_topeft_commit=args.package_build_topeft_commit,
+        t0_topeft_commit=args.t0_topeft_commit,
+        t0_topcoffea_commit=args.t0_topcoffea_commit,
+    )
+    print(json.dumps({"output": str(args.output), "input_snapshot_sha256":
+                      manifest["datacards"]["input_snapshot_sha256"]}, sort_keys=True))
     return 0
 
 

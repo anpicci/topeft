@@ -1,14 +1,19 @@
-"""Focused synthetic checks for the portable fit input wrapper."""
+"""Focused synthetic checks for the portable fit-input projection."""
 
 import hashlib
 import json
 import os
-import subprocess
 from pathlib import Path
 
 import pytest
 
 from analysis.topeft_run2 import build_fit_input_package as fit_input
+
+
+_mapping_fields = {
+    "era", "physical_name", "per_era_chN", "combined_chN",
+    "combined_order_index", "destination_txt_name", "destination_root_name",
+}
 
 
 def _write_json(path, value):
@@ -19,114 +24,147 @@ def _sha256(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def _refresh_hashes(package):
+    provenance_path = package / "package-provenance.json"
+    provenance = json.loads(provenance_path.read_text())
+    for name, field in (
+        ("scalings.json", "scalings_sha256"),
+        ("ordered_card_inputs.txt", "ordered_card_inputs_sha256"),
+        ("combined_mapping_manifest.json", "manifest_sha256"),
+    ):
+        provenance[field] = _sha256(package / name)
+    _write_json(provenance_path, provenance)
+
+
 def _fixture(tmp_path):
-    repo = tmp_path / "repo"
-    config = repo / "topeft" / "params" / "fits" / "TOP_26_006.yml"
-    config.parent.mkdir(parents=True)
+    config = tmp_path / "plain-config.yml"
     config.write_text(
         "analysis: TOP_26_006\nwc_population:\n  scientific: [ctW]\n"
         "  fixed_zero: [ctu1]\nwc_ranges:\n  ctW: [-3.0, 3.0]\n",
         encoding="utf-8",
     )
-    subprocess.run(["git", "init", "-q", str(repo)], check=True)
-    subprocess.run(["git", "-C", str(repo), "add", "topeft/params/fits/TOP_26_006.yml"], check=True)
-    subprocess.run(["git", "-C", str(repo), "-c", "user.name=Fixture",
-                    "-c", "user.email=fixture@example.invalid", "commit", "-qm", "fixture"], check=True)
     package = tmp_path / "combined"
     cards = package / "cards"
     cards.mkdir(parents=True)
-    (cards / "one.txt").write_bytes(b"shapes * * one.root $PROCESS\n")
-    (cards / "one.root").write_bytes(b"synthetic-root-bytes\x00")
-    (package / "ordered_card_inputs.txt").write_text("cards/one.txt\n", encoding="utf-8")
-    _write_json(package / "scalings.json", [{"channel": "ch1"}])
+    for name in ("one", "two"):
+        (cards / f"{name}.txt").write_bytes(f"shapes * * {name}.root $PROCESS\n".encode())
+        (cards / f"{name}.root").write_bytes(f"synthetic-{name}\x00".encode())
+    (package / "ordered_card_inputs.txt").write_text(
+        "cards/two.txt\ncards/one.txt\n", encoding="utf-8")
+    _write_json(package / "scalings.json", [{"channel": "ch1"}, {"channel": "ch2"}])
+    rows = []
+    for index, name in enumerate(("two", "one"), start=1):
+        rows.append({
+            "era": "run2", "physical_name": name, "per_era_chN": f"ch{index}",
+            "combined_chN": f"ch{index}", "combined_order_index": index,
+            "destination_txt_name": f"{name}.txt",
+            "destination_root_name": f"{name}.root",
+            "source_txt_path": "/groups/historical/card.txt",
+        })
     _write_json(package / "combined_mapping_manifest.json", {
         "schema": "TOP26006_v1", "artifact_type": "combined_mapping_manifest",
-        "rows": [{"combined_order_index": 1, "destination_txt_name": "one.txt"}],
+        "package_root": "/groups/historical/package", "rows": rows,
     })
-    (package / "README.md").write_text("Synthetic combined package.\n", encoding="utf-8")
+    (package / "README.md").write_text(
+        "Historical source at /groups/historical/package\n", encoding="utf-8")
     _write_json(package / "package-provenance.json", {
-        "schema": "TOP26006_v1", "artifact_type": "package_provenance", "analysis": "TOP-26-006",
-        "scalings_sha256": _sha256(package / "scalings.json"),
-        "ordered_card_inputs_sha256": _sha256(package / "ordered_card_inputs.txt"),
-        "manifest_sha256": _sha256(package / "combined_mapping_manifest.json"),
+        "schema": "TOP26006_v1", "artifact_type": "package_provenance",
+        "analysis": "TOP-26-006", "package_root": "/groups/historical/package",
+        "package_version": "v1", "package_date": "260925",
+        "assembler_commit": "a" * 40,
+        "source_mapping_sha256": {"run2": "b" * 64},
     })
-    return repo, config, package, tmp_path / "fit-input"
+    _refresh_hashes(package)
+    return config, package, tmp_path / "fit-input"
 
 
-def test_valid_package_copies_bytes_and_binds_identity(tmp_path):
-    repo, config, package, output = _fixture(tmp_path)
-    expected = {path.relative_to(package).as_posix(): path.read_bytes()
-                for path in package.rglob("*") if path.is_file()}
-    result = fit_input.build_fit_input_package(package, repo, output)
+def test_valid_projection_copies_only_consumer_bytes(tmp_path):
+    config, package, output = _fixture(tmp_path)
+    source_bytes = {
+        path.relative_to(package).as_posix(): path.read_bytes()
+        for path in (package / "cards").rglob("*") if path.is_file()
+    }
+    source_bytes.update({name: (package / name).read_bytes()
+                         for name in ("scalings.json", "ordered_card_inputs.txt")})
+    result = fit_input.build_fit_input_package(
+        package, config, output, package_build_topeft_commit="c" * 40,
+        t0_topeft_commit="d" * 40, t0_topcoffea_commit="e" * 40)
     observed = json.loads((output / "fit-input-manifest.json").read_text())
     assert result == observed
     assert {path.relative_to(output / "datacards").as_posix(): path.read_bytes()
-            for path in (output / "datacards").rglob("*") if path.is_file()} == expected
+            for path in (output / "datacards").rglob("*") if path.is_file()} == source_bytes
     assert (output / "config" / "TOP_26_006.yml").read_bytes() == config.read_bytes()
-    assert observed["fit_config"]["sha256"] == _sha256(config)
-    assert observed["fit_config"]["source_git_commit"] == subprocess.run(
-        ["git", "-C", str(repo), "rev-parse", "HEAD"], check=True,
-        stdout=subprocess.PIPE, text=True).stdout.strip()
-    files = observed["datacards"]["files"]
-    assert files == sorted(files, key=lambda row: row["path"])
-    assert observed["datacards"]["content_sha256"] == hashlib.sha256(
-        fit_input._json_bytes(files)).hexdigest()
-    assert str(repo) not in (output / "fit-input-manifest.json").read_text()
-    assert str(package) not in (output / "README.md").read_text()
+    assert observed["fit_config"] == {
+        "path": "config/TOP_26_006.yml", "sha256": _sha256(config)}
+    assert observed["datacards"]["input_snapshot_sha256"] == hashlib.sha256(
+        fit_input._json_bytes(observed["datacards"]["files"])).hexdigest()
+    assert observed["datacards"]["files"] == sorted(
+        observed["datacards"]["files"], key=lambda row: row["path"])
+    rows = observed["datacards"]["channel_mapping"]["rows"]
+    assert [set(row) for row in rows] == [_mapping_fields, _mapping_fields]
+    assert [row["destination_txt_name"] for row in rows] == ["two.txt", "one.txt"]
+    assert observed["provenance"]["package_build"]["topeft_commit"] == "c" * 40
+    assert observed["provenance"]["upstream_t0"] == {
+        "topeft_commit": "d" * 40, "topcoffea_commit": "e" * 40}
+    assert observed["provenance"]["source_datacard_package"]["package_version"] == "v1"
+    assert "/groups/historical" not in (output / "fit-input-manifest.json").read_text()
+    readme = (output / "README.md").read_text()
+    assert "/groups/historical" not in readme
+    for phrase in ("sole card-order authority", "wildcard or glob", "scalings.json",
+                   "cards/<name>.txt", "leading `cards/`", "writable cards directory",
+                   'combineCards.py "${ordered_basenames[@]}" > combinedcard.txt',
+                   "TOPEFT documents this command but does not execute it"):
+        assert phrase in readme
+    assert not (output / "combinedcard.txt").exists()
     assert not (output / "selectedWCs.txt").exists()
-    assert not (output / "datacards" / "selectedWCs.txt").exists()
     inventory_path = os.environ.get("FIT_INPUT_SYNTHETIC_INVENTORY_PATH")
     if inventory_path:
         Path(inventory_path).write_text(json.dumps({
-            "fixture": "synthetic combined datacard package and synthetic Git config",
-            "source_members": sorted(expected),
-            "source_and_destination_bytes_equal": True,
-            "config_bytes_equal": True,
-            "datacards_content_sha256": observed["datacards"]["content_sha256"],
-            "fit_config_sha256": observed["fit_config"]["sha256"],
-            "source_git_commit": observed["fit_config"]["source_git_commit"],
-            "wrapper_members": sorted(path.relative_to(output).as_posix()
-                                      for path in output.rglob("*") if path.is_file()),
-        }, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+            "source_package": str(package), "source_config": str(config),
+            "output_package": str(output),
+        }, sort_keys=True) + "\n", encoding="utf-8")
 
 
-@pytest.mark.parametrize("ordered", ["", "cards/one.txt\ncards/one.txt\n",
-                                     "/tmp/one.txt\n", "cards/../one.txt\n",
-                                     "../cards/one.txt\n", "cards/missing.txt\n"])
+@pytest.mark.parametrize("ordered", [
+    "", "cards/two.txt\ncards/two.txt\n", "/tmp/two.txt\n",
+    "cards/../two.txt\n", "../cards/two.txt\n", "cards/missing.txt\n",
+    "cards/nested/two.txt\n", "cards/one.root\n",
+])
 def test_ordered_card_inputs_fail_closed(tmp_path, ordered):
-    repo, _, package, output = _fixture(tmp_path)
+    config, package, output = _fixture(tmp_path)
     (package / "ordered_card_inputs.txt").write_text(ordered, encoding="utf-8")
+    _refresh_hashes(package)
     with pytest.raises(fit_input.FitInputError):
-        fit_input.build_fit_input_package(package, repo, output)
+        fit_input.build_fit_input_package(package, config, output)
     assert not output.exists()
 
 
-@pytest.mark.parametrize("member", ["cards/one.root", "README.md"])
-def test_symlink_member_fails_closed(tmp_path, member):
-    repo, _, package, output = _fixture(tmp_path)
+@pytest.mark.parametrize("member", ["cards/one.root", "scalings.json"])
+def test_symlink_source_fails_closed(tmp_path, member):
+    config, package, output = _fixture(tmp_path)
     path = package / member
     path.unlink()
     path.symlink_to(package / "cards" / "one.txt")
     with pytest.raises(fit_input.FitInputError):
-        fit_input.build_fit_input_package(package, repo, output)
+        fit_input.build_fit_input_package(package, config, output)
     assert not output.exists()
 
 
 @pytest.mark.parametrize("content", [None, "analysis: [bad\n", "analysis: wrong\n"])
 def test_missing_or_malformed_config_has_no_fallback(tmp_path, content):
-    repo, config, package, output = _fixture(tmp_path)
+    config, package, output = _fixture(tmp_path)
     if content is None:
         config.unlink()
     else:
         config.write_text(content, encoding="utf-8")
     with pytest.raises(fit_input.FitInputError):
-        fit_input.build_fit_input_package(package, repo, output)
+        fit_input.build_fit_input_package(package, config, output)
     assert not output.exists()
 
 
 @pytest.mark.parametrize("kind", ["output", "staging", "source_inside_output", "output_inside_source"])
 def test_existing_or_overlapping_paths_fail_closed(tmp_path, kind):
-    repo, _, package, output = _fixture(tmp_path)
+    config, package, output = _fixture(tmp_path)
     if kind == "output":
         output.mkdir()
     elif kind == "staging":
@@ -136,59 +174,77 @@ def test_existing_or_overlapping_paths_fail_closed(tmp_path, kind):
     else:
         output = package / "nested-output"
     with pytest.raises(fit_input.FitInputError):
-        fit_input.build_fit_input_package(package, repo, output)
+        fit_input.build_fit_input_package(package, config, output)
 
 
-@pytest.mark.parametrize("name", ["combinedcard.txt", "workspace.root", "higgsCombineTest.root",
-                                     "fitDiagnostics.root", "selectedWCs.txt"])
-def test_downstream_artifact_rejected(tmp_path, name):
-    repo, _, package, output = _fixture(tmp_path)
-    (package / "cards" / name).write_bytes(b"forbidden")
-    with pytest.raises(fit_input.FitInputError, match="forbidden artifact"):
-        fit_input.build_fit_input_package(package, repo, output)
+@pytest.mark.parametrize("name", ["combinedcard.txt", "selectedWCs.txt"])
+def test_downstream_owned_card_artifacts_rejected(tmp_path, name):
+    config, package, output = _fixture(tmp_path)
+    (package / "cards" / name).write_bytes(b"not an input")
+    with pytest.raises(fit_input.FitInputError, match="downstream-owned"):
+        fit_input.build_fit_input_package(package, config, output)
     assert not output.exists()
 
 
-def test_only_git_is_invoked_and_no_statistical_outputs_are_created(tmp_path, monkeypatch):
-    repo, _, package, output = _fixture(tmp_path)
-    calls = []
-    original = fit_input.subprocess.run
-
-    def capture(command, **kwargs):
-        calls.append(command)
-        return original(command, **kwargs)
-
-    monkeypatch.setattr(fit_input.subprocess, "run", capture)
-    fit_input.build_fit_input_package(package, repo, output)
-    assert calls and all(command[0] == "git" for command in calls)
-    assert {path.name for path in output.rglob("*") if path.is_file()} == {
-        "one.txt", "one.root", "scalings.json", "ordered_card_inputs.txt",
-        "combined_mapping_manifest.json", "package-provenance.json",
-        "TOP_26_006.yml", "fit-input-manifest.json", "README.md",
-    }
+def test_arbitrary_card_name_is_not_statistical_ownership_proxy(tmp_path):
+    config, package, output = _fixture(tmp_path)
+    (package / "cards" / "impacts.root").write_bytes(b"opaque template")
+    fit_input.build_fit_input_package(package, config, output)
+    assert (output / "datacards" / "cards" / "impacts.root").read_bytes() == b"opaque template"
 
 
-def test_cli_builds_synthetic_package(tmp_path, capsys):
-    repo, _, package, output = _fixture(tmp_path)
-    assert fit_input.main(["--combined-package", str(package), "--source-repo", str(repo),
+def test_provenance_variation_does_not_change_input_identities(tmp_path):
+    config, package, first = _fixture(tmp_path)
+    second = tmp_path / "second-fit-input"
+    one = fit_input.build_fit_input_package(
+        package, config, first, package_build_topeft_commit="a" * 40,
+        t0_topeft_commit="b" * 40, t0_topcoffea_commit="c" * 40)
+    two = fit_input.build_fit_input_package(
+        package, config, second, package_build_topeft_commit="d" * 40,
+        t0_topeft_commit="e" * 40, t0_topcoffea_commit="f" * 40)
+    assert one["provenance"] != two["provenance"]
+    assert one["datacards"]["input_snapshot_sha256"] == two["datacards"]["input_snapshot_sha256"]
+    assert one["fit_config"]["sha256"] == two["fit_config"]["sha256"]
+
+
+def test_source_location_disguised_as_provenance_is_omitted(tmp_path):
+    config, package, output = _fixture(tmp_path)
+    provenance_path = package / "package-provenance.json"
+    provenance = json.loads(provenance_path.read_text())
+    provenance["package_version"] = "/groups/historical/package"
+    provenance["source_scalings_sha256"] = {"run2": "/groups/historical/scalings.json"}
+    _write_json(provenance_path, provenance)
+    manifest = fit_input.build_fit_input_package(package, config, output)
+    source_fields = manifest["provenance"]["source_datacard_package"]
+    assert "package_version" not in source_fields
+    assert "source_scalings_sha256" not in source_fields
+    assert "/groups/historical" not in (output / "fit-input-manifest.json").read_text()
+
+
+def test_cli_uses_plain_config_file_without_git(tmp_path, capsys):
+    config, package, output = _fixture(tmp_path)
+    assert fit_input.main(["--combined-package", str(package), "--fit-config", str(config),
                            "--output", str(output)]) == 0
     response = json.loads(capsys.readouterr().out)
     manifest = json.loads((output / "fit-input-manifest.json").read_text())
-    assert response["datacards_content_sha256"] == manifest["datacards"]["content_sha256"]
+    assert response["input_snapshot_sha256"] == manifest["datacards"]["input_snapshot_sha256"]
 
 
 def test_non_regular_card_member_fails_closed(tmp_path):
-    repo, _, package, output = _fixture(tmp_path)
-    fifo = package / "cards" / "named_pipe"
-    os.mkfifo(fifo)
+    config, package, output = _fixture(tmp_path)
+    os.mkfifo(package / "cards" / "named_pipe")
     with pytest.raises(fit_input.FitInputError, match="non-regular"):
-        fit_input.build_fit_input_package(package, repo, output)
+        fit_input.build_fit_input_package(package, config, output)
     assert not output.exists()
 
 
-def test_config_must_match_recorded_git_commit(tmp_path):
-    repo, config, package, output = _fixture(tmp_path)
-    config.write_bytes(config.read_bytes() + b"\n")
-    with pytest.raises(fit_input.FitInputError, match="differ from source Git commit"):
-        fit_input.build_fit_input_package(package, repo, output)
+def test_mapping_order_or_required_field_fails_closed(tmp_path):
+    config, package, output = _fixture(tmp_path)
+    path = package / "combined_mapping_manifest.json"
+    mapping = json.loads(path.read_text())
+    mapping["rows"][0]["destination_txt_name"] = "one.txt"
+    _write_json(path, mapping)
+    _refresh_hashes(package)
+    with pytest.raises(fit_input.FitInputError, match="disagrees"):
+        fit_input.build_fit_input_package(package, config, output)
     assert not output.exists()
