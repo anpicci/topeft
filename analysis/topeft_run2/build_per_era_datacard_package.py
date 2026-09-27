@@ -1,4 +1,4 @@
-"""Build one per-era datacard package from current matrix-v2 completions."""
+"""Build one per-era datacard package from current matrix-v3 completions."""
 
 import argparse
 import json
@@ -60,7 +60,7 @@ def _physical_name(channel, distribution):
     return name
 
 
-def _resolve_v2_manifest_units(manifest_paths, era, *, verify_source_files=True, allow_empty=False):
+def _resolve_v3_manifest_units(manifest_paths, era, *, verify_source_files=True, allow_empty=False):
     """Resolve completed matrix rows and their successful row receipts."""
     _require(era in {"run2", "run3"}, "invalid requested era")
     _require(bool(manifest_paths), "at least one matrix manifest is required")
@@ -391,7 +391,7 @@ def main(argv=None):
     build.add_argument("--output", type=Path, required=True)
     build.add_argument("--analysis", required=True)
     args = parser.parse_args(argv)
-    units, manifest_hashes = _resolve_v2_manifest_units(args.matrix_manifest, args.era, allow_empty=True)
+    units, manifest_hashes = _resolve_v3_manifest_units(args.matrix_manifest, args.era, allow_empty=True)
     physical_names = _declared_manifest_surface(args.matrix_manifest, args.era)
     coverage_message = _target_coverage_message(args.matrix_manifest, args.era, physical_names, units)
     _require(coverage_message is None, coverage_message)

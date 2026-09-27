@@ -12,8 +12,12 @@ and Combine.
 channel, plus row-local `selectedWCs.txt` and
 `scalings-preselect.json`. It can be used directly without a matrix manifest.
 For standard multi-row production, `make_datacard_matrix_manifest.py` selects
-Run 2 or Run 3 rows from the maintained profile and channel registry and binds
-them to caller-supplied PKLs. The resumable runner reads that manifest and writes successful row receipts and
+Run 2 or Run 3 logical rows from the maintained profile and channel registry,
+binds their input roles to caller-supplied PKLs, and writes a v3 manifest of
+execution units. The full profile has 11 logical rows in each era, mapped to
+11 Run 2 or 34 Run 3 units. Units from one logical row keep its input role and
+distribution and preserve its physical-channel union. The resumable runner
+reads that manifest and writes successful unit receipts and
 metadata snapshots. Its final shared metadata files are not a complete era
 package.
 

@@ -17,7 +17,7 @@ import sys
 import tempfile
 from typing import Any
 
-MANIFEST_SCHEMA = "topeft_datacard_matrix_v2"
+MANIFEST_SCHEMA = "topeft_datacard_matrix_v3"
 RECEIPT_SCHEMA = "topeft_datacard_execution_receipt_v2"
 OWNER_SCHEMA = "topeft_datacard_runner_owner_v1"
 IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
@@ -25,7 +25,7 @@ SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 TOP_FIELDS = {"schema", "control_root", "lock_path", "runtime_contract", "rows"}
 RUNTIME_FIELDS = {"contract_id", "python_executable", "make_cards_path", "fingerprints"}
 FINGERPRINT_FIELDS = {"path", "sha256"}
-ROW_FIELDS = {"row_id", "attempt_id", "era", "working_directory", "input_pkl", "output_root", "distribution", "physical_channels", "years", "missing_parton_path", "sr_registry", "merge_report_path", "snapshot_directory", "log_path", "expected_output_paths", "producer_args"}
+ROW_FIELDS = {"row_id", "logical_row_id", "attempt_id", "era", "working_directory", "input_pkl", "output_root", "distribution", "physical_channels", "years", "missing_parton_path", "merge_report_path", "snapshot_directory", "log_path", "expected_output_paths", "producer_args"}
 SNAPSHOTS = {"selected_wcs": "selectedWCs.txt", "scalings": "scalings-preselect.json", "merge_report": "merge_report.json"}
 
 
@@ -131,9 +131,10 @@ def validate_runtime(contract: Any, verify_files: bool = True) -> dict[str, Any]
 def validate_row(row: Any, index: int, control_root: Path) -> dict[str, Any]:
     row = exact_fields(row, ROW_FIELDS, f"rows[{index}]")
     row_id, attempt = text(row["row_id"], "row_id"), text(row["attempt_id"], "attempt_id")
-    if not IDENTIFIER_RE.fullmatch(row_id) or not IDENTIFIER_RE.fullmatch(attempt):
-        raise RunnerError("manifest_schema_error", "row_id and attempt_id must be portable identifiers")
-    for key in ("era", "distribution", "sr_registry"):
+    logical_row_id = text(row["logical_row_id"], "logical_row_id")
+    if not all(IDENTIFIER_RE.fullmatch(value) for value in (row_id, logical_row_id, attempt)):
+        raise RunnerError("manifest_schema_error", "row_id, logical_row_id and attempt_id must be portable identifiers")
+    for key in ("era", "distribution"):
         text(row[key], key)
     for key in ("working_directory", "input_pkl", "output_root", "missing_parton_path", "merge_report_path", "snapshot_directory", "log_path"):
         absolute(row[key], key)
@@ -148,7 +149,9 @@ def validate_row(row: Any, index: int, control_root: Path) -> dict[str, Any]:
             raise RunnerError("manifest_schema_error", "expected outputs must be below output_root") from exc
     if {"--condor", "-C", "--merge-only", "--select-only"}.intersection(args):
         raise RunnerError("manifest_schema_error", "producer_args selects a non-row mode")
-    required = {"--out-dir": [row["output_root"]], "--var-lst": [row["distribution"]], "--ch-lst": channels, "--year": years, "--miss-parton-file": [row["missing_parton_path"]], "--sr-registry": [row["sr_registry"]], "--merge-report": [row["merge_report_path"]]}
+    if "--sr-registry" in args:
+        raise RunnerError("manifest_schema_error", "v3 producer_args must not contain --sr-registry")
+    required = {"--out-dir": [row["output_root"]], "--var-lst": [row["distribution"]], "--ch-lst": channels, "--year": years, "--miss-parton-file": [row["missing_parton_path"]], "--merge-report": [row["merge_report_path"]]}
     for option, expected in required.items():
         if option_values(args, option) != expected:
             raise RunnerError("manifest_schema_error", f"{option} differs from structured row field")
@@ -163,6 +166,8 @@ def load_manifest(path: Path) -> tuple[dict[str, Any], str]:
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise RunnerError("manifest_read_error", str(exc)) from exc
     manifest = exact_fields(manifest, TOP_FIELDS, "manifest")
+    if manifest["schema"] == "topeft_datacard_matrix_v2":
+        raise RunnerError("manifest_schema_error", "Historical datacard matrix schema `topeft_datacard_matrix_v2` is not accepted by the current datacard workflow. Generate a new `topeft_datacard_matrix_v3` manifest with make_datacard_matrix_manifest.py.")
     if manifest["schema"] != MANIFEST_SCHEMA:
         raise RunnerError("manifest_schema_error", f"schema must be {MANIFEST_SCHEMA}")
     root, lock = absolute(manifest["control_root"], "control_root"), absolute(manifest["lock_path"], "lock_path")

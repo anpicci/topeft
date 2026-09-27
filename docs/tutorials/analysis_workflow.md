@@ -206,8 +206,12 @@ you what each actor owns and, equally importantly, what it does not own.
 
 - **Datacard matrix.** For multi-row production,
   `make_datacard_matrix_manifest.py` takes the era, current PKL role bindings,
-  and runtime paths and writes the standard rows. The resumable runner produces cards and
-  successful row receipts. A direct `make_cards.py` task needs no manifest.
+  and runtime paths and writes a `topeft_datacard_matrix_v3` manifest. Each
+  full era has 11 logical profile rows; the maintained partition gives Run 2
+  11 execution units and Run 3 34. Units from one logical row retain its input
+  role and distribution and together cover exactly its physical channels.
+  The resumable runner produces cards and successful unit receipts. A direct
+  `make_cards.py` task needs no manifest.
 
 - **Per-era package builder.** `build_per_era_datacard_package.py build`
   reads matrix manifests and completed row receipts and checks their producer
@@ -442,7 +446,9 @@ Python executable, missing-parton file, runtime identifier, and fresh
 manifest/output/control paths. The helper fills the standard channel and
 distribution rows. Run 2 roles are `block1` through `block5`; Run 3 roles are
 `2l_mixed`, `3l_m_offz`, `3l_p_offz`, `3l_onz_tau`, and `3l_fwd`.
-Run the manifest through
+The generator filters the maintained execution units when a restricted subset
+is selected. Its card commands use `--ch-lst` for each unit and year coverage
+`error`. Run the v3 manifest through
 `run_datacard_matrix_resumable.sh`; the runner writes receipts for completed
 rows. Inspect the producer artifacts before packaging. Use the
 [datacard/scaling how-to](../how_to/datacards_and_scalings.md) for selection and
@@ -472,6 +478,10 @@ For a restricted fit, select subset X in each era's manifest using a maintained
 Build the Run 2 and Run 3 packages without selecting X again. If a manifest
 target is missing, the builder reports its manifest row and prints the runner's status
 and resume commands; extra completed targets are reported separately.
+
+Older `topeft_datacard_matrix_v2` manifests are historical, not corrupt. The
+current datacard workflow does not accept them. Generate a new v3 manifest
+with `make_datacard_matrix_manifest.py`; there is no conversion path.
 
 ## 9. Build the combined package and cross the EFTFit/Combine boundary
 

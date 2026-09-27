@@ -58,18 +58,19 @@ def _manifest_receipt(tmp_path, unit_id="unit_01", channel="alpha", era="run2", 
     fingerprint = _write(tmp_path / "producer.py", b"# synthetic\n")
     args = ["--out-dir", str(output_root), "--var-lst", "ptz", "--ch-lst", channel,
             "--year", "UL18", "--miss-parton-file", str(tmp_path / "missing.root"),
-            "--sr-registry", "ALL_CH_LST_SR", "--merge-report", str(merge)]
+            "--merge-report", str(merge)]
     row = {
-        "row_id": unit_id, "attempt_id": attempt, "era": era,
+        "row_id": unit_id, "logical_row_id": unit_id,
+        "attempt_id": attempt, "era": era,
         "working_directory": str(tmp_path), "input_pkl": str(tmp_path / "input.pkl"),
         "output_root": str(output_root), "distribution": "ptz", "physical_channels": [channel],
         "years": ["UL18"], "missing_parton_path": str(tmp_path / "missing.root"),
-        "sr_registry": "ALL_CH_LST_SR", "merge_report_path": str(merge),
+        "merge_report_path": str(merge),
         "snapshot_directory": str(snapshot), "log_path": str(log),
         "expected_output_paths": [str(root), str(txt)], "producer_args": args,
     }
     runtime = {
-        "contract_id": "synthetic-v2", "python_executable": str(tmp_path / "python"),
+        "contract_id": "synthetic-v3", "python_executable": str(tmp_path / "python"),
         "make_cards_path": str(fingerprint), "fingerprints": [_record(fingerprint)],
     }
     runtime["fingerprints"][0].pop("size_bytes")
@@ -107,6 +108,21 @@ def _replace_receipt(path, receipt):
     path.write_text(json.dumps(receipt), encoding="utf-8")
 
 
+def test_historical_v2_manifest_rejected_for_new_package_build(tmp_path):
+    path, _, manifest, _ = _manifest_receipt(tmp_path)
+    manifest["schema"] = "topeft_datacard_matrix_v2"
+    path.write_text(json.dumps(manifest), encoding="utf-8")
+    with pytest.raises(runner.RunnerError) as exc_info:
+        builder._resolve_v3_manifest_units([path], "run2")
+    assert exc_info.value.code == "manifest_schema_error"
+    message = str(exc_info.value)
+    assert all(anchor in message for anchor in (
+        "Historical", "topeft_datacard_matrix_v2", "current datacard workflow",
+        "topeft_datacard_matrix_v3", "make_datacard_matrix_manifest.py",
+    ))
+    assert "new runtime execution" not in message
+
+
 def _partial_manifest(tmp_path):
     first, _, first_manifest, first_receipt = _manifest_receipt(tmp_path, "unit_01", "alpha")
     second, _, second_manifest, _ = _manifest_receipt(tmp_path, "unit_02", "beta")
@@ -123,10 +139,10 @@ def _partial_manifest(tmp_path):
     return plan_path, second
 
 
-def test_current_v2_resolver_preserves_receipt_identities(tmp_path):
+def test_current_v3_resolver_preserves_receipt_identities(tmp_path):
     first, _, _, first_receipt = _manifest_receipt(tmp_path, "unit_01", "alpha")
     second, _, _, second_receipt = _manifest_receipt(tmp_path, "unit_02", "beta")
-    units, hashes = builder._resolve_v2_manifest_units([second, first], "run2")
+    units, hashes = builder._resolve_v3_manifest_units([second, first], "run2")
     assert [unit["unit_id"] for unit in units] == ["unit_02", "unit_01"]
     assert hashes == [hashlib.sha256(path.read_bytes()).hexdigest() for path in (second, first)]
     assert units[0]["primary_outputs"][0]["txt"] == second_receipt["primary_outputs"][1]
@@ -134,17 +150,17 @@ def test_current_v2_resolver_preserves_receipt_identities(tmp_path):
     assert units[0]["selected_wcs_source"] == second_receipt["artifacts"]["selected_wcs_snapshot"]
     assert units[1]["scalings_source"] == first_receipt["artifacts"]["scalings_snapshot"]
     with pytest.raises(ValueError, match="duplicate manifest identity"):
-        builder._resolve_v2_manifest_units([first, first], "run2")
+        builder._resolve_v3_manifest_units([first, first], "run2")
     with pytest.raises(ValueError, match="no selected"):
-        builder._resolve_v2_manifest_units([first], "run3")
+        builder._resolve_v3_manifest_units([first], "run3")
 
 
 def test_partial_manifest_and_later_success(tmp_path):
     plan, later = _partial_manifest(tmp_path)
-    units, hashes = builder._resolve_v2_manifest_units([plan], "run2")
+    units, hashes = builder._resolve_v3_manifest_units([plan], "run2")
     assert [unit["unit_id"] for unit in units] == ["unit_01"]
     assert hashes == [hashlib.sha256(plan.read_bytes()).hexdigest()]
-    units, hashes = builder._resolve_v2_manifest_units([plan, later], "run2")
+    units, hashes = builder._resolve_v3_manifest_units([plan, later], "run2")
     assert [unit["unit_id"] for unit in units] == ["unit_01", "unit_02"]
     assert hashes == [hashlib.sha256(path.read_bytes()).hexdigest() for path in (plan, later)]
 
@@ -192,18 +208,18 @@ def test_existing_malformed_receipt_fails_closed(tmp_path):
     receipt_path.parent.mkdir(parents=True, exist_ok=True)
     receipt_path.write_text("{invalid", encoding="utf-8")
     with pytest.raises(ValueError, match="unreadable current receipt"):
-        builder._resolve_v2_manifest_units([plan], "run2")
+        builder._resolve_v3_manifest_units([plan], "run2")
 
 
 def test_duplicate_successful_unit_identity(tmp_path):
     first, _, _, _ = _manifest_receipt(tmp_path / "first", "unit_01", "alpha")
     second, _, _, _ = _manifest_receipt(tmp_path / "second", "unit_01", "beta")
     with pytest.raises(ValueError, match="duplicate unit identity"):
-        builder._resolve_v2_manifest_units([first, second], "run2")
+        builder._resolve_v3_manifest_units([first, second], "run2")
 
 
 @pytest.mark.parametrize("mutation", ["stale", "failed", "incomplete", "identity", "snapshot"])
-def test_current_v2_rejects_unbound_or_incomplete_receipt(tmp_path, mutation):
+def test_current_v3_rejects_unbound_or_incomplete_receipt(tmp_path, mutation):
     manifest_path, receipt_path, _, receipt = _manifest_receipt(tmp_path)
     if mutation == "stale":
         receipt["attempt_id"] = "attempt_old"
@@ -217,17 +233,17 @@ def test_current_v2_rejects_unbound_or_incomplete_receipt(tmp_path, mutation):
         receipt["artifacts"]["selected_wcs_snapshot"]["sha256"] = "0" * 64
     _replace_receipt(receipt_path, receipt)
     with pytest.raises(ValueError):
-        builder._resolve_v2_manifest_units([manifest_path], "run2")
+        builder._resolve_v3_manifest_units([manifest_path], "run2")
 
 
-def test_current_v2_rejects_overlap_and_era_mismatch(tmp_path):
+def test_current_v3_rejects_overlap_and_era_mismatch(tmp_path):
     first, _, _, _ = _manifest_receipt(tmp_path, "unit_01", "alpha")
     second, _, _, _ = _manifest_receipt(tmp_path, "unit_02", "alpha")
     with pytest.raises(ValueError, match="duplicate physical"):
-        builder._resolve_v2_manifest_units([first, second], "run2")
+        builder._resolve_v3_manifest_units([first, second], "run2")
     third, _, _, _ = _manifest_receipt(tmp_path, "unit_03", "gamma", era="run3")
     with pytest.raises(ValueError, match="no selected"):
-        builder._resolve_v2_manifest_units([third], "run2")
+        builder._resolve_v3_manifest_units([third], "run2")
 
 
 def test_builder_core_publishes_canonical_cards_and_minimal_provenance(tmp_path):

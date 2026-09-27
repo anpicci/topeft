@@ -41,6 +41,24 @@ def _input_bindings(values, allowed_roles):
     return bindings
 
 
+def _execution_channels(profile_row, era):
+    """Expand the maintained contiguous partition of one logical row."""
+    channels = profile_row["physical_channels"]
+    sizes = profile_row.get("execution_unit_sizes", {}).get(era)
+    if sizes is None:
+        return [channels]
+    if (not isinstance(sizes, list) or not sizes
+            or any(type(size) is not int or size <= 0 for size in sizes)
+            or sum(sizes) != len(channels)):
+        raise ValueError("invalid execution unit sizes for standard matrix row")
+    groups = []
+    start = 0
+    for size in sizes:
+        groups.append(channels[start:start + size])
+        start += size
+    return groups
+
+
 def _runtime_path(value, label, *, executable=False):
     path = runner.absolute(str(value), label)
     if not path.is_file() or (executable and not os.access(path, os.X_OK)):
@@ -87,40 +105,43 @@ def make_manifest(args):
     inputs = _input_bindings(args.input_pkl, roles)
     rows = []
     for profile_row in profile_rows:
-        row_id = f"{args.era}_{profile_row['row_number']:02d}"
+        logical_row_id = f"{args.era}_{profile_row['row_number']:02d}"
         distribution = profile_row["distribution"]
-        channels = [channel for channel in profile_row["physical_channels"]
-                    if f"{channel}_{distribution}" in selected]
-        if not channels:
-            continue
         role = profile_row["input_roles"][args.era]
-        if role not in inputs:
-            raise ValueError(f"{role} PKL is required for row {row_id}")
-        input_pkl = _runtime_path(inputs[role], f"{role}_pkl")
-        row_output = output_root / row_id
-        merge_report = control_root / "merge_reports" / f"{row_id}__{args.attempt_id}.json"
-        snapshot = control_root / "snapshots" / f"{row_id}__{args.attempt_id}"
-        log = control_root / "logs" / f"{row_id}__{args.attempt_id}.log"
-        expected_outputs = [str(row_output / f"{_card_prefix}{channel}_{distribution}.{suffix}")
-                            for channel in channels for suffix in ("txt", "root")]
-        producer_args = [
-            "--out-dir", str(row_output), "--var-lst", distribution,
-            "--ch-lst", *channels,
-            "--do-nuisance", "--do-mc-stat", "--skip-selected-wcs-check",
-            "--year-coverage-policy", "warn", "--year", *years,
-            "--miss-parton-file", str(missing_parton), "--sr-registry", args.channel_set_key,
-            "--merge-report", str(merge_report),
-        ]
-        rows.append({
-            "row_id": row_id, "attempt_id": args.attempt_id, "era": args.era,
-            "working_directory": str(working_directory), "input_pkl": str(input_pkl),
-            "output_root": str(row_output), "distribution": distribution,
-            "physical_channels": channels, "years": years,
-            "missing_parton_path": str(missing_parton), "sr_registry": args.channel_set_key,
-            "merge_report_path": str(merge_report), "snapshot_directory": str(snapshot),
-            "log_path": str(log), "expected_output_paths": expected_outputs,
-            "producer_args": producer_args,
-        })
+        for unit_index, standard_channels in enumerate(_execution_channels(profile_row, args.era), 1):
+            channels = [channel for channel in standard_channels
+                        if f"{channel}_{distribution}" in selected]
+            if not channels:
+                continue
+            row_id = f"{logical_row_id}_exec_{unit_index:02d}"
+            if role not in inputs:
+                raise ValueError(f"{role} PKL is required for row {row_id}")
+            input_pkl = _runtime_path(inputs[role], f"{role}_pkl")
+            row_output = output_root / row_id
+            merge_report = control_root / "merge_reports" / f"{row_id}__{args.attempt_id}.json"
+            snapshot = control_root / "snapshots" / f"{row_id}__{args.attempt_id}"
+            log = control_root / "logs" / f"{row_id}__{args.attempt_id}.log"
+            expected_outputs = [str(row_output / f"{_card_prefix}{channel}_{distribution}.{suffix}")
+                                for channel in channels for suffix in ("txt", "root")]
+            producer_args = [
+                "--out-dir", str(row_output), "--var-lst", distribution,
+                "--ch-lst", *channels, "--binning", "fitting",
+                "--do-nuisance", "--do-mc-stat", "--skip-selected-wcs-check",
+                "--year-coverage-policy", "error", "--year", *years,
+                "--miss-parton-file", str(missing_parton),
+                "--merge-report", str(merge_report),
+            ]
+            rows.append({
+                "row_id": row_id, "logical_row_id": logical_row_id,
+                "attempt_id": args.attempt_id, "era": args.era,
+                "working_directory": str(working_directory), "input_pkl": str(input_pkl),
+                "output_root": str(row_output), "distribution": distribution,
+                "physical_channels": channels, "years": years,
+                "missing_parton_path": str(missing_parton),
+                "merge_report_path": str(merge_report), "snapshot_directory": str(snapshot),
+                "log_path": str(log), "expected_output_paths": expected_outputs,
+                "producer_args": producer_args,
+            })
     manifest = {
         "schema": runner.MANIFEST_SCHEMA, "control_root": str(control_root),
         "lock_path": str(control_root / "runner.lock"),

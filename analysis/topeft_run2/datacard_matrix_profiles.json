@@ -65,6 +65,24 @@
       "input_roles": {
         "run2": "block1",
         "run3": "2l_mixed"
+      },
+      "execution_unit_sizes": {
+        "run3": [
+          1,
+          2,
+          2,
+          2,
+          2,
+          2,
+          2,
+          2,
+          2,
+          2,
+          2,
+          2,
+          2,
+          2
+        ]
       }
     },
     {
@@ -145,6 +163,14 @@
       "input_roles": {
         "run2": "block2",
         "run3": "3l_m_offz"
+      },
+      "execution_unit_sizes": {
+        "run3": [
+          2,
+          2,
+          2,
+          2
+        ]
       }
     },
     {
@@ -189,6 +215,14 @@
       "input_roles": {
         "run2": "block3",
         "run3": "3l_p_offz"
+      },
+      "execution_unit_sizes": {
+        "run3": [
+          2,
+          2,
+          2,
+          2
+        ]
       }
     },
     {
@@ -225,6 +259,15 @@
       "input_roles": {
         "run2": "block4",
         "run3": "3l_onz_tau"
+      },
+      "execution_unit_sizes": {
+        "run3": [
+          2,
+          2,
+          2,
+          2,
+          2
+        ]
       }
     },
     {

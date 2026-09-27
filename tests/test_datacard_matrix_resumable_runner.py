@@ -66,12 +66,12 @@ def make_row(tmp_path, fake, row_id="row_01", attempt="attempt_01", extra=None):
     input_pkl.parent.mkdir(exist_ok=True); input_pkl.write_text("input\n")
     missing = tmp_path / "inputs" / f"{row_id}_{attempt}_missing.root"; missing.write_text("missing\n")
     outputs = [root / "card.txt", root / "card.root"]
-    args = ["--out-dir", str(root), "--var-lst", "lj0pt", "--ch-lst", "channel_a", "channel_b", "--binning", "fitting", "--year", "2022", "2022EE", "--miss-parton-file", str(missing), "--sr-registry", "ALL_CH_LST_SR", "--merge-report", str(evidence / "merge.json"), "--expected-output", *map(str, outputs), *(extra or [])]
-    return {"row_id": row_id, "attempt_id": attempt, "era": "run3", "working_directory": str(fake.parent), "input_pkl": str(input_pkl), "output_root": str(root), "distribution": "lj0pt", "physical_channels": ["channel_a", "channel_b"], "years": ["2022", "2022EE"], "missing_parton_path": str(missing), "sr_registry": "ALL_CH_LST_SR", "merge_report_path": str(evidence / "merge.json"), "snapshot_directory": str(tmp_path / "control" / "snapshots" / f"{row_id}_{attempt}"), "log_path": str(evidence / "row.log"), "expected_output_paths": list(map(str, outputs)), "producer_args": args}
+    args = ["--out-dir", str(root), "--var-lst", "lj0pt", "--ch-lst", "channel_a", "channel_b", "--binning", "fitting", "--year", "2022", "2022EE", "--miss-parton-file", str(missing), "--merge-report", str(evidence / "merge.json"), "--expected-output", *map(str, outputs), *(extra or [])]
+    return {"row_id": row_id, "logical_row_id": row_id, "attempt_id": attempt, "era": "run3", "working_directory": str(fake.parent), "input_pkl": str(input_pkl), "output_root": str(root), "distribution": "lj0pt", "physical_channels": ["channel_a", "channel_b"], "years": ["2022", "2022EE"], "missing_parton_path": str(missing), "merge_report_path": str(evidence / "merge.json"), "snapshot_directory": str(tmp_path / "control" / "snapshots" / f"{row_id}_{attempt}"), "log_path": str(evidence / "row.log"), "expected_output_paths": list(map(str, outputs)), "producer_args": args}
 
 
 def manifest(tmp_path, fake, rows, name="manifest.json"):
-    data = {"schema": "topeft_datacard_matrix_v2", "control_root": str(tmp_path / "control"), "lock_path": str(tmp_path / "control" / "runner.lock"), "runtime_contract": {"contract_id": "synthetic-runtime", "python_executable": sys.executable, "make_cards_path": str(fake), "fingerprints": [{"path": str(fake), "sha256": sha(fake)}]}, "rows": rows}
+    data = {"schema": "topeft_datacard_matrix_v3", "control_root": str(tmp_path / "control"), "lock_path": str(tmp_path / "control" / "runner.lock"), "runtime_contract": {"contract_id": "synthetic-runtime", "python_executable": sys.executable, "make_cards_path": str(fake), "fingerprints": [{"path": str(fake), "sha256": sha(fake)}]}, "rows": rows}
     path = tmp_path / name; path.write_text(json.dumps(data, indent=2) + "\n")
     return path, data
 
@@ -142,6 +142,36 @@ def test_schema_and_identity_rejections(tmp_path, fake_script):
     path, _ = manifest(tmp_path, fake_script, [row]); assert result(invoke(path).stderr)["status"] == "manifest_schema_error"
     first, second = make_row(tmp_path, fake_script), make_row(tmp_path, fake_script)
     path, _ = manifest(tmp_path, fake_script, [first, second], "duplicate.json"); assert result(invoke(path, "--plan-only").stderr)["status"] == "manifest_schema_error"
+
+
+def test_historical_v2_rejected_before_runtime_mutation(tmp_path, fake_script):
+    row = make_row(tmp_path, fake_script, extra=["--counter", str(tmp_path / "counter")])
+    path, data = manifest(tmp_path, fake_script, [row])
+    data["schema"] = "topeft_datacard_matrix_v2"
+    path.write_text(json.dumps(data))
+    completed = invoke(path)
+    assert completed.returncode != 0
+    error = result(completed.stderr)
+    assert error["status"] == "manifest_schema_error"
+    message = error["message"]
+    assert all(anchor in message for anchor in (
+        "Historical", "topeft_datacard_matrix_v2", "current datacard workflow",
+        "topeft_datacard_matrix_v3", "make_datacard_matrix_manifest.py",
+    ))
+    assert "new runtime execution" not in message
+    assert not Path(data["control_root"]).exists()
+    assert not (tmp_path / "counter").exists()
+
+
+def test_v3_requires_logical_row_id_and_rejects_old_consumer_option(tmp_path, fake_script):
+    row = make_row(tmp_path, fake_script)
+    row.pop("logical_row_id")
+    path, _ = manifest(tmp_path, fake_script, [row])
+    assert result(invoke(path, "--plan-only").stderr)["status"] == "manifest_schema_error"
+    row = make_row(tmp_path, fake_script)
+    row["producer_args"].extend(["--sr-registry", "ALL_CH_LST_SR"])
+    path, _ = manifest(tmp_path, fake_script, [row], "old-option.json")
+    assert result(invoke(path, "--plan-only").stderr)["status"] == "manifest_schema_error"
 
 
 def test_plan_and_status_are_nonmutating(tmp_path, fake_script):

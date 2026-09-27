@@ -1,10 +1,16 @@
 # Regenerate and validate missing-parton payloads
 
-This guide covers the maintained operator workflow for deriving a
+This guide covers the maintained workflow for deriving a
 missing-parton correction payload from accepted central `tZq` and private
 `tllq` source cards. Payload generation is not event processing: it begins with
 matched per-category ROOT/TXT card pairs and ends with a compact ROOT correction
 consumed later by `DatacardMaker`.
+
+The `--sr-registry` commands below belong to the payload producer and select
+the layout to write. The separate `make_cards.py` consumer has no
+`--sr-registry` option: it infers one maintained layout from the payload's tree
+order and array lengths, and fails on no match or ambiguity. An exact consumer
+payload override uses `--miss-parton-file`.
 
 The source authority is:
 

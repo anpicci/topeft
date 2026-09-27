@@ -351,8 +351,13 @@ ordering, card combination, or workspace construction.
 `make_datacard_matrix_manifest.py` derives standard Run 2 or Run 3 rows from
 `datacard_matrix_profiles.json`, `ch_lst.json`, and caller-supplied PKL role
 bindings and runtime paths. It selects any restricted physical surface here
-and writes a concrete manifest without executing card production. The resumable matrix runner reads
-the manifest, checks its runtime and row outputs, and writes successful row
+and writes a v3 manifest without executing card production. The full profile
+has 11 logical rows per era. Its maintained execution partition yields 11
+Run 2 units and 34 Run 3 units. One logical row may produce several units;
+each retains its input role and distribution, and the units preserve its exact
+physical-channel union. Restricted selection filters those units at manifest
+generation without regrouping them. The resumable matrix runner reads the
+manifest, checks its runtime and unit outputs, and writes successful unit
 receipts. It provides status and resume commands; the package builder does not
 manage row execution state. Direct `make_cards.py` use bypasses the matrix.
 

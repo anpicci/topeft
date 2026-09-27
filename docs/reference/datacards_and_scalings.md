@@ -34,7 +34,7 @@ are:
 | Years/coverage | Optional supported year list; coverage `warn`, `error`, or `off`, default `warn` | Mixed input identities and structural year gaps follow the selected fail/warn policy. |
 | Binning | `fitting` or `processing`, default `fitting` | Fitting performs exact late aggregation per selected physical channel. |
 | WCs | POI list, reference/selected-WC files, select-only/check controls, optional WC values/scaling order | WC selection uses the card-facing fitting view; selected files must match the producer's supported process/WC structure. `--use-selected` materializes canonical signal-only `selectedWCs.txt` in `--out-dir`. |
-| Nuisances | Nuisance and MC-stat switches, `--rate-syst-json`, missing-parton payload/registry/skip option | Run era selects maintained defaults when the override is omitted. An explicit `--rate-syst-json` is forwarded as `rate_systs_path`, including to Condor child commands. An explicit missing-parton path must match the selected registry/era. |
+| Nuisances | Nuisance and MC-stat switches, `--rate-syst-json`, `--miss-parton-file`, and `--skip-missing-parton-rate-syst` | Run era selects maintained defaults when the override is omitted. An explicit `--rate-syst-json` is forwarded as `rate_systs_path`, including to Condor child commands. The missing-parton consumer infers the maintained payload layout and has no `--sr-registry` option. |
 | Data/negative bins | Asimov by default; `--unblind` for observed data; crop negative bins by default | These choices affect card contents and must be recorded with production evidence. |
 | Execution | Local default or `--condor`; chunks default 1 | Condor mode prepares/submits per-channel jobs and has external side effects; it requires separately authorized execution. |
 
@@ -79,7 +79,6 @@ raises `TypeError`.
 | `wc_scalings` | Sequence, default empty | Requested WC ordering/selection for scaling production. |
 | `rate_systs_path` | Path, default Run-2/Run-3 JSON selected from years | Rate-systematic registry relative to `topeft_path`. |
 | `missing_parton_path` | Optional exact path | Overrides run-era payload selection; empty string and mixed-era use fail. |
-| `sr_registry` | Registered name, default current SR registry | A nondefault registry requires an explicitly matching missing-parton payload. |
 | `ignore` | Sequence, default empty | Additional pre-grouping process names to exclude. |
 
 The constructor key is the plural `rate_systs_path`. The direct CLI forwards
@@ -95,13 +94,13 @@ therefore has file-read side effects even before `analyze()`. Writing occurs in
 Important failure boundaries include invalid/mixed years, incompatible
 artifacts or WC order, missing required sumw2, unsupported SR application-axis
 labels, unresolved sparse axes that would duplicate ROOT template names,
-invalid exact rebinning, missing/mismatched shape pairs, and payload/registry
-incompatibility.
+invalid exact rebinning, missing/mismatched shape pairs, and a payload that
+matches no maintained layout or matches more than one.
 
 ## Datacard matrix manifest and runner
 
 `analysis/topeft_run2/make_datacard_matrix_manifest.py` writes a new
-`topeft_datacard_matrix_v2` JSON manifest. Required options are
+`topeft_datacard_matrix_v3` JSON manifest. Required options are
 `--era {run2,run3}`, `--manifest-output`, `--output-root`, `--control-root`,
 `--python-executable`, `--missing-parton-file`, and
 `--runtime-contract-id`. Repeat `--input-pkl ROLE=PATH` to bind the selected
@@ -118,11 +117,24 @@ subset. Supply the PKL roles used by the selected rows.
 
 Physical targets and their distributions come from
 `datacard_matrix_profiles.json`, checked against `ch_lst.json`. The helper
-writes 11 standard rows for a full manifest, with Run 2 years
-`UL16APV UL16 UL17 UL18` or Run 3 years
-`2022 2022EE 2023 2023BPix`. Input files and runtime paths must exist;
+writes 11 logical profile rows for either full era. The maintained execution
+partition yields 11 Run 2 execution units or 34 Run 3 execution units, each
+serialized as a manifest row. Every unit retains its logical row's input role
+and distribution; units belonging to one logical row have exactly its physical
+channel union without duplication. `make_cards.py --ch-lst` selects each unit's
+physical channels. Run 2 uses years `UL16APV UL16 UL17 UL18`; Run 3 uses
+`2022 2022EE 2023 2023BPix`. Generated producer arguments set
+`--year-coverage-policy error`. Input files and runtime paths must exist;
 manifest, output, and control paths must be absolute, and the manifest must
 not already exist. The helper creates neither cards nor receipts.
+
+`topeft_datacard_matrix_v2` is historical, not corrupt. The current runner and
+per-era builder do not accept v2 manifests. Generate a new v3 manifest with
+`make_datacard_matrix_manifest.py`; no migration or conversion path is provided.
+Select a restricted physical subset once at manifest generation using
+`--channel-set-key` or the advanced `--physical-target` filter. The helper
+filters the maintained execution partition; it does not regroup units. The
+per-era builder does not reselect targets.
 
 `run_datacard_matrix_resumable.sh --plan-only MANIFEST` checks the plan;
 `--status MANIFEST` reports row state without running cards; passing
@@ -205,7 +217,7 @@ subcommand reads an existing package against `--run2-package` and
 | `DatacardMaker.get_selected_wcs` | Family and optional exact channel subset → process→WC sets | Inspects signal coefficient terms in fitting bins, ignoring flow, using class tolerance and optional WC restriction. No files written. |
 | `DatacardMaker.make_scalings_json` | Existing record list, physical channel, family, process, WC names, scaling array → same appended list | Emits physical `<channel>_<family>`, `<process>_sm`, formatted parameters, and per-bin scaling excluding underflow. |
 | `DatacardMaker.analyze` | Family, channel, selected-WC map, negative-bin policy, WC values → card result/`None` | Writes `ttx_multileptons-{channel}_{family}.txt/.root`, appends scaling records, applies fitting view to nominal and sumw2, and validates physical scaling edges. Unknown family/channel currently reports and returns `None`; deeper contract failures raise. |
-| `build_per_era_datacard_package.build_per_era_package_from_units` | Era, analysis, physical names, validated units, output, source manifest hashes → provenance | Builds and verifies one per-era package from the supplied units; the CLI resolves matrix-v2 completions. |
+| `build_per_era_datacard_package.build_per_era_package_from_units` | Era, analysis, physical names, validated units, output, source manifest hashes → provenance | Builds and verifies one per-era package from the supplied units; the CLI resolves v3 completions. |
 | `topeft/channels/ch_lst.json` | Developer-facing configuration registry | Owns named topology blocks and physical channel/jet membership. Different consumers select explicit blocks; it is not a global claim that every block is current analysis scope. |
 
 `DatacardMaker` extension points are the maintained process/systematic

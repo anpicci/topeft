@@ -10,7 +10,7 @@ run and resume it.
 | Interface | Purpose | Inputs and defaults | Outputs and checks |
 | --- | --- | --- | --- |
 | `make_cards.py` | Merge histogram inputs and select WCs, channels, and variables | Fitting binning, year coverage `warn`, Asimov data, no nuisances or MC-stat opt-in | `DatacardMaker` writes TXT cards, ROOT templates, and scaling records; local or Condor execution |
-| `make_datacard_matrix_manifest.py` | Prepare standard Run 2 or Run 3 production rows | Era, `--input-pkl ROLE=PATH` bindings, runtime paths, and fresh manifest path | Writes a concrete matrix manifest; does not produce cards |
+| `make_datacard_matrix_manifest.py` | Prepare standard Run 2 or Run 3 execution units | Era, `--input-pkl ROLE=PATH` bindings, runtime paths, and fresh manifest path | Writes a `topeft_datacard_matrix_v3` manifest; does not produce cards |
 | `build_per_era_datacard_package.py build` | Build one Run 2 or Run 3 package | Era, one or more matrix manifests with completed rows, and a fresh absolute output | Requires exactly the targets declared by the manifest rows, checks recorded source files, and writes cards, WCs, scalings, and per-era `chN` |
 | `build_combined_datacard_package.py build` | Build a cards-only Run 2 + Run 3 package | Two per-era packages with the same physical target set, fresh absolute output, analysis, package date, and version | Writes the combined mapping, ordered card list, and scalings; checks the package against its inputs; does not run Combine |
 | EFTFit/Combine | Combine cards and construct the statistical model | Packaged cards and scalings plus fit configuration | Creates `combinedcard.txt` and the workspace after package construction |
@@ -68,9 +68,10 @@ exist as histogram families in the merged input.
   physical channel definitions in `topeft/channels/ch_lst.json`.
 - Choose processing or fitting edges through `--binning`; change definitions at
   `topeft/modules/axes.py`, following the [binning guide](flexible_binning.md).
-- Use `--miss-parton-file` and `--sr-registry` to select existing supported
-  configuration. Do not duplicate payload or registry data in a local
-  wrapper.
+- Use `--miss-parton-file` for an exact missing-parton payload override. The
+  card consumer infers its maintained layout from the payload; it has no
+  `--sr-registry` option. The separate payload producer retains its own
+  `--sr-registry` layout selector.
 - `--rate-syst-json` overrides the run-era rate-systematics JSON path. An
   explicit value is forwarded to `DatacardMaker` as `rate_systs_path`; when it
   is omitted, `DatacardMaker` selects its maintained Run 2 or Run 3 default.
@@ -91,8 +92,8 @@ To add a supported selection/configuration control:
 
 1. Identify its existing owner: physical channels in `ch_lst.json`, axes in
    `axes.py`, currently default-selected rate-systematic JSON in
-   `DatacardMaker`, missing-parton payload/registry through their dedicated
-   options, or WC selection through selected-WC inputs. Use
+   `DatacardMaker`, missing-parton payload through its exact-path option,
+   or WC selection through selected-WC inputs. Use
    `--rate-syst-json` only to select an existing supported rate-systematics
    JSON.
 2. Add a CLI selector only when choosing among existing supported authorities;
@@ -136,7 +137,12 @@ python analysis/topeft_run2/make_datacard_matrix_manifest.py \
 For Run 2, use `--era run2`, five `--input-pkl` bindings named `block1` through
 `block5`, and the Run 2 missing-parton file. The helper combines the maintained
 channel registry with `datacard_matrix_profiles.json`, selects the era's years,
-and writes 11 standard rows for the full fit.
+and writes a `topeft_datacard_matrix_v3` manifest. The full profile has 11
+logical rows in either era. Its maintained execution partition produces 11
+Run 2 units and 34 Run 3 units. A logical row may map to several execution
+units; each keeps its input role and distribution, and their physical channels
+have exactly the logical row's union. The generated units select channels in
+`make_cards.py` with `--ch-lst` and use year coverage `error`.
 It records the selected Python interpreter and hashes `make_cards.py`; repeat
 `--runtime-file` for other files to include in the runner's runtime check.
 The manifest path must be new. For a maintained restricted fit, use
@@ -146,12 +152,18 @@ Only PKL roles used by the selected rows are required. Make the same physical
 subset in the Run 2 and Run 3 manifests before running either matrix: Run 2
 manifest X and Run 3 manifest X produce packages with the same surface X.
 
-The manifest uses the `topeft_datacard_matrix_v2` schema. Each row records its
-input PKL, literal channel arguments, distribution, years, output paths,
+The current manifest uses the `topeft_datacard_matrix_v3` schema. Each
+execution-unit row records its logical row ID, input PKL, literal channel
+arguments, distribution, years, output paths,
 `make_cards.py` arguments, and log/snapshot locations. The runner checks the
 declared runtime files before execution and writes successful row receipts;
 the analyst does not create receipt files. Direct `make_cards.py` use does not
 require a matrix manifest.
+
+`topeft_datacard_matrix_v2` is a historical schema, not a corrupt manifest.
+The current datacard workflow does not accept it. Generate a new v3 manifest
+with `make_datacard_matrix_manifest.py`; there is no migration or conversion
+path.
 
 A minimal invocation is:
 
@@ -216,7 +228,7 @@ row.
 The steps are:
 
 1. Run the producer rows and retain their logs, snapshots, and receipts.
-2. Review the completed matrix-v2 manifests and source artifacts.
+2. Review the completed v3 manifests and source artifacts.
 3. Build each per-era package with `build_per_era_datacard_package.py build`.
    The runner does not launch either package builder.
 
@@ -225,7 +237,7 @@ The steps are:
 The resumable runner produces individual TXT/ROOT pairs
 and row-local `selectedWCs.txt` and `scalings-preselect.json`. The last row's
 shared metadata files are not a complete era package. Supply the completed
-matrix-v2 manifests to the per-era builder; repeat
+v3 manifests to the per-era builder; repeat
 `--matrix-manifest` for each contributing manifest. Run the following
 builder command from the repository root:
 

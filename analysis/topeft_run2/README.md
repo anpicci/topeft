@@ -31,8 +31,12 @@ completed producer rows by era, then assemble and check the cards-only combined
 package. For direct card work, `make_cards.py` takes PKLs and writes cards,
 templates, selected WCs, and preselection scalings without a manifest. For
 resumable multi-row production, the manifest helper binds the Run 2 or Run 3
-profile's five input roles to current PKLs; the runner executes its rows and
-writes receipts. The per-era builder derives its requested physical targets
+profile's five input roles to current PKLs and writes a
+`topeft_datacard_matrix_v3` manifest. Each full profile has 11 logical rows;
+the maintained partition has 11 Run 2 execution units or 34 Run 3 units.
+The runner executes those units and writes receipts. Historical v2 manifests
+are not accepted by the current workflow; generate a new v3 manifest rather
+than converting one. The per-era builder derives its requested physical targets
 from those manifest rows and reports missing or extra completions before
 publishing.
 The combined builder requires matching physical target sets across eras;
