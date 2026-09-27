@@ -45,9 +45,10 @@ Current semantic digests, using the serialization defined by
 - Run 2: `936a7316894257a5dcac31c345c60ea273d27cb672c71fbce6382fe5df534a24`
 - Run 3: `8ddf59420ed47828551803ef7b168ae1dec02e1402418801ab5ec2efc90de332`
 
-The payload producer is a separate workflow. Its existing `--sr-registry`
-option selects the output layout during generation; the datacard consumer
-infers the layout when reading an existing file.
+The payload producer is a separate workflow. Its
+`--missing-parton-layout-key` option selects the output layout during
+generation; the datacard consumer infers the layout when reading an existing
+file.
 
 ## Source provenance and maintenance boundary
 

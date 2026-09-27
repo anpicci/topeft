@@ -115,11 +115,12 @@ channel set. As an advanced optional filter, repeat
 `--physical-target <channel>_<distribution>` to produce an exact one-off
 subset. Supply the PKL roles used by the selected rows.
 
-Physical targets and their distributions come from
-`datacard_matrix_profiles.json`, checked against `ch_lst.json`. The helper
-writes 11 logical profile rows for either full era. The maintained execution
-partition yields 11 Run 2 execution units or 34 Run 3 execution units, each
-serialized as a manifest row. Every unit retains its logical row's input role
+Physical targets and their distributions come from the human-authored
+`analysis/topeft_run2/datacard_matrix_profiles.yml`, checked against
+`ch_lst.json`. The helper writes 11 logical profile rows for either full era.
+The maintained execution partition yields 11 Run 2 execution units or 34 Run 3
+execution units, each serialized as a manifest row. Every unit retains its
+logical row's input role
 and distribution; units belonging to one logical row have exactly its physical
 channel union without duplication. `make_cards.py --ch-lst` selects each unit's
 physical channels. Run 2 uses years `UL16APV UL16 UL17 UL18`; Run 3 uses
@@ -138,7 +139,7 @@ per-era builder does not reselect targets.
 
 `run_datacard_matrix_resumable.sh --plan-only MANIFEST` checks the plan;
 `--status MANIFEST` reports row state without running cards; passing
-`MANIFEST` runs or resumes eligible rows. The runner writes receipts after
+`MANIFEST` runs or resumes eligible rows. The runner writes JSON receipts after
 checking declared outputs. Direct `make_cards.py` production has no manifest
 requirement.
 
@@ -232,7 +233,7 @@ See [flexible binning](flexible_binning.md) and
 
 - `analysis/topeft_run2/make_cards.py`
 - `analysis/topeft_run2/make_datacard_matrix_manifest.py`
-- `analysis/topeft_run2/datacard_matrix_profiles.json`
+- `analysis/topeft_run2/datacard_matrix_profiles.yml`
 - `analysis/topeft_run2/datacard_matrix_runner.py`
 - `analysis/topeft_run2/build_per_era_datacard_package.py`
 - `analysis/topeft_run2/build_combined_datacard_package.py`

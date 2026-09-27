@@ -70,8 +70,8 @@ exist as histogram families in the merged input.
   `topeft/modules/axes.py`, following the [binning guide](flexible_binning.md).
 - Use `--miss-parton-file` for an exact missing-parton payload override. The
   card consumer infers its maintained layout from the payload; it has no
-  `--sr-registry` option. The separate payload producer retains its own
-  `--sr-registry` layout selector.
+  `--sr-registry` option. The separate payload producer selects its output
+  layout with `--missing-parton-layout-key`.
 - `--rate-syst-json` overrides the run-era rate-systematics JSON path. An
   explicit value is forwarded to `DatacardMaker` as `rate_systs_path`; when it
   is omitted, `DatacardMaker` selects its maintained Run 2 or Run 3 default.
@@ -136,8 +136,9 @@ python analysis/topeft_run2/make_datacard_matrix_manifest.py \
 
 For Run 2, use `--era run2`, five `--input-pkl` bindings named `block1` through
 `block5`, and the Run 2 missing-parton file. The helper combines the maintained
-channel registry with `datacard_matrix_profiles.json`, selects the era's years,
-and writes a `topeft_datacard_matrix_v3` manifest. The full profile has 11
+channel registry with the human-authored
+`analysis/topeft_run2/datacard_matrix_profiles.yml`, selects the era's years,
+and writes a `topeft_datacard_matrix_v3` JSON manifest. The full profile has 11
 logical rows in either era. Its maintained execution partition produces 11
 Run 2 units and 34 Run 3 units. A logical row may map to several execution
 units; each keeps its input role and distribution, and their physical channels
@@ -148,6 +149,10 @@ It records the selected Python interpreter and hashes `make_cards.py`; repeat
 The manifest path must be new. For a maintained restricted fit, use
 `--channel-set-key OFFZ_SPLIT_CH_LST_SR`. For a one-off subset, repeat
 `--physical-target <channel>_<distribution>` as an advanced generator option.
+These manifest filters choose production targets; the generated `--ch-lst`
+arguments select channels in `make_cards.py`, while
+`--missing-parton-layout-key` selects only the separate payload producer's
+output layout.
 Only PKL roles used by the selected rows are required. Make the same physical
 subset in the Run 2 and Run 3 manifests before running either matrix: Run 2
 manifest X and Run 3 manifest X produce packages with the same surface X.
@@ -156,7 +161,7 @@ The current manifest uses the `topeft_datacard_matrix_v3` schema. Each
 execution-unit row records its logical row ID, input PKL, literal channel
 arguments, distribution, years, output paths,
 `make_cards.py` arguments, and log/snapshot locations. The runner checks the
-declared runtime files before execution and writes successful row receipts;
+declared runtime files before execution and writes successful row JSON receipts;
 the analyst does not create receipt files. Direct `make_cards.py` use does not
 require a matrix manifest.
 

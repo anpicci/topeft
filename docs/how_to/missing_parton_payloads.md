@@ -6,11 +6,11 @@ missing-parton correction payload from accepted central `tZq` and private
 matched per-category ROOT/TXT card pairs and ends with a compact ROOT correction
 consumed later by `DatacardMaker`.
 
-The `--sr-registry` commands below belong to the payload producer and select
-the layout to write. The separate `make_cards.py` consumer has no
-`--sr-registry` option: it infers one maintained layout from the payload's tree
-order and array lengths, and fails on no match or ambiguity. An exact consumer
-payload override uses `--miss-parton-file`.
+The `--missing-parton-layout-key` commands below select the payload layout to
+write. The separate `make_cards.py` consumer has no `--sr-registry` option: it
+infers one maintained layout from the payload's tree order and array lengths,
+and fails on no match or ambiguity. An exact consumer payload override uses
+`--miss-parton-file`.
 
 The source authority is:
 
@@ -61,7 +61,7 @@ scratch_payload=/path/to/writable/scratch/missing_parton_run2.root
 python analysis/topeft_run2/missing_parton.py \
   --central-card-dir "${central_card_dir}" \
   --private-card-dir "${private_card_dir}" \
-  --sr-registry ALL_CH_LST_SR \
+  --missing-parton-layout-key ALL_CH_LST_SR \
   --output-file "${scratch_payload}" \
   --var njets \
   --dry-run
@@ -85,7 +85,7 @@ Repeat the same command without `--dry-run`:
 python analysis/topeft_run2/missing_parton.py \
   --central-card-dir "${central_card_dir}" \
   --private-card-dir "${private_card_dir}" \
-  --sr-registry ALL_CH_LST_SR \
+  --missing-parton-layout-key ALL_CH_LST_SR \
   --output-file "${scratch_payload}" \
   --var njets
 ```

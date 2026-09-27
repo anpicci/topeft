@@ -5,6 +5,7 @@ import json
 import sys
 
 import pytest
+import yaml
 
 from analysis.topeft_run2 import datacard_matrix_runner as runner
 from analysis.topeft_run2 import make_datacard_matrix_manifest as generator
@@ -98,7 +99,7 @@ def test_standard_manifest_matches_accepted_input_matrix(tmp_path, era, years):
                for row in rows)
     profile_text = generator._profile_path.read_text()
     assert "/groups/" not in profile_text and "/users/" not in profile_text
-    profile = json.loads(profile_text)
+    profile = yaml.safe_load(profile_text)
     assert all("execution_units" not in profile_row for profile_row in profile["rows"])
     for profile_row in profile["rows"]:
         groups = generator._execution_channels(profile_row, era)

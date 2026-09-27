@@ -4,6 +4,7 @@ import argparse
 import json
 import os
 from pathlib import Path
+import yaml
 
 from analysis.topeft_run2 import build_per_era_datacard_package as per_era
 from analysis.topeft_run2 import datacard_matrix_runner as runner
@@ -12,11 +13,11 @@ from analysis.topeft_run2 import datacard_matrix_runner as runner
 _card_prefix = "ttx_multileptons-"
 _repository_root = Path(__file__).resolve().parents[2]
 _registry = _repository_root / "topeft/channels/ch_lst.json"
-_profile_path = Path(__file__).with_name("datacard_matrix_profiles.json")
+_profile_path = Path(__file__).with_name("datacard_matrix_profiles.yml")
 
 
 def _load_profile(era):
-    profile = json.loads(_profile_path.read_text(encoding="utf-8"))
+    profile = yaml.safe_load(_profile_path.read_text(encoding="utf-8"))
     if profile.get("schema") != "topeft_datacard_matrix_profiles_v1":
         raise ValueError("unsupported datacard matrix profile schema")
     years = profile["eras"][era]["years"]
