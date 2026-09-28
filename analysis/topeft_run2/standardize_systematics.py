@@ -6,12 +6,12 @@ import json
 import numpy as np
 import boost_histogram as bh
 import topcoffea.modules.utils as utils
+from topeft.modules.datacard_tools import tau_2016_correlation_bases
 
-# Just brute force renaming map
+# Final nuisance names for TOP-26-006 cards.
 SYST_NAMING_MAP = {
     "run2": {
         # Luminosity
-        "lumi": "lumi_13TeV_correlated",
         # PDF rate systematics
         "pdf_scale_gg": "cross_section_pdf_gg",
         "pdf_scale_qg": "cross_section_pdf_gq",
@@ -88,13 +88,8 @@ SYST_NAMING_MAP = {
         # L1 Prefiring
         "PreFiring": "CMS_l1_ecal_prefiring",
         # Taus
-        "TES_run2": "CMS_scale_t_13TeV",
-        "FES_run2": "CMS_fake_t_DeepTau2017v2p1",   # We don't distinguish between VSe and VSmu corrections
         "lepSF_taus_fake_run2": "CMS_TOP26006_eff_fake_t_13TeV",
-        "lepSF_taus_real_run2": "CMS_TOP26006_eff_real_t_13TeV",
         # lepSF
-        "lepSF_elec_run2": "CMS_eff_e_13TeV",   # To check
-        "lepSF_muon_run2": "CMS_eff_m_13TeV",   # To check
         # triggerSF
         "triggerSF_2016APV": "CMS_TOP26006_eff_trigger_2016preVFP",
         "triggerSF_2016": "CMS_TOP26006_eff_trigger_2016postVFP",
@@ -115,10 +110,99 @@ SYST_NAMING_MAP = {
         # Other
         "diboson_njets": "CMS_TOP26006_njets_VV",
         "missing_parton": "CMS_TOP26006_missing_parton",
+        'CMS_eff_t_DeepTau2017v2p1_VSjet_dm_stat1_DM0_2016': 'CMS_eff_t_DeepTau2017v2p1_VSjet_dm_stat1_DM0_2016',
+        'CMS_eff_t_DeepTau2017v2p1_VSjet_dm_stat1_DM0_2017': 'CMS_eff_t_DeepTau2017v2p1_VSjet_dm_stat1_DM0_2017',
+        'CMS_eff_t_DeepTau2017v2p1_VSjet_dm_stat1_DM0_2018': 'CMS_eff_t_DeepTau2017v2p1_VSjet_dm_stat1_DM0_2018',
+        'CMS_eff_t_DeepTau2017v2p1_VSjet_dm_stat1_DM10_2016': 'CMS_eff_t_DeepTau2017v2p1_VSjet_dm_stat1_DM10_2016',
+        'CMS_eff_t_DeepTau2017v2p1_VSjet_dm_stat1_DM10_2017': 'CMS_eff_t_DeepTau2017v2p1_VSjet_dm_stat1_DM10_2017',
+        'CMS_eff_t_DeepTau2017v2p1_VSjet_dm_stat1_DM10_2018': 'CMS_eff_t_DeepTau2017v2p1_VSjet_dm_stat1_DM10_2018',
+        'CMS_eff_t_DeepTau2017v2p1_VSjet_dm_stat1_DM11_2016': 'CMS_eff_t_DeepTau2017v2p1_VSjet_dm_stat1_DM11_2016',
+        'CMS_eff_t_DeepTau2017v2p1_VSjet_dm_stat1_DM11_2017': 'CMS_eff_t_DeepTau2017v2p1_VSjet_dm_stat1_DM11_2017',
+        'CMS_eff_t_DeepTau2017v2p1_VSjet_dm_stat1_DM11_2018': 'CMS_eff_t_DeepTau2017v2p1_VSjet_dm_stat1_DM11_2018',
+        'CMS_eff_t_DeepTau2017v2p1_VSjet_dm_stat1_DM1_2016': 'CMS_eff_t_DeepTau2017v2p1_VSjet_dm_stat1_DM1_2016',
+        'CMS_eff_t_DeepTau2017v2p1_VSjet_dm_stat1_DM1_2017': 'CMS_eff_t_DeepTau2017v2p1_VSjet_dm_stat1_DM1_2017',
+        'CMS_eff_t_DeepTau2017v2p1_VSjet_dm_stat1_DM1_2018': 'CMS_eff_t_DeepTau2017v2p1_VSjet_dm_stat1_DM1_2018',
+        'CMS_eff_t_DeepTau2017v2p1_VSjet_dm_stat2_DM0_2016': 'CMS_eff_t_DeepTau2017v2p1_VSjet_dm_stat2_DM0_2016',
+        'CMS_eff_t_DeepTau2017v2p1_VSjet_dm_stat2_DM0_2017': 'CMS_eff_t_DeepTau2017v2p1_VSjet_dm_stat2_DM0_2017',
+        'CMS_eff_t_DeepTau2017v2p1_VSjet_dm_stat2_DM0_2018': 'CMS_eff_t_DeepTau2017v2p1_VSjet_dm_stat2_DM0_2018',
+        'CMS_eff_t_DeepTau2017v2p1_VSjet_dm_stat2_DM10_2016': 'CMS_eff_t_DeepTau2017v2p1_VSjet_dm_stat2_DM10_2016',
+        'CMS_eff_t_DeepTau2017v2p1_VSjet_dm_stat2_DM10_2017': 'CMS_eff_t_DeepTau2017v2p1_VSjet_dm_stat2_DM10_2017',
+        'CMS_eff_t_DeepTau2017v2p1_VSjet_dm_stat2_DM10_2018': 'CMS_eff_t_DeepTau2017v2p1_VSjet_dm_stat2_DM10_2018',
+        'CMS_eff_t_DeepTau2017v2p1_VSjet_dm_stat2_DM11_2016': 'CMS_eff_t_DeepTau2017v2p1_VSjet_dm_stat2_DM11_2016',
+        'CMS_eff_t_DeepTau2017v2p1_VSjet_dm_stat2_DM11_2017': 'CMS_eff_t_DeepTau2017v2p1_VSjet_dm_stat2_DM11_2017',
+        'CMS_eff_t_DeepTau2017v2p1_VSjet_dm_stat2_DM11_2018': 'CMS_eff_t_DeepTau2017v2p1_VSjet_dm_stat2_DM11_2018',
+        'CMS_eff_t_DeepTau2017v2p1_VSjet_dm_stat2_DM1_2016': 'CMS_eff_t_DeepTau2017v2p1_VSjet_dm_stat2_DM1_2016',
+        'CMS_eff_t_DeepTau2017v2p1_VSjet_dm_stat2_DM1_2017': 'CMS_eff_t_DeepTau2017v2p1_VSjet_dm_stat2_DM1_2017',
+        'CMS_eff_t_DeepTau2017v2p1_VSjet_dm_stat2_DM1_2018': 'CMS_eff_t_DeepTau2017v2p1_VSjet_dm_stat2_DM1_2018',
+        'CMS_eff_t_DeepTau2017v2p1_VSjet_dm_syst_2016': 'CMS_eff_t_DeepTau2017v2p1_VSjet_dm_syst_2016',
+        'CMS_eff_t_DeepTau2017v2p1_VSjet_dm_syst_2017': 'CMS_eff_t_DeepTau2017v2p1_VSjet_dm_syst_2017',
+        'CMS_eff_t_DeepTau2017v2p1_VSjet_dm_syst_2018': 'CMS_eff_t_DeepTau2017v2p1_VSjet_dm_syst_2018',
+        'CMS_eff_t_DeepTau2017v2p1_VSjet_dm_syst_DM0_2016': 'CMS_eff_t_DeepTau2017v2p1_VSjet_dm_syst_DM0_2016',
+        'CMS_eff_t_DeepTau2017v2p1_VSjet_dm_syst_DM0_2017': 'CMS_eff_t_DeepTau2017v2p1_VSjet_dm_syst_DM0_2017',
+        'CMS_eff_t_DeepTau2017v2p1_VSjet_dm_syst_DM0_2018': 'CMS_eff_t_DeepTau2017v2p1_VSjet_dm_syst_DM0_2018',
+        'CMS_eff_t_DeepTau2017v2p1_VSjet_dm_syst_DM10_2016': 'CMS_eff_t_DeepTau2017v2p1_VSjet_dm_syst_DM10_2016',
+        'CMS_eff_t_DeepTau2017v2p1_VSjet_dm_syst_DM10_2017': 'CMS_eff_t_DeepTau2017v2p1_VSjet_dm_syst_DM10_2017',
+        'CMS_eff_t_DeepTau2017v2p1_VSjet_dm_syst_DM10_2018': 'CMS_eff_t_DeepTau2017v2p1_VSjet_dm_syst_DM10_2018',
+        'CMS_eff_t_DeepTau2017v2p1_VSjet_dm_syst_DM11_2016': 'CMS_eff_t_DeepTau2017v2p1_VSjet_dm_syst_DM11_2016',
+        'CMS_eff_t_DeepTau2017v2p1_VSjet_dm_syst_DM11_2017': 'CMS_eff_t_DeepTau2017v2p1_VSjet_dm_syst_DM11_2017',
+        'CMS_eff_t_DeepTau2017v2p1_VSjet_dm_syst_DM11_2018': 'CMS_eff_t_DeepTau2017v2p1_VSjet_dm_syst_DM11_2018',
+        'CMS_eff_t_DeepTau2017v2p1_VSjet_dm_syst_DM1_2016': 'CMS_eff_t_DeepTau2017v2p1_VSjet_dm_syst_DM1_2016',
+        'CMS_eff_t_DeepTau2017v2p1_VSjet_dm_syst_DM1_2017': 'CMS_eff_t_DeepTau2017v2p1_VSjet_dm_syst_DM1_2017',
+        'CMS_eff_t_DeepTau2017v2p1_VSjet_dm_syst_DM1_2018': 'CMS_eff_t_DeepTau2017v2p1_VSjet_dm_syst_DM1_2018',
+        'CMS_eff_t_DeepTau2017v2p1_VSjet_dm_syst_alleras_Run2': 'CMS_eff_t_DeepTau2017v2p1_VSjet_dm_syst_alleras_13TeV',
+        'CMS_fake_t_DeepTau2017v2p1_VSe_abseta0to1p5_2016': 'CMS_fake_t_DeepTau2017v2p1_VSe_abseta0to1p5_2016',
+        'CMS_fake_t_DeepTau2017v2p1_VSe_abseta0to1p5_2017': 'CMS_fake_t_DeepTau2017v2p1_VSe_abseta0to1p5_2017',
+        'CMS_fake_t_DeepTau2017v2p1_VSe_abseta0to1p5_2018': 'CMS_fake_t_DeepTau2017v2p1_VSe_abseta0to1p5_2018',
+        'CMS_fake_t_DeepTau2017v2p1_VSe_abseta1p5to2p3_2016': 'CMS_fake_t_DeepTau2017v2p1_VSe_abseta1p5to2p3_2016',
+        'CMS_fake_t_DeepTau2017v2p1_VSe_abseta1p5to2p3_2017': 'CMS_fake_t_DeepTau2017v2p1_VSe_abseta1p5to2p3_2017',
+        'CMS_fake_t_DeepTau2017v2p1_VSe_abseta1p5to2p3_2018': 'CMS_fake_t_DeepTau2017v2p1_VSe_abseta1p5to2p3_2018',
+        'CMS_fake_t_DeepTau2017v2p1_VSmu_abseta0p4to0p8_2016': 'CMS_fake_t_DeepTau2017v2p1_VSmu_abseta0p4to0p8_2016',
+        'CMS_fake_t_DeepTau2017v2p1_VSmu_abseta0p4to0p8_2017': 'CMS_fake_t_DeepTau2017v2p1_VSmu_abseta0p4to0p8_2017',
+        'CMS_fake_t_DeepTau2017v2p1_VSmu_abseta0p4to0p8_2018': 'CMS_fake_t_DeepTau2017v2p1_VSmu_abseta0p4to0p8_2018',
+        'CMS_fake_t_DeepTau2017v2p1_VSmu_abseta0p8to1p2_2016': 'CMS_fake_t_DeepTau2017v2p1_VSmu_abseta0p8to1p2_2016',
+        'CMS_fake_t_DeepTau2017v2p1_VSmu_abseta0p8to1p2_2017': 'CMS_fake_t_DeepTau2017v2p1_VSmu_abseta0p8to1p2_2017',
+        'CMS_fake_t_DeepTau2017v2p1_VSmu_abseta0p8to1p2_2018': 'CMS_fake_t_DeepTau2017v2p1_VSmu_abseta0p8to1p2_2018',
+        'CMS_fake_t_DeepTau2017v2p1_VSmu_abseta0to0p4_2016': 'CMS_fake_t_DeepTau2017v2p1_VSmu_abseta0to0p4_2016',
+        'CMS_fake_t_DeepTau2017v2p1_VSmu_abseta0to0p4_2017': 'CMS_fake_t_DeepTau2017v2p1_VSmu_abseta0to0p4_2017',
+        'CMS_fake_t_DeepTau2017v2p1_VSmu_abseta0to0p4_2018': 'CMS_fake_t_DeepTau2017v2p1_VSmu_abseta0to0p4_2018',
+        'CMS_fake_t_DeepTau2017v2p1_VSmu_abseta1p2to1p7_2016': 'CMS_fake_t_DeepTau2017v2p1_VSmu_abseta1p2to1p7_2016',
+        'CMS_fake_t_DeepTau2017v2p1_VSmu_abseta1p2to1p7_2017': 'CMS_fake_t_DeepTau2017v2p1_VSmu_abseta1p2to1p7_2017',
+        'CMS_fake_t_DeepTau2017v2p1_VSmu_abseta1p2to1p7_2018': 'CMS_fake_t_DeepTau2017v2p1_VSmu_abseta1p2to1p7_2018',
+        'CMS_fake_t_DeepTau2017v2p1_VSmu_abseta1p7to2p3_2016': 'CMS_fake_t_DeepTau2017v2p1_VSmu_abseta1p7to2p3_2016',
+        'CMS_fake_t_DeepTau2017v2p1_VSmu_abseta1p7to2p3_2017': 'CMS_fake_t_DeepTau2017v2p1_VSmu_abseta1p7to2p3_2017',
+        'CMS_fake_t_DeepTau2017v2p1_VSmu_abseta1p7to2p3_2018': 'CMS_fake_t_DeepTau2017v2p1_VSmu_abseta1p7to2p3_2018',
+        'CMS_scale_t_DeepTau2017v2p1_DM0_genElectron_2016': 'CMS_scale_t_DeepTau2017v2p1_DM0_genElectron_2016',
+        'CMS_scale_t_DeepTau2017v2p1_DM0_genElectron_2017': 'CMS_scale_t_DeepTau2017v2p1_DM0_genElectron_2017',
+        'CMS_scale_t_DeepTau2017v2p1_DM0_genElectron_2018': 'CMS_scale_t_DeepTau2017v2p1_DM0_genElectron_2018',
+        'CMS_scale_t_DeepTau2017v2p1_DM0_genMuon_Run2': 'CMS_scale_t_DeepTau2017v2p1_DM0_genMuon_13TeV',
+        'CMS_scale_t_DeepTau2017v2p1_DM0_genTau_2016': 'CMS_scale_t_DeepTau2017v2p1_DM0_genTau_2016',
+        'CMS_scale_t_DeepTau2017v2p1_DM0_genTau_2017': 'CMS_scale_t_DeepTau2017v2p1_DM0_genTau_2017',
+        'CMS_scale_t_DeepTau2017v2p1_DM0_genTau_2018': 'CMS_scale_t_DeepTau2017v2p1_DM0_genTau_2018',
+        'CMS_scale_t_DeepTau2017v2p1_DM10_genMuon_Run2': 'CMS_scale_t_DeepTau2017v2p1_DM10_genMuon_13TeV',
+        'CMS_scale_t_DeepTau2017v2p1_DM10_genTau_2016': 'CMS_scale_t_DeepTau2017v2p1_DM10_genTau_2016',
+        'CMS_scale_t_DeepTau2017v2p1_DM10_genTau_2017': 'CMS_scale_t_DeepTau2017v2p1_DM10_genTau_2017',
+        'CMS_scale_t_DeepTau2017v2p1_DM10_genTau_2018': 'CMS_scale_t_DeepTau2017v2p1_DM10_genTau_2018',
+        'CMS_scale_t_DeepTau2017v2p1_DM11_genMuon_Run2': 'CMS_scale_t_DeepTau2017v2p1_DM11_genMuon_13TeV',
+        'CMS_scale_t_DeepTau2017v2p1_DM11_genTau_2016': 'CMS_scale_t_DeepTau2017v2p1_DM11_genTau_2016',
+        'CMS_scale_t_DeepTau2017v2p1_DM11_genTau_2017': 'CMS_scale_t_DeepTau2017v2p1_DM11_genTau_2017',
+        'CMS_scale_t_DeepTau2017v2p1_DM11_genTau_2018': 'CMS_scale_t_DeepTau2017v2p1_DM11_genTau_2018',
+        'CMS_scale_t_DeepTau2017v2p1_DM1_genElectron_2016': 'CMS_scale_t_DeepTau2017v2p1_DM1_genElectron_2016',
+        'CMS_scale_t_DeepTau2017v2p1_DM1_genElectron_2017': 'CMS_scale_t_DeepTau2017v2p1_DM1_genElectron_2017',
+        'CMS_scale_t_DeepTau2017v2p1_DM1_genElectron_2018': 'CMS_scale_t_DeepTau2017v2p1_DM1_genElectron_2018',
+        'CMS_scale_t_DeepTau2017v2p1_DM1_genMuon_Run2': 'CMS_scale_t_DeepTau2017v2p1_DM1_genMuon_13TeV',
+        'CMS_scale_t_DeepTau2017v2p1_DM1_genTau_2016': 'CMS_scale_t_DeepTau2017v2p1_DM1_genTau_2016',
+        'CMS_scale_t_DeepTau2017v2p1_DM1_genTau_2017': 'CMS_scale_t_DeepTau2017v2p1_DM1_genTau_2017',
+        'CMS_scale_t_DeepTau2017v2p1_DM1_genTau_2018': 'CMS_scale_t_DeepTau2017v2p1_DM1_genTau_2018',
+        'lepSF_elec_non_mva': 'lepSF_elec_non_mva_13TeV',
+        'lepSF_muon_non_mva': 'lepSF_muon_non_mva_13TeV',
+        'lepSF_elec_mva': 'lepSF_elec_mva_13TeV',
+        'lepSF_muon_mva': 'lepSF_muon_mva_13TeV',
+        'lumi_13TeV_15161718_l': 'lumi_13TeV_15161718_l',
+        'lumi_13TeV_151617_l': 'lumi_13TeV_151617_l',
+        'lumi_13TeV_1516_l': 'lumi_13TeV_1516_l',
     },
     "run3": {
         # Luminosity
-        "lumi_run3": "lumi_13p6TeV_2223",
         # PDF rate systematics
         "pdf_scale_gg": "cross_section_pdf_gg",
         "pdf_scale_qg": "cross_section_pdf_gq",
@@ -215,13 +299,8 @@ SYST_NAMING_MAP = {
         # L1 Prefiring
         "PreFiring": "CMS_l1_ecal_prefiring",   # Exists in Run3, but variations are just set to nominal
         # Taus
-        "TES_run3": "CMS_scale_t_13p6TeV",
-        "FES_run3": "CMS_fake_t_DeepTau2018v2p5",   # We don't distinguish between VSe and VSmu corrections?
         "lepSF_taus_fake_run3": "CMS_TOP26006_eff_fake_t_13p6TeV",
-        "lepSF_taus_real_run3": "CMS_TOP26006_eff_real_t_13p6TeV",
         # lepSF
-        "lepSF_elec_run3": "CMS_eff_e_13p6TeV", # To check
-        "lepSF_muon_run3": "CMS_eff_m_13p6TeV", # To check
         # triggerSF
         "triggerSF_2022": "CMS_TOP26006_eff_trigger_2022",
         "triggerSF_2022EE": "CMS_TOP26006_eff_trigger_2022EE",
@@ -240,8 +319,162 @@ SYST_NAMING_MAP = {
         # Other
         "diboson_njets": "CMS_TOP26006_njets_VV",
         "missing_parton": "CMS_TOP26006_missing_parton",
+        'CMS_eff_t_DeepTau2018v2p5_VSjet_dm_stat1_DM0_2022': 'CMS_eff_t_DeepTau2018v2p5_VSjet_dm_stat1_DM0_2022',
+        'CMS_eff_t_DeepTau2018v2p5_VSjet_dm_stat1_DM0_2022EE': 'CMS_eff_t_DeepTau2018v2p5_VSjet_dm_stat1_DM0_2022EE',
+        'CMS_eff_t_DeepTau2018v2p5_VSjet_dm_stat1_DM0_2023': 'CMS_eff_t_DeepTau2018v2p5_VSjet_dm_stat1_DM0_2023',
+        'CMS_eff_t_DeepTau2018v2p5_VSjet_dm_stat1_DM0_2023BPix': 'CMS_eff_t_DeepTau2018v2p5_VSjet_dm_stat1_DM0_2023BPix',
+        'CMS_eff_t_DeepTau2018v2p5_VSjet_dm_stat1_DM10_2022': 'CMS_eff_t_DeepTau2018v2p5_VSjet_dm_stat1_DM10_2022',
+        'CMS_eff_t_DeepTau2018v2p5_VSjet_dm_stat1_DM10_2022EE': 'CMS_eff_t_DeepTau2018v2p5_VSjet_dm_stat1_DM10_2022EE',
+        'CMS_eff_t_DeepTau2018v2p5_VSjet_dm_stat1_DM10_2023': 'CMS_eff_t_DeepTau2018v2p5_VSjet_dm_stat1_DM10_2023',
+        'CMS_eff_t_DeepTau2018v2p5_VSjet_dm_stat1_DM10_2023BPix': 'CMS_eff_t_DeepTau2018v2p5_VSjet_dm_stat1_DM10_2023BPix',
+        'CMS_eff_t_DeepTau2018v2p5_VSjet_dm_stat1_DM11_2022': 'CMS_eff_t_DeepTau2018v2p5_VSjet_dm_stat1_DM11_2022',
+        'CMS_eff_t_DeepTau2018v2p5_VSjet_dm_stat1_DM11_2022EE': 'CMS_eff_t_DeepTau2018v2p5_VSjet_dm_stat1_DM11_2022EE',
+        'CMS_eff_t_DeepTau2018v2p5_VSjet_dm_stat1_DM11_2023': 'CMS_eff_t_DeepTau2018v2p5_VSjet_dm_stat1_DM11_2023',
+        'CMS_eff_t_DeepTau2018v2p5_VSjet_dm_stat1_DM11_2023BPix': 'CMS_eff_t_DeepTau2018v2p5_VSjet_dm_stat1_DM11_2023BPix',
+        'CMS_eff_t_DeepTau2018v2p5_VSjet_dm_stat1_DM1_2022': 'CMS_eff_t_DeepTau2018v2p5_VSjet_dm_stat1_DM1_2022',
+        'CMS_eff_t_DeepTau2018v2p5_VSjet_dm_stat1_DM1_2022EE': 'CMS_eff_t_DeepTau2018v2p5_VSjet_dm_stat1_DM1_2022EE',
+        'CMS_eff_t_DeepTau2018v2p5_VSjet_dm_stat1_DM1_2023': 'CMS_eff_t_DeepTau2018v2p5_VSjet_dm_stat1_DM1_2023',
+        'CMS_eff_t_DeepTau2018v2p5_VSjet_dm_stat1_DM1_2023BPix': 'CMS_eff_t_DeepTau2018v2p5_VSjet_dm_stat1_DM1_2023BPix',
+        'CMS_eff_t_DeepTau2018v2p5_VSjet_dm_stat2_DM0_2022': 'CMS_eff_t_DeepTau2018v2p5_VSjet_dm_stat2_DM0_2022',
+        'CMS_eff_t_DeepTau2018v2p5_VSjet_dm_stat2_DM0_2022EE': 'CMS_eff_t_DeepTau2018v2p5_VSjet_dm_stat2_DM0_2022EE',
+        'CMS_eff_t_DeepTau2018v2p5_VSjet_dm_stat2_DM0_2023': 'CMS_eff_t_DeepTau2018v2p5_VSjet_dm_stat2_DM0_2023',
+        'CMS_eff_t_DeepTau2018v2p5_VSjet_dm_stat2_DM0_2023BPix': 'CMS_eff_t_DeepTau2018v2p5_VSjet_dm_stat2_DM0_2023BPix',
+        'CMS_eff_t_DeepTau2018v2p5_VSjet_dm_stat2_DM10_2022': 'CMS_eff_t_DeepTau2018v2p5_VSjet_dm_stat2_DM10_2022',
+        'CMS_eff_t_DeepTau2018v2p5_VSjet_dm_stat2_DM10_2022EE': 'CMS_eff_t_DeepTau2018v2p5_VSjet_dm_stat2_DM10_2022EE',
+        'CMS_eff_t_DeepTau2018v2p5_VSjet_dm_stat2_DM10_2023': 'CMS_eff_t_DeepTau2018v2p5_VSjet_dm_stat2_DM10_2023',
+        'CMS_eff_t_DeepTau2018v2p5_VSjet_dm_stat2_DM10_2023BPix': 'CMS_eff_t_DeepTau2018v2p5_VSjet_dm_stat2_DM10_2023BPix',
+        'CMS_eff_t_DeepTau2018v2p5_VSjet_dm_stat2_DM11_2022': 'CMS_eff_t_DeepTau2018v2p5_VSjet_dm_stat2_DM11_2022',
+        'CMS_eff_t_DeepTau2018v2p5_VSjet_dm_stat2_DM11_2022EE': 'CMS_eff_t_DeepTau2018v2p5_VSjet_dm_stat2_DM11_2022EE',
+        'CMS_eff_t_DeepTau2018v2p5_VSjet_dm_stat2_DM11_2023': 'CMS_eff_t_DeepTau2018v2p5_VSjet_dm_stat2_DM11_2023',
+        'CMS_eff_t_DeepTau2018v2p5_VSjet_dm_stat2_DM11_2023BPix': 'CMS_eff_t_DeepTau2018v2p5_VSjet_dm_stat2_DM11_2023BPix',
+        'CMS_eff_t_DeepTau2018v2p5_VSjet_dm_stat2_DM1_2022': 'CMS_eff_t_DeepTau2018v2p5_VSjet_dm_stat2_DM1_2022',
+        'CMS_eff_t_DeepTau2018v2p5_VSjet_dm_stat2_DM1_2022EE': 'CMS_eff_t_DeepTau2018v2p5_VSjet_dm_stat2_DM1_2022EE',
+        'CMS_eff_t_DeepTau2018v2p5_VSjet_dm_stat2_DM1_2023': 'CMS_eff_t_DeepTau2018v2p5_VSjet_dm_stat2_DM1_2023',
+        'CMS_eff_t_DeepTau2018v2p5_VSjet_dm_stat2_DM1_2023BPix': 'CMS_eff_t_DeepTau2018v2p5_VSjet_dm_stat2_DM1_2023BPix',
+        'CMS_eff_t_DeepTau2018v2p5_VSjet_dm_syst_2022': 'CMS_eff_t_DeepTau2018v2p5_VSjet_dm_syst_2022',
+        'CMS_eff_t_DeepTau2018v2p5_VSjet_dm_syst_2022EE': 'CMS_eff_t_DeepTau2018v2p5_VSjet_dm_syst_2022EE',
+        'CMS_eff_t_DeepTau2018v2p5_VSjet_dm_syst_2023': 'CMS_eff_t_DeepTau2018v2p5_VSjet_dm_syst_2023',
+        'CMS_eff_t_DeepTau2018v2p5_VSjet_dm_syst_2023BPix': 'CMS_eff_t_DeepTau2018v2p5_VSjet_dm_syst_2023BPix',
+        'CMS_eff_t_DeepTau2018v2p5_VSjet_dm_syst_DM0_2022': 'CMS_eff_t_DeepTau2018v2p5_VSjet_dm_syst_DM0_2022',
+        'CMS_eff_t_DeepTau2018v2p5_VSjet_dm_syst_DM0_2022EE': 'CMS_eff_t_DeepTau2018v2p5_VSjet_dm_syst_DM0_2022EE',
+        'CMS_eff_t_DeepTau2018v2p5_VSjet_dm_syst_DM0_2023': 'CMS_eff_t_DeepTau2018v2p5_VSjet_dm_syst_DM0_2023',
+        'CMS_eff_t_DeepTau2018v2p5_VSjet_dm_syst_DM0_2023BPix': 'CMS_eff_t_DeepTau2018v2p5_VSjet_dm_syst_DM0_2023BPix',
+        'CMS_eff_t_DeepTau2018v2p5_VSjet_dm_syst_DM10_2022': 'CMS_eff_t_DeepTau2018v2p5_VSjet_dm_syst_DM10_2022',
+        'CMS_eff_t_DeepTau2018v2p5_VSjet_dm_syst_DM10_2022EE': 'CMS_eff_t_DeepTau2018v2p5_VSjet_dm_syst_DM10_2022EE',
+        'CMS_eff_t_DeepTau2018v2p5_VSjet_dm_syst_DM10_2023': 'CMS_eff_t_DeepTau2018v2p5_VSjet_dm_syst_DM10_2023',
+        'CMS_eff_t_DeepTau2018v2p5_VSjet_dm_syst_DM10_2023BPix': 'CMS_eff_t_DeepTau2018v2p5_VSjet_dm_syst_DM10_2023BPix',
+        'CMS_eff_t_DeepTau2018v2p5_VSjet_dm_syst_DM11_2022': 'CMS_eff_t_DeepTau2018v2p5_VSjet_dm_syst_DM11_2022',
+        'CMS_eff_t_DeepTau2018v2p5_VSjet_dm_syst_DM11_2022EE': 'CMS_eff_t_DeepTau2018v2p5_VSjet_dm_syst_DM11_2022EE',
+        'CMS_eff_t_DeepTau2018v2p5_VSjet_dm_syst_DM11_2023': 'CMS_eff_t_DeepTau2018v2p5_VSjet_dm_syst_DM11_2023',
+        'CMS_eff_t_DeepTau2018v2p5_VSjet_dm_syst_DM11_2023BPix': 'CMS_eff_t_DeepTau2018v2p5_VSjet_dm_syst_DM11_2023BPix',
+        'CMS_eff_t_DeepTau2018v2p5_VSjet_dm_syst_DM1_2022': 'CMS_eff_t_DeepTau2018v2p5_VSjet_dm_syst_DM1_2022',
+        'CMS_eff_t_DeepTau2018v2p5_VSjet_dm_syst_DM1_2022EE': 'CMS_eff_t_DeepTau2018v2p5_VSjet_dm_syst_DM1_2022EE',
+        'CMS_eff_t_DeepTau2018v2p5_VSjet_dm_syst_DM1_2023': 'CMS_eff_t_DeepTau2018v2p5_VSjet_dm_syst_DM1_2023',
+        'CMS_eff_t_DeepTau2018v2p5_VSjet_dm_syst_DM1_2023BPix': 'CMS_eff_t_DeepTau2018v2p5_VSjet_dm_syst_DM1_2023BPix',
+        'CMS_eff_t_DeepTau2018v2p5_VSjet_dm_syst_alleras_Run3': 'CMS_eff_t_DeepTau2018v2p5_VSjet_dm_syst_alleras_13p6TeV',
+        'CMS_fake_t_DeepTau2018v2p5_VSe_DM0_abseta0to1p46_2022': 'CMS_fake_t_DeepTau2018v2p5_VSe_DM0_abseta0to1p46_2022',
+        'CMS_fake_t_DeepTau2018v2p5_VSe_DM0_abseta0to1p46_2022EE': 'CMS_fake_t_DeepTau2018v2p5_VSe_DM0_abseta0to1p46_2022EE',
+        'CMS_fake_t_DeepTau2018v2p5_VSe_DM0_abseta0to1p46_2023': 'CMS_fake_t_DeepTau2018v2p5_VSe_DM0_abseta0to1p46_2023',
+        'CMS_fake_t_DeepTau2018v2p5_VSe_DM0_abseta0to1p46_2023BPix': 'CMS_fake_t_DeepTau2018v2p5_VSe_DM0_abseta0to1p46_2023BPix',
+        'CMS_fake_t_DeepTau2018v2p5_VSe_DM0_abseta1p46to1p56_2022': 'CMS_fake_t_DeepTau2018v2p5_VSe_DM0_abseta1p46to1p56_2022',
+        'CMS_fake_t_DeepTau2018v2p5_VSe_DM0_abseta1p46to1p56_2022EE': 'CMS_fake_t_DeepTau2018v2p5_VSe_DM0_abseta1p46to1p56_2022EE',
+        'CMS_fake_t_DeepTau2018v2p5_VSe_DM0_abseta1p46to1p56_2023': 'CMS_fake_t_DeepTau2018v2p5_VSe_DM0_abseta1p46to1p56_2023',
+        'CMS_fake_t_DeepTau2018v2p5_VSe_DM0_abseta1p46to1p56_2023BPix': 'CMS_fake_t_DeepTau2018v2p5_VSe_DM0_abseta1p46to1p56_2023BPix',
+        'CMS_fake_t_DeepTau2018v2p5_VSe_DM0_abseta1p56to2p5_2022': 'CMS_fake_t_DeepTau2018v2p5_VSe_DM0_abseta1p56to2p5_2022',
+        'CMS_fake_t_DeepTau2018v2p5_VSe_DM0_abseta1p56to2p5_2022EE': 'CMS_fake_t_DeepTau2018v2p5_VSe_DM0_abseta1p56to2p5_2022EE',
+        'CMS_fake_t_DeepTau2018v2p5_VSe_DM0_abseta1p56to2p5_2023': 'CMS_fake_t_DeepTau2018v2p5_VSe_DM0_abseta1p56to2p5_2023',
+        'CMS_fake_t_DeepTau2018v2p5_VSe_DM0_abseta1p56to2p5_2023BPix': 'CMS_fake_t_DeepTau2018v2p5_VSe_DM0_abseta1p56to2p5_2023BPix',
+        'CMS_fake_t_DeepTau2018v2p5_VSe_DM10_abseta0to1p46_2022': 'CMS_fake_t_DeepTau2018v2p5_VSe_DM10_abseta0to1p46_2022',
+        'CMS_fake_t_DeepTau2018v2p5_VSe_DM10_abseta0to1p46_2022EE': 'CMS_fake_t_DeepTau2018v2p5_VSe_DM10_abseta0to1p46_2022EE',
+        'CMS_fake_t_DeepTau2018v2p5_VSe_DM10_abseta0to1p46_2023': 'CMS_fake_t_DeepTau2018v2p5_VSe_DM10_abseta0to1p46_2023',
+        'CMS_fake_t_DeepTau2018v2p5_VSe_DM10_abseta0to1p46_2023BPix': 'CMS_fake_t_DeepTau2018v2p5_VSe_DM10_abseta0to1p46_2023BPix',
+        'CMS_fake_t_DeepTau2018v2p5_VSe_DM10_abseta1p46to1p56_2022': 'CMS_fake_t_DeepTau2018v2p5_VSe_DM10_abseta1p46to1p56_2022',
+        'CMS_fake_t_DeepTau2018v2p5_VSe_DM10_abseta1p46to1p56_2022EE': 'CMS_fake_t_DeepTau2018v2p5_VSe_DM10_abseta1p46to1p56_2022EE',
+        'CMS_fake_t_DeepTau2018v2p5_VSe_DM10_abseta1p46to1p56_2023': 'CMS_fake_t_DeepTau2018v2p5_VSe_DM10_abseta1p46to1p56_2023',
+        'CMS_fake_t_DeepTau2018v2p5_VSe_DM10_abseta1p46to1p56_2023BPix': 'CMS_fake_t_DeepTau2018v2p5_VSe_DM10_abseta1p46to1p56_2023BPix',
+        'CMS_fake_t_DeepTau2018v2p5_VSe_DM10_abseta1p56to2p5_2022': 'CMS_fake_t_DeepTau2018v2p5_VSe_DM10_abseta1p56to2p5_2022',
+        'CMS_fake_t_DeepTau2018v2p5_VSe_DM10_abseta1p56to2p5_2022EE': 'CMS_fake_t_DeepTau2018v2p5_VSe_DM10_abseta1p56to2p5_2022EE',
+        'CMS_fake_t_DeepTau2018v2p5_VSe_DM10_abseta1p56to2p5_2023': 'CMS_fake_t_DeepTau2018v2p5_VSe_DM10_abseta1p56to2p5_2023',
+        'CMS_fake_t_DeepTau2018v2p5_VSe_DM10_abseta1p56to2p5_2023BPix': 'CMS_fake_t_DeepTau2018v2p5_VSe_DM10_abseta1p56to2p5_2023BPix',
+        'CMS_fake_t_DeepTau2018v2p5_VSe_DM11_abseta0to1p46_2022': 'CMS_fake_t_DeepTau2018v2p5_VSe_DM11_abseta0to1p46_2022',
+        'CMS_fake_t_DeepTau2018v2p5_VSe_DM11_abseta0to1p46_2022EE': 'CMS_fake_t_DeepTau2018v2p5_VSe_DM11_abseta0to1p46_2022EE',
+        'CMS_fake_t_DeepTau2018v2p5_VSe_DM11_abseta0to1p46_2023': 'CMS_fake_t_DeepTau2018v2p5_VSe_DM11_abseta0to1p46_2023',
+        'CMS_fake_t_DeepTau2018v2p5_VSe_DM11_abseta0to1p46_2023BPix': 'CMS_fake_t_DeepTau2018v2p5_VSe_DM11_abseta0to1p46_2023BPix',
+        'CMS_fake_t_DeepTau2018v2p5_VSe_DM11_abseta1p46to1p56_2022': 'CMS_fake_t_DeepTau2018v2p5_VSe_DM11_abseta1p46to1p56_2022',
+        'CMS_fake_t_DeepTau2018v2p5_VSe_DM11_abseta1p46to1p56_2022EE': 'CMS_fake_t_DeepTau2018v2p5_VSe_DM11_abseta1p46to1p56_2022EE',
+        'CMS_fake_t_DeepTau2018v2p5_VSe_DM11_abseta1p46to1p56_2023': 'CMS_fake_t_DeepTau2018v2p5_VSe_DM11_abseta1p46to1p56_2023',
+        'CMS_fake_t_DeepTau2018v2p5_VSe_DM11_abseta1p46to1p56_2023BPix': 'CMS_fake_t_DeepTau2018v2p5_VSe_DM11_abseta1p46to1p56_2023BPix',
+        'CMS_fake_t_DeepTau2018v2p5_VSe_DM11_abseta1p56to2p5_2022': 'CMS_fake_t_DeepTau2018v2p5_VSe_DM11_abseta1p56to2p5_2022',
+        'CMS_fake_t_DeepTau2018v2p5_VSe_DM11_abseta1p56to2p5_2022EE': 'CMS_fake_t_DeepTau2018v2p5_VSe_DM11_abseta1p56to2p5_2022EE',
+        'CMS_fake_t_DeepTau2018v2p5_VSe_DM11_abseta1p56to2p5_2023': 'CMS_fake_t_DeepTau2018v2p5_VSe_DM11_abseta1p56to2p5_2023',
+        'CMS_fake_t_DeepTau2018v2p5_VSe_DM11_abseta1p56to2p5_2023BPix': 'CMS_fake_t_DeepTau2018v2p5_VSe_DM11_abseta1p56to2p5_2023BPix',
+        'CMS_fake_t_DeepTau2018v2p5_VSe_DM1_abseta0to1p46_2022': 'CMS_fake_t_DeepTau2018v2p5_VSe_DM1_abseta0to1p46_2022',
+        'CMS_fake_t_DeepTau2018v2p5_VSe_DM1_abseta0to1p46_2022EE': 'CMS_fake_t_DeepTau2018v2p5_VSe_DM1_abseta0to1p46_2022EE',
+        'CMS_fake_t_DeepTau2018v2p5_VSe_DM1_abseta0to1p46_2023': 'CMS_fake_t_DeepTau2018v2p5_VSe_DM1_abseta0to1p46_2023',
+        'CMS_fake_t_DeepTau2018v2p5_VSe_DM1_abseta0to1p46_2023BPix': 'CMS_fake_t_DeepTau2018v2p5_VSe_DM1_abseta0to1p46_2023BPix',
+        'CMS_fake_t_DeepTau2018v2p5_VSe_DM1_abseta1p46to1p56_2022': 'CMS_fake_t_DeepTau2018v2p5_VSe_DM1_abseta1p46to1p56_2022',
+        'CMS_fake_t_DeepTau2018v2p5_VSe_DM1_abseta1p46to1p56_2022EE': 'CMS_fake_t_DeepTau2018v2p5_VSe_DM1_abseta1p46to1p56_2022EE',
+        'CMS_fake_t_DeepTau2018v2p5_VSe_DM1_abseta1p46to1p56_2023': 'CMS_fake_t_DeepTau2018v2p5_VSe_DM1_abseta1p46to1p56_2023',
+        'CMS_fake_t_DeepTau2018v2p5_VSe_DM1_abseta1p46to1p56_2023BPix': 'CMS_fake_t_DeepTau2018v2p5_VSe_DM1_abseta1p46to1p56_2023BPix',
+        'CMS_fake_t_DeepTau2018v2p5_VSe_DM1_abseta1p56to2p5_2022': 'CMS_fake_t_DeepTau2018v2p5_VSe_DM1_abseta1p56to2p5_2022',
+        'CMS_fake_t_DeepTau2018v2p5_VSe_DM1_abseta1p56to2p5_2022EE': 'CMS_fake_t_DeepTau2018v2p5_VSe_DM1_abseta1p56to2p5_2022EE',
+        'CMS_fake_t_DeepTau2018v2p5_VSe_DM1_abseta1p56to2p5_2023': 'CMS_fake_t_DeepTau2018v2p5_VSe_DM1_abseta1p56to2p5_2023',
+        'CMS_fake_t_DeepTau2018v2p5_VSe_DM1_abseta1p56to2p5_2023BPix': 'CMS_fake_t_DeepTau2018v2p5_VSe_DM1_abseta1p56to2p5_2023BPix',
+        'CMS_fake_t_DeepTau2018v2p5_VSmu_abseta0p4to0p8_2022': 'CMS_fake_t_DeepTau2018v2p5_VSmu_abseta0p4to0p8_2022',
+        'CMS_fake_t_DeepTau2018v2p5_VSmu_abseta0p4to0p8_2023': 'CMS_fake_t_DeepTau2018v2p5_VSmu_abseta0p4to0p8_2023',
+        'CMS_fake_t_DeepTau2018v2p5_VSmu_abseta0p8to1p2_2022': 'CMS_fake_t_DeepTau2018v2p5_VSmu_abseta0p8to1p2_2022',
+        'CMS_fake_t_DeepTau2018v2p5_VSmu_abseta0p8to1p2_2023': 'CMS_fake_t_DeepTau2018v2p5_VSmu_abseta0p8to1p2_2023',
+        'CMS_fake_t_DeepTau2018v2p5_VSmu_abseta0to0p4_2022': 'CMS_fake_t_DeepTau2018v2p5_VSmu_abseta0to0p4_2022',
+        'CMS_fake_t_DeepTau2018v2p5_VSmu_abseta0to0p4_2023': 'CMS_fake_t_DeepTau2018v2p5_VSmu_abseta0to0p4_2023',
+        'CMS_fake_t_DeepTau2018v2p5_VSmu_abseta1p2to1p7_2022': 'CMS_fake_t_DeepTau2018v2p5_VSmu_abseta1p2to1p7_2022',
+        'CMS_fake_t_DeepTau2018v2p5_VSmu_abseta1p2to1p7_2023': 'CMS_fake_t_DeepTau2018v2p5_VSmu_abseta1p2to1p7_2023',
+        'CMS_fake_t_DeepTau2018v2p5_VSmu_abseta1p7to2p4_2022': 'CMS_fake_t_DeepTau2018v2p5_VSmu_abseta1p7to2p4_2022',
+        'CMS_fake_t_DeepTau2018v2p5_VSmu_abseta1p7to2p4_2023': 'CMS_fake_t_DeepTau2018v2p5_VSmu_abseta1p7to2p4_2023',
+        'CMS_scale_t_DeepTau2018v2p5_DM0_genElectron_2022': 'CMS_scale_t_DeepTau2018v2p5_DM0_genElectron_2022',
+        'CMS_scale_t_DeepTau2018v2p5_DM0_genElectron_2022EE': 'CMS_scale_t_DeepTau2018v2p5_DM0_genElectron_2022EE',
+        'CMS_scale_t_DeepTau2018v2p5_DM0_genElectron_2023': 'CMS_scale_t_DeepTau2018v2p5_DM0_genElectron_2023',
+        'CMS_scale_t_DeepTau2018v2p5_DM0_genElectron_2023BPix': 'CMS_scale_t_DeepTau2018v2p5_DM0_genElectron_2023BPix',
+        'CMS_scale_t_DeepTau2018v2p5_DM0_genMuon_Run3': 'CMS_scale_t_DeepTau2018v2p5_DM0_genMuon_13p6TeV',
+        'CMS_scale_t_DeepTau2018v2p5_DM0_genTau_2022': 'CMS_scale_t_DeepTau2018v2p5_DM0_genTau_2022',
+        'CMS_scale_t_DeepTau2018v2p5_DM0_genTau_2022EE': 'CMS_scale_t_DeepTau2018v2p5_DM0_genTau_2022EE',
+        'CMS_scale_t_DeepTau2018v2p5_DM0_genTau_2023': 'CMS_scale_t_DeepTau2018v2p5_DM0_genTau_2023',
+        'CMS_scale_t_DeepTau2018v2p5_DM0_genTau_2023BPix': 'CMS_scale_t_DeepTau2018v2p5_DM0_genTau_2023BPix',
+        'CMS_scale_t_DeepTau2018v2p5_DM10_genElectron_2022': 'CMS_scale_t_DeepTau2018v2p5_DM10_genElectron_2022',
+        'CMS_scale_t_DeepTau2018v2p5_DM10_genElectron_2022EE': 'CMS_scale_t_DeepTau2018v2p5_DM10_genElectron_2022EE',
+        'CMS_scale_t_DeepTau2018v2p5_DM10_genElectron_2023': 'CMS_scale_t_DeepTau2018v2p5_DM10_genElectron_2023',
+        'CMS_scale_t_DeepTau2018v2p5_DM10_genElectron_2023BPix': 'CMS_scale_t_DeepTau2018v2p5_DM10_genElectron_2023BPix',
+        'CMS_scale_t_DeepTau2018v2p5_DM10_genMuon_Run3': 'CMS_scale_t_DeepTau2018v2p5_DM10_genMuon_13p6TeV',
+        'CMS_scale_t_DeepTau2018v2p5_DM10_genTau_2022': 'CMS_scale_t_DeepTau2018v2p5_DM10_genTau_2022',
+        'CMS_scale_t_DeepTau2018v2p5_DM10_genTau_2022EE': 'CMS_scale_t_DeepTau2018v2p5_DM10_genTau_2022EE',
+        'CMS_scale_t_DeepTau2018v2p5_DM10_genTau_2023': 'CMS_scale_t_DeepTau2018v2p5_DM10_genTau_2023',
+        'CMS_scale_t_DeepTau2018v2p5_DM10_genTau_2023BPix': 'CMS_scale_t_DeepTau2018v2p5_DM10_genTau_2023BPix',
+        'CMS_scale_t_DeepTau2018v2p5_DM11_genElectron_2022': 'CMS_scale_t_DeepTau2018v2p5_DM11_genElectron_2022',
+        'CMS_scale_t_DeepTau2018v2p5_DM11_genElectron_2022EE': 'CMS_scale_t_DeepTau2018v2p5_DM11_genElectron_2022EE',
+        'CMS_scale_t_DeepTau2018v2p5_DM11_genElectron_2023': 'CMS_scale_t_DeepTau2018v2p5_DM11_genElectron_2023',
+        'CMS_scale_t_DeepTau2018v2p5_DM11_genElectron_2023BPix': 'CMS_scale_t_DeepTau2018v2p5_DM11_genElectron_2023BPix',
+        'CMS_scale_t_DeepTau2018v2p5_DM11_genMuon_Run3': 'CMS_scale_t_DeepTau2018v2p5_DM11_genMuon_13p6TeV',
+        'CMS_scale_t_DeepTau2018v2p5_DM11_genTau_2022': 'CMS_scale_t_DeepTau2018v2p5_DM11_genTau_2022',
+        'CMS_scale_t_DeepTau2018v2p5_DM11_genTau_2022EE': 'CMS_scale_t_DeepTau2018v2p5_DM11_genTau_2022EE',
+        'CMS_scale_t_DeepTau2018v2p5_DM11_genTau_2023': 'CMS_scale_t_DeepTau2018v2p5_DM11_genTau_2023',
+        'CMS_scale_t_DeepTau2018v2p5_DM11_genTau_2023BPix': 'CMS_scale_t_DeepTau2018v2p5_DM11_genTau_2023BPix',
+        'CMS_scale_t_DeepTau2018v2p5_DM1_genElectron_2022': 'CMS_scale_t_DeepTau2018v2p5_DM1_genElectron_2022',
+        'CMS_scale_t_DeepTau2018v2p5_DM1_genElectron_2022EE': 'CMS_scale_t_DeepTau2018v2p5_DM1_genElectron_2022EE',
+        'CMS_scale_t_DeepTau2018v2p5_DM1_genElectron_2023': 'CMS_scale_t_DeepTau2018v2p5_DM1_genElectron_2023',
+        'CMS_scale_t_DeepTau2018v2p5_DM1_genElectron_2023BPix': 'CMS_scale_t_DeepTau2018v2p5_DM1_genElectron_2023BPix',
+        'CMS_scale_t_DeepTau2018v2p5_DM1_genMuon_Run3': 'CMS_scale_t_DeepTau2018v2p5_DM1_genMuon_13p6TeV',
+        'CMS_scale_t_DeepTau2018v2p5_DM1_genTau_2022': 'CMS_scale_t_DeepTau2018v2p5_DM1_genTau_2022',
+        'CMS_scale_t_DeepTau2018v2p5_DM1_genTau_2022EE': 'CMS_scale_t_DeepTau2018v2p5_DM1_genTau_2022EE',
+        'CMS_scale_t_DeepTau2018v2p5_DM1_genTau_2023': 'CMS_scale_t_DeepTau2018v2p5_DM1_genTau_2023',
+        'CMS_scale_t_DeepTau2018v2p5_DM1_genTau_2023BPix': 'CMS_scale_t_DeepTau2018v2p5_DM1_genTau_2023BPix',
+        'lepSF_elec_non_mva': 'lepSF_elec_non_mva_13p6TeV',
+        'lepSF_muon_non_mva': 'lepSF_muon_non_mva_13p6TeV',
+        'lepSF_elec_mva': 'lepSF_elec_mva_13p6TeV',
+        'lepSF_muon_mva': 'lepSF_muon_mva_13p6TeV',
+        'lumi_1': 'lumi_1',
+        'lumi_2': 'lumi_2',
     },
 }
+
 
 def create_directory(out_dir,clean=None):
     if ".." in out_dir:
@@ -275,6 +508,22 @@ def parse_datacard(fpath):
                     rate_systs.append((i,words[0]))
     return lines, shape_systs, rate_systs
 
+def resolve_nuisance_name(source_name, run):
+    if run == "run2" and source_name.endswith("_2016APV"):
+        source_base = source_name.removesuffix("_2016APV")
+        if source_base in tau_2016_correlation_bases:
+            raise ValueError(
+                f"Stale pre-correlation tau nuisance {source_name!r}; "
+                "regenerate the Run-2 datacards with native year correlation."
+            )
+    try:
+        return SYST_NAMING_MAP[run][source_name]
+    except KeyError as exc:
+        raise RuntimeError(
+            f"{source_name} not found in the {run} naming map!"
+        ) from exc
+
+
 def remap_name(old_name,run):
     pieces = old_name.split("_")
     if len(pieces) == 1:
@@ -305,9 +554,7 @@ def remap_name(old_name,run):
         syst_name = syst_name.removesuffix("Down")
     else:
         raise RuntimeError(f"The histogram {old_name} has a systematic without an up/down variation: {syst_name}")
-    if not syst_name in SYST_NAMING_MAP[run]:
-        raise RuntimeError(f"{syst_name} not found in our naming map!")
-    new_syst_name = SYST_NAMING_MAP[run][syst_name]
+    new_syst_name = resolve_nuisance_name(syst_name, run)
     new_name = f"{process}_{new_syst_name}{direction}"
 
     return new_name
@@ -384,6 +631,11 @@ def remake_histogram(root_histogram,run,verbose=False):
     return new_name,new_hist
 
 def process_templates(templates,run,out_dir):
+    # Reject stale tau APV inputs before cleaning or writing output.
+    for old_fpath in templates:
+        with uproot.open(old_fpath) as source_file:
+            for _, root_histogram in source_file.items():
+                remap_name(root_histogram.name, run)
     run_dir = os.path.join(out_dir,run)
     create_directory(run_dir,clean=[r".*\.root"])
     nfiles = len(templates)
@@ -406,6 +658,10 @@ def process_templates(templates,run,out_dir):
         validate_histograms(old_file=old_fpath,new_file=new_fpath,run=run,verbose=True)
 
 def process_cards(cards,run,out_dir):
+    for fpath in cards:
+        _, shapes, rates = parse_datacard(fpath)
+        for _, source_name in shapes + rates:
+            resolve_nuisance_name(source_name, run)
     # When replacing the string names, the columns for the nuisance parameters will be offset, but shouldn't affect combine
     run_dir = os.path.join(out_dir,run)
     create_directory(run_dir,clean=[r".*\.txt"])
@@ -421,18 +677,18 @@ def process_cards(cards,run,out_dir):
         # Get the max width of new names, to at least make sure columns stay aligned
         max_width = 0
         for ln,old in shapes:
-            new = SYST_NAMING_MAP[run][old]
+            new = resolve_nuisance_name(old, run)
             max_width = max(max_width,len(new))
         for ln,old in rates:
-            new = SYST_NAMING_MAP[run][old]
+            new = resolve_nuisance_name(old, run)
             max_width = max(max_width,len(new))
 
         for j,(ln,old) in enumerate(shapes):
-            new = SYST_NAMING_MAP[run][old]
+            new = resolve_nuisance_name(old, run)
             idx = lines[ln].find(" shape") + 1
             lines[ln] = lines[ln].replace(f"{old:<{idx}}",f"{new:<{max_width+1}}")
         for j,(ln,old) in enumerate(rates):
-            new = SYST_NAMING_MAP[run][old]
+            new = resolve_nuisance_name(old, run)
             idx = lines[ln].find(" lnN") + 1
             lines[ln] = lines[ln].replace(f"{old:<{idx}}",f"{new:<{max_width+1}}")
         new_fpath = f"{run_dir}/{new_category}.txt"
@@ -506,4 +762,5 @@ def main():
 
     print("Done!")
 
-main()
+if __name__ == "__main__":
+    main()

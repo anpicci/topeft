@@ -238,6 +238,36 @@ def add_run3_luminosity_shape_nuisances(histogram):
     )
 
 
+tau_2016_correlation_bases = (
+    "CMS_eff_t_DeepTau2017v2p1_VSjet_dm_stat1_DM0",
+    "CMS_eff_t_DeepTau2017v2p1_VSjet_dm_stat1_DM10",
+    "CMS_eff_t_DeepTau2017v2p1_VSjet_dm_stat1_DM11",
+    "CMS_eff_t_DeepTau2017v2p1_VSjet_dm_stat1_DM1",
+    "CMS_eff_t_DeepTau2017v2p1_VSjet_dm_stat2_DM0",
+    "CMS_eff_t_DeepTau2017v2p1_VSjet_dm_stat2_DM10",
+    "CMS_eff_t_DeepTau2017v2p1_VSjet_dm_stat2_DM11",
+    "CMS_eff_t_DeepTau2017v2p1_VSjet_dm_stat2_DM1",
+    "CMS_eff_t_DeepTau2017v2p1_VSjet_dm_syst",
+    "CMS_eff_t_DeepTau2017v2p1_VSjet_dm_syst_DM0",
+    "CMS_eff_t_DeepTau2017v2p1_VSjet_dm_syst_DM10",
+    "CMS_eff_t_DeepTau2017v2p1_VSjet_dm_syst_DM11",
+    "CMS_eff_t_DeepTau2017v2p1_VSjet_dm_syst_DM1",
+    "CMS_fake_t_DeepTau2017v2p1_VSe_abseta0to1p5",
+    "CMS_fake_t_DeepTau2017v2p1_VSe_abseta1p5to2p3",
+    "CMS_fake_t_DeepTau2017v2p1_VSmu_abseta0p4to0p8",
+    "CMS_fake_t_DeepTau2017v2p1_VSmu_abseta0p8to1p2",
+    "CMS_fake_t_DeepTau2017v2p1_VSmu_abseta0to0p4",
+    "CMS_fake_t_DeepTau2017v2p1_VSmu_abseta1p2to1p7",
+    "CMS_fake_t_DeepTau2017v2p1_VSmu_abseta1p7to2p3",
+    "CMS_scale_t_DeepTau2017v2p1_DM0_genElectron",
+    "CMS_scale_t_DeepTau2017v2p1_DM0_genTau",
+    "CMS_scale_t_DeepTau2017v2p1_DM10_genTau",
+    "CMS_scale_t_DeepTau2017v2p1_DM11_genTau",
+    "CMS_scale_t_DeepTau2017v2p1_DM1_genElectron",
+    "CMS_scale_t_DeepTau2017v2p1_DM1_genTau",
+)
+
+
 def resolve_shape_nuisance_identity(systematic, run_suffix, run_decorrelate):
     """Return one final nuisance base and paired template name for a variation."""
     direction = ""
@@ -1446,6 +1476,11 @@ class DatacardMaker():
             },
         }
 
+
+        self.syst_year_corr.update({
+            source_base: {"2016": ["2016APV"], "2016APV": ["2016"]}
+            for source_base in tau_2016_correlation_bases
+        })
 
         # Defines which systematics should be decorrelated in the self.analysis() step. Each key
         #   should match (exactly) a particular systematic. The list for each systematic specifies
