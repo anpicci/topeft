@@ -3,6 +3,7 @@
 import hashlib
 import json
 import os
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -22,6 +23,13 @@ def _write_json(path, value):
 
 def _sha256(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _snapshot_from_manifest(manifest):
+    datacards = manifest["datacards"]
+    payload = {"files": datacards["files"], "channel_mapping": datacards["channel_mapping"]}
+    encoded = (json.dumps(payload, sort_keys=True, indent=2) + "\n").encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def _refresh_hashes(package):
@@ -80,15 +88,14 @@ def _fixture(tmp_path):
 
 def test_valid_projection_copies_only_consumer_bytes(tmp_path):
     config, package, output = _fixture(tmp_path)
-    source_bytes = {
-        path.relative_to(package).as_posix(): path.read_bytes()
-        for path in (package / "cards").rglob("*") if path.is_file()
-    }
+    source_bytes = {f"cards/{name}{suffix}": (package / "cards" / f"{name}{suffix}").read_bytes()
+                    for name in ("one", "two") for suffix in (".txt", ".root")}
     source_bytes.update({name: (package / name).read_bytes()
                          for name in ("scalings.json", "ordered_card_inputs.txt")})
     result = fit_input.build_fit_input_package(
-        package, config, output, package_build_topeft_commit="c" * 40,
-        t0_topeft_commit="d" * 40, t0_topcoffea_commit="e" * 40)
+        package, config, output, package_creation_topeft_commit="c" * 40,
+        input_production_topeft_commit="d" * 40,
+        input_production_topcoffea_commit="e" * 40)
     observed = json.loads((output / "fit-input-manifest.json").read_text())
     assert result == observed
     assert {path.relative_to(output / "datacards").as_posix(): path.read_bytes()
@@ -96,15 +103,19 @@ def test_valid_projection_copies_only_consumer_bytes(tmp_path):
     assert (output / "config" / "TOP_26_006.yml").read_bytes() == config.read_bytes()
     assert observed["fit_config"] == {
         "path": "config/TOP_26_006.yml", "sha256": _sha256(config)}
-    assert observed["datacards"]["input_snapshot_sha256"] == hashlib.sha256(
-        fit_input._json_bytes(observed["datacards"]["files"])).hexdigest()
+    assert observed["datacards"]["files"] == [
+        {"path": f"datacards/{relative}", "size_bytes": len(content),
+         "sha256": hashlib.sha256(content).hexdigest()}
+        for relative, content in sorted(source_bytes.items())
+    ]
+    assert observed["datacards"]["input_snapshot_sha256"] == _snapshot_from_manifest(observed)
     assert observed["datacards"]["files"] == sorted(
         observed["datacards"]["files"], key=lambda row: row["path"])
     rows = observed["datacards"]["channel_mapping"]["rows"]
     assert [set(row) for row in rows] == [_mapping_fields, _mapping_fields]
     assert [row["destination_txt_name"] for row in rows] == ["two.txt", "one.txt"]
-    assert observed["provenance"]["package_build"]["topeft_commit"] == "c" * 40
-    assert observed["provenance"]["upstream_t0"] == {
+    assert observed["provenance"]["package_creation"]["topeft_commit"] == "c" * 40
+    assert observed["provenance"]["input_production"] == {
         "topeft_commit": "d" * 40, "topcoffea_commit": "e" * 40}
     assert observed["provenance"]["source_datacard_package"]["package_version"] == "v1"
     assert "/groups/historical" not in (output / "fit-input-manifest.json").read_text()
@@ -177,31 +188,46 @@ def test_existing_or_overlapping_paths_fail_closed(tmp_path, kind):
         fit_input.build_fit_input_package(package, config, output)
 
 
-@pytest.mark.parametrize("name", ["combinedcard.txt", "selectedWCs.txt"])
-def test_downstream_owned_card_artifacts_rejected(tmp_path, name):
+@pytest.mark.parametrize("name", ["combinedcard.txt", "selectedWCs.txt", "other.root"])
+def test_unmapped_card_artifacts_are_ignored(tmp_path, name):
     config, package, output = _fixture(tmp_path)
+    baseline = fit_input.build_fit_input_package(package, config, tmp_path / "baseline")
     (package / "cards" / name).write_bytes(b"not an input")
-    with pytest.raises(fit_input.FitInputError, match="downstream-owned"):
-        fit_input.build_fit_input_package(package, config, output)
-    assert not output.exists()
+    observed = fit_input.build_fit_input_package(package, config, output)
+    assert not (output / "datacards" / "cards" / name).exists()
+    assert observed["datacards"]["input_snapshot_sha256"] == baseline["datacards"]["input_snapshot_sha256"]
 
 
 def test_arbitrary_card_name_is_not_statistical_ownership_proxy(tmp_path):
     config, package, output = _fixture(tmp_path)
     (package / "cards" / "impacts.root").write_bytes(b"opaque template")
-    fit_input.build_fit_input_package(package, config, output)
-    assert (output / "datacards" / "cards" / "impacts.root").read_bytes() == b"opaque template"
+    (package / "unrelated.txt").write_bytes(b"unrelated top-level member")
+    baseline_package = tmp_path / "baseline-combined"
+    baseline_package.mkdir()
+    for name in ("scalings.json", "ordered_card_inputs.txt", "combined_mapping_manifest.json",
+                 "package-provenance.json"):
+        (baseline_package / name).write_bytes((package / name).read_bytes())
+    (baseline_package / "cards").mkdir()
+    for name in ("one.txt", "one.root", "two.txt", "two.root"):
+        (baseline_package / "cards" / name).write_bytes((package / "cards" / name).read_bytes())
+    baseline = fit_input.build_fit_input_package(baseline_package, config, tmp_path / "baseline")
+    observed = fit_input.build_fit_input_package(package, config, output)
+    assert not (output / "datacards" / "cards" / "impacts.root").exists()
+    assert not (output / "unrelated.txt").exists()
+    assert observed["datacards"]["input_snapshot_sha256"] == baseline["datacards"]["input_snapshot_sha256"]
 
 
 def test_provenance_variation_does_not_change_input_identities(tmp_path):
     config, package, first = _fixture(tmp_path)
     second = tmp_path / "second-fit-input"
     one = fit_input.build_fit_input_package(
-        package, config, first, package_build_topeft_commit="a" * 40,
-        t0_topeft_commit="b" * 40, t0_topcoffea_commit="c" * 40)
+        package, config, first, package_creation_topeft_commit="a" * 40,
+        input_production_topeft_commit="b" * 40,
+        input_production_topcoffea_commit="c" * 40)
     two = fit_input.build_fit_input_package(
-        package, config, second, package_build_topeft_commit="d" * 40,
-        t0_topeft_commit="e" * 40, t0_topcoffea_commit="f" * 40)
+        package, config, second, package_creation_topeft_commit="d" * 40,
+        input_production_topeft_commit="e" * 40,
+        input_production_topcoffea_commit="f" * 40)
     assert one["provenance"] != two["provenance"]
     assert one["datacards"]["input_snapshot_sha256"] == two["datacards"]["input_snapshot_sha256"]
     assert one["fit_config"]["sha256"] == two["fit_config"]["sha256"]
@@ -230,12 +256,11 @@ def test_cli_uses_plain_config_file_without_git(tmp_path, capsys):
     assert response["input_snapshot_sha256"] == manifest["datacards"]["input_snapshot_sha256"]
 
 
-def test_non_regular_card_member_fails_closed(tmp_path):
+def test_non_regular_unmapped_card_member_is_ignored(tmp_path):
     config, package, output = _fixture(tmp_path)
     os.mkfifo(package / "cards" / "named_pipe")
-    with pytest.raises(fit_input.FitInputError, match="non-regular"):
-        fit_input.build_fit_input_package(package, config, output)
-    assert not output.exists()
+    fit_input.build_fit_input_package(package, config, output)
+    assert not (output / "datacards" / "cards" / "named_pipe").exists()
 
 
 def test_mapping_order_or_required_field_fails_closed(tmp_path):
@@ -246,5 +271,83 @@ def test_mapping_order_or_required_field_fails_closed(tmp_path):
     _write_json(path, mapping)
     _refresh_hashes(package)
     with pytest.raises(fit_input.FitInputError, match="disagrees"):
+        fit_input.build_fit_input_package(package, config, output)
+    assert not output.exists()
+
+
+def test_mapping_only_change_changes_snapshot(tmp_path):
+    config, package, output = _fixture(tmp_path)
+    first = fit_input.build_fit_input_package(package, config, output)
+    mapping_path = package / "combined_mapping_manifest.json"
+    mapping = json.loads(mapping_path.read_text())
+    mapping["rows"][0]["physical_name"] = "renamed-channel"
+    _write_json(mapping_path, mapping)
+    _refresh_hashes(package)
+    second = fit_input.build_fit_input_package(package, config, tmp_path / "second")
+    assert first["datacards"]["files"] == second["datacards"]["files"]
+    assert first["datacards"]["channel_mapping"] != second["datacards"]["channel_mapping"]
+    assert first["datacards"]["input_snapshot_sha256"] != second["datacards"]["input_snapshot_sha256"]
+    assert second["datacards"]["input_snapshot_sha256"] == _snapshot_from_manifest(second)
+
+
+def test_fit_config_bytes_have_independent_identity(tmp_path):
+    config, package, output = _fixture(tmp_path)
+    first = fit_input.build_fit_input_package(package, config, output)
+    config.write_text(config.read_text() + "# distinct config bytes\n", encoding="utf-8")
+    second = fit_input.build_fit_input_package(package, config, tmp_path / "second")
+    assert first["fit_config"]["sha256"] != second["fit_config"]["sha256"]
+    assert first["datacards"]["input_snapshot_sha256"] == second["datacards"]["input_snapshot_sha256"]
+
+
+@pytest.mark.parametrize("bad_value", ["a" * 39, "A" * 40, "g" * 40, "a" * 41, "", 123])
+@pytest.mark.parametrize("field", [
+    "package_creation_topeft_commit", "input_production_topeft_commit",
+    "input_production_topcoffea_commit",
+])
+def test_invalid_provenance_commit_fails_syntax_only(tmp_path, monkeypatch, field, bad_value):
+    config, package, output = _fixture(tmp_path)
+    monkeypatch.setattr(os, "system", lambda *_: pytest.fail("Git lookup attempted"))
+    monkeypatch.setattr(os, "popen", lambda *_: pytest.fail("Git lookup attempted"))
+    monkeypatch.setattr(subprocess, "run", lambda *_args, **_kwargs: pytest.fail("Git lookup attempted"))
+    with pytest.raises(fit_input.FitInputError, match="invalid provenance commit syntax"):
+        fit_input.build_fit_input_package(package, config, output, **{field: bad_value})
+    assert not output.exists()
+
+
+def test_null_provenance_values_and_cli_names(tmp_path, capsys):
+    config, package, output = _fixture(tmp_path)
+    fit_input.main(["--combined-package", str(package), "--fit-config", str(config),
+                    "--output", str(output), "--package-creation-topeft-commit", "a" * 40,
+                    "--input-production-topeft-commit", "b" * 40,
+                    "--input-production-topcoffea-commit", "c" * 40])
+    capsys.readouterr()
+    observed = json.loads((output / "fit-input-manifest.json").read_text())
+    assert observed["provenance"]["package_creation"] == {"topeft_commit": "a" * 40}
+    assert observed["provenance"]["input_production"] == {
+        "topeft_commit": "b" * 40, "topcoffea_commit": "c" * 40}
+    null_output = tmp_path / "nulls"
+    fit_input.build_fit_input_package(package, config, null_output)
+    nulls = json.loads((null_output / "fit-input-manifest.json").read_text())
+    assert nulls["provenance"]["package_creation"] == {"topeft_commit": None}
+    assert nulls["provenance"]["input_production"] == {
+        "topeft_commit": None, "topcoffea_commit": None}
+
+
+@pytest.mark.parametrize("field,value", [
+    ("destination_txt_name", "nested/two.txt"),
+    ("destination_txt_name", "two.root"),
+    ("destination_root_name", "nested\\two.root"),
+    ("destination_root_name", "two.txt"),
+    ("destination_root_name", "one.root"),
+    ("destination_root_name", "absent.root"),
+])
+def test_mapped_name_validation_fails_closed(tmp_path, field, value):
+    config, package, output = _fixture(tmp_path)
+    mapping_path = package / "combined_mapping_manifest.json"
+    mapping = json.loads(mapping_path.read_text())
+    mapping["rows"][0][field] = value
+    _write_json(mapping_path, mapping)
+    _refresh_hashes(package)
+    with pytest.raises(fit_input.FitInputError):
         fit_input.build_fit_input_package(package, config, output)
     assert not output.exists()

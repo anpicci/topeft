@@ -22,7 +22,6 @@ _metadata_hashes = {
     "combined_mapping_manifest.json": "manifest_sha256",
 }
 _source_top = set(_metadata_hashes) | {"cards", "package-provenance.json"}
-_excluded_card_names = {"combinedcard.txt", "selectedWCs.txt"}
 _mapping_fields = (
     "era", "physical_name", "per_era_chN", "combined_chN",
     "combined_order_index", "destination_txt_name", "destination_root_name",
@@ -77,29 +76,19 @@ def _read_regular_bytes(path: Path) -> bytes:
         return stream.read()
 
 
-def _source_members(package: Path) -> list[str]:
+def _validate_source_members(package: Path) -> None:
     _require(_plain_dir(package), "combined package must be a plain directory")
-    top = {entry.name for entry in package.iterdir()}
-    _require(_source_top <= top <= _source_top | {"README.md"},
-             "combined package top-level structure is invalid")
     _require(_plain_dir(package / "cards"), "cards must be a plain directory")
     for name in _source_top - {"cards"}:
         _require(_regular_file(package / name), f"non-regular source metadata: {name}")
-    members = []
-    for root, dirs, files in os.walk(package / "cards", followlinks=False):
-        for name in dirs:
-            _require(_plain_dir(Path(root) / name), f"non-regular card directory: {name}")
-        for name in files:
-            path = Path(root) / name
-            _require(_regular_file(path), f"non-regular card member: {path}")
-            _require(name not in _excluded_card_names, f"downstream-owned card artifact: {name}")
-            members.append(path.relative_to(package).as_posix())
-    members.sort()
-    _require(bool(members), "cards is empty")
-    return members
 
 
-def _source_contract(package: Path, members: list[str]) -> tuple[list[dict[str, object]], dict[str, object]]:
+def _valid_basename(value: object, suffix: str) -> bool:
+    return (isinstance(value, str) and value not in {"", ".", ".."}
+            and "/" not in value and "\\" not in value and value.endswith(suffix))
+
+
+def _source_contract(package: Path) -> tuple[list[dict[str, object]], dict[str, object], list[str]]:
     try:
         provenance = json.loads(_read_regular_bytes(package / "package-provenance.json"))
         mapping = json.loads(_read_regular_bytes(package / "combined_mapping_manifest.json"))
@@ -116,9 +105,8 @@ def _source_contract(package: Path, members: list[str]) -> tuple[list[dict[str, 
              "combined mapping metadata is invalid")
     _require(bool(ordered) and len(ordered) == len(set(ordered)),
              "ordered card inputs missing or duplicate")
-    member_set = set(members)
     for entry in ordered:
-        _require(bool(re.fullmatch(r"cards/[^/\\]+\.txt", entry)) and entry in member_set,
+        _require(entry.startswith("cards/") and _valid_basename(entry.removeprefix("cards/"), ".txt"),
                  f"invalid ordered card entry: {entry}")
     for name, field in _metadata_hashes.items():
         expected = provenance.get(field)
@@ -129,16 +117,22 @@ def _source_contract(package: Path, members: list[str]) -> tuple[list[dict[str, 
     rows = mapping["rows"]
     _require(len(rows) == len(ordered), "mapping and ordered card counts differ")
     projected = []
+    selected_names = set()
     for index, (row, entry) in enumerate(zip(rows, ordered), start=1):
         _require(isinstance(row, dict) and all(field in row for field in _mapping_fields),
                  f"mapping row {index} lacks consumer fields")
         _require(row["combined_order_index"] == index
                  and row["destination_txt_name"] == entry.removeprefix("cards/")
-                 and isinstance(row["destination_root_name"], str)
-                 and f"cards/{row['destination_root_name']}" in member_set
+                 and _valid_basename(row["destination_txt_name"], ".txt")
+                 and _valid_basename(row["destination_root_name"], ".root")
                  and all(isinstance(row[field], str) and bool(row[field])
                          for field in _mapping_fields if field != "combined_order_index"),
                  f"mapping row {index} disagrees with ordered card inputs")
+        for name in (row["destination_txt_name"], row["destination_root_name"]):
+            _require(name not in selected_names, f"duplicate mapped card member: {name}")
+            selected_names.add(name)
+            _require(_regular_file(package / "cards" / name),
+                     f"missing or non-regular mapped card member: {name}")
         projected.append({field: row[field] for field in _mapping_fields})
     source_provenance = {}
     for field in _provenance_fields:
@@ -157,7 +151,12 @@ def _source_contract(package: Path, members: list[str]) -> tuple[list[dict[str, 
             )
         if valid:
             source_provenance[field] = value
-    return projected, source_provenance
+    return projected, source_provenance, sorted(f"cards/{name}" for name in selected_names)
+
+
+def _validate_commit(value: str | None, field: str) -> None:
+    _require(value is None or (isinstance(value, str) and bool(re.fullmatch(r"[0-9a-f]{40}", value))),
+             f"invalid provenance commit syntax: {field}")
 
 
 def _config_bytes(config: Path) -> bytes:
@@ -225,9 +224,9 @@ def _readme() -> str:
 
 def build_fit_input_package(
     package: Path, fit_config: Path, output: Path, *,
-    package_build_topeft_commit: str | None = None,
-    t0_topeft_commit: str | None = None,
-    t0_topcoffea_commit: str | None = None,
+    package_creation_topeft_commit: str | None = None,
+    input_production_topeft_commit: str | None = None,
+    input_production_topcoffea_commit: str | None = None,
 ) -> dict[str, object]:
     package, fit_config, output = Path(package), Path(fit_config), Path(output)
     staging = output.parent / f".{output.name}.staging"
@@ -238,8 +237,14 @@ def build_fit_input_package(
     for first, second in ((package, fit_config), (package, output), (package, staging),
                           (fit_config, output), (fit_config, staging), (staging, output)):
         _require(not _overlap(first, second), "source, config, staging, and output must not overlap")
-    card_members = _source_members(package)
-    mapping_rows, source_provenance = _source_contract(package, card_members)
+    for field, value in (
+        ("package_creation.topeft_commit", package_creation_topeft_commit),
+        ("input_production.topeft_commit", input_production_topeft_commit),
+        ("input_production.topcoffea_commit", input_production_topcoffea_commit),
+    ):
+        _validate_commit(value, field)
+    _validate_source_members(package)
+    mapping_rows, source_provenance, card_members = _source_contract(package)
     config_content = _config_bytes(fit_config)
     members = sorted(card_members + ["ordered_card_inputs.txt", "scalings.json"])
     staging.mkdir(mode=0o700)
@@ -269,15 +274,18 @@ def build_fit_input_package(
                 "cards_path": "datacards/cards",
                 "ordered_card_inputs_path": "datacards/ordered_card_inputs.txt",
                 "scalings_path": "datacards/scalings.json",
-                "input_snapshot_sha256": _sha256_bytes(_json_bytes(source_inventory)),
+                "input_snapshot_sha256": _sha256_bytes(_json_bytes({
+                    "files": source_inventory,
+                    "channel_mapping": {"rows": mapping_rows},
+                })),
                 "files": source_inventory,
                 "channel_mapping": {"rows": mapping_rows},
             },
             "fit_config": {"path": "config/TOP_26_006.yml", "sha256": config_sha},
             "provenance": {
-                "package_build": {"topeft_commit": package_build_topeft_commit},
-                "upstream_t0": {"topeft_commit": t0_topeft_commit,
-                                "topcoffea_commit": t0_topcoffea_commit},
+                "package_creation": {"topeft_commit": package_creation_topeft_commit},
+                "input_production": {"topeft_commit": input_production_topeft_commit,
+                                     "topcoffea_commit": input_production_topcoffea_commit},
                 "source_datacard_package": source_provenance,
             },
         }
@@ -296,15 +304,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--combined-package", type=Path, required=True)
     parser.add_argument("--fit-config", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--package-build-topeft-commit")
-    parser.add_argument("--t0-topeft-commit")
-    parser.add_argument("--t0-topcoffea-commit")
+    parser.add_argument("--package-creation-topeft-commit")
+    parser.add_argument("--input-production-topeft-commit")
+    parser.add_argument("--input-production-topcoffea-commit")
     args = parser.parse_args(argv)
     manifest = build_fit_input_package(
         args.combined_package, args.fit_config, args.output,
-        package_build_topeft_commit=args.package_build_topeft_commit,
-        t0_topeft_commit=args.t0_topeft_commit,
-        t0_topcoffea_commit=args.t0_topcoffea_commit,
+        package_creation_topeft_commit=args.package_creation_topeft_commit,
+        input_production_topeft_commit=args.input_production_topeft_commit,
+        input_production_topcoffea_commit=args.input_production_topcoffea_commit,
     )
     print(json.dumps({"output": str(args.output), "input_snapshot_sha256":
                       manifest["datacards"]["input_snapshot_sha256"]}, sort_keys=True))
