@@ -279,6 +279,11 @@ def resolve_shape_nuisance_identity(systematic, run_suffix, run_decorrelate):
     if base.startswith(FULLY_SPECIFIED_TAU_NUISANCE_PREFIXES):
         return base, f"{base}{direction}"
     if base in run_decorrelate:
+        if base in (
+            "lepSF_elec_mva", "lepSF_muon_mva",
+            "lepSF_elec_non_mva", "lepSF_muon_non_mva",
+        ):
+            run_suffix = {"_run2": "_13TeV", "_run3": "_13p6TeV"}[run_suffix]
         base = f"{base}{run_suffix}"
     return base, f"{base}{direction}"
 
@@ -1520,7 +1525,7 @@ class DatacardMaker():
             }]
         }
 
-        self.run_decorrelate = ["FES","FF", "FFeta", "FFpt", "btagSFbc_corr", "btagSFlight_corr", "charge_flips", "TES", "lepSF_elec", "lepSF_muon", "lepSF_taus_fake", "lepSF_taus_real"]
+        self.run_decorrelate = ["FES","FF", "FFeta", "FFpt", "btagSFbc_corr", "btagSFlight_corr", "charge_flips", "TES", "lepSF_elec", "lepSF_muon", "lepSF_taus_fake", "lepSF_taus_real", "lepSF_elec_mva", "lepSF_muon_mva", "lepSF_elec_non_mva", "lepSF_muon_non_mva"]
         if extra_ignore:
             print(f"Adding processes to ignore: {extra_ignore}")
         self.ignore.extend(extra_ignore)

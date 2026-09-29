@@ -519,6 +519,14 @@ def resolve_nuisance_name(source_name, run):
     try:
         return SYST_NAMING_MAP[run][source_name]
     except KeyError as exc:
+        if run in SYST_NAMING_MAP and source_name in (
+            SYST_NAMING_MAP[run][base]
+            for base in (
+                "lepSF_elec_mva", "lepSF_muon_mva",
+                "lepSF_elec_non_mva", "lepSF_muon_non_mva",
+            )
+        ):
+            return source_name
         raise RuntimeError(
             f"{source_name} not found in the {run} naming map!"
         ) from exc

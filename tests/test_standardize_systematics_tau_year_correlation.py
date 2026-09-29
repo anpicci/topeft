@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hist
+import numpy as np
 import pytest
 import uproot
 
@@ -12,6 +13,7 @@ from analysis.topeft_run2.standardize_systematics import (
     resolve_nuisance_name,
 )
 from topcoffea.modules.sparseHist import SparseHist
+from topcoffea.modules.histEFT import HistEFT
 from topeft.modules.datacard_tools import DatacardMaker, tau_2016_correlation_bases
 
 
@@ -113,7 +115,9 @@ def test_standardizer_owns_exact_mva_and_non_mva_names(run, domain):
         target = f"{source}_{domain}"
         assert SYST_NAMING_MAP[run][source] == target
         assert resolve_nuisance_name(source, run) == target
+        assert resolve_nuisance_name(target, run) == target
         assert remap_name(f"ttH_sm_{source}Up", run) == f"ttH_sm_{target}Up"
+        assert remap_name(f"ttH_sm_{target}Up", run) == f"ttH_sm_{target}Up"
         assert not target.startswith("CMS_TOP26006_")
 
 
@@ -159,3 +163,58 @@ def test_stale_tau_card_fails_before_output_is_created(tmp_path):
     with pytest.raises(ValueError, match="regenerate"):
         process_cards([str(card)], "run2", str(output))
     assert not output.exists()
+
+
+@pytest.mark.parametrize(
+    "year,domain",
+    (("UL18", "13TeV"), ("2022", "13p6TeV")),
+)
+def test_raw_card_writer_uses_lepton_run_domain_names(tmp_path, year, domain):
+    sources = (
+        "lepSF_elec_mva", "lepSF_muon_mva",
+        "lepSF_elec_non_mva", "lepSF_muon_non_mva",
+    )
+    histogram = HistEFT(
+        hist.axis.StrCategory([], name="process", growth=True),
+        hist.axis.StrCategory([], name="channel", growth=True),
+        hist.axis.StrCategory([], name="systematic", growth=True),
+        hist.axis.Regular(1, 0, 1, name="njets"),
+        wc_names=[], label="Events",
+    )
+    for systematic, value in [("nominal", 10.0)] + [
+        (f"{source}{direction}", 11.0 if direction == "Up" else 9.0)
+        for source in (*sources, "JES_Absolute")
+        for direction in ("Up", "Down")
+    ]:
+        histogram.fill(
+            process=f"ttH_central{year}", channel="3l_onZ_1b",
+            systematic=systematic, njets=np.asarray([0.5]),
+            weight=np.asarray([value]),
+        )
+    maker = DatacardMaker(
+        hists={"njets": histogram}, year_lst=[year],
+        out_dir=str(tmp_path), var_lst=["njets"], do_nuisance=True,
+        skip_missing_parton_rate_syst=True, verbose=False,
+    )
+    maker.analyze("njets", "3l_onZ_1b", {"ttH": []}, True, {})
+    stem = tmp_path / "ttx_multileptons-3l_onZ_1b_njets"
+    card_text = stem.with_suffix(".txt").read_text()
+    shape_names = {
+        words[0] for words in (line.split() for line in card_text.splitlines())
+        if len(words) >= 2 and words[1] == "shape"
+    }
+    expected = {f"{source}_{domain}" for source in sources}
+    assert expected | {"JES_Absolute"} <= shape_names
+    assert not set(sources) & shape_names
+    with uproot.open(stem.with_suffix(".root")) as root_file:
+        root_names = set(root_file.keys(cycle=False))
+        for source in sources:
+            target = f"{source}_{domain}"
+            for direction, value in (("Up", 11.0), ("Down", 9.0)):
+                key = f"ttH_sm_{target}{direction}"
+                assert key in root_names
+                assert f"ttH_sm_{source}{direction}" not in root_names
+                assert np.sum(root_file[key].values()) == pytest.approx(value)
+                assert np.count_nonzero(root_file[key].values()) == 1
+        for direction, value in (("Up", 11.0), ("Down", 9.0)):
+            assert np.sum(root_file[f"ttH_sm_JES_Absolute{direction}"].values()) == pytest.approx(value)
