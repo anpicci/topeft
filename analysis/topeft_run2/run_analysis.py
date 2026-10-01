@@ -2127,6 +2127,7 @@ if __name__ == "__main__":
             category_group_selection["sr_category_dict"],
             category_group_selection["cr_category_dict"],
         ),
+        selected_category_regions=("SR", "CR"),
         split_by_lepton_flavor=split_lep_flavor,
         is_run3_values=tuple(
             dict.fromkeys(
