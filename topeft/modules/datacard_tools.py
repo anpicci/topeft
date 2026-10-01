@@ -238,20 +238,7 @@ def add_run3_luminosity_shape_nuisances(histogram):
     )
 
 
-tau_2016_correlation_bases = (
-    "CMS_eff_t_DeepTau2017v2p1_VSjet_dm_stat1_DM0",
-    "CMS_eff_t_DeepTau2017v2p1_VSjet_dm_stat1_DM10",
-    "CMS_eff_t_DeepTau2017v2p1_VSjet_dm_stat1_DM11",
-    "CMS_eff_t_DeepTau2017v2p1_VSjet_dm_stat1_DM1",
-    "CMS_eff_t_DeepTau2017v2p1_VSjet_dm_stat2_DM0",
-    "CMS_eff_t_DeepTau2017v2p1_VSjet_dm_stat2_DM10",
-    "CMS_eff_t_DeepTau2017v2p1_VSjet_dm_stat2_DM11",
-    "CMS_eff_t_DeepTau2017v2p1_VSjet_dm_stat2_DM1",
-    "CMS_eff_t_DeepTau2017v2p1_VSjet_dm_syst",
-    "CMS_eff_t_DeepTau2017v2p1_VSjet_dm_syst_DM0",
-    "CMS_eff_t_DeepTau2017v2p1_VSjet_dm_syst_DM10",
-    "CMS_eff_t_DeepTau2017v2p1_VSjet_dm_syst_DM11",
-    "CMS_eff_t_DeepTau2017v2p1_VSjet_dm_syst_DM1",
+tau_run2_year_correlation_bases = (
     "CMS_fake_t_DeepTau2017v2p1_VSe_abseta0to1p5",
     "CMS_fake_t_DeepTau2017v2p1_VSe_abseta1p5to2p3",
     "CMS_fake_t_DeepTau2017v2p1_VSmu_abseta0p4to0p8",
@@ -1484,8 +1471,26 @@ class DatacardMaker():
 
         self.syst_year_corr.update({
             source_base: {"2016": ["2016APV"], "2016APV": ["2016"]}
-            for source_base in tau_2016_correlation_bases
+            for source_base in tau_run2_year_correlation_bases
         })
+
+        for eta_token in (
+            "abseta0to0p4", "abseta0p4to0p8", "abseta0p8to1p2",
+            "abseta1p2to1p7", "abseta1p7to2p4",
+        ):
+            self.syst_year_corr[
+                f"CMS_fake_t_DeepTau2018v2p5_VSmu_{eta_token}"
+            ] = {
+                "2022": ["2022EE"], "2022EE": ["2022"],
+                "2023": ["2023BPix"], "2023BPix": ["2023"],
+            }
+        for decay_mode in (0, 1, 10, 11):
+            self.syst_year_corr[
+                f"CMS_scale_t_DeepTau2018v2p5_DM{decay_mode}_genElectron"
+            ] = {
+                "2022": ["2022EE"], "2022EE": ["2022"],
+                "2023": ["2023BPix"], "2023BPix": ["2023"],
+            }
 
         # Defines which systematics should be decorrelated in the self.analysis() step. Each key
         #   should match (exactly) a particular systematic. The list for each systematic specifies
@@ -1656,6 +1661,108 @@ class DatacardMaker():
             h = h.group("process", grp_map)
 
             h = self.group_processes(h)
+            # Legacy Run-3 VSmu shapes used the calendar year on the systematic
+            # axis even though the process axis retained the source period.
+            # Rename only the affected joint coordinates, before year merging.
+            vsmu_pattern = re.compile(
+                r"(?P<base>CMS_fake_t_DeepTau2018v2p5_VSmu_[A-Za-z0-9]+)_"
+                r"(?P<period>2022EE|2023BPix|2022|2023)"
+                r"(?P<direction>Up|Down)"
+            )
+            vsmu_prefix = "CMS_fake_t_DeepTau2018v2p5_VSmu_"
+            rename_by_process = defaultdict(dict)
+            periods_by_family = defaultdict(set)
+            subera_schema_by_family = defaultdict(set)
+            sides_by_coordinate = defaultdict(set)
+            target_sources = defaultdict(dict)
+            for key in h.categorical_keys:
+                process = key.process
+                systematic = key.systematic
+                process_period = self.get_year(process)
+                if systematic.startswith(vsmu_prefix):
+                    match = vsmu_pattern.fullmatch(systematic)
+                    if match is None or match["base"] not in self.syst_year_corr:
+                        raise ValueError(
+                            f"Unsupported Run-3 VSmu source identity {systematic!r}."
+                        )
+                    if process_period not in ("2022", "2022EE", "2023", "2023BPix"):
+                        raise ValueError(
+                            f"Run-3 VSmu process period is missing or ambiguous: {process!r}."
+                        )
+                    source_period = match["period"]
+                    if source_period not in (process_period, process_period[:4]):
+                        raise ValueError(
+                            f"Run-3 VSmu source/process period mismatch: "
+                            f"{systematic!r}, {process!r}."
+                        )
+                    base = match["base"]
+                    periods_by_family[(process, base)].add(source_period)
+                    if process_period != process_period[:4]:
+                        subera_schema_by_family[base].add(
+                            "native" if source_period == process_period else "legacy"
+                        )
+                    coordinates = tuple(
+                        (name, value) for name, value in key._asdict().items()
+                        if name != "systematic"
+                    )
+                    sides_by_coordinate[(coordinates, base)].add(match["direction"])
+                    target = f"{base}_{process_period}{match['direction']}"
+                    prior = target_sources[process].setdefault(target, systematic)
+                    if prior != systematic:
+                        raise ValueError(
+                            f"Run-3 VSmu coordinate collision: {prior!r}, {systematic!r}."
+                        )
+                    rename_by_process[process][systematic] = target
+                elif (
+                    systematic.startswith("CMS_fake_t_DeepTau2018v2p5_VSe_")
+                    or (
+                        systematic.startswith("CMS_eff_t_DeepTau2018v2p5_VSjet_dm_")
+                        and not systematic.startswith(
+                            "CMS_eff_t_DeepTau2018v2p5_VSjet_dm_syst_alleras_Run3"
+                        )
+                    )
+                    or (
+                        systematic.startswith("CMS_scale_t_DeepTau2018v2p5_")
+                        and ("_genTau_" in systematic or "_genElectron_" in systematic)
+                    )
+                ):
+                    source_period = self.get_year(systematic)
+                    if source_period != process_period:
+                        raise ValueError(
+                            f"Unsupported pre-collapsed Run-3 Tau source identity: "
+                            f"{systematic!r}, {process!r}."
+                        )
+            if any(len(periods) != 1 for periods in periods_by_family.values()):
+                raise ValueError("Mixed native and legacy Run-3 VSmu source identities.")
+            if any(len(kinds) != 1 for kinds in subera_schema_by_family.values()):
+                raise ValueError("Mixed native and legacy Run-3 VSmu source identities.")
+            if any(sides != {"Up", "Down"} for sides in sides_by_coordinate.values()):
+                raise ValueError("Incomplete Run-3 VSmu Up/Down source identities.")
+            if any(
+                source != target
+                for replacements in rename_by_process.values()
+                for source, target in replacements.items()
+            ):
+                recovered = h.empty_from_axes()
+                processes = {key.process for key in h.categorical_keys}
+                for process in sorted(
+                    processes,
+                    key=lambda name: (
+                        self.get_process(name),
+                        self.YEARS.index(self.get_year(name))
+                        if self.get_year(name) in self.YEARS else len(self.YEARS),
+                    ),
+                ):
+                    fragment = h[{"process": [process]}]
+                    sources = {key.systematic for key in fragment.categorical_keys}
+                    groups = {
+                        rename_by_process[process].get(source, source): [source]
+                        for source in sources
+                    }
+                    if len(groups) != len(sources):
+                        raise ValueError(f"Run-3 VSmu coordinate collision for {process!r}.")
+                    recovered += fragment.group("systematic", groups)
+                h = recovered
             h = self.correlate_years(
                 h,
                 add_luminosity_shapes=not _is_sumw2_key(km_dist),

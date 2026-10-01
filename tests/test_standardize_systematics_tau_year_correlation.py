@@ -14,7 +14,7 @@ from analysis.topeft_run2.standardize_systematics import (
 )
 from topcoffea.modules.sparseHist import SparseHist
 from topcoffea.modules.histEFT import HistEFT
-from topeft.modules.datacard_tools import DatacardMaker, tau_2016_correlation_bases
+from topeft.modules.datacard_tools import DatacardMaker
 
 
 def make_histogram(source_base, year_values):
@@ -90,10 +90,19 @@ def test_ffclose_and_tau_use_same_native_correlation(source_base, monkeypatch):
     assert f"{source_base}_2016APVDown" not in set(merged.axes["systematic"])
 
 
-def test_exact_tau_registration_and_standardizer_identity(monkeypatch):
+def test_run2_tau_standardizer_stale_and_era_defined_identities(monkeypatch):
     maker = registered_maker(monkeypatch)
-    assert len(tau_2016_correlation_bases) == len(set(tau_2016_correlation_bases)) == 26
-    for source_base in tau_2016_correlation_bases:
+    stale_bases = {
+        name.removesuffix("_2016")
+        for name in SYST_NAMING_MAP["run2"]
+        if name.startswith((
+            "CMS_fake_t_DeepTau2017v2p1_VSe_",
+            "CMS_fake_t_DeepTau2017v2p1_VSmu_",
+            "CMS_scale_t_DeepTau2017v2p1_",
+        )) and name.endswith("_2016")
+    }
+    assert len(stale_bases) == 13
+    for source_base in stale_bases:
         assert maker.syst_year_corr[source_base] == {
             "2016": ["2016APV"],
             "2016APV": ["2016"],
@@ -104,6 +113,19 @@ def test_exact_tau_registration_and_standardizer_identity(monkeypatch):
         assert resolve_nuisance_name(native_name, "run2") == native_name
         with pytest.raises(ValueError, match="regenerate"):
             resolve_nuisance_name(f"{source_base}_2016APV", "run2")
+
+    vsjet_bases = {
+        name.removesuffix("_2016")
+        for name in SYST_NAMING_MAP["run2"]
+        if name.startswith("CMS_eff_t_DeepTau2017v2p1_VSjet_dm_")
+        and name.endswith("_2016")
+    }
+    assert len(vsjet_bases) == 13
+    assert vsjet_bases.isdisjoint(maker.syst_year_corr)
+    for source_base in vsjet_bases:
+        native = f"{source_base}_2016APV"
+        assert resolve_nuisance_name(native, "run2") == native
+        assert remap_name(f"ttH_sm_{native}Up", "run2") == f"ttH_sm_{native}Up"
 
 
 @pytest.mark.parametrize("run,domain", (("run2", "13TeV"), ("run3", "13p6TeV")))

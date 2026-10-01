@@ -6,7 +6,22 @@ import json
 import numpy as np
 import boost_histogram as bh
 import topcoffea.modules.utils as utils
-from topeft.modules.datacard_tools import tau_2016_correlation_bases
+
+stale_run2_tau_apv_bases = frozenset({
+    "CMS_fake_t_DeepTau2017v2p1_VSe_abseta0to1p5",
+    "CMS_fake_t_DeepTau2017v2p1_VSe_abseta1p5to2p3",
+    "CMS_fake_t_DeepTau2017v2p1_VSmu_abseta0to0p4",
+    "CMS_fake_t_DeepTau2017v2p1_VSmu_abseta0p4to0p8",
+    "CMS_fake_t_DeepTau2017v2p1_VSmu_abseta0p8to1p2",
+    "CMS_fake_t_DeepTau2017v2p1_VSmu_abseta1p2to1p7",
+    "CMS_fake_t_DeepTau2017v2p1_VSmu_abseta1p7to2p3",
+    "CMS_scale_t_DeepTau2017v2p1_DM0_genTau",
+    "CMS_scale_t_DeepTau2017v2p1_DM1_genTau",
+    "CMS_scale_t_DeepTau2017v2p1_DM10_genTau",
+    "CMS_scale_t_DeepTau2017v2p1_DM11_genTau",
+    "CMS_scale_t_DeepTau2017v2p1_DM0_genElectron",
+    "CMS_scale_t_DeepTau2017v2p1_DM1_genElectron",
+})
 
 # Final nuisance names for TOP-26-006 cards.
 SYST_NAMING_MAP = {
@@ -511,11 +526,16 @@ def parse_datacard(fpath):
 def resolve_nuisance_name(source_name, run):
     if run == "run2" and source_name.endswith("_2016APV"):
         source_base = source_name.removesuffix("_2016APV")
-        if source_base in tau_2016_correlation_bases:
+        if source_base in stale_run2_tau_apv_bases:
             raise ValueError(
                 f"Stale pre-correlation tau nuisance {source_name!r}; "
                 "regenerate the Run-2 datacards with native year correlation."
             )
+        if (
+            source_base.startswith("CMS_eff_t_DeepTau2017v2p1_VSjet_dm_")
+            and f"{source_base}_2016" in SYST_NAMING_MAP["run2"]
+        ):
+            return source_name
     try:
         return SYST_NAMING_MAP[run][source_name]
     except KeyError as exc:
