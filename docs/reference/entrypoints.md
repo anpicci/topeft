@@ -15,6 +15,7 @@ layer retains. It is a lookup page, not a production recipe. See the
 | `analysis/topeft_run2/run_plotter.sh` | Maintained plotting wrapper | Readable PKL, output directory, and years | Forwards to the direct plotter; can infer CR/SR from the filename; dry-run prints the resolved command without creating the output directory | Rejects missing inputs/years; the direct plotter owns artifact and metadata validation |
 | `analysis/topeft_run2/make_cr_and_sr_plots.py` | Direct plotting CLI | Repeatable `-f` inputs or a list file, output, years, and plot controls | Processing binning; merged channels; one worker; year coverage `warn` | Rejects incoherent artifacts, ambiguous channel authority, invalid binning, and mixed Run 2/Run 3 inputs |
 | `analysis/topeft_run2/make_cards.py` | Direct card CLI; no manifest required | Positional PKLs or a list file, variables/channels, and card controls | Fitting binning; year coverage `warn`; Asimov data | Rejects incoherent artifacts, invalid exact aggregation, incomplete shape pairs, and selected-WC/coverage failures according to options |
+| `analysis/topeft_run2/validate_datacard_correlation.py` | Read-only card correlation validator | Source PKL, final TXT/ROOT pair, variable, channel, source periods, explicit groups, nuisance prefix, and exact card process | Writes one JSON report; returns nonzero on mismatch | Independently sums source-period nominal and directional arrays; rejects missing, extra, duplicate, or numerically mismatched final identities |
 | `analysis/topeft_run2/make_datacard_matrix_manifest.py` | Standard matrix manifest generator | Era, repeatable `--input-pkl ROLE=PATH`, Python and missing-parton paths, runtime ID, output/control roots, and fresh manifest path; optional `--channel-set-key` or advanced `--physical-target` subset | `topeft_datacard_matrix_v3`; 11 logical full-profile rows in each era become 11 Run 2 or 34 Run 3 execution units | Rejects missing runtime inputs, unknown targets, incomplete PKL roles, and manifest collisions |
 | `analysis/topeft_run2/run_datacard_matrix_resumable.sh` | Resumable matrix runner | Matrix manifest; optional `--plan-only` or `--status` | Runs eligible rows and writes receipts; status is read-only | Rejects invalid manifests, changed runtime files, failed rows, and invalid receipts |
 | `analysis/topeft_run2/build_per_era_datacard_package.py` | Per-era package builder | `build` with era, repeatable matrix manifests, fresh absolute output, and analysis; requested targets come from manifest rows | Cards, selected WCs, scalings, physical-to-`chN` mapping, and provenance | Reports missing/extra targets and relevant manifest rows plus runner commands; rejects invalid receipts, duplicate scalings, and output collisions |
@@ -128,6 +129,12 @@ requested output directory; normal execution creates it immediately before
 launching the plotter.
 `make_cards.py` is the manifest-free direct card interface and delegates
 card/template construction to `topeft.modules.datacard_tools.DatacardMaker`.
+For a focused correlation check, run
+`python analysis/topeft_run2/validate_datacard_correlation.py --source-pkl SOURCE.pkl.gz --card CARD.txt --root TEMPLATE.root --variable lj0pt --channel CHANNEL --period 2022 --period 2022EE --group 2022=2022,2022EE --prefix CMS_fake_t_DeepTau2018v2p5_VSmu_ --process Diboson --output validation.json`.
+The validator independently constructs final year-group sums. It reuses
+DatacardMaker's source preparation, process grouping, channel/SR selection,
+fitting binning, SM evaluation, and negative-bin sanitation. It produces no
+cards or production outputs.
 `make_datacard_matrix_manifest.py` writes standard Run 2 or Run 3 production
 rows from caller-supplied PKLs bound to the profile's input roles;
 `run_datacard_matrix_resumable.sh` executes

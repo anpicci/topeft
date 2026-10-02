@@ -487,6 +487,38 @@ def test_route_d_legacy_read_reaches_year_pair_correlation_once():
     assert not any("2022EE" in name for name in values)
 
 
+def test_source_period_seam_stops_before_final_correlation(monkeypatch):
+    base = "CMS_fake_t_DeepTau2018v2p5_VSmu_abseta0to0p4"
+    cells = [
+        (f"sample{period}", "channel", systematic, value)
+        for period, nominal in (("2022", 10), ("2022EE", 20))
+        for systematic, value in (
+            ("nominal", nominal),
+            (f"{base}_2022Up", nominal + 2),
+            (f"{base}_2022Down", nominal - 2),
+        )
+    ]
+    card = maker(enable_legacy_run3_vsmu_recovery=True)
+    calls = []
+    original = card.correlate_years
+
+    def record_correlation(histogram, **kwargs):
+        calls.append(kwargs)
+        return original(histogram, **kwargs)
+
+    monkeypatch.setattr(card, "correlate_years", record_correlation)
+    card.read_source_periods(hists={"x": make_eft_histogram(cells)})
+    assert calls == []
+    source_keys = {key.systematic for key in card.hists["x"].categorical_keys}
+    assert f"{base}_2022EEUp" in source_keys
+    assert f"{base}_2022EEDown" in source_keys
+    card.read(hists={"x": make_eft_histogram(cells)})
+    assert len(calls) == 1
+    final_keys = {key.systematic for key in card.hists["x"].categorical_keys}
+    assert f"{base}_2022Up" in final_keys
+    assert f"{base}_2022EEUp" not in final_keys
+
+
 @pytest.mark.parametrize("family", ("vsmu", "efes"))
 def test_run3_year_pair_algebra(family):
     base = (

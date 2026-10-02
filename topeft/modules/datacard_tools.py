@@ -1559,6 +1559,20 @@ class DatacardMaker():
         print (f"Saving output to {os.path.realpath(self.out_dir)}")
 
     def read(self,fpath=None,hists=None):
+        """Prepare card histograms and apply the normal final year correlation."""
+        for km_dist in self._prepare_source_periods(fpath=fpath, hists=hists):
+            h = self.correlate_years(
+                self.hists[km_dist],
+                add_luminosity_shapes=not _is_sumw2_key(km_dist),
+            )
+            print(f"Num. Systematics: {len(h.axes['systematic'])}")
+            self.hists[km_dist] = h
+
+    def read_source_periods(self,fpath=None,hists=None):
+        """Expose the prepared source-period view before final year correlation."""
+        return list(self._prepare_source_periods(fpath=fpath, hists=hists))
+
+    def _prepare_source_periods(self,fpath=None,hists=None):
         """
             Input can be either:
               - a file path to a pkl file containing histograms produced by the topeft.py processor
@@ -1744,8 +1758,15 @@ class DatacardMaker():
                 raise ValueError("Mixed native and legacy Run-3 VSmu source identities.")
             if len(discriminating_schema_kinds) > 1:
                 raise ValueError("Mixed native and legacy Run-3 VSmu source identities.")
-            if any(sides != {"Up", "Down"} for sides in sides_by_coordinate.values()):
-                raise ValueError("Incomplete Run-3 VSmu Up/Down source identities.")
+            for (coordinates, base), sides in sides_by_coordinate.items():
+                if sides != {"Up", "Down"}:
+                    process = dict(coordinates)["process"]
+                    missing = sorted({"Up", "Down"} - sides)
+                    raise ValueError(
+                        "Incomplete Run-3 VSmu Up/Down source identities: "
+                        f"{base}_{self.get_year(process)}{missing[0]!s}, "
+                        f"coordinates={coordinates!r}."
+                    )
             if (
                 "legacy" in discriminating_schema_kinds
                 and not self.enable_legacy_run3_vsmu_recovery
@@ -1779,15 +1800,8 @@ class DatacardMaker():
                         raise ValueError(f"Run-3 VSmu coordinate collision for {process!r}.")
                     recovered += fragment.group("systematic", groups)
                 h = recovered
-            h = self.correlate_years(
-                h,
-                add_luminosity_shapes=not _is_sumw2_key(km_dist),
-            )
-
-            num_systs = len(h.axes["systematic"])
-            print(f"Num. Systematics: {num_systs}")
-
             self.hists[km_dist] = h
+            yield km_dist
 
     def channels(self, km_dist):
         return list(self.hists[km_dist].axes["channel"])
