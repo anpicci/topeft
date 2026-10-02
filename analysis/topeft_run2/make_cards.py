@@ -90,6 +90,10 @@ def build_arg_parser():
         ),
     )
     parser.add_argument("--skip-missing-parton-rate-syst",action="store_true",default=False,help="Skip loading/inserting only the missing-parton rate systematic; preserves other nuisances.")
+    parser.add_argument(
+        "--enable-legacy-run3-vsmu-recovery", action="store_true", default=False,
+        help="Explicitly allow recovery of structurally supported pre-fix Run-3 VSmu labels.",
+    )
     parser.add_argument("--selected-wcs-ref",default="test/selectedWCs.json",help="Reference file for selected wcs")
     parser.add_argument("--out-dir","-d",default=".",help="Output directory to write root and text datacard files to")
     parser.add_argument("--var-lst",default=[],action="extend",nargs="+",help="Specify a list of variables to make cards for.")
@@ -420,6 +424,7 @@ def main():
         "do_nuisance": do_nuis,
         "drop_syst": drop_syst,
         "skip_missing_parton_rate_syst": skip_missing_parton_rate_syst,
+        "enable_legacy_run3_vsmu_recovery": args.enable_legacy_run3_vsmu_recovery,
         "unblind": unblind,
         "verbose": verbose,
         "year_lst": years,

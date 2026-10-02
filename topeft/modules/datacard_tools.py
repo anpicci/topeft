@@ -1346,6 +1346,9 @@ class DatacardMaker():
 
     def __init__(self,pkl_path=None,hists=None,**kwargs):
         self.binning_mode    = kwargs.pop("binning_mode", "fitting")
+        self.enable_legacy_run3_vsmu_recovery = bool(
+            kwargs.pop("enable_legacy_run3_vsmu_recovery", False)
+        )
         if self.binning_mode not in BINNING_MODES:
             raise ValueError(
                 f"Unknown binning mode {self.binning_mode!r}; expected one of {BINNING_MODES}."
@@ -1672,7 +1675,7 @@ class DatacardMaker():
             vsmu_prefix = "CMS_fake_t_DeepTau2018v2p5_VSmu_"
             rename_by_process = defaultdict(dict)
             periods_by_family = defaultdict(set)
-            subera_schema_by_family = defaultdict(set)
+            discriminating_schema_kinds = set()
             sides_by_coordinate = defaultdict(set)
             target_sources = defaultdict(dict)
             for key in h.categorical_keys:
@@ -1698,7 +1701,7 @@ class DatacardMaker():
                     base = match["base"]
                     periods_by_family[(process, base)].add(source_period)
                     if process_period != process_period[:4]:
-                        subera_schema_by_family[base].add(
+                        discriminating_schema_kinds.add(
                             "native" if source_period == process_period else "legacy"
                         )
                     coordinates = tuple(
@@ -1734,10 +1737,18 @@ class DatacardMaker():
                         )
             if any(len(periods) != 1 for periods in periods_by_family.values()):
                 raise ValueError("Mixed native and legacy Run-3 VSmu source identities.")
-            if any(len(kinds) != 1 for kinds in subera_schema_by_family.values()):
+            if len(discriminating_schema_kinds) > 1:
                 raise ValueError("Mixed native and legacy Run-3 VSmu source identities.")
             if any(sides != {"Up", "Down"} for sides in sides_by_coordinate.values()):
                 raise ValueError("Incomplete Run-3 VSmu Up/Down source identities.")
+            if (
+                "legacy" in discriminating_schema_kinds
+                and not self.enable_legacy_run3_vsmu_recovery
+            ):
+                raise ValueError(
+                    "Route-D legacy Run-3 VSmu recovery requires explicit "
+                    "--enable-legacy-run3-vsmu-recovery."
+                )
             if any(
                 source != target
                 for replacements in rename_by_process.values()

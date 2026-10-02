@@ -32,12 +32,13 @@ RUN3_VSMU_ETA = (
 )
 
 
-def maker(hists=None, years=None):
+def maker(hists=None, years=None, *, enable_legacy_run3_vsmu_recovery=False):
     return DatacardMaker(
         hists={} if hists is None else hists,
         year_lst=[] if years is None else years,
         var_lst=["x"], do_nuisance=True,
         skip_missing_parton_rate_syst=True, verbose=False,
+        enable_legacy_run3_vsmu_recovery=enable_legacy_run3_vsmu_recovery,
     )
 
 
@@ -245,7 +246,7 @@ def test_route_d_transport_preserves_full_eft_payload(monkeypatch):
     cells += [(f"sample{period}", "channel", "nominal", 10) for period in RUN3_PERIODS]
     source = make_eft_histogram(cells, tracked=True)
     before = payload_by_key(source)
-    card = maker()
+    card = maker(enable_legacy_run3_vsmu_recovery=True)
     monkeypatch.setattr(card, "correlate_years", lambda histogram, **_: histogram)
     card.read(hists={"x": source})
     result = card.hists["x"]
@@ -331,6 +332,95 @@ def test_route_d_native_passthrough_and_fail_closed(monkeypatch):
     assert set(payload_by_key(card.hists["x"])) == set(payload_by_key(global_nuisances))
 
 
+@pytest.mark.parametrize("enable_recovery", (False, True))
+def test_route_d_cross_eta_mixed_schema_fails_closed(monkeypatch, enable_recovery):
+    bases = (
+        "CMS_fake_t_DeepTau2018v2p5_VSmu_abseta0to0p4",
+        "CMS_fake_t_DeepTau2018v2p5_VSmu_abseta0p4to0p8",
+    )
+    mixed = make_eft_histogram([
+        ("sample2022EE", "channel", f"{base}_{period}{side}", 4)
+        for base, period in zip(bases, ("2022", "2022EE"))
+        for side in ("Up", "Down")
+    ])
+    card = maker(enable_legacy_run3_vsmu_recovery=enable_recovery)
+    monkeypatch.setattr(card, "correlate_years", lambda histogram, **_: histogram)
+    with pytest.raises(ValueError, match="Mixed native and legacy"):
+        card.read(hists={"x": mixed})
+
+
+def test_route_d_multi_eta_legacy_requires_opt_in(monkeypatch):
+    bases = (
+        "CMS_fake_t_DeepTau2018v2p5_VSmu_abseta0to0p4",
+        "CMS_fake_t_DeepTau2018v2p5_VSmu_abseta0p4to0p8",
+    )
+    legacy = make_eft_histogram([
+        ("sample2022EE", "channel", f"{base}_2022{side}", 4)
+        for base in bases for side in ("Up", "Down")
+    ])
+    closed = maker()
+    monkeypatch.setattr(
+        closed, "correlate_years",
+        lambda histogram, **_: pytest.fail("correlation reached before opt-in"),
+    )
+    with pytest.raises(ValueError, match="--enable-legacy-run3-vsmu-recovery"):
+        closed.read(hists={"x": legacy})
+    enabled = maker(enable_legacy_run3_vsmu_recovery=True)
+    monkeypatch.setattr(enabled, "correlate_years", lambda histogram, **_: histogram)
+    enabled.read(hists={"x": legacy})
+    names = {key.systematic for key in enabled.hists["x"].categorical_keys}
+    assert names == {f"{base}_2022EE{side}" for base in bases for side in ("Up", "Down")}
+
+
+@pytest.mark.parametrize("periods", (("2022EE", "2023BPix"), ("2022", "2023"), ("2022EE",)))
+def test_route_d_native_and_sparse_supported_schema_passes(periods, monkeypatch):
+    bases = (
+        "CMS_fake_t_DeepTau2018v2p5_VSmu_abseta0to0p4",
+        "CMS_fake_t_DeepTau2018v2p5_VSmu_abseta0p4to0p8",
+    )
+    native = make_eft_histogram([
+        (f"sample{period}", "channel", f"{base}_{period}{side}", 4)
+        for period in periods for base in bases for side in ("Up", "Down")
+    ])
+    card = maker()
+    monkeypatch.setattr(card, "correlate_years", lambda histogram, **_: histogram)
+    card.read(hists={"x": native})
+    assert set(payload_by_key(card.hists["x"])) == set(payload_by_key(native))
+
+
+@pytest.mark.parametrize("systematic, message", (
+    ("CMS_fake_t_DeepTau2018v2p5_VSmu_abseta0to0p4_2023Up", "mismatch"),
+    ("CMS_fake_t_DeepTau2018v2p5_VSmu_abseta0to0p4_2022XUp", "Unsupported"),
+))
+def test_route_d_opt_in_does_not_bypass_invalid_schema(systematic, message):
+    bad = make_eft_histogram([("sample2022EE", "channel", systematic, 4)])
+    card = maker(enable_legacy_run3_vsmu_recovery=True)
+    with pytest.raises(ValueError, match=message):
+        card.read(hists={"x": bad})
+
+
+def test_route_d_opt_in_does_not_bypass_mixed_or_incomplete(monkeypatch):
+    base = "CMS_fake_t_DeepTau2018v2p5_VSmu_abseta0to0p4"
+    card = maker(enable_legacy_run3_vsmu_recovery=True)
+    monkeypatch.setattr(card, "correlate_years", lambda histogram, **_: histogram)
+    mixed = make_eft_histogram([
+        (f"sample{period}", "channel", f"{base}_{source}{side}", 4)
+        for period, source in (("2022EE", "2022"), ("2023BPix", "2023BPix"))
+        for side in ("Up", "Down")
+    ])
+    with pytest.raises(ValueError, match="Mixed"):
+        card.read(hists={"x": mixed})
+    incomplete = make_eft_histogram([("sample2022EE", "channel", f"{base}_2022Up", 4)])
+    with pytest.raises(ValueError, match="Incomplete"):
+        card.read(hists={"x": incomplete})
+    collision = make_eft_histogram([
+        ("sample2022EE", "channel", f"{base}_{period}{side}", 4)
+        for period in ("2022", "2022EE") for side in ("Up", "Down")
+    ])
+    with pytest.raises(ValueError, match="collision"):
+        card.read(hists={"x": collision})
+
+
 def test_route_d_preserves_sumw2_sidecar(monkeypatch):
     base = "CMS_fake_t_DeepTau2018v2p5_VSmu_abseta0to0p4"
     cells = [
@@ -339,7 +429,7 @@ def test_route_d_preserves_sumw2_sidecar(monkeypatch):
     ]
     source = make_eft_histogram(cells)
     before = payload_by_key(source)
-    card = maker()
+    card = maker(enable_legacy_run3_vsmu_recovery=True)
     monkeypatch.setattr(card, "correlate_years", lambda histogram, **_: histogram)
     card.read(hists={"x_sumw2": source})
     after = payload_by_key(card.hists["x_sumw2"])
@@ -361,7 +451,10 @@ def test_route_d_legacy_read_reaches_year_pair_correlation_once():
             (f"{base}_2022Down", nominal - 2),
         )
     ]
-    card = maker({"x_sumw2": make_eft_histogram(cells)}, years=["2022", "2022EE"])
+    card = maker(
+        {"x_sumw2": make_eft_histogram(cells)}, years=["2022", "2022EE"],
+        enable_legacy_run3_vsmu_recovery=True,
+    )
     values = {
         key.systematic: float(array[1, 1])
         for key, array in card.hists["x_sumw2"].view(flow=True).items()
