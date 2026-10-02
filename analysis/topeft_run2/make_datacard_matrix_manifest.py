@@ -132,6 +132,8 @@ def make_manifest(args):
                 "--miss-parton-file", str(missing_parton),
                 "--merge-report", str(merge_report),
             ]
+            if args.enable_legacy_run3_vsmu_recovery and args.era == "run3":
+                producer_args.append("--enable-legacy-run3-vsmu-recovery")
             rows.append({
                 "row_id": row_id, "logical_row_id": logical_row_id,
                 "attempt_id": args.attempt_id, "era": args.era,
@@ -157,6 +159,9 @@ def make_manifest(args):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--era", choices=("run2", "run3"), required=True)
+    parser.add_argument("--enable-legacy-run3-vsmu-recovery", action="store_true",
+                        default=False,
+                        help="Enable accepted legacy Run 3 VSmu recovery for Run 3 rows")
     parser.add_argument("--manifest-output", type=Path, required=True)
     parser.add_argument("--output-root", type=Path, required=True)
     parser.add_argument("--control-root", type=Path, required=True)
