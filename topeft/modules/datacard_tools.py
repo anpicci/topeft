@@ -1346,9 +1346,14 @@ class DatacardMaker():
 
     def __init__(self,pkl_path=None,hists=None,**kwargs):
         self.binning_mode    = kwargs.pop("binning_mode", "fitting")
-        self.enable_legacy_run3_vsmu_recovery = bool(
-            kwargs.pop("enable_legacy_run3_vsmu_recovery", False)
+        enable_legacy_run3_vsmu_recovery = kwargs.pop(
+            "enable_legacy_run3_vsmu_recovery", False,
         )
+        if not isinstance(enable_legacy_run3_vsmu_recovery, bool):
+            raise TypeError(
+                "enable_legacy_run3_vsmu_recovery must be a bool"
+            )
+        self.enable_legacy_run3_vsmu_recovery = enable_legacy_run3_vsmu_recovery
         if self.binning_mode not in BINNING_MODES:
             raise ValueError(
                 f"Unknown binning mode {self.binning_mode!r}; expected one of {BINNING_MODES}."

@@ -42,6 +42,28 @@ def maker(hists=None, years=None, *, enable_legacy_run3_vsmu_recovery=False):
     )
 
 
+def test_legacy_recovery_flag_requires_bool():
+    card = DatacardMaker(
+        hists={}, year_lst=[], var_lst=["x"], do_nuisance=True,
+        skip_missing_parton_rate_syst=True, verbose=False,
+    )
+    assert card.enable_legacy_run3_vsmu_recovery is False
+
+    for value in (False, True):
+        card = maker(enable_legacy_run3_vsmu_recovery=value)
+        assert card.enable_legacy_run3_vsmu_recovery is value
+
+
+@pytest.mark.parametrize("value", (
+    "False", "True", "0", "1", 0, 1, None, [], {},
+))
+def test_legacy_recovery_flag_rejects_non_bool(value):
+    with pytest.raises(
+        TypeError, match="enable_legacy_run3_vsmu_recovery",
+    ):
+        maker(enable_legacy_run3_vsmu_recovery=value)
+
+
 def semantic_groups(registry):
     groups = set()
     for base, rules in registry.items():
