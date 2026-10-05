@@ -156,6 +156,20 @@ recorded source files, requires the completed rows to provide exactly the
 requested physical targets, rejects duplicate scaling identities, and assigns
 deterministic per-era `chN` labels.
 
+For a recovered full-era campaign whose source manifests declare overlapping
+targets, repeat `--selected-unit MANIFEST_SHA256:ROW_ID:ATTEMPT_ID` for every
+authoritative successful unit. The manifest SHA is the hash of the original
+manifest bytes under which that unit's receipt was written. Supply each
+original manifest with `--matrix-manifest`; do not regenerate a restricted
+manifest from completed rows, because receipts bind to the original manifest
+SHA. The selected-unit route requires one valid current receipt for every
+listed unit, rejects duplicate selected targets and units, and requires exact
+coverage of the maintained `ALL_CH_LST_SR` full-era target set. Omitted or
+unknown selected units fail. Without `--selected-unit`, the original manifest
+surface behavior remains in effect and overlapping declarations are an error.
+The package provenance retains the actual source manifest hashes and selected
+unit count; the explicit invocation identifies the selected row/attempt receipts.
+
 For missing manifest-declared targets, the error identifies each applicable
 manifest and row ID and prints the runner's read-only `--status` and normal
 resume commands as guidance. Extra completed targets are listed separately.
