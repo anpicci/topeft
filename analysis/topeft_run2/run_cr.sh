@@ -548,13 +548,11 @@ cd -- "${script_dir}"
 validation_backend="${SRPLOT009_VALIDATION_BACKEND:-}"
 validation_root="${SRPLOT009_VALIDATION_ROOT:-}"
 validation_scenario="${SRPLOT009_VALIDATION_SCENARIO:-success}"
-native_wq_log_dir="${script_dir}"
+native_wq_log_dir=""
 if [[ -n "${validation_backend}" ]]; then
   case "${validation_root}" in /tmp/*) ;; *) echo "ERROR: SRPLOT009_VALIDATION_ROOT must be below /tmp." >&2; exit 1 ;; esac
   case "${validation_backend}" in /tmp/*) ;; *) echo "ERROR: SRPLOT009_VALIDATION_BACKEND must be below /tmp." >&2; exit 1 ;; esac
   [[ -x "${validation_backend}" ]] || { echo "ERROR: validation backend is not executable." >&2; exit 1; }
-  native_wq_log_dir="${validation_root}/native_logs"
-  mkdir -p -- "${native_wq_log_dir}"
 fi
 
 ###############################################################################
@@ -2357,11 +2355,18 @@ build_common_command_options() {
 
 native_wq_log_names=(debug.log tr.log stats.log tasks.log)
 
+set_native_wq_log_dir() {
+  local block_id="$1"
+  local stage="$2"
+  native_wq_log_dir="${output_dir}/work_queue_logs/${production_component}/${block_id}/${stage}_native"
+}
+
 assert_native_wq_logs_clean() {
   local name
+  mkdir -p -- "${native_wq_log_dir}"
   for name in "${native_wq_log_names[@]}"; do
     if [[ -e "${native_wq_log_dir}/${name}" ]]; then
-      echo "ERROR: unexpected generic Work Queue log requires ownership reconciliation before a new invocation: ${native_wq_log_dir}/${name}" >&2
+      echo "ERROR: owned Work Queue log already exists for this fragment and stage; refusing a new invocation: ${native_wq_log_dir}/${name}" >&2
       return 1
     fi
   done
@@ -2506,6 +2511,7 @@ run_cr_block() {
     echo "ERROR: unable to resolve expected output paths for ${production_block}." >&2
     exit 1
   fi
+  set_native_wq_log_dir "${production_block}" source
   source_sidecar_path="${source_path}.metadata.json"
   nonprompt_sidecar_path="${nonprompt_path}.metadata.json"
 
@@ -2643,6 +2649,7 @@ run_cr_block() {
   )
 
   build_common_command_options cmd
+  cmd+=(--wq-log-dir "${native_wq_log_dir}")
 
   local nonprompt_cmd=(
     python ./run_data_driven.py
@@ -2861,6 +2868,7 @@ run_sr_block() {
     echo "ERROR: unable to resolve expected output paths for ${production_block}." >&2
     exit 1
   fi
+  set_native_wq_log_dir "${production_block}" source
   source_sidecar_path="${source_path}.metadata.json"
   nonprompt_sidecar_path="${nonprompt_path}.metadata.json"
 
@@ -2962,6 +2970,7 @@ run_sr_block() {
   )
 
   build_common_command_options source_cmd
+  source_cmd+=(--wq-log-dir "${native_wq_log_dir}")
   local nonprompt_cmd=(
     python ./run_data_driven.py
     --input-pkl "${source_path}"
