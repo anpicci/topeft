@@ -66,3 +66,15 @@ def test_invalid_source_metadata_does_not_publish(tmp_path):
     with pytest.raises(ValueError, match="hash mismatch"):
         standardize_package(source, output)
     assert not output.exists()
+
+
+def test_arbitrary_card_names_use_mapping_era(tmp_path):
+    names = ("nebula_axis.txt", "quartz_window.txt", "cobalt_leaf.txt")
+    source, ordered = make_package(tmp_path, names, eras=("run2", "run3", "run2"))
+    output = tmp_path / "standardized"
+    provenance = standardize_package(source, output)
+    assert (output / "ordered_card_inputs.txt").read_text() == ordered
+    assert provenance["packaged_txt_count"] == len(names)
+    assert {path.name for path in (output / "cards").glob("*.txt")} == set(names)
+    for name, domain in zip(names, ("13TeV", "13p6TeV", "13TeV")):
+        assert f"CMS_pileup_{domain} shape" in (output / "cards" / name).read_text()

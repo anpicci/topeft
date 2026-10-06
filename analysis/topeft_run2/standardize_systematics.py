@@ -771,14 +771,6 @@ def _sha256(path):
     return digest.hexdigest()
 
 
-def _run_for_card(card_name):
-    if card_name.startswith("Run2_"):
-        return "run2"
-    if card_name.startswith("Run3_"):
-        return "run3"
-    raise ValueError(f"Card has no Run2/Run3 identity: {card_name}")
-
-
 def _register_identity(source_name, run, source_to_target, target_to_source):
     target_name = resolve_nuisance_name(source_name, run)
     source_key = (run, source_name)
@@ -808,7 +800,7 @@ def _root_key_identity(key):
     return process, variation.removesuffix(direction), direction
 
 
-def _read_package_inputs(input_package):
+def _read_package_inputs(input_package, source_rows):
     cards_dir = input_package / "cards"
     ordered_path = input_package / "ordered_card_inputs.txt"
     if not cards_dir.is_dir() or not ordered_path.is_file():
@@ -820,7 +812,7 @@ def _read_package_inputs(input_package):
         raise ValueError("Ordered card inputs do not match package TXT cards")
     pairs = []
     root_names = set()
-    for relative_card in ordered:
+    for relative_card, row in zip(ordered, source_rows):
         card_relative = Path(relative_card)
         if (len(card_relative.parts) != 2 or card_relative.parts[0] != "cards"
                 or card_relative.suffix != ".txt"):
@@ -842,7 +834,10 @@ def _read_package_inputs(input_package):
         if root_name in root_names:
             raise ValueError(f"Shapes ROOT file used by multiple cards: {root_name}")
         root_names.add(root_name)
-        pairs.append((card_path, root_path, _run_for_card(card_path.name)))
+        run = row["era"]
+        if run not in SYST_NAMING_MAP:
+            raise ValueError(f"Unsupported card era: {run}")
+        pairs.append((card_path, root_path, run))
     if root_names != {path.name for path in cards_dir.glob("*.root")}:
         raise ValueError("Shapes references do not match package ROOT files")
     return ordered_path, ordered, pairs
@@ -898,9 +893,9 @@ def standardize_package(input_package, output_package):
         raise FileExistsError(f"Output package already exists: {output_package}")
     if output_package.resolve().is_relative_to(input_package):
         raise ValueError("Output package must be outside the input package")
-    ordered_path, ordered, pairs = _read_package_inputs(input_package)
     _validate_source_members(input_package)
     source_rows, _, _ = _source_contract(input_package)
+    ordered_path, ordered, pairs = _read_package_inputs(input_package, source_rows)
     source_manifest = json.loads((input_package / "combined_mapping_manifest.json").read_text())
     source_provenance_path = input_package / "package-provenance.json"
     source_provenance = json.loads(source_provenance_path.read_text())

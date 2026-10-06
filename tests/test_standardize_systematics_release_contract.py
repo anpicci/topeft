@@ -39,7 +39,7 @@ def test_retired_efes_aliases_rejected(dm, period):
     assert resolve_nuisance_name(valid, "run3") == valid
 
 
-def make_package(tmp_path, card_names=("Run3_second.txt", "Run2_first.txt")):
+def make_package(tmp_path, card_names=("Run3_second.txt", "Run2_first.txt"), eras=None):
     source = tmp_path / "source"
     cards = source / "cards"
     cards.mkdir(parents=True)
@@ -62,7 +62,8 @@ def make_package(tmp_path, card_names=("Run3_second.txt", "Run2_first.txt")):
     mapping = {
         "schema": "TOP26006_v1", "artifact_type": "combined_mapping_manifest",
         "package_root": str(source), "rows": [
-            {"era": "run3" if name.startswith("Run3_") else "run2",
+            {"era": eras[index - 1] if eras is not None else
+                    ("run3" if name.startswith("Run3_") else "run2"),
              "physical_name": name.removesuffix(".txt"),
              "per_era_chN": f"ch{index}", "combined_chN": f"ch{index}",
              "combined_order_index": index, "destination_txt_name": name,
