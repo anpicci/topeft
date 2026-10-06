@@ -139,9 +139,38 @@ per-era builder does not reselect targets.
 
 `run_datacard_matrix_resumable.sh --plan-only MANIFEST` checks the plan;
 `--status MANIFEST` reports row state without running cards; passing
-`MANIFEST` runs or resumes eligible rows. The runner writes JSON receipts after
-checking declared outputs. Direct `make_cards.py` production has no manifest
-requirement.
+`MANIFEST` runs or reconciles eligible rows. There is no `--resume` flag.
+`attempt_id` in a v3 manifest remains the public successful-unit identity used
+by receipts and `--selected-unit MANIFEST_SHA256:ROW_ID:ATTEMPT_ID`. The runner
+derives a private numbered physical-attempt directory beside each row output
+directory; a failed physical attempt never acquires selected-unit authority.
+Already valid v2 receipts remain valid and are skipped without a new attempt.
+Direct `make_cards.py` production has no manifest requirement.
+
+The runner redirects row-owned producer output, merge report, and log writes
+into that private directory. After a zero return code it checks the declared
+nonempty TXT/ROOT outputs and control artifacts, snapshots the selection,
+scalings, and merge report, records sizes and SHA-256 values, and writes an
+attempt-local completion intent. It then creates the absent canonical row
+directory, marks it with a hardlink to that intent, publishes files without
+overwriting existing destinations, checks canonical bytes against the intent,
+and finally writes the existing receipt format. Publication is a checked
+sequence, not an atomic directory rename on the deployed NFS filesystem.
+The intent and marker distinguish recoverable process-crash windows; an
+unmarked or mismatched canonical directory fails closed. The byte checks do
+not establish physics validity or power-loss durability.
+
+`--status` is the row-state authority. It distinguishes `complete`,
+`not_started`, `active`, `partial_staging_attempt`,
+`complete_validated_staging_not_promoted`, `promoted_incomplete`,
+`promoted_complete_without_receipt`, `stale_owner_free_lock`,
+`held_lock_active_or_unknown`, `invalid_receipt`, and
+`canonical_collision_or_ambiguous_state`. A later explicit invocation starts a
+new private attempt after incomplete staging, or reconciles a complete
+validated attempt without rerunning the producer. A valid receipt remains the
+only completion authority. The dashboard renders runner status and receipt
+counts; it does not independently validate completion, physics, resources,
+scheduler state, or topology suitability.
 
 ## Per-era package interface
 

@@ -90,6 +90,40 @@ def test_dashboard_waits_for_absent_active_log(tmp_path):
     assert list(control_root.iterdir()) == []
 
 
+@pytest.mark.parametrize("state,label", [
+    ("stale_owner_free_lock", "[STALE OWNER]"),
+    ("partial_staging_attempt", "[PARTIAL]"),
+    ("complete_validated_staging_not_promoted", "[STAGED READY]"),
+    ("promoted_incomplete", "[PUBLISHING]"),
+    ("promoted_complete_without_receipt", "[RECEIPT PENDING]"),
+    ("held_lock_active_or_unknown", "[LOCK UNKNOWN]"),
+    ("invalid_receipt", "[INVALID RECEIPT]"),
+    ("canonical_collision_or_ambiguous_state", "[COLLISION]"),
+])
+def test_dashboard_renders_runner_recovery_state_without_claiming_completion(tmp_path, state, label):
+    dashboard, manifest, status_path, _ = dashboard_case(tmp_path)
+    payload = json.loads(status_path.read_text())
+    payload["rows"][1]["status"] = state
+    status_path.write_text(json.dumps(payload))
+    observed = run_once(dashboard, manifest)
+    assert observed.returncode == 0, observed.stderr
+    assert label in observed.stdout
+    assert "Execution units: 1 / 3" in observed.stdout
+    assert "does not establish physics validation" in observed.stdout
+
+
+def test_dashboard_uses_runner_active_log_path(tmp_path):
+    dashboard, manifest, status_path, control_root = dashboard_case(tmp_path)
+    staged_log = control_root / "staged.log"
+    staged_log.write_text("staged producer log\n")
+    payload = json.loads(status_path.read_text())
+    payload["rows"][1]["active_log_path"] = str(staged_log)
+    status_path.write_text(json.dumps(payload))
+    observed = run_once(dashboard, manifest)
+    assert observed.returncode == 0, observed.stderr
+    assert "staged producer log" in observed.stdout
+
+
 @pytest.mark.parametrize("change", ["wrong_schema", "row_mismatch", "unknown_state", "mutated"])
 def test_dashboard_rejects_inconsistent_status(tmp_path, change):
     dashboard, manifest, status_path, _ = dashboard_case(tmp_path)

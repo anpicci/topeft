@@ -195,9 +195,13 @@ command or output-check failure.
 After a successful row command, the runner checks the declared outputs, retains
 the row-specific merge report, snapshots `selectedWCs.txt`,
 `scalings-preselect.json`, and the merge report, hashes the primary TXT/ROOT
-outputs and every row-local control artifact (merge report, snapshots, and log),
-and atomically publishes an execution receipt. Receipt validation rechecks both
-size and SHA256; these checks do not assess the physics content.
+outputs and every row-local control artifact (merge report, snapshots, and log).
+Producer writes go first into a private numbered physical-attempt directory
+beside the canonical row output. After validation the runner writes an
+attempt-local completion intent, publishes canonical files without overwriting
+existing bytes, verifies the published sizes and SHA-256 values, then publishes
+the execution receipt. Receipt validation rechecks both size and SHA-256;
+these checks do not assess the physics content.
 
 On restart, a row is skipped only when its receipt matches the current manifest,
 argv, paths, runtime contract, and byte-bound artifacts. A valid immutable
@@ -213,22 +217,41 @@ runtime and execution-input availability and marks the overall plan not
 launch-ready when a required input is unavailable; completed rows are not
 penalized for unavailable historical execution inputs.
 
+The manifest `attempt_id` remains the public receipt and package
+`--selected-unit` identity. Physical attempt numbers are internal runner
+retries under that identity. There is no `--resume` flag and no automatic retry
+within a failing invocation; passing the same manifest again is the explicit
+rerun/reconciliation action. A valid receipt skips without a new physical
+attempt. An incomplete attempt is preserved, receives no completion authority,
+and a later explicit invocation uses a new noncolliding directory when the
+canonical row directory remains absent.
+
 Owner metadata is updated atomically under the OS lock before each row.
 `started_at` records when this runner acquired execution ownership and remains
 stable for that runner's lifetime; `current_row_started_at` records the start
-of the current row and changes with each row. `--status` reports
-`active` only when evidence has no receipt *and* the lock plus owner metadata
-identify that exact row/attempt; evidence with a free lock is
-`interrupted_requires_external_reconciliation`, even if stale owner JSON
-remains. `invalid_receipt` means recorded bytes no longer match.
+of the current row and changes with each row. `--status` reports `active` only
+when the held OS lock and owner metadata identify that row. A free lock makes
+matching owner metadata stale; `stale_owner_free_lock` is eligible for the
+normal invocation when no row bytes exist. The dashboard renders this status
+and tails the runner-reported staged log for an active row. It is not a
+scheduler, memory/resource, topology, physics, or independent completion check.
 
 Before each row launch, the held runner rechecks the runtime contract and
-freshly classifies the row. Only `not_started` launches; valid receipts skip,
-and `active`, interrupted, unreceipted, or invalid state blocks. External
-reconciliation must decide whether a new attempt is safe and, if so, supply a
-new attempt ID and non-overwriting paths. There is no automatic retry or
-output-existence shortcut. A runtime fingerprint change blocks before the next
-row.
+freshly classifies the row. `not_started`, `stale_owner_free_lock`, and
+`partial_staging_attempt` can launch a new physical attempt; valid receipts
+skip. `complete_validated_staging_not_promoted` is revalidated and published
+without running the producer. `promoted_incomplete` completes only missing
+files whose existing bytes match the attempt intent.
+`promoted_complete_without_receipt` publishes the missing receipt only after
+all canonical and control bytes match the validated attempt. A stale owner
+cannot override a held lock. An invalid receipt, unmarked canonical directory,
+mismatched bytes, malformed intent, or unknown lock ownership blocks with
+`invalid_receipt`, `canonical_collision_or_ambiguous_state`, or
+`held_lock_active_or_unknown`. Preserve these bytes and investigate the
+reported paths; do not delete them or rely on file counts. A crash between
+creating the canonical directory and linking its attempt marker is intentionally
+ambiguous and fails closed. A runtime fingerprint change blocks before the next
+producer launch; reconciliation uses its recorded successful runtime binding.
 
 The steps are:
 

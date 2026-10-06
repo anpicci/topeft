@@ -82,8 +82,11 @@ render_once() {
     ([.rows[].row_id] | unique | length) == ($source.rows | length) and
     ([.rows[] | select(.status == "active")] | length) <= 1 and
     ([.rows[] | .status] | all(. == "complete" or . == "active" or
-      . == "not_started" or . == "invalid_receipt" or
-      . == "interrupted_requires_external_reconciliation")) and
+      . == "not_started" or . == "stale_owner_free_lock" or
+      . == "partial_staging_attempt" or . == "complete_validated_staging_not_promoted" or
+      . == "promoted_incomplete" or . == "promoted_complete_without_receipt" or
+      . == "held_lock_active_or_unknown" or . == "invalid_receipt" or
+      . == "canonical_collision_or_ambiguous_state")) and
     (.lock_held == null or (.lock_held | type == "boolean")) and
     (.owner_metadata == null or (.owner_metadata | type == "object"))
   ' <<<"$status_json" >/dev/null 2>&1; then
@@ -96,8 +99,8 @@ render_once() {
       ($status.rows | length),
       ([$status.rows[] | select(.status == "complete")] | length),
       ([$status.rows[] | select(.status == "active")] | length),
-      ([$status.rows[] | select(.status == "not_started")] | length),
-      ([$status.rows[] | select(.status == "invalid_receipt" or .status == "interrupted_requires_external_reconciliation")] | length),
+      ([$status.rows[] | select(.status == "not_started" or .status == "stale_owner_free_lock")] | length),
+      ([$status.rows[] | select(.status != "complete" and .status != "active" and .status != "not_started" and .status != "stale_owner_free_lock")] | length),
       ([$source.rows[] | .physical_channels | length] | add // 0),
       ([$source.rows[] as $row | select(any($status.rows[]; .row_id == $row.row_id and .status == "complete")) | $row.physical_channels | length] | add // 0),
       ([$source.rows[] as $row | select(any($status.rows[]; .row_id == $row.row_id and .status == "active")) | $row.physical_channels | length] | add // 0),
@@ -132,19 +135,26 @@ render_once() {
   printf 'Active units   : %s (%s targets)  Pending: %s  Problems: %s  Lock: %s\n' \
     "$active_units" "$active_targets" "$pending_units" "$problem_units" "$lock_state"
   printf 'Current unit   : %s  Attempt: %s  Started: %s\n\n' "$active_row" "$active_attempt" "$started_at"
+  printf 'Status source  : runner --status and validated receipts only; this view does not establish physics validation, memory/resource validation, scheduler state, or topology suitability.\n\n'
 
-  printf '%-10s %-31s %-16s %-16s %4s  %s\n' STATE EXECUTION_UNIT LOGICAL_ROW ATTEMPT NCH PHYSICAL_CHANNELS
-  printf '%-10s %-31s %-16s %-16s %4s  %s\n' ---------- ------------------------------- ---------------- ---------------- ---- -----------------
+  printf '%-22s %-31s %-16s %-16s %4s  %s\n' STATE EXECUTION_UNIT LOGICAL_ROW ATTEMPT NCH PHYSICAL_CHANNELS
+  printf '%-22s %-31s %-16s %-16s %4s  %s\n' ---------------------- ------------------------------- ---------------- ---------------- ---- -----------------
   table=$(jq -r --slurpfile manifest "$manifest" '
     . as $status | $manifest[0].rows[] as $row |
     ($status.rows[] | select(.row_id == $row.row_id and .attempt_id == $row.attempt_id)) as $state |
     [($state.status | if . == "complete" then "[OK]" elif . == "active" then "[ACTIVE]"
-      elif . == "not_started" then "[PENDING]" else "[PROBLEM]" end),
+      elif . == "not_started" then "[PENDING]" elif . == "stale_owner_free_lock" then "[STALE OWNER]"
+      elif . == "partial_staging_attempt" then "[PARTIAL]"
+      elif . == "complete_validated_staging_not_promoted" then "[STAGED READY]"
+      elif . == "promoted_incomplete" then "[PUBLISHING]"
+      elif . == "promoted_complete_without_receipt" then "[RECEIPT PENDING]"
+      elif . == "held_lock_active_or_unknown" then "[LOCK UNKNOWN]"
+      elif . == "invalid_receipt" then "[INVALID RECEIPT]" else "[COLLISION]" end),
      $row.row_id, $row.attempt_id, $row.logical_row_id,
      ($row.physical_channels | length), ($row.physical_channels | join(","))] | @tsv
   ' <<<"$status_json") || die 'cannot join manifest rows with canonical status'
   while IFS=$'\t' read -r row_state row_id attempt logical_row target_count channels; do
-    printf '%-10s %-31s %-16s %-16s %4s  %s\n' "$row_state" "$row_id" "$logical_row" "$attempt" "$target_count" "$channels"
+    printf '%-22s %-31s %-16s %-16s %4s  %s\n' "$row_state" "$row_id" "$logical_row" "$attempt" "$target_count" "$channels"
   done <<<"$table"
 
   printf '\nCURRENT LOG\n-----------\n'
@@ -153,7 +163,11 @@ render_once() {
     return
   fi
   log_path=$(jq -r --arg row "$active_row" --arg attempt "$active_attempt" \
-    '[.rows[] | select(.row_id == $row and .attempt_id == $attempt) | .log_path][0] // empty' "$manifest")
+    '[.rows[] | select(.row_id == $row and .attempt_id == $attempt) | .active_log_path][0] // empty' <<<"$status_json")
+  if [[ -z $log_path ]]; then
+    log_path=$(jq -r --arg row "$active_row" --arg attempt "$active_attempt" \
+      '[.rows[] | select(.row_id == $row and .attempt_id == $attempt) | .log_path][0] // empty' "$manifest")
+  fi
   [[ -n $log_path ]] || die "active unit has no log path in manifest: $active_row"
   if [[ ! -e $log_path ]]; then
     printf '[waiting for log] %s\n' "$log_path"

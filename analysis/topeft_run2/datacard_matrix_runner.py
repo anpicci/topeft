@@ -27,6 +27,9 @@ RUNTIME_FIELDS = {"contract_id", "python_executable", "make_cards_path", "finger
 FINGERPRINT_FIELDS = {"path", "sha256"}
 ROW_FIELDS = {"row_id", "logical_row_id", "attempt_id", "era", "working_directory", "input_pkl", "output_root", "distribution", "physical_channels", "years", "missing_parton_path", "merge_report_path", "snapshot_directory", "log_path", "expected_output_paths", "producer_args"}
 SNAPSHOTS = {"selected_wcs": "selectedWCs.txt", "scalings": "scalings-preselect.json", "merge_report": "merge_report.json"}
+INTENT_SCHEMA = "topeft_datacard_attempt_intent_v1"
+INTENT_MARKER = ".datacard_attempt_intent.json"
+ATTEMPT_RE = re.compile(r"^attempt_([0-9]{6})$")
 
 
 class RunnerError(Exception):
@@ -147,7 +150,7 @@ def validate_row(row: Any, index: int, control_root: Path) -> dict[str, Any]:
             absolute(output, "expected_output_path").relative_to(Path(row["output_root"]))
         except ValueError as exc:
             raise RunnerError("manifest_schema_error", "expected outputs must be below output_root") from exc
-    if {"--condor", "-C", "--merge-only", "--select-only"}.intersection(args):
+    if {"--condor", "-C", "--merge-only", "--select-only", "--cache-merged-pkl"}.intersection(args):
         raise RunnerError("manifest_schema_error", "producer_args selects a non-row mode")
     if "--sr-registry" in args:
         raise RunnerError("manifest_schema_error", "v3 producer_args must not contain --sr-registry")
@@ -277,6 +280,12 @@ def validate_receipt(receipt: Any, manifest: dict[str, Any], manifest_hash: str,
     expected = {"schema": RECEIPT_SCHEMA, "manifest_sha256": manifest_hash, "row_id": row["row_id"], "attempt_id": row["attempt_id"], "resolved_argv": resolved_argv(manifest, row), "command_return_code": 0, "runtime_contract_id": runtime["contract_id"], "python_executable": runtime["python_executable"], "make_cards_path": runtime["make_cards_path"], "runtime_fingerprints": runtime["fingerprints"], "runtime_contract_digest": runtime_digest(runtime)}
     if any(receipt.get(key) != value for key, value in expected.items()):
         return False, "receipt contract does not match"
+    if "physical_attempt_id" in receipt or "execution_argv" in receipt:
+        physical = receipt.get("physical_attempt_id")
+        if not isinstance(physical, str) or not ATTEMPT_RE.fullmatch(physical):
+            return False, "physical attempt identity is invalid"
+        if receipt.get("execution_argv") != staged_argv(manifest, row, attempt_root(manifest_hash, row) / physical):
+            return False, "execution argv does not match physical attempt"
     if not all(isinstance(receipt.get(key), str) and receipt[key] for key in ("start_timestamp", "end_timestamp")):
         return False, "receipt timestamps missing"
     outputs = receipt.get("primary_outputs")
@@ -313,6 +322,112 @@ def probe_lock(path: Path) -> tuple[bool | None, str | None]:
         return None, f"{type(exc).__name__}: {exc}"
 
 
+def attempt_root(manifest_hash: str, row: dict[str, Any]) -> Path:
+    output = Path(row["output_root"])
+    return output.parent / f".{output.name}.{manifest_hash}.{row['attempt_id']}.attempts"
+
+
+def attempts(manifest_hash: str, row: dict[str, Any]) -> list[Path]:
+    root = attempt_root(manifest_hash, row)
+    if not root.exists():
+        return []
+    if not root.is_dir() or root.is_symlink():
+        raise RunnerError("canonical_collision_or_ambiguous_state", f"attempt namespace is not a directory: {root}", row_id=row["row_id"])
+    entries = sorted(root.iterdir())
+    if any(not ATTEMPT_RE.fullmatch(path.name) or not path.is_dir() or path.is_symlink() for path in entries):
+        raise RunnerError("canonical_collision_or_ambiguous_state", f"unexpected attempt namespace entry: {root}", row_id=row["row_id"])
+    return entries
+
+
+def staged_paths(row: dict[str, Any], attempt: Path) -> tuple[list[Path], dict[str, Path]]:
+    root = Path(row["output_root"])
+    outputs = [attempt / "cards" / Path(path).relative_to(root) for path in row["expected_output_paths"]]
+    artifacts = {
+        "merge_report": attempt / "merge_report.json",
+        "selected_wcs_snapshot": attempt / "snapshots" / SNAPSHOTS["selected_wcs"],
+        "scalings_snapshot": attempt / "snapshots" / SNAPSHOTS["scalings"],
+        "merge_report_snapshot": attempt / "snapshots" / SNAPSHOTS["merge_report"],
+        "log": attempt / "producer.log",
+    }
+    return outputs, artifacts
+
+
+def canonical_artifacts(row: dict[str, Any]) -> dict[str, Path]:
+    return {"merge_report": Path(row["merge_report_path"]), "selected_wcs_snapshot": snapshots(row)["selected_wcs"], "scalings_snapshot": snapshots(row)["scalings"], "merge_report_snapshot": snapshots(row)["merge_report"], "log": Path(row["log_path"])}
+
+
+def staged_argv(manifest: dict[str, Any], row: dict[str, Any], attempt: Path) -> list[str]:
+    # The first three argv entries identify the interpreter, producer and input.
+    argv = resolved_argv(manifest, row)
+    output_paths, _ = staged_paths(row, attempt)
+    destinations = {row["output_root"]: str(attempt / "cards"), row["merge_report_path"]: str(attempt / "merge_report.json")}
+    destinations.update(zip(row["expected_output_paths"], map(str, output_paths)))
+    return [*argv[:3], *(destinations.get(value, value) for value in argv[3:])]
+
+
+def valid_intent(manifest: dict[str, Any], manifest_hash: str, row: dict[str, Any], attempt: Path) -> tuple[bool, str, dict[str, Any] | None]:
+    path = attempt / "intent.json"
+    try:
+        intent = json.loads(path.read_text())
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        return False, str(exc), None
+    if not isinstance(intent, dict):
+        return False, "intent is not an object", None
+    expected = {"schema": INTENT_SCHEMA, "manifest_sha256": manifest_hash, "row_id": row["row_id"], "attempt_id": row["attempt_id"], "physical_attempt_id": attempt.name, "resolved_argv": resolved_argv(manifest, row), "execution_argv": staged_argv(manifest, row, attempt), "runtime_contract_digest": runtime_digest(manifest["runtime_contract"]), "command_return_code": 0}
+    if any(intent.get(key) != value for key, value in expected.items()):
+        return False, "intent identity or execution contract differs", None
+    if not all(isinstance(intent.get(key), str) and intent[key] for key in ("start_timestamp", "end_timestamp")):
+        return False, "intent timestamps missing", None
+    outputs, artifacts = staged_paths(row, attempt)
+    if not isinstance(intent.get("primary_outputs"), list) or len(intent["primary_outputs"]) != len(outputs) or any(path.is_symlink() or not valid_record(item, path) or path.stat().st_size == 0 for item, path in zip(intent["primary_outputs"], outputs)):
+        return False, "staged primary outputs differ from intent", None
+    if not isinstance(intent.get("artifacts"), dict) or set(intent["artifacts"]) != set(artifacts) or any(path.is_symlink() or not valid_record(intent["artifacts"][key], path) or path.stat().st_size == 0 for key, path in artifacts.items()):
+        return False, "staged control artifacts differ from intent", None
+    return True, "complete validated attempt", intent
+
+
+def candidate_attempt(manifest: dict[str, Any], manifest_hash: str, row: dict[str, Any], entries: list[Path]) -> tuple[Path, dict[str, Any]] | None:
+    candidates = []
+    for attempt in entries:
+        if (attempt / "intent.json").exists():
+            valid, reason, intent = valid_intent(manifest, manifest_hash, row, attempt)
+            if not valid:
+                raise RunnerError("canonical_collision_or_ambiguous_state", reason, row_id=row["row_id"])
+            candidates.append((attempt, intent))
+    if len(candidates) > 1:
+        raise RunnerError("canonical_collision_or_ambiguous_state", "multiple complete attempts for one public row", row_id=row["row_id"])
+    return candidates[0] if candidates else None
+
+
+def publication_state(row: dict[str, Any], attempt: Path, intent: dict[str, Any]) -> tuple[str, str]:
+    root = Path(row["output_root"])
+    marker = root / INTENT_MARKER
+    source_outputs, source_artifacts = staged_paths(row, attempt)
+    canonical_outputs = [Path(path) for path in row["expected_output_paths"]]
+    artifacts = canonical_artifacts(row)
+    if root.is_symlink():
+        return "canonical_collision_or_ambiguous_state", "canonical root is a symlink"
+    if not root.exists():
+        if any(path.exists() for path in artifacts.values()):
+            return "canonical_collision_or_ambiguous_state", "control artifact exists before canonical publication"
+        return "complete_validated_staging_not_promoted", "validated attempt awaits publication"
+    if not root.is_dir() or root.is_symlink() or not marker.is_file() or not os.path.samefile(marker, attempt / "intent.json"):
+        return "canonical_collision_or_ambiguous_state", "canonical directory has no matching attempt marker"
+    allowed = {marker, root / "selectedWCs.txt", root / "scalings-preselect.json", *canonical_outputs}
+    if any(path.is_symlink() or (path.is_file() and path not in allowed) or (path.is_dir() and not any(path in expected.parents for expected in allowed)) for path in root.rglob("*")):
+        return "canonical_collision_or_ambiguous_state", "unexpected canonical entry"
+    pairs = list(zip(canonical_outputs, intent["primary_outputs"]))
+    pairs += [(root / "selectedWCs.txt", record(source_artifacts["selected_wcs_snapshot"])), (root / "scalings-preselect.json", record(source_artifacts["scalings_snapshot"]))]
+    pairs += [(artifacts[key], intent["artifacts"][key]) for key in artifacts]
+    missing = False
+    for destination, source_record in pairs:
+        if not destination.exists():
+            missing = True
+        elif destination.is_symlink() or not valid_record({**source_record, "path": str(destination)}, destination):
+            return "canonical_collision_or_ambiguous_state", f"published bytes differ: {destination}"
+    return ("promoted_incomplete", "matching publication marker; missing canonical files") if missing else ("promoted_complete_without_receipt", "canonical bytes match validated attempt")
+
+
 def classify(manifest: dict[str, Any], manifest_hash: str, row: dict[str, Any], held: bool | None = None, owner: dict[str, Any] | None = None) -> dict[str, Any]:
     receipt = receipt_path(manifest, row)
     base = {"row_id": row["row_id"], "attempt_id": row["attempt_id"], "receipt_path": str(receipt)}
@@ -322,14 +437,34 @@ def classify(manifest: dict[str, Any], manifest_hash: str, row: dict[str, Any], 
         except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
             valid, reason = False, str(exc)
         return {**base, "status": "complete" if valid else "invalid_receipt", "reason": reason}
-    evidence = [str(path) for path in [*[Path(path) for path in row["expected_output_paths"]], Path(row["merge_report_path"]), Path(row["log_path"]), *snapshots(row).values()] if path.exists()]
-    if not evidence:
-        return {**base, "status": "not_started", "reason": "no row-owned artifacts"}
     held = probe_lock(Path(manifest["lock_path"]))[0] if held is None else held
     owner = read_owner(manifest) if owner is None else owner
     active = held is True and isinstance(owner, dict) and owner.get("schema_version") == OWNER_SCHEMA and owner.get("manifest_sha256") == manifest_hash and owner.get("current_row_id") == row["row_id"] and owner.get("current_attempt_id") == row["attempt_id"]
-    reason = "lock and owner identify current row" if active else "lock state is unknown; row-owned artifacts exist without valid receipt" if held is None else "row-owned artifacts exist without valid receipt"
-    return {**base, "status": "active" if active else "interrupted_requires_external_reconciliation", "reason": reason, "existing_paths": evidence}
+    stale_owner = held is False and isinstance(owner, dict) and owner.get("schema_version") == OWNER_SCHEMA and owner.get("manifest_sha256") == manifest_hash and owner.get("current_row_id") == row["row_id"] and owner.get("current_attempt_id") == row["attempt_id"]
+    if active:
+        return {**base, "status": "active", "reason": "lock and owner identify current row", "active_log_path": owner.get("current_log_path"), "stale_owner_free_lock": False}
+    try:
+        entries = attempts(manifest_hash, row)
+        candidate = candidate_attempt(manifest, manifest_hash, row, entries)
+        if candidate:
+            attempt, intent = candidate
+            status, reason = publication_state(row, attempt, intent)
+            return {**base, "status": status, "reason": reason, "physical_attempt_id": attempt.name, "stale_owner_free_lock": stale_owner}
+    except (RunnerError, OSError, ValueError) as exc:
+        return {**base, "status": "canonical_collision_or_ambiguous_state", "reason": str(exc), "stale_owner_free_lock": stale_owner}
+    canonical = Path(row["output_root"])
+    legacy = [str(path) for path in [Path(row["merge_report_path"]), Path(row["log_path"]), *snapshots(row).values()] if path.exists()]
+    if canonical.exists() or legacy:
+        return {**base, "status": "canonical_collision_or_ambiguous_state", "reason": "canonical or public control bytes have no validated attempt", "existing_paths": ([str(canonical)] if canonical.exists() else []) + legacy, "stale_owner_free_lock": stale_owner}
+    if held is None and entries:
+        return {**base, "status": "held_lock_active_or_unknown", "reason": "lock state unknown with attempt evidence", "stale_owner_free_lock": False}
+    if held is True and entries:
+        return {**base, "status": "held_lock_active_or_unknown", "reason": "lock held without matching row owner", "stale_owner_free_lock": False}
+    if entries:
+        return {**base, "status": "partial_staging_attempt", "reason": "incomplete attempt preserved; explicit rerun may start a fresh physical attempt", "physical_attempt_id": entries[-1].name, "stale_owner_free_lock": stale_owner}
+    if stale_owner:
+        return {**base, "status": "stale_owner_free_lock", "reason": "owner metadata is stale; OS lock is free", "stale_owner_free_lock": True}
+    return {**base, "status": "not_started", "reason": "no row-owned artifacts", "stale_owner_free_lock": False}
 
 
 def read_only(mode: str, manifest: dict[str, Any], manifest_hash: str) -> dict[str, Any]:
@@ -338,9 +473,9 @@ def read_only(mode: str, manifest: dict[str, Any], manifest_hash: str) -> dict[s
     rows = [classify(manifest, manifest_hash, row, held, owner) for row in manifest["rows"]]
     if mode == "plan_only":
         for row, status in zip(manifest["rows"], rows):
-            status["action"] = "skip" if status["status"] == "complete" else "execute" if status["status"] == "not_started" else "block"
+            status["action"] = "skip" if status["status"] == "complete" else "execute" if status["status"] in {"not_started", "stale_owner_free_lock", "partial_staging_attempt"} else "reconcile" if status["status"] in {"complete_validated_staging_not_promoted", "promoted_incomplete", "promoted_complete_without_receipt"} else "block"
             status["resolved_argv"] = resolved_argv(manifest, row)
-            if status["status"] == "not_started":
+            if status["action"] == "execute":
                 availability = execution_input_availability(manifest, row)
                 status["execution_input_availability"] = availability
                 if not availability["ready"]:
@@ -350,12 +485,12 @@ def read_only(mode: str, manifest: dict[str, Any], manifest_hash: str) -> dict[s
                 status["execution_input_availability"] = {
                     "required": False,
                     "checked": False,
-                    "ready": status["status"] == "complete",
-                    "reason": "valid receipt permits skip without historical execution inputs" if status["status"] == "complete" else "row state blocks before execution-input checks",
+                    "ready": status["action"] in {"skip", "reconcile"},
+                    "reason": "valid receipt permits skip without historical execution inputs" if status["action"] == "skip" else "validated attempt permits reconciliation without historical execution inputs" if status["action"] == "reconcile" else "row state blocks before execution-input checks",
                 }
     result = {"schema": "topeft_datacard_matrix_read_only_result_v2", "mode": mode, "manifest_sha256": manifest_hash, "runtime_contract_digest": runtime_digest(manifest["runtime_contract"]), "lock_held": held, "lock_probe_error": lock_probe_error, "owner_metadata": owner, "mutated": False, "rows": rows}
     if mode == "plan_only":
-        result["launch_ready"] = all(row["action"] in {"skip", "execute"} for row in rows)
+        result["launch_ready"] = all(row["action"] in {"skip", "execute", "reconcile"} for row in rows)
     return result
 
 
@@ -399,38 +534,117 @@ def copy_once(source: Path, destination: Path) -> None:
         temporary.unlink(missing_ok=True)
 
 
-def owner_payload(manifest: dict[str, Any], manifest_hash: str, owner_started_at: str, row: dict[str, Any] | None = None) -> dict[str, Any]:
+def owner_payload(manifest: dict[str, Any], manifest_hash: str, owner_started_at: str, row: dict[str, Any] | None = None, log_path: Path | None = None) -> dict[str, Any]:
     runtime = manifest["runtime_contract"]
-    return {"schema_version": OWNER_SCHEMA, "pid": os.getpid(), "hostname": socket.gethostname(), "started_at": owner_started_at, "manifest_sha256": manifest_hash, "lock_path": manifest["lock_path"], "current_row_id": row["row_id"] if row else None, "current_attempt_id": row["attempt_id"] if row else None, "current_row_started_at": now() if row else None, "python_executable": runtime["python_executable"], "make_cards_path": runtime["make_cards_path"]}
+    return {"schema_version": OWNER_SCHEMA, "pid": os.getpid(), "hostname": socket.gethostname(), "started_at": owner_started_at, "manifest_sha256": manifest_hash, "lock_path": manifest["lock_path"], "current_row_id": row["row_id"] if row else None, "current_attempt_id": row["attempt_id"] if row else None, "current_row_started_at": now() if row else None, "current_log_path": str(log_path) if log_path else None, "python_executable": runtime["python_executable"], "make_cards_path": runtime["make_cards_path"]}
 
 
-def execute_row(manifest: dict[str, Any], manifest_hash: str, row: dict[str, Any]) -> dict[str, Any]:
-    log = Path(row["log_path"]); log.parent.mkdir(parents=True, exist_ok=True)
+def publish_matching(source: Path, destination: Path, source_record: dict[str, Any]) -> None:
+    if destination.exists() or destination.is_symlink():
+        if destination.is_symlink():
+            raise RunnerError("canonical_collision_or_ambiguous_state", f"published path is a symlink: {destination}")
+        if not valid_record({**source_record, "path": str(destination)}, destination):
+            raise RunnerError("canonical_collision_or_ambiguous_state", f"published bytes differ: {destination}")
+        return
+    if source.is_symlink() or not valid_record(source_record, source) or source.stat().st_size == 0:
+        raise RunnerError("canonical_collision_or_ambiguous_state", f"staged source differs: {source}")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        os.link(source, destination)
+    except OSError as exc:
+        if exc.errno != 18:  # EXDEV: control_root may reside on another filesystem.
+            raise RunnerError("canonical_collision_or_ambiguous_state", f"cannot publish {destination}: {exc}") from exc
+        copy_once(source, destination)
+    if not valid_record({**source_record, "path": str(destination)}, destination):
+        raise RunnerError("canonical_collision_or_ambiguous_state", f"published bytes differ: {destination}")
+
+
+def reconcile_row(manifest: dict[str, Any], manifest_hash: str, row: dict[str, Any]) -> dict[str, Any]:
+    candidate = candidate_attempt(manifest, manifest_hash, row, attempts(manifest_hash, row))
+    if candidate is None:
+        raise RunnerError("canonical_collision_or_ambiguous_state", "no validated attempt for reconciliation", row_id=row["row_id"])
+    attempt, intent = candidate
+    state, reason = publication_state(row, attempt, intent)
+    if state not in {"complete_validated_staging_not_promoted", "promoted_incomplete", "promoted_complete_without_receipt"}:
+        raise RunnerError(state, reason, row_id=row["row_id"])
+    root = Path(row["output_root"])
+    if state == "complete_validated_staging_not_promoted":
+        try:
+            root.mkdir()  # Exclusive creation; a pre-existing directory is a collision.
+        except FileExistsError as exc:
+            raise RunnerError("canonical_collision_or_ambiguous_state", f"canonical destination exists: {root}", row_id=row["row_id"]) from exc
+        try:
+            os.link(attempt / "intent.json", root / INTENT_MARKER)
+        except OSError as exc:
+            raise RunnerError("canonical_collision_or_ambiguous_state", f"cannot mark canonical destination: {exc}", row_id=row["row_id"]) from exc
+    source_outputs, source_artifacts = staged_paths(row, attempt)
+    for source, destination, source_record in zip(source_outputs, map(Path, row["expected_output_paths"]), intent["primary_outputs"]):
+        publish_matching(source, destination, source_record)
+    for key, name in (("selected_wcs_snapshot", "selectedWCs.txt"), ("scalings_snapshot", "scalings-preselect.json")):
+        source = source_artifacts[key]
+        publish_matching(source, root / name, record(source))
+    for key, destination in canonical_artifacts(row).items():
+        publish_matching(source_artifacts[key], destination, intent["artifacts"][key])
+    state, reason = publication_state(row, attempt, intent)
+    if state != "promoted_complete_without_receipt":
+        raise RunnerError(state, reason, row_id=row["row_id"])
+    runtime = manifest["runtime_contract"]
+    receipt = {"schema": RECEIPT_SCHEMA, "manifest_sha256": manifest_hash, "row_id": row["row_id"], "attempt_id": row["attempt_id"], "physical_attempt_id": attempt.name, "resolved_argv": resolved_argv(manifest, row), "execution_argv": intent["execution_argv"], "start_timestamp": intent["start_timestamp"], "end_timestamp": intent["end_timestamp"], "command_return_code": 0, "runtime_contract_id": runtime["contract_id"], "python_executable": runtime["python_executable"], "make_cards_path": runtime["make_cards_path"], "runtime_fingerprints": runtime["fingerprints"], "runtime_contract_digest": runtime_digest(runtime), "primary_outputs": [record(Path(path)) for path in row["expected_output_paths"]], "artifacts": {key: record(path) for key, path in canonical_artifacts(row).items()}}
+    valid, reason = validate_receipt(receipt, manifest, manifest_hash, row)
+    if not valid:
+        raise RunnerError("canonical_collision_or_ambiguous_state", reason, row_id=row["row_id"])
+    final = receipt_path(manifest, row)
+    atomic_json(receipt, final, False)
+    valid, reason = validate_receipt(json.loads(final.read_text()), manifest, manifest_hash, row)
+    if not valid:
+        raise RunnerError("invalid_receipt", reason, row_id=row["row_id"])
+    return {"row_id": row["row_id"], "attempt_id": row["attempt_id"], "physical_attempt_id": attempt.name, "action": "reconciled", "receipt_path": str(final)}
+
+
+def execute_row(manifest: dict[str, Any], manifest_hash: str, row: dict[str, Any], owner_started_at: str) -> dict[str, Any]:
+    entries = attempts(manifest_hash, row)
+    next_index = int(entries[-1].name[-6:]) + 1 if entries else 1
+    if next_index > 999999:
+        raise RunnerError("canonical_collision_or_ambiguous_state", "physical attempt index exhausted", row_id=row["row_id"])
+    root = attempt_root(manifest_hash, row)
+    root.mkdir(parents=True, exist_ok=True)
+    attempt = root / f"attempt_{next_index:06d}"
+    attempt.mkdir()
+    log = attempt / "producer.log"
+    atomic_json(owner_payload(manifest, manifest_hash, owner_started_at, row, log), owner_path(manifest), True)
     try:
         handle = log.open("xb")
     except FileExistsError as exc:
-        raise RunnerError("interrupted_requires_external_reconciliation", f"log exists: {log}", row_id=row["row_id"]) from exc
-    argv, started = resolved_argv(manifest, row), now()
+        raise RunnerError("canonical_collision_or_ambiguous_state", f"log exists: {log}", row_id=row["row_id"]) from exc
+    argv, started = staged_argv(manifest, row, attempt), now()
     with handle:
-        handle.write((json.dumps({"row_id": row["row_id"], "attempt_id": row["attempt_id"], "resolved_argv": argv, "start_timestamp": started}, sort_keys=True) + "\n").encode())
+        handle.write((json.dumps({"row_id": row["row_id"], "attempt_id": row["attempt_id"], "physical_attempt_id": attempt.name, "resolved_argv": resolved_argv(manifest, row), "execution_argv": argv, "start_timestamp": started}, sort_keys=True) + "\n").encode())
         handle.flush()
         completed = subprocess.run(argv, cwd=row["working_directory"], stdout=handle, stderr=subprocess.STDOUT, check=False)
         os.fsync(handle.fileno())
     if completed.returncode:
         raise RunnerError("row_command_failed", f"direct producer argv returned {completed.returncode}; no retry was attempted", row_id=row["row_id"])
-    output_paths = [Path(path) for path in row["expected_output_paths"]]
+    output_paths, staged_artifacts = staged_paths(row, attempt)
     if any(not path.is_file() or path.stat().st_size == 0 for path in output_paths):
         raise RunnerError("expected_output_check_failed", "expected output missing or empty", row_id=row["row_id"])
-    root, merge = Path(row["output_root"]), Path(row["merge_report_path"])
-    sources = {"selected_wcs": root / "selectedWCs.txt", "scalings": root / "scalings-preselect.json", "merge_report": merge}
-    destinations = snapshots(row)
+    stage_root, merge = attempt / "cards", attempt / "merge_report.json"
+    sources = {"selected_wcs": stage_root / "selectedWCs.txt", "scalings": stage_root / "scalings-preselect.json", "merge_report": merge}
+    destinations = {key: staged_artifacts[f"{key}_snapshot"] if key != "merge_report" else staged_artifacts["merge_report_snapshot"] for key in sources}
     for key, source in sources.items():
         copy_once(source, destinations[key])
-    runtime = manifest["runtime_contract"]
-    receipt = {"schema": RECEIPT_SCHEMA, "manifest_sha256": manifest_hash, "row_id": row["row_id"], "attempt_id": row["attempt_id"], "resolved_argv": argv, "start_timestamp": started, "end_timestamp": now(), "command_return_code": completed.returncode, "runtime_contract_id": runtime["contract_id"], "python_executable": runtime["python_executable"], "make_cards_path": runtime["make_cards_path"], "runtime_fingerprints": runtime["fingerprints"], "runtime_contract_digest": runtime_digest(runtime), "primary_outputs": [record(path) for path in output_paths], "artifacts": {"merge_report": record(merge), "selected_wcs_snapshot": record(destinations["selected_wcs"]), "scalings_snapshot": record(destinations["scalings"]), "merge_report_snapshot": record(destinations["merge_report"]), "log": record(log)}}
-    final = receipt_path(manifest, row)
-    atomic_json(receipt, final, False)
-    return {"row_id": row["row_id"], "attempt_id": row["attempt_id"], "action": "executed", "receipt_path": str(final)}
+    for path in [*output_paths, *sources.values(), *staged_artifacts.values()]:
+        if path.is_symlink() or not path.is_file():
+            raise RunnerError("expected_output_check_failed", f"staged artifact is not a regular file: {path}", row_id=row["row_id"])
+        with path.open("rb") as source_handle:
+            os.fsync(source_handle.fileno())
+    intent = {"schema": INTENT_SCHEMA, "manifest_sha256": manifest_hash, "row_id": row["row_id"], "attempt_id": row["attempt_id"], "physical_attempt_id": attempt.name, "resolved_argv": resolved_argv(manifest, row), "execution_argv": argv, "runtime_contract_digest": runtime_digest(manifest["runtime_contract"]), "command_return_code": 0, "start_timestamp": started, "end_timestamp": now(), "primary_outputs": [record(path) for path in output_paths], "artifacts": {key: record(path) for key, path in staged_artifacts.items()}}
+    atomic_json(intent, attempt / "intent.json", False)
+    valid, reason, _ = valid_intent(manifest, manifest_hash, row, attempt)
+    if not valid:
+        raise RunnerError("canonical_collision_or_ambiguous_state", reason, row_id=row["row_id"])
+    result = reconcile_row(manifest, manifest_hash, row)
+    result["action"] = "executed"
+    return result
 
 
 def execute(manifest: dict[str, Any], manifest_hash: str) -> dict[str, Any]:
@@ -444,24 +658,26 @@ def execute(manifest: dict[str, Any], manifest_hash: str) -> dict[str, Any]:
         owner_started_at = now()
         try:
             for row in manifest["rows"]:
-                state = classify(manifest, manifest_hash, row, True, read_owner(manifest))
-                if state["status"] not in {"not_started", "complete"}:
+                state = classify(manifest, manifest_hash, row, False, read_owner(manifest))
+                if state["status"] not in {"not_started", "complete", "stale_owner_free_lock", "partial_staging_attempt", "complete_validated_staging_not_promoted", "promoted_incomplete", "promoted_complete_without_receipt"}:
                     raise RunnerError(state["status"], state["reason"], row_id=row["row_id"])
             atomic_json(owner_payload(manifest, manifest_hash, owner_started_at), owner_path(manifest), True)
             results: list[dict[str, Any]] = []
             for row in manifest["rows"]:
-                state = classify(manifest, manifest_hash, row, True, read_owner(manifest))
+                state = classify(manifest, manifest_hash, row, False, read_owner(manifest))
                 if state["status"] == "complete":
                     results.append({"row_id": row["row_id"], "attempt_id": row["attempt_id"], "action": "skipped_valid_receipt", "receipt_path": state["receipt_path"]}); continue
-                if state["status"] != "not_started":
+                if state["status"] in {"complete_validated_staging_not_promoted", "promoted_incomplete", "promoted_complete_without_receipt"}:
+                    results.append(reconcile_row(manifest, manifest_hash, row))
+                    continue
+                if state["status"] not in {"not_started", "stale_owner_free_lock", "partial_staging_attempt"}:
                     raise RunnerError(state["status"], state["reason"], row_id=row["row_id"])
                 validate_runtime(manifest["runtime_contract"])
                 validate_row_inputs(row)
-                fresh = classify(manifest, manifest_hash, row, True, read_owner(manifest))
-                if fresh["status"] != "not_started":
+                fresh = classify(manifest, manifest_hash, row, False, read_owner(manifest))
+                if fresh["status"] not in {"not_started", "stale_owner_free_lock", "partial_staging_attempt"}:
                     raise RunnerError(fresh["status"], fresh["reason"], row_id=row["row_id"])
-                atomic_json(owner_payload(manifest, manifest_hash, owner_started_at, row), owner_path(manifest), True)
-                results.append(execute_row(manifest, manifest_hash, row))
+                results.append(execute_row(manifest, manifest_hash, row, owner_started_at))
                 atomic_json(owner_payload(manifest, manifest_hash, owner_started_at), owner_path(manifest), True)
             return {"schema": "topeft_datacard_matrix_execution_result_v2", "manifest_sha256": manifest_hash, "rows": results}
         finally:
