@@ -397,6 +397,24 @@ check an existing package against the same Run 2 and Run 3 inputs. Fit
 configuration determines the Wilson coefficients used when building the
 workspace.
 
+## Standardize a certified combined package
+
+For the current `TOP26006_v1` package schema, run from the repository root:
+
+```bash
+python analysis/topeft_run2/standardize_systematics.py \
+  --input-package /absolute/path/to/certified-combined-package \
+  --output-package /absolute/path/to/fresh-standardized-sibling
+```
+
+The input and output must differ, and the destination must be fresh. The input
+package is not modified. The mapping row's `run2` or `run3` era selects the
+naming map; card filenames and card count do not select it. This operates on
+final TXT/ROOT datacards, preserving their already-realized correlation
+topology, card order, EFT scalings, and logical mapping. The sibling is still
+a datacard package. See the [nuisance reference](../reference/datacards_and_scalings.md)
+for exact identities and failure boundaries.
+
 `ordered_card_inputs.txt` lists cards in combination order. From the combined
 package directory, follow its generated README:
 

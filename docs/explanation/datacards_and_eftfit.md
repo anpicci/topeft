@@ -43,6 +43,17 @@ The result includes `combined_mapping_manifest.json`, `scalings.json`,
 `ordered_card_inputs.txt`, provenance, and a README. It does not
 produce a combined `selectedWCs.txt` or `combinedcard.txt`.
 
+`DatacardMaker` has already realized the final nuisance correlation groups in
+the individual TXT/ROOT cards before combination or standardization. The
+certified `TOP26006_v1` combined package is the card-level input authority.
+`standardize_systematics.py` may rename its final TXT nuisances and matching
+ROOT keys into a fresh standardized sibling; it preserves the realized
+correlation topology, card order, EFT scalings, and logical mapping. The
+maintained `build_fit_input_package.py` intake accepts either package under
+the same package contract. This is a pre-workspace handoff: the standardized
+sibling is a datacard package, not `combinedcard.txt`, a workspace, a fit, or
+an impacts result.
+
 ## Repository boundary
 
 `ordered_card_inputs.txt` lists the cards in the order used for combination.

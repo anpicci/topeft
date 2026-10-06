@@ -377,6 +377,57 @@ variation labels own the candidate shape inputs; the missing-parton contract
 owns its category/payload layout; sumw2 owns statistical companions; and the
 binning resolver owns the exact processing-to-fitting view.
 
+### Final nuisance identities
+
+The source variation label is an input, not necessarily the final card nuisance
+identity. `DatacardMaker` applies `syst_year_corr` in `correlate_years(...)`
+while merging periods, then writes the final TXT nuisance rows and paired ROOT
+templates. For Run 3 DeepTau2018v2p5 `VSmu`, its source/period check rejects
+ambiguous or mismatched legacy labels; the maintained final groups are
+2022 with 2022EE and 2023 with 2023BPix, separately for each eta bin. Run 3
+electron-fake tau energy scales (`genElectron`, decay modes 0, 1, 10, 11)
+use the same two year groups. Run 2 DeepTau2017v2p1 `VSe`, `VSmu`, genuine-tau
+energy scales, and electron-fake tau energy scales for decay modes 0 and 1
+group 2016 with 2016APV; 2017 and 2018 retain separate year identities.
+Other tau families have their own final identities; inspect the focused test
+before inferring a shared year domain from a family name.
+
+The package naming map distinguishes `lepSF_elec_mva`, `lepSF_muon_mva`,
+`lepSF_elec_non_mva`, and `lepSF_muon_non_mva`: each has a `13TeV` Run 2
+identity and a `13p6TeV` Run 3 identity. `PU` becomes `CMS_pileup_13TeV` or
+`CMS_pileup_13p6TeV`; `MET_UnclusteredEnergy` becomes
+`CMS_scale_met_Unclustred_energy_13TeV` or
+`CMS_scale_met_Unclustred_energy_13p6TeV` (the spelling is maintained).
+`PreFiring` maps to `CMS_l1_ecal_prefiring` in the naming map; this identity
+does not assert a nonzero effect in every era or package. The luminosity
+identities include Run 2 `lumi_13TeV_1516_l`, `lumi_13TeV_151617_l`, and
+`lumi_13TeV_15161718_l`, and Run 3 `lumi_1` and `lumi_2`. Theory rate and
+shape aliases are specified by the era entries in `SYST_NAMING_MAP`; their
+names alone do not establish a blanket process or year correlation rule.
+
+These are current implementation contracts in
+[`datacard_tools.py`](../../topeft/modules/datacard_tools.py) and
+[`standardize_systematics.py`](../../analysis/topeft_run2/standardize_systematics.py),
+with focused checks in
+[`test_tau_datacard_correlation.py`](../../tests/test_tau_datacard_correlation.py),
+[`test_standardize_systematics_tau_year_correlation.py`](../../tests/test_standardize_systematics_tau_year_correlation.py),
+and [`test_standardize_systematics_release_contract.py`](../../tests/test_standardize_systematics_release_contract.py).
+
+### Package standardizer
+
+`standardize_systematics.py` accepts a certified `TOP26006_v1` combined
+datacard package through `--input-package` and a distinct, absent destination
+through `--output-package`. Its `SYST_NAMING_MAP` selects final names from each
+mapping row's `run2` or `run3` era. It renames TXT shape and rate nuisance rows
+and matching ROOT systematic keys, rejecting nuisance and ROOT-key collisions.
+It copies card order and EFT scalings, preserves logical mapping rows, and
+writes a fresh package with updated provenance. It does not reconstruct
+correlations from PKLs, choose scientific year groups, or construct a workspace.
+The card maker has already realized the correlation topology before this
+rename. The [package procedure](../how_to/datacards_and_scalings.md) and
+[artifact boundary](../explanation/datacards_and_eftfit.md) give the operating
+context.
+
 The ineffective legacy rate/envelope override is not an active default.
 Current era-selected rate-systematic files and the implemented consumer remain
 authority. Numeric inputs and current effects can be documented without
