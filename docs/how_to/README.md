@@ -10,6 +10,7 @@ ownership boundaries.
 ## Current production and downstream tasks
 
 - [Run or extend histogram production](production.md)
+- [Produce and qualify SR-reco extension PKLs](sr_reco_pkl_campaign.md)
 - [Change objects, selections, or triggers](objects_selections_and_triggers.md)
 - [Change corrections, weights, or systematics](corrections_weights_and_systematics.md)
 - [Change categories or observables](categories_and_observables.md)

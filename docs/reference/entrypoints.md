@@ -8,7 +8,7 @@ layer retains. It is a lookup page, not a production recipe. See the
 
 | Component | Kind and status | Inputs | Defaults and outputs | Failure boundary |
 | --- | --- | --- | --- | --- |
-| `analysis/topeft_run2/run_cr.sh` | Maintained production-profile wrapper | `--production-profile`, a fresh absolute `--output-dir`, and `--campaign-tag`; optional `--env-file`, `--resume`, and `--dry-run` | Eight public Run 2/Run 3 SR+CR profiles; campaign state plus source/transformed PKLs and sidecars | Rejects missing or mismatched state, a reused fresh namespace, invalid archives, ambiguous interruption, and incomplete outputs |
+| `analysis/topeft_run2/run_cr.sh` | Maintained production-profile wrapper | `--production-profile`, an absolute `--output-dir`, and `--campaign-tag`; optional `--env-file`, `--resume`, and `--dry-run` | Ten public Run 2/Run 3 SR+CR and SR-reco extension profiles; campaign state plus source/transformed PKLs and sidecars | Rejects missing or mismatched state, a reused fresh namespace, invalid archives, ambiguous interruption, and incomplete outputs |
 | `analysis/topeft_run2/fullR3_run.sh` | Maintained command/configuration wrapper | Years, exactly one of `--cr` or `--sr`, optional histogram/input/output overrides, and forwarded analysis options | Year/config-dependent `run_analysis.py` command | Rejects conflicting input overrides, missing cfg/JSON inputs, and unsupported region/year combinations |
 | `analysis/topeft_run2/run_analysis.py` | Direct developer CLI | Sample JSON/cfg expression and CLI or YAML options | Executor `work_queue`; 8 workers; chunksize 100000; `histos/plotsTopEFT.pkl.gz` | Validates executor, active sample universe, categories, environment, policies, and artifact contracts at their owning boundaries |
 | `analysis/topeft_run2/run_data_driven.py` | Direct transformed-artifact CLI | A validated source PKL/sidecar and requested data-driven product | Streaming input; output name derived from the input when omitted | Rejects missing/incompatible sidecars, uncertified input policy, invalid product requests, and incomplete transformed companions |
@@ -35,8 +35,8 @@ state to resume without confusing partial, stale, or mismatched output.
 
 | Input | Type/requirement/default | Semantics |
 | --- | --- | --- |
-| `--production-profile` | Required public profile: `run2_full`, `run3_full`, `run2_full_CR`, `run3_full_CR`, `run2_run3_full`, `run2_run3_full_CR`, `t0_sr_statonly`, or `t0_cr_statonly` | Selects the hard-coded maintained block plan. It is not a free-form config path. `rebin_fine` remains a specialist legacy profile with its own explicit environment requirement. |
-| `--output-dir` | Required fresh absolute path for a new campaign | Owns state, logs, and produced artifacts. Existing state is accepted only through compatible resume behavior. |
+| `--production-profile` | Required public profile: `run2_full`, `run3_full`, `run2_full_CR`, `run3_full_CR`, `run2_run3_full`, `run2_run3_full_CR`, `run2_sr_ext`, `run3_sr_ext`, `t0_sr_statonly`, or `t0_cr_statonly` | Selects the maintained block plan. `run2_sr_ext` uses inline data-driven production; `run3_sr_ext` uses a deferred local stage. `rebin_fine` remains a specialist legacy profile with its own explicit environment requirement. |
+| `--output-dir` | Required absolute path; fresh for a new campaign root | Owns state, logs, and produced artifacts. The SR-reco Run 3 component follows successful Run 2 in its reviewed shared root; it does not repeat the initial root-absence gate. Existing state otherwise follows profile-specific compatibility and resume behavior. |
 | `--campaign-tag` | Required non-empty string | Portable campaign identity recorded with state. |
 | `--env-file` | Optional absolute path | When omitted, resolves or creates the current worker environment. When supplied, selects exactly that archive as an intentional snapshot: integrity/provenance validation remains required, but current-checkout compatibility does not. The wrapper freezes the mode, resolved path, hash, fingerprint, and source identity; combined profiles forward the same explicit snapshot to both components. |
 | `--resume` | Boolean, default false | Reopens compatible campaign state and mechanically selects incomplete blocks/stages. |
@@ -47,7 +47,8 @@ state, and, for the maintained deferred path, invokes `run_data_driven.py` only
 after the heavy processor child exits. It does not own selections, processor
 physics, bin edges, or artifact schemas. Extend a profile by changing its one
 block-plan owner and the production-profile tests; do not copy its defaults into
-another wrapper.
+another wrapper. The [SR-reco campaign guide](../how_to/sr_reco_pkl_campaign.md)
+specifies the conditional Run 2 then Run 3 operation and evidence review.
 
 ### `analysis/topeft_run2/fullR3_run.sh`
 
@@ -76,11 +77,12 @@ pair.
 | --- | --- | --- |
 | Positional `jsonFiles` | Optional path/expression, default empty string | Sample JSON or cfg authority. Higher wrappers normally supply it. |
 | Executor/resources | `--executor work_queue` by default; workers 8; chunksize 100000; optional chunks/prefix/tree | Executor names are validated later by the execution branch; parser acceptance alone is not support. |
+| Work Queue logs | Optional `--wq-log-dir PATH`; otherwise `<outpath>/work_queue_logs/<outname>/source_native/` | Owns native `debug.log`, `tr.log`, `stats.log`, and `tasks.log`; refuses existing owned log paths. Campaign profiles supply a component/block-specific directory and archive verified logs under `source/`. |
 | Output | `--outname plotsTopEFT`, `--outpath histos` | Publishes `<outpath>/<outname>.pkl.gz` and adjacent metadata. Existing/output safety is owned by the writer path. |
 | Scope | Optional years, histogram list, category groups, WC list | Filters the resolved input/processor family universe. Names are validated before or during processor construction. |
 | Analysis flags | Off-Z, tau, forward, or all-analysis; default none | Mutually exclusive mode selectors. `--analysis-mode` accepts `standard` or `taufitter`, default `standard`. |
 | Sumw2/systematics | Modern YAML `sumw2_storage`; deprecated `--no-sumw2`; `--do-systs` | Modern policy is resolved before processing. Legacy statistical inputs have explicit compatibility/conflict handling. |
-| Raw-count diagnostics | `--record-raw-count`; YAML `record_raw_count`; default false | Records per-bin selected nominal-MC event counts for histograms used by the fitting configuration. The six full-production profiles leave raw-count recording disabled. The two stat-only diagnostic profiles, `t0_sr_statonly` and `t0_cr_statonly`, enable it. |
+| Raw-count diagnostics | `--record-raw-count`; YAML `record_raw_count`; default false | Records per-bin selected nominal-MC event counts for histograms used by the fitting configuration. Ordinary full-production and SR-reco extension profiles leave raw-count recording disabled. The two stat-only diagnostic profiles, `t0_sr_statonly` and `t0_cr_statonly`, enable it. |
 | Nonprompt | `--do-np`; `--np-postprocess` in `inline`, `defer`, `skip`, default `inline` | Inline publishes a transformed artifact; defer prints a direct follow-up command; skip omits transformation. |
 | Environment | Optional archive/rebuild/prepare/snapshot/no-remote controls | Owns worker-environment preparation/validation, not package installation. |
 | YAML overlay | `--options FILE` | One mapping loaded after CLI-derived values; recognized YAML values replace corresponding CLI values. See the exact caveat in production configuration. |
@@ -252,11 +254,13 @@ derived values in the implemented path.
 ## `run_cr.sh` production interface
 
 The public production profiles are `run2_full`, `run3_full`, `run2_full_CR`,
-`run3_full_CR`, `run2_run3_full`, `run2_run3_full_CR`, `t0_sr_statonly`, and
-`t0_cr_statonly`; no arguments retain the legacy `run2_full` alias.
+`run3_full_CR`, `run2_run3_full`, `run2_run3_full_CR`, `run2_sr_ext`,
+`run3_sr_ext`, `t0_sr_statonly`, and `t0_cr_statonly`; no arguments retain the
+legacy `run2_full` alias.
 `rebin_fine` is a specialist legacy profile and requires an explicit
-environment archive. Public profiles require fresh output namespaces, an
-absolute output directory, and a campaign tag.
+environment archive. New campaign roots require fresh output namespaces, an
+absolute output directory, and a campaign tag; the SR-reco Run 3 component
+uses the reviewed root already established by Run 2.
 
 For a fresh maintained campaign, no `--env-file` means resolve or create the
 current worker environment for the checkout. An explicit absolute

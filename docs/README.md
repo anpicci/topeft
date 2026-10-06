@@ -36,6 +36,7 @@ and is not a substitute for these current tutorials.
 ### Production and artifacts
 
 - [Run or extend the production entrypoints](how_to/production.md)
+- [Produce and qualify SR-reco extension PKLs](how_to/sr_reco_pkl_campaign.md)
 - [Change sample roles or normalization inputs](how_to/sample_roles_and_normalization.md)
 - [Produce and recover data-driven nonprompt artifacts](how_to/nonprompt.md)
 - [Run with Work Queue](how_to/work_queue.md)
