@@ -57,7 +57,33 @@ def make_package(tmp_path, card_names=("Run3_second.txt", "Run2_first.txt")):
                     root_file[f"ttH_sm_{source_name}{direction}"] = histogram
     ordered = "".join(f"cards/{card_name}\n" for card_name in card_names)
     (source / "ordered_card_inputs.txt").write_text(ordered)
-    (source / "package-provenance.json").write_text("{}\n")
+    (source / "scalings.json").write_text('[{"channel": "ch1"}]\n')
+    (source / "README.md").write_text("Source datacard package\n")
+    mapping = {
+        "schema": "TOP26006_v1", "artifact_type": "combined_mapping_manifest",
+        "package_root": str(source), "rows": [
+            {"era": "run3" if name.startswith("Run3_") else "run2",
+             "physical_name": name.removesuffix(".txt"),
+             "per_era_chN": f"ch{index}", "combined_chN": f"ch{index}",
+             "combined_order_index": index, "destination_txt_name": name,
+             "destination_root_name": name.replace(".txt", "_shapes.root")}
+            for index, name in enumerate(card_names, 1)
+        ],
+    }
+    (source / "combined_mapping_manifest.json").write_text(json.dumps(mapping) + "\n")
+    provenance = {
+        "schema": "TOP26006_v1", "artifact_type": "package_provenance",
+        "analysis": "TOP-26-006", "package_root": str(source),
+        "package_version": "v1", "package_date": "261005",
+        "assembler_commit": "a" * 40, "assembler_source_sha256": "b" * 64,
+        "source_mapping_sha256": {"run2": "c" * 64, "run3": "d" * 64},
+        "source_scalings_sha256": {"run2": "e" * 64, "run3": "f" * 64},
+        "manifest_sha256": hashlib.sha256((source / "combined_mapping_manifest.json").read_bytes()).hexdigest(),
+        "ordered_card_inputs_sha256": hashlib.sha256(ordered.encode()).hexdigest(),
+        "scalings_sha256": hashlib.sha256((source / "scalings.json").read_bytes()).hexdigest(),
+        "packaged_txt_count": len(card_names), "packaged_root_count": len(card_names),
+    }
+    (source / "package-provenance.json").write_text(json.dumps(provenance) + "\n")
     return source, ordered
 
 
@@ -70,21 +96,15 @@ def test_ordered_pairing_provenance_and_existing_output(tmp_path):
         "Run3_second.txt", "Run2_first.txt",
         "Run3_second_shapes.root", "Run2_first_shapes.root",
     }
-    assert provenance == json.loads((output / "derivative-provenance.json").read_text())
-    assert provenance["source_release_path"] == str(source)
-    assert provenance["source_ordered_card_inputs_sha256"] == hashlib.sha256(
-        ordered.encode()
+    assert provenance == json.loads((output / "package-provenance.json").read_text())
+    assert provenance["standardization"]["source_package_root"] == str(source)
+    assert provenance["standardization"]["source_package_provenance_sha256"] == hashlib.sha256(
+        (source / "package-provenance.json").read_bytes()
     ).hexdigest()
-    assert provenance["source_package_provenance_sha256"] == hashlib.sha256(
-        b"{}\n"
-    ).hexdigest()
-    assert provenance["input_card_count"] == provenance["output_card_count"] == 2
-    assert provenance["generated_member_counts"]["root_files"] == 2
+    assert provenance["packaged_txt_count"] == provenance["packaged_root_count"] == 2
     readme = (output / "README.md").read_text()
-    assert "reviewer/Combine derivative" in readme
-    assert "not the certified lane_09 fit-input authority" in readme
-    assert "inherited from the input datacards" in readme
-    assert "naming/interface transformation only" in readme
+    assert "Drop-in datacard-package input" in readme
+    assert "not a combined card, workspace, or fit result" in readme
     for card_name, domain in (("Run3_second.txt", "13p6TeV"),
                               ("Run2_first.txt", "13TeV")):
         card_text = (output / "cards" / card_name).read_text()

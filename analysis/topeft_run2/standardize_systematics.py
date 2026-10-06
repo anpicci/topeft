@@ -2,6 +2,7 @@ import os
 import shutil
 import argparse
 import hashlib
+from datetime import datetime, timezone
 from pathlib import Path
 import uproot
 import hist
@@ -9,6 +10,9 @@ import json
 import numpy as np
 import boost_histogram as bh
 import topcoffea.modules.utils as utils
+from analysis.topeft_run2.build_fit_input_package import _source_contract, _validate_source_members
+
+accepted_mapping_commit = "013d9de2b53ad2f0eb5cfae5e47e5d796b07fe1f"
 
 stale_run2_tau_apv_bases = frozenset({
     "CMS_fake_t_DeepTau2017v2p1_VSe_abseta0to1p5",
@@ -895,6 +899,18 @@ def standardize_package(input_package, output_package):
     if output_package.resolve().is_relative_to(input_package):
         raise ValueError("Output package must be outside the input package")
     ordered_path, ordered, pairs = _read_package_inputs(input_package)
+    _validate_source_members(input_package)
+    source_rows, _, _ = _source_contract(input_package)
+    source_manifest = json.loads((input_package / "combined_mapping_manifest.json").read_text())
+    source_provenance_path = input_package / "package-provenance.json"
+    source_provenance = json.loads(source_provenance_path.read_text())
+    if (source_manifest.get("package_root") != str(input_package)
+            or source_provenance.get("package_root") != str(input_package)):
+        raise ValueError("Input metadata package root does not identify the input package")
+    if len(source_manifest["rows"]) != len(pairs):
+        raise ValueError("Input mapping and card population differ")
+    if source_manifest["rows"] != source_rows:
+        raise ValueError("Input mapping contains unsupported fields")
     _preflight_package(pairs)
     output_package.mkdir(parents=True, exist_ok=False)
     output_cards = output_package / "cards"
@@ -906,34 +922,45 @@ def standardize_package(input_package, output_package):
                 name, histogram = remake_histogram(root_histogram, run)
                 output_file[name] = histogram
         _write_standardized_card(card_path, root_path, run, output_cards / card_path.name)
-    (output_package / "ordered_card_inputs.txt").write_text(
-        "\n".join(ordered) + "\n"
-    )
-    source_provenance = input_package / "package-provenance.json"
-    provenance = {
-        "source_release_path": str(input_package),
-        "source_ordered_card_inputs_sha256": _sha256(ordered_path),
-        "source_package_provenance_sha256": (
-            _sha256(source_provenance) if source_provenance.is_file() else None
-        ),
-        "standardizer_file_sha256": _sha256(Path(__file__)),
-        "input_card_count": len(pairs),
-        "output_card_count": len(list(output_cards.glob("*.txt"))),
-        "generated_member_counts": {
-            "txt_cards": len(list(output_cards.glob("*.txt"))),
-            "root_files": len(list(output_cards.glob("*.root"))),
-            "ordered_card_inputs": 1, "derivative_provenance": 1, "readme": 1,
-        },
-    }
-    (output_package / "derivative-provenance.json").write_text(
-        json.dumps(provenance, indent=2) + "\n"
+    shutil.copyfile(ordered_path, output_package / "ordered_card_inputs.txt")
+    shutil.copyfile(input_package / "scalings.json", output_package / "scalings.json")
+    source_manifest["package_root"] = str(output_package.resolve())
+    (output_package / "combined_mapping_manifest.json").write_text(
+        json.dumps(source_manifest, sort_keys=True, indent=2) + "\n"
     )
     (output_package / "README.md").write_text(
-        "# Standardized reviewer/Combine derivative\n\n"
-        "This is a standardized reviewer/Combine derivative.\n"
-        "This is not the certified lane_09 fit-input authority.\n"
-        "Scientific nuisance correlations are inherited from the input datacards.\n"
-        "Standardization is a naming/interface transformation only.\n"
+        "# Standardized datacard package\n\n"
+        "Drop-in datacard-package input for the existing pre-workspace Wynona/lane_09 intake.\n"
+        "Cards contain standardized nuisance names and corresponding ROOT keys.\n"
+        "EFT scaling and fit-configuration semantics are unchanged.\n"
+        "This package is not a combined card, workspace, or fit result.\n"
+        "Workspace and fit qualification remain lane_09-owned.\n"
+    )
+    member_inventory = [
+        {"path": path.relative_to(output_package).as_posix(), "sha256": _sha256(path)}
+        for path in sorted(output_package.rglob("*")) if path.is_file()
+    ]
+    provenance = dict(source_provenance)
+    provenance.update({
+        "package_root": str(output_package.resolve()),
+        "package_version": source_provenance["package_version"] + ".standardized",
+        "package_date": datetime.now(timezone.utc).strftime("%y%m%d"),
+        "manifest_sha256": _sha256(output_package / "combined_mapping_manifest.json"),
+        "ordered_card_inputs_sha256": _sha256(output_package / "ordered_card_inputs.txt"),
+        "scalings_sha256": _sha256(output_package / "scalings.json"),
+        "packaged_txt_count": len(pairs),
+        "packaged_root_count": len(pairs),
+        "standardization": {
+            "source_package_root": str(input_package),
+            "source_package_provenance_sha256": _sha256(source_provenance_path),
+            "accepted_mapping_commit": accepted_mapping_commit,
+            "standardizer_file_sha256": _sha256(Path(__file__)),
+            "member_inventory_scope": "all package files except package-provenance.json",
+            "member_inventory": member_inventory,
+        },
+    })
+    (output_package / "package-provenance.json").write_text(
+        json.dumps(provenance, sort_keys=True, indent=2) + "\n"
     )
     return provenance
 
