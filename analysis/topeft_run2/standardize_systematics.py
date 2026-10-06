@@ -1,5 +1,8 @@
 import os
 import shutil
+import argparse
+import hashlib
+from pathlib import Path
 import uproot
 import hist
 import json
@@ -57,7 +60,7 @@ SYST_NAMING_MAP = {
         "JES_RelativeBal": "CMS_scale_j_RelativeBal_13TeV",   # Should this be (un-)correlated with run2/3?
         "JES_RelativeSample": "CMS_scale_j_RelativeSample", # Should this be uncorrelated across years, as was done for run3?
         # MET
-        "MET_UnclusteredEnergy": "CMS_scale_met_Unclustred_energy",  # Unclear on if should be correlated across years
+        "MET_UnclusteredEnergy": "CMS_scale_met_Unclustred_energy_13TeV",
         # QCD Factorization (shape)
         "fact_Diboson": "QCDscale_fac_VV_ACCEPT",
         "fact_Triboson": "QCDscale_fac_VVV_ACCEPT",
@@ -99,7 +102,7 @@ SYST_NAMING_MAP = {
         "btagSFlight_2017": "CMS_btag_fixedWP_light_uncorrelated_2017",
         "btagSFlight_2018": "CMS_btag_fixedWP_light_uncorrelated_2018",
         # PU
-        "PU": "CMS_pileup",
+        "PU": "CMS_pileup_13TeV",
         # L1 Prefiring
         "PreFiring": "CMS_l1_ecal_prefiring",
         # Taus
@@ -265,7 +268,7 @@ SYST_NAMING_MAP = {
         "JES_Regrouped_RelativeSample_2023": "CMS_scale_j_RelativeSample_2023",
         "JES_Regrouped_RelativeSample_2023BPix": "CMS_scale_j_RelativeSample_2023BPix",
         # MET
-        "MET_UnclusteredEnergy": "CMS_scale_met_Unclustred_energy",  # Unclear on if should be correlated across years
+        "MET_UnclusteredEnergy": "CMS_scale_met_Unclustred_energy_13p6TeV",
         # Muon systematics
         "MuonResolution": "CMS_res_m_13p6TeV",
         "MuonScale": "CMS_scale_m_13p6TeV",
@@ -310,7 +313,7 @@ SYST_NAMING_MAP = {
         "btagSFlight_2023": "CMS_btag_fixedWP_light_uncorrelated_2023",
         "btagSFlight_2023BPix": "CMS_btag_fixedWP_light_uncorrelated_2023BPix",
         # PU
-        "PU": "CMS_pileup",
+        "PU": "CMS_pileup_13p6TeV",
         # L1 Prefiring
         "PreFiring": "CMS_l1_ecal_prefiring",   # Exists in Run3, but variations are just set to nominal
         # Taus
@@ -446,36 +449,28 @@ SYST_NAMING_MAP = {
         'CMS_fake_t_DeepTau2018v2p5_VSmu_abseta1p7to2p4_2022': 'CMS_fake_t_DeepTau2018v2p5_VSmu_abseta1p7to2p4_2022',
         'CMS_fake_t_DeepTau2018v2p5_VSmu_abseta1p7to2p4_2023': 'CMS_fake_t_DeepTau2018v2p5_VSmu_abseta1p7to2p4_2023',
         'CMS_scale_t_DeepTau2018v2p5_DM0_genElectron_2022': 'CMS_scale_t_DeepTau2018v2p5_DM0_genElectron_2022',
-        'CMS_scale_t_DeepTau2018v2p5_DM0_genElectron_2022EE': 'CMS_scale_t_DeepTau2018v2p5_DM0_genElectron_2022EE',
         'CMS_scale_t_DeepTau2018v2p5_DM0_genElectron_2023': 'CMS_scale_t_DeepTau2018v2p5_DM0_genElectron_2023',
-        'CMS_scale_t_DeepTau2018v2p5_DM0_genElectron_2023BPix': 'CMS_scale_t_DeepTau2018v2p5_DM0_genElectron_2023BPix',
         'CMS_scale_t_DeepTau2018v2p5_DM0_genMuon_Run3': 'CMS_scale_t_DeepTau2018v2p5_DM0_genMuon_13p6TeV',
         'CMS_scale_t_DeepTau2018v2p5_DM0_genTau_2022': 'CMS_scale_t_DeepTau2018v2p5_DM0_genTau_2022',
         'CMS_scale_t_DeepTau2018v2p5_DM0_genTau_2022EE': 'CMS_scale_t_DeepTau2018v2p5_DM0_genTau_2022EE',
         'CMS_scale_t_DeepTau2018v2p5_DM0_genTau_2023': 'CMS_scale_t_DeepTau2018v2p5_DM0_genTau_2023',
         'CMS_scale_t_DeepTau2018v2p5_DM0_genTau_2023BPix': 'CMS_scale_t_DeepTau2018v2p5_DM0_genTau_2023BPix',
         'CMS_scale_t_DeepTau2018v2p5_DM10_genElectron_2022': 'CMS_scale_t_DeepTau2018v2p5_DM10_genElectron_2022',
-        'CMS_scale_t_DeepTau2018v2p5_DM10_genElectron_2022EE': 'CMS_scale_t_DeepTau2018v2p5_DM10_genElectron_2022EE',
         'CMS_scale_t_DeepTau2018v2p5_DM10_genElectron_2023': 'CMS_scale_t_DeepTau2018v2p5_DM10_genElectron_2023',
-        'CMS_scale_t_DeepTau2018v2p5_DM10_genElectron_2023BPix': 'CMS_scale_t_DeepTau2018v2p5_DM10_genElectron_2023BPix',
         'CMS_scale_t_DeepTau2018v2p5_DM10_genMuon_Run3': 'CMS_scale_t_DeepTau2018v2p5_DM10_genMuon_13p6TeV',
         'CMS_scale_t_DeepTau2018v2p5_DM10_genTau_2022': 'CMS_scale_t_DeepTau2018v2p5_DM10_genTau_2022',
         'CMS_scale_t_DeepTau2018v2p5_DM10_genTau_2022EE': 'CMS_scale_t_DeepTau2018v2p5_DM10_genTau_2022EE',
         'CMS_scale_t_DeepTau2018v2p5_DM10_genTau_2023': 'CMS_scale_t_DeepTau2018v2p5_DM10_genTau_2023',
         'CMS_scale_t_DeepTau2018v2p5_DM10_genTau_2023BPix': 'CMS_scale_t_DeepTau2018v2p5_DM10_genTau_2023BPix',
         'CMS_scale_t_DeepTau2018v2p5_DM11_genElectron_2022': 'CMS_scale_t_DeepTau2018v2p5_DM11_genElectron_2022',
-        'CMS_scale_t_DeepTau2018v2p5_DM11_genElectron_2022EE': 'CMS_scale_t_DeepTau2018v2p5_DM11_genElectron_2022EE',
         'CMS_scale_t_DeepTau2018v2p5_DM11_genElectron_2023': 'CMS_scale_t_DeepTau2018v2p5_DM11_genElectron_2023',
-        'CMS_scale_t_DeepTau2018v2p5_DM11_genElectron_2023BPix': 'CMS_scale_t_DeepTau2018v2p5_DM11_genElectron_2023BPix',
         'CMS_scale_t_DeepTau2018v2p5_DM11_genMuon_Run3': 'CMS_scale_t_DeepTau2018v2p5_DM11_genMuon_13p6TeV',
         'CMS_scale_t_DeepTau2018v2p5_DM11_genTau_2022': 'CMS_scale_t_DeepTau2018v2p5_DM11_genTau_2022',
         'CMS_scale_t_DeepTau2018v2p5_DM11_genTau_2022EE': 'CMS_scale_t_DeepTau2018v2p5_DM11_genTau_2022EE',
         'CMS_scale_t_DeepTau2018v2p5_DM11_genTau_2023': 'CMS_scale_t_DeepTau2018v2p5_DM11_genTau_2023',
         'CMS_scale_t_DeepTau2018v2p5_DM11_genTau_2023BPix': 'CMS_scale_t_DeepTau2018v2p5_DM11_genTau_2023BPix',
         'CMS_scale_t_DeepTau2018v2p5_DM1_genElectron_2022': 'CMS_scale_t_DeepTau2018v2p5_DM1_genElectron_2022',
-        'CMS_scale_t_DeepTau2018v2p5_DM1_genElectron_2022EE': 'CMS_scale_t_DeepTau2018v2p5_DM1_genElectron_2022EE',
         'CMS_scale_t_DeepTau2018v2p5_DM1_genElectron_2023': 'CMS_scale_t_DeepTau2018v2p5_DM1_genElectron_2023',
-        'CMS_scale_t_DeepTau2018v2p5_DM1_genElectron_2023BPix': 'CMS_scale_t_DeepTau2018v2p5_DM1_genElectron_2023BPix',
         'CMS_scale_t_DeepTau2018v2p5_DM1_genMuon_Run3': 'CMS_scale_t_DeepTau2018v2p5_DM1_genMuon_13p6TeV',
         'CMS_scale_t_DeepTau2018v2p5_DM1_genTau_2022': 'CMS_scale_t_DeepTau2018v2p5_DM1_genTau_2022',
         'CMS_scale_t_DeepTau2018v2p5_DM1_genTau_2022EE': 'CMS_scale_t_DeepTau2018v2p5_DM1_genTau_2022EE',
@@ -764,31 +759,191 @@ def combine_scalings(r2_loc,r3_loc,out_dir):
     with open(fpath,'w') as f:
         json.dump(jsn_r2,f,indent=4)
 
+def _sha256(path):
+    digest = hashlib.sha256()
+    with open(path, "rb") as source:
+        for chunk in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _run_for_card(card_name):
+    if card_name.startswith("Run2_"):
+        return "run2"
+    if card_name.startswith("Run3_"):
+        return "run3"
+    raise ValueError(f"Card has no Run2/Run3 identity: {card_name}")
+
+
+def _register_identity(source_name, run, source_to_target, target_to_source):
+    target_name = resolve_nuisance_name(source_name, run)
+    source_key = (run, source_name)
+    previous_target = source_to_target.setdefault(source_key, target_name)
+    if previous_target != target_name:
+        raise ValueError(f"Nuisance split: {source_key}: {previous_target} / {target_name}")
+    previous_source = target_to_source.setdefault(target_name, source_name)
+    if previous_source != source_name:
+        raise ValueError(
+            f"Nuisance collision: {previous_source} and {source_name} -> {target_name}"
+        )
+    return target_name
+
+
+def _root_key_identity(key):
+    if key == "data_obs" or key.endswith("_sm"):
+        return None
+    pieces = key.split("_")
+    if len(pieces) < 3:
+        raise ValueError(f"Unexpected ROOT key: {key}")
+    process_end = 3 if key.startswith("charge_flips_") else 2
+    process = "_".join(pieces[:process_end])
+    variation = "_".join(pieces[process_end:])
+    if not process.endswith("_sm") or not variation.endswith(("Up", "Down")):
+        raise ValueError(f"Unexpected ROOT systematic key: {key}")
+    direction = "Up" if variation.endswith("Up") else "Down"
+    return process, variation.removesuffix(direction), direction
+
+
+def _read_package_inputs(input_package):
+    cards_dir = input_package / "cards"
+    ordered_path = input_package / "ordered_card_inputs.txt"
+    if not cards_dir.is_dir() or not ordered_path.is_file():
+        raise ValueError("Input package requires cards/ and ordered_card_inputs.txt")
+    ordered = ordered_path.read_text().splitlines()
+    if not ordered or len(ordered) != len(set(ordered)):
+        raise ValueError("Ordered card inputs must be nonempty and unique")
+    if set(ordered) != {f"cards/{path.name}" for path in cards_dir.glob("*.txt")}:
+        raise ValueError("Ordered card inputs do not match package TXT cards")
+    pairs = []
+    root_names = set()
+    for relative_card in ordered:
+        card_relative = Path(relative_card)
+        if (len(card_relative.parts) != 2 or card_relative.parts[0] != "cards"
+                or card_relative.suffix != ".txt"):
+            raise ValueError(f"Unsafe ordered card path: {relative_card}")
+        card_path = input_package / card_relative
+        if not card_path.is_file() or card_path.is_symlink():
+            raise ValueError(f"Missing or linked card: {relative_card}")
+        shapes = [line.split() for line in card_path.read_text().splitlines()
+                  if line.split() and line.split()[0] == "shapes"]
+        shape_roots = {words[3] for words in shapes if len(words) >= 4}
+        if not shapes or len(shape_roots) != 1:
+            raise ValueError(f"Expected one shapes ROOT reference in {relative_card}")
+        root_name = next(iter(shape_roots))
+        if Path(root_name).name != root_name or not root_name.endswith(".root"):
+            raise ValueError(f"Unsafe shapes ROOT reference: {root_name}")
+        root_path = cards_dir / root_name
+        if not root_path.is_file() or root_path.is_symlink():
+            raise ValueError(f"Missing or linked shapes ROOT file: {root_name}")
+        if root_name in root_names:
+            raise ValueError(f"Shapes ROOT file used by multiple cards: {root_name}")
+        root_names.add(root_name)
+        pairs.append((card_path, root_path, _run_for_card(card_path.name)))
+    if root_names != {path.name for path in cards_dir.glob("*.root")}:
+        raise ValueError("Shapes references do not match package ROOT files")
+    return ordered_path, ordered, pairs
+
+
+def _preflight_package(pairs):
+    source_to_target = {}
+    target_to_source = {}
+    output_names = set()
+    for card_path, root_path, run in pairs:
+        for path in (card_path, root_path):
+            if path.name in output_names:
+                raise ValueError(f"Duplicate output member: {path.name}")
+            output_names.add(path.name)
+        _, shapes, rates = parse_datacard(card_path)
+        for _, source_name in shapes + rates:
+            _register_identity(source_name, run, source_to_target, target_to_source)
+        key_targets = {}
+        with uproot.open(root_path) as source_file:
+            for key in source_file.keys(cycle=False):
+                identity = _root_key_identity(key)
+                if identity is None:
+                    continue
+                process, source_base, direction = identity
+                target_base = _register_identity(
+                    source_base, run, source_to_target, target_to_source
+                )
+                target_key = (process, target_base, direction)
+                previous = key_targets.setdefault(target_key, key)
+                if previous != key:
+                    raise ValueError(f"ROOT key collision: {previous} and {key}")
+    return source_to_target
+
+
+def _write_standardized_card(card_path, root_path, run, output_path):
+    lines = []
+    for line in card_path.read_text().splitlines(keepends=True):
+        words = line.split()
+        if words and words[0] == "shapes":
+            words[3] = root_path.name
+            line = " ".join(words) + "\n"
+        elif len(words) >= 2 and words[1] in ("shape", "lnN"):
+            target_name = resolve_nuisance_name(words[0], run)
+            line = line.replace(words[0], target_name, 1)
+        lines.append(line)
+    output_path.write_text("".join(lines))
+
+
+def standardize_package(input_package, output_package):
+    input_package = Path(input_package).resolve()
+    output_package = Path(output_package)
+    if output_package.exists() or output_package.is_symlink():
+        raise FileExistsError(f"Output package already exists: {output_package}")
+    if output_package.resolve().is_relative_to(input_package):
+        raise ValueError("Output package must be outside the input package")
+    ordered_path, ordered, pairs = _read_package_inputs(input_package)
+    _preflight_package(pairs)
+    output_package.mkdir(parents=True, exist_ok=False)
+    output_cards = output_package / "cards"
+    output_cards.mkdir()
+    for card_path, root_path, run in pairs:
+        destination = output_cards / root_path.name
+        with uproot.open(root_path) as source_file, uproot.recreate(destination) as output_file:
+            for _, root_histogram in source_file.items(cycle=False):
+                name, histogram = remake_histogram(root_histogram, run)
+                output_file[name] = histogram
+        _write_standardized_card(card_path, root_path, run, output_cards / card_path.name)
+    (output_package / "ordered_card_inputs.txt").write_text(
+        "\n".join(ordered) + "\n"
+    )
+    source_provenance = input_package / "package-provenance.json"
+    provenance = {
+        "source_release_path": str(input_package),
+        "source_ordered_card_inputs_sha256": _sha256(ordered_path),
+        "source_package_provenance_sha256": (
+            _sha256(source_provenance) if source_provenance.is_file() else None
+        ),
+        "standardizer_file_sha256": _sha256(Path(__file__)),
+        "input_card_count": len(pairs),
+        "output_card_count": len(list(output_cards.glob("*.txt"))),
+        "generated_member_counts": {
+            "txt_cards": len(list(output_cards.glob("*.txt"))),
+            "root_files": len(list(output_cards.glob("*.root"))),
+            "ordered_card_inputs": 1, "derivative_provenance": 1, "readme": 1,
+        },
+    }
+    (output_package / "derivative-provenance.json").write_text(
+        json.dumps(provenance, indent=2) + "\n"
+    )
+    (output_package / "README.md").write_text(
+        "# Standardized reviewer/Combine derivative\n\n"
+        "This is a standardized reviewer/Combine derivative.\n"
+        "This is not the certified lane_09 fit-input authority.\n"
+        "Scientific nuisance correlations are inherited from the input datacards.\n"
+        "Standardization is a naming/interface transformation only.\n"
+    )
+    return provenance
+
+
 def main():
-    user = os.environ["USER"]
-    out_dir = f"/tmpscratch/users/{user}/TOP-26-006-renamed-systematics/testing"
-
-    run2_cards_dir = "/tmpscratch/users/apiccine/TOP-26-006-final-datacards/run2/"
-    run3_cards_dir = "/tmpscratch/users/apiccine/TOP-26-006-final-datacards/run3/"
-
-    run2_cards = utils.get_files(run2_cards_dir,match_files=["^ttx_multileptons.*txt$"])
-    run3_cards = utils.get_files(run3_cards_dir,match_files=["^ttx_multileptons.*txt$"])
-
-    run2_templates = utils.get_files(run2_cards_dir,match_files=["^ttx_multileptons.*root$"])
-    run3_templates = utils.get_files(run3_cards_dir,match_files=["^ttx_multileptons.*root$"])
-
-    process_templates(templates=run2_templates,run="run2",out_dir=out_dir)
-    process_templates(templates=run3_templates,run="run3",out_dir=out_dir)
-
-    process_cards(run2_cards,run="run2",out_dir=out_dir)
-    process_cards(run3_cards,run="run3",out_dir=out_dir)
-
-    run2_other_files = utils.get_files(run2_cards_dir,match_files=["selectedWCs.txt",".*json$"])
-    run3_other_files = utils.get_files(run3_cards_dir,match_files=["selectedWCs.txt",".*json$"])
-
-    combine_scalings(run2_cards_dir,run3_cards_dir,out_dir)
-
-    print("Done!")
+    parser = argparse.ArgumentParser(description="Standardize a certified datacard package")
+    parser.add_argument("--input-package", required=True, type=Path)
+    parser.add_argument("--output-package", required=True, type=Path)
+    arguments = parser.parse_args()
+    standardize_package(arguments.input_package, arguments.output_package)
 
 if __name__ == "__main__":
     main()
