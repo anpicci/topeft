@@ -166,3 +166,31 @@ def test_dashboard_reports_missing_runner(tmp_path):
     result = run_once(dashboard, manifest)
     assert result.returncode == 2
     assert "runner is missing or not executable" in result.stderr
+
+
+def test_dashboard_renders_multiple_active_units_and_logs(tmp_path):
+    dashboard, manifest, status_path, control_root = dashboard_case(tmp_path)
+    status = json.loads(status_path.read_text())
+    status["rows"][2]["status"] = "active"
+    for row in status["rows"][1:]:
+        row["owner_metadata"] = {"backend": "condor", "scheduler_id": row["row_id"], "current_row_started_at": "synthetic"}
+        (control_root / (row["row_id"] + ".log")).write_text(row["row_id"] + " log\n")
+    status_path.write_text(json.dumps(status))
+    before = {path: path.read_bytes() for path in control_root.iterdir()}
+    result = run_once(dashboard, manifest)
+    assert result.returncode == 0, result.stderr
+    assert "Active units   : 2 (5 targets)" in result.stdout
+    assert "unit_2 log" in result.stdout and "unit_3 log" in result.stdout
+    assert result.stdout.count("Backend: condor") == 2
+    assert before == {path: path.read_bytes() for path in control_root.iterdir()}
+
+
+def test_dashboard_displays_observations_without_changing_completion(tmp_path):
+    dashboard, manifest, status_path, _ = dashboard_case(tmp_path)
+    status = json.loads(status_path.read_text())
+    status["rows"][0]["scheduler_metadata"] = {"scheduler_id": "1.0", "state": "removed", "observed_at": "synthetic", "completion_authority": False}
+    status_path.write_text(json.dumps(status))
+    result = run_once(dashboard, manifest)
+    assert result.returncode == 0, result.stderr
+    assert "Execution units: 1 / 3" in result.stdout
+    assert "removed at synthetic (operational only)" in result.stdout

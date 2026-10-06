@@ -36,6 +36,11 @@ if "--order" in args:
 if "--write-path" in args:
     p = Path(one("--write-path")); p.parent.mkdir(parents=True, exist_ok=True); p.write_text("external\n")
 if "--mutate-path" in args: Path(one("--mutate-path")).write_text("runtime drift\n")
+if "--wait-for" in args:
+    deadline = time.monotonic() + 30
+    while not Path(one("--wait-for")).exists():
+        if time.monotonic() > deadline: raise SystemExit(8)
+        time.sleep(.01)
 if "--sleep" in args: time.sleep(float(one("--sleep")))
 if "--fail" in args: raise SystemExit(7)
 root = Path(one("--out-dir")); root.mkdir(parents=True, exist_ok=True)
@@ -231,7 +236,7 @@ def test_active_interrupted_and_stale_owner_statuses(tmp_path, fake_script):
         wrong_owner = {**stale_owner, "current_row_id": "different_row"}
         (tmp_path / "control" / "runner_owner.json").write_text(json.dumps(wrong_owner))
         mismatched = result(invoke(path, "--status").stdout)
-        assert mismatched["lock_held"] is True and mismatched["rows"][0]["status"] == "canonical_collision_or_ambiguous_state"
+        assert mismatched["lock_held"] is True and mismatched["rows"][0]["status"] == "held_lock_active_or_unknown"
     (tmp_path / "control" / "runner_owner.json").write_text(json.dumps(stale_owner))
     final = result(invoke(path, "--status").stdout)
     assert final["lock_held"] is False and final["rows"][0]["status"] == "canonical_collision_or_ambiguous_state"
@@ -251,7 +256,7 @@ def test_lock_probe_oserror_is_explicit_unknown(tmp_path, fake_script, monkeypat
     status = runner_engine.read_only("status", loaded, manifest_hash)
     assert status["lock_held"] is None
     assert status["lock_probe_error"] == "OSError: synthetic lock probe failure"
-    assert status["rows"][0]["status"] == "canonical_collision_or_ambiguous_state"
+    assert status["rows"][0]["status"] == "held_lock_active_or_unknown"
 
 
 def test_receipt_byte_binds_outputs_and_control_artifacts(tmp_path, fake_script):
@@ -481,7 +486,7 @@ def test_unexpected_exception_cleans_active_owner(tmp_path, fake_script, monkeyp
     path, data = manifest(tmp_path, fake_script, [row])
     loaded, manifest_hash = runner_engine.load_manifest(path)
 
-    def unexpected(*_args):
+    def unexpected(*_args, **_kwargs):
         raise RuntimeError("synthetic unexpected failure")
 
     monkeypatch.setattr(runner_engine, "execute_row", unexpected)
@@ -583,16 +588,16 @@ def test_lock_blocks_second_owner_and_no_finalizer_behavior(tmp_path, fake_scrip
     source = ENGINE.read_text(); assert "datacards_post_processing" not in source and '"scalings.json"' not in source
 
 
-def test_owner_started_at_is_stable_across_row_updates(tmp_path, fake_script):
+def test_owner_lifetime_is_per_unit(tmp_path, fake_script):
     first = make_row(tmp_path, fake_script, "first", extra=["--sleep", ".4"])
     second = make_row(tmp_path, fake_script, "second", extra=["--sleep", ".4"])
     path, data = manifest(tmp_path, fake_script, [first, second], "owner.json")
     process = subprocess.Popen([str(RUNNER), str(path)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    owner_path = Path(data["control_root"]) / "runner_owner.json"
+    owner_path = runner_engine.unit_owner_path(first)
     first_owner = wait_for_owner(owner_path, "first")
-    second_owner = wait_for_owner(owner_path, "second")
+    second_owner = wait_for_owner(runner_engine.unit_owner_path(second), "second")
     stdout, stderr = process.communicate(timeout=10)
     assert process.returncode == 0, stdout + stderr
-    assert first_owner["started_at"] == second_owner["started_at"]
+    assert first_owner["started_at"] != second_owner["started_at"]
     assert first_owner["current_row_started_at"] != second_owner["current_row_started_at"]
     assert not owner_path.exists()

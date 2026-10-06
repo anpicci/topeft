@@ -34,19 +34,20 @@ are:
 | Years/coverage | Optional supported year list; coverage `warn`, `error`, or `off`, default `warn` | Mixed input identities and structural year gaps follow the selected fail/warn policy. |
 | Binning | `fitting` or `processing`, default `fitting` | Fitting performs exact late aggregation per selected physical channel. |
 | WCs | POI list, reference/selected-WC files, select-only/check controls, optional WC values/scaling order | WC selection uses the card-facing fitting view; selected files must match the producer's supported process/WC structure. `--use-selected` materializes canonical signal-only `selectedWCs.txt` in `--out-dir`. |
-| Nuisances | Nuisance and MC-stat switches, `--rate-syst-json`, `--miss-parton-file`, and `--skip-missing-parton-rate-syst` | Run era selects maintained defaults when the override is omitted. An explicit `--rate-syst-json` is forwarded as `rate_systs_path`, including to Condor child commands. The missing-parton consumer infers the maintained payload layout and has no `--sr-registry` option. |
+| Nuisances | Nuisance and MC-stat switches, `--rate-syst-json`, `--miss-parton-file`, and `--skip-missing-parton-rate-syst` | Run era selects maintained defaults when the override is omitted. An explicit `--rate-syst-json` is forwarded as `rate_systs_path`; worker arguments come from the canonical manifest. The missing-parton consumer infers the maintained payload layout and has no `--sr-registry` option. |
 | Data/negative bins | Asimov by default; `--unblind` for observed data; crop negative bins by default | These choices affect card contents and must be recorded with production evidence. |
-| Execution | Local default or `--condor`; chunks default 1 | Condor mode prepares/submits per-channel jobs and has external side effects; it requires separately authorized execution. |
+| Execution | Direct local default; `--condor` requires `--matrix-manifest`, `--condor-output`, and explicit CPU/memory/disk requests | Condor preparation emits one queue item per existing manifest row, without producer work or submission. |
 
-`make_cards.main()` resolves inputs, validates/merges them, constructs one
-`DatacardMaker`, selects or loads WCs, dispatches `run_local()` or
-`run_condor()`, and writes `scalings-preselect.json`. It writes
-canonical signal-only `selectedWCs.txt` for both derived and `--use-selected`
-selection paths.
+In direct mode, `make_cards.main()` resolves inputs, validates/merges them,
+constructs one `DatacardMaker`, selects or loads WCs, calls `run_local()`, and
+writes `scalings-preselect.json`. It writes canonical signal-only
+`selectedWCs.txt` for both derived and `--use-selected` selection paths.
 `run_local()` selects physical channels by regex and calls `analyze()` per
-channel/distribution. `run_condor()` materializes the job boundary and
-submission commands; it is a developer-facing execution interface, not a
-pure-return helper.
+channel/distribution. `--condor` dispatches before these producer operations to
+`datacard_matrix_condor.prepare_material()`. The legacy `run_condor()` and
+`--chunks` partitioning interface have been removed. Supported worker producer
+options are recorded in canonical manifest rows, never reconstructed by the
+scheduler frontend.
 
 ## `topeft.modules.datacard_tools.DatacardMaker`
 
@@ -172,6 +173,81 @@ only completion authority. The dashboard renders runner status and receipt
 counts; it does not independently validate completion, physics, resources,
 scheduler state, or topology suitability.
 
+### Execution-unit and dispatch interfaces
+
+| Maintained interface | Contract |
+| --- | --- |
+| `datacard_matrix_runner.derive_units(path)` | Loads the original global v3 workload and deterministically returns one descriptor per existing row, in manifest order. New execution requires disjoint canonical output roots. |
+| `resolve_unit(descriptor)` | Validates exact descriptor fields and parent integrity, returning the unchanged full parent, its byte hash and selected row. Unknown rows and changed parent bytes fail closed. |
+| `execute_unit(manifest, manifest_hash, row, backend=..., scheduler_id=...)` | Sole mutating primitive: acquire unit ownership, validate receipt or reconcile H2 state, then execute only if eligible. Backend/ID are owner metadata. |
+| `execute(manifest, manifest_hash, ...)` | Sequential orchestration over `execute_unit`; stops at a blocked/failed unit. No second completion state machine. |
+| Runner `--unit FILE` or `MANIFEST --row-id ID` | Selects one unit without rewriting its parent or public identity. `--plan-only` and `--status` remain read-only. `--derive-units MANIFEST` prints descriptors only. |
+| `datacard_matrix_condor.prepare_material(manifest_path, destination, request_cpus=..., request_memory=..., request_disk=..., max_runtime=...)` | Fresh-only shared-filesystem material generation. CPU/memory/disk required; runtime optional. No producer, submission or package builder. |
+
+Descriptor fields are exactly `schema` (`topeft_datacard_execution_unit_v1`),
+`parent_manifest` (absolute path), `parent_integrity` (SHA-256 of those current
+bytes), and `row_id`. Descriptors are generated dispatch artifacts. Workload
+semantics remain in the global v3 manifest and its profile/channel owners.
+Receipt validation continues to use the original parent hash, public row and
+attempt, exact runtime/argv and recorded artifacts. Existing receipt and
+selected-unit interfaces are unchanged; historical manifest loading is not
+restricted by the new execution-layout check.
+
+The canonical output root determines a persistent sibling
+`.<output_name>.datacard.lock` and `.<output_name>.datacard.owner.json`.
+Hash, backend and row-name aliases cannot create another lease for that root.
+A short `.datacard_lease_setup.lock` at the nearest existing parent serializes
+path initialization and is released before execution. This prevents a nested
+request from creating an active owner's absent canonical directory. Ancestor
+ownership is checked before any directory creation and again under setup.
+Lock inodes persist and must never be unlinked while the workflow may run.
+The legacy manifest lock is held shared to exclude an older exclusive runner;
+unit execution and completion state remain entirely row-owned. Producers
+inherit both lifetime lock descriptors, so manager death alone cannot authorize
+a duplicate producer. Unknown/held ownership fails closed.
+
+Status rows carry unit `lock_path`, `lock_held`, `lock_probe_error` and
+`owner_metadata`; aggregate `lock_held` means any unit is held, or unknown if
+none is held and a probe failed. The legacy top-level `owner_metadata` may be
+null. Consumers must use row metadata for multiple active units. Owner backend
+and scheduler ID are observations, not receipt fields.
+
+`--scheduler-status FILE` on runner status or dashboard accepts an externally
+collected observation with exactly these keys:
+
+```json
+{
+  "schema": "topeft_datacard_scheduler_status_v1",
+  "parent_integrity": "<current parent manifest SHA-256>",
+  "observed_at": "<observation timestamp>",
+  "units": [{"row_id": "<existing row>", "scheduler_id": "<cluster.proc>", "state": "<observed scheduler state>"}]
+}
+```
+
+Unknown/duplicate rows or a mismatched parent fail. The runner attaches
+`scheduler_metadata` with `completion_authority: false` and preserves its own
+row status. Observations may cover a subset; with `--row-id`, supply only that
+row. No scheduler query or persistent scheduler registry is maintained here.
+Held, removed or disappeared jobs require runner state inspection before retry;
+exit zero alone provides no producer completion authority.
+
+Generated material consists of `units/*.json`, `items.txt`, `worker.sh`,
+`datacards.sub`, and `logs/`. Queue items bind row IDs to descriptor byte hashes.
+The worker checks descriptor/parent/runner integrity and enters the same unit
+executor, with the producer's recorded arguments and no recursive Condor mode.
+The submit file is published last using the existing no-overwrite copy helper.
+Existing destinations and invalid resource quantities are rejected. Generated
+paths have the restricted character set documented in the operator guide.
+
+The adapter uses `should_transfer_files = NO`; absolute paths and the selected
+runtime/environment must be available on workers. `request_cpus` is a positive
+integer; `request_memory` and `request_disk` accept positive integer quantities
+and optional unit suffixes. Optional positive `max_runtime` sets `+MaxRuntime`
+for sites supporting it. There are no resource defaults or jobs-in-flight caps.
+One common resource request covers the derived units. Resource/site validation,
+a real worker canary, telemetry, and later optimization are separate work;
+this interface prepares material and never submits it.
+
 ## Per-era package interface
 
 `analysis/topeft_run2/build_per_era_datacard_package.py build` builds a
@@ -278,6 +354,9 @@ See [flexible binning](flexible_binning.md) and
 - `analysis/topeft_run2/make_datacard_matrix_manifest.py`
 - `analysis/topeft_run2/datacard_matrix_profiles.yml`
 - `analysis/topeft_run2/datacard_matrix_runner.py`
+- `analysis/topeft_run2/datacard_matrix_condor.py`
+- `tests/test_datacard_matrix_execution_units.py`
+- `tests/test_datacard_matrix_condor.py`
 - `analysis/topeft_run2/build_per_era_datacard_package.py`
 - `analysis/topeft_run2/build_combined_datacard_package.py`
 - `topeft/modules/datacard_tools.py`

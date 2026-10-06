@@ -9,7 +9,7 @@ run and resume it.
 
 | Interface | Purpose | Inputs and defaults | Outputs and checks |
 | --- | --- | --- | --- |
-| `make_cards.py` | Merge histogram inputs and select WCs, channels, and variables | Fitting binning, year coverage `warn`, Asimov data, no nuisances or MC-stat opt-in | `DatacardMaker` writes TXT cards, ROOT templates, and scaling records; local or Condor execution |
+| `make_cards.py` | Merge histogram inputs and select WCs, channels, and variables | Fitting binning, year coverage `warn`, Asimov data, no nuisances or MC-stat opt-in | Direct mode writes TXT/ROOT and scaling records; `--condor` prepares matrix dispatch material without submission |
 | `make_datacard_matrix_manifest.py` | Prepare standard Run 2 or Run 3 execution units | Era, `--input-pkl ROLE=PATH` bindings, runtime paths, and fresh manifest path | Writes a `topeft_datacard_matrix_v3` manifest; does not produce cards |
 | `build_per_era_datacard_package.py build` | Build one Run 2 or Run 3 package | Era, one or more matrix manifests with completed rows, and a fresh absolute output | Requires exactly the targets declared by the manifest rows, checks recorded source files, and writes cards, WCs, scalings, and per-era `chN` |
 | `build_combined_datacard_package.py build` | Build a cards-only Run 2 + Run 3 package | Two per-era packages with the same physical target set, fresh absolute output, analysis, package date, and version | Writes the combined mapping, ordered card list, and scalings; checks the package against its inputs; does not run Combine |
@@ -78,15 +78,17 @@ exist as histogram families in the merged input.
 - `--use-selected FILE` reads the reviewed JSON for card construction,
   canonicalizes its signal-only representation, and materializes that
   representation as `<out_dir>/selectedWCs.txt` without modifying `FILE`.
-- When extending the CLI, update parsing, Condor forwarding if applicable,
-  `DatacardMaker` construction, output/provenance behavior, and focused tests.
+- When extending the CLI, update parsing, canonical manifest arguments where
+  applicable, `DatacardMaker` construction, output/provenance behavior, and
+  focused tests.
 
-The `--condor` implementation is not transparent forwarding. It generates a
-worker script and submit files with a curated option list, one CPU, 20000 MB
-memory, 4096 MB disk, transferred `make_cards.py`/`selectedWCs.txt`/PKL list,
-and a shared output-directory assumption. When a supported card option must
-work under Condor, add it to `_build_condor_base_other_opts` and test both local
-and generated-worker commands. Do not assume a new parser option reaches jobs.
+`make_cards.py --condor` prepares execution units from an existing canonical
+v3 manifest before any PKL loading or producer setup. Put producer options in
+that workload; the frontend accepts only manifest, dispatch destination and
+resource options. Local and worker execution pass the same recorded producer
+arguments through the matrix runner. The former Condor option reconstruction
+and `--chunks` interface have been retired; execution partitioning remains
+owned by the profile and manifest generator.
 
 To add a supported selection/configuration control:
 
@@ -188,8 +190,9 @@ long-running jobs that should continue after the terminal disconnects.
 Inspect `--plan-only` and
 `--status` first, and keep the manifest unchanged during an
 attempt. The runner validates the schema and runtime fingerprints before plan
-or execution, holds one OS advisory lock for a mutating run, and directly runs
-the declared Python argv with no shell intermediary. It stops on the first
+or execution, acquires ownership for each execution unit, and directly runs
+the declared Python argv with no shell intermediary. Sequential orchestration
+stops on the first
 command or output-check failure.
 
 After a successful row command, the runner checks the declared outputs, retains
@@ -226,15 +229,15 @@ attempt. An incomplete attempt is preserved, receives no completion authority,
 and a later explicit invocation uses a new noncolliding directory when the
 canonical row directory remains absent.
 
-Owner metadata is updated atomically under the OS lock before each row.
-`started_at` records when this runner acquired execution ownership and remains
-stable for that runner's lifetime; `current_row_started_at` records the start
-of the current row and changes with each row. `--status` reports `active` only
-when the held OS lock and owner metadata identify that row. A free lock makes
-matching owner metadata stale; `stale_owner_free_lock` is eligible for the
-normal invocation when no row bytes exist. The dashboard renders this status
-and tails the runner-reported staged log for an active row. It is not a
-scheduler, memory/resource, topology, physics, or independent completion check.
+Owner metadata is updated atomically under the unit's output-domain lock.
+`started_at` and `current_row_started_at` describe that unit's ownership and
+physical producer start. `--status` reports `active` when the held lock and
+owner metadata identify the row. Different units may be active together;
+local, manual and Condor attempts on the same canonical output root exclude
+each other. Owner metadata carries backend and optional scheduler identity as
+observations. The dashboard renders every active unit and its staged log.
+A free lock makes matching owner metadata stale; rerun still passes through
+the runner's transaction classification.
 
 Before each row launch, the held runner rechecks the runtime contract and
 freshly classifies the row. `not_started`, `stale_owner_free_lock`, and
@@ -252,6 +255,75 @@ reported paths; do not delete them or rely on file counts. A crash between
 creating the canonical directory and linking its attempt marker is intentionally
 ambiguous and fails closed. A runtime fingerprint change blocks before the next
 producer launch; reconciliation uses its recorded successful runtime binding.
+
+### Execute one unit or prepare Condor material
+
+The global v3 manifest defines workload topology. Each existing manifest row
+is one execution unit. A derived `topeft_datacard_execution_unit_v1` descriptor
+contains `parent_manifest`, `parent_integrity`, and `row_id` alongside `schema`.
+It references the original manifest; it contains no independent channel plan.
+The integrity hash detects changed dispatch input. Public row/attempt and
+receipt/package bindings continue to use the original manifest bytes.
+
+Whole-manifest local execution is a sequential loop over the same unit
+executor used by workers. To inspect or execute a single existing row, use its
+exact ID from the manifest:
+
+```bash
+analysis/topeft_run2/run_datacard_matrix_resumable.sh --derive-units /path/to/manifest.json
+analysis/topeft_run2/run_datacard_matrix_resumable.sh --plan-only --row-id "$row_id" /path/to/manifest.json
+analysis/topeft_run2/run_datacard_matrix_resumable.sh --row-id "$row_id" /path/to/manifest.json
+```
+
+Prepare a fresh dispatch directory after choosing resource quantities for your
+site and workload. The variables below must be set explicitly; the software
+supplies no CPU, memory or disk defaults:
+
+```bash
+python analysis/topeft_run2/make_cards.py --condor \
+  --matrix-manifest /absolute/path/to/manifest.json \
+  --condor-output /absolute/path/to/fresh_dispatch \
+  --request-cpus "$request_cpus" \
+  --request-memory "$request_memory" \
+  --request-disk "$request_disk"
+```
+
+This writes `units/*.json`, `items.txt`, `worker.sh`, `datacards.sub`, and an
+empty `logs/` directory. Each queue item identifies exactly one unit. The
+worker enters `datacard_matrix_runner.py --unit DESCRIPTOR`; its producer runs
+without `--condor`. No parent producer, package builder or submission command
+runs during preparation. Existing dispatch destinations are rejected; a failed
+preparation must be inspected and a fresh destination selected.
+
+The adapter currently requires a shared filesystem: original manifests,
+inputs, runtime, dispatch and output paths must be visible at the same absolute
+locations on every worker. Dispatch destination, interpreter and runner paths
+support letters, digits, `_`, `.`, `/`, `+` and `-`; whitespace and submit
+metacharacters fail before output creation. Worker/site qualification is a
+separate step. Material generation alone does not qualify submission.
+
+CPU requests are positive integers. Memory/disk are positive quantities with
+optional HTCondor unit suffixes; explicit suffixes avoid unit ambiguity.
+`--max-runtime` optionally emits the site's `MaxRuntime` ClassAd in seconds.
+Use one common resource request initially and measure it before normal
+scheduling. Cards per unit come from workload decomposition; jobs in flight
+come from operator/site policy. This adapter sets no concurrency cap.
+
+Changing venue does not regenerate a valid receipt. The worker checks the
+descriptor, parent manifest and runner integrity before mutation, then uses the
+same skip/reconcile/execute rules as local execution. Failed jobs are held by
+the generated submit policy; no automatic retry is configured. Killing a
+manager does not release a surviving producer's inherited lease. Prove old
+ownership has ended and inspect runner state before explicitly retrying.
+Never delete lock files to bypass ownership. Unit output roots must be disjoint;
+nesting inside an existing ownership domain is rejected.
+
+Scheduler observations can be supplied separately to either runner `--status`
+or the dashboard with `--scheduler-status FILE`. They are displayed as
+operational metadata with an observation time; they never change completion
+or permit retry. Scheduler exit zero without a valid receipt is incomplete.
+See the [reference](../reference/datacards_and_scalings.md#execution-unit-and-dispatch-interfaces)
+for the observation schema and maintained APIs.
 
 The steps are:
 

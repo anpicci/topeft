@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager, ExitStack
 import datetime as dt
 import fcntl
 import hashlib
@@ -17,6 +18,7 @@ import sys
 import tempfile
 from typing import Any
 
+UNIT_SCHEMA = "topeft_datacard_execution_unit_v1"
 MANIFEST_SCHEMA = "topeft_datacard_matrix_v3"
 RECEIPT_SCHEMA = "topeft_datacard_execution_receipt_v2"
 OWNER_SCHEMA = "topeft_datacard_runner_owner_v1"
@@ -189,6 +191,114 @@ def load_manifest(path: Path) -> tuple[dict[str, Any], str]:
     if len(set(owned)) != len(owned):
         raise RunnerError("manifest_schema_error", "row-owned paths must be unique")
     return manifest, hashlib.sha256(raw).hexdigest()
+
+
+def validate_unit_layout(manifest: dict[str, Any]) -> None:
+    roots = [Path(row["output_root"]).resolve() for row in manifest["rows"]]
+    if any(a == b or a in b.parents or b in a.parents for i, a in enumerate(roots) for b in roots[i + 1:]):
+        raise RunnerError("manifest_schema_error", "execution units require disjoint output roots")
+
+
+def derive_units(path: Path) -> list[dict[str, Any]]:
+    """Derive dispatch selectors; the original manifest remains workload authority."""
+    manifest, manifest_hash = load_manifest(path)
+    validate_unit_layout(manifest)
+    return [{"schema": UNIT_SCHEMA, "parent_manifest": str(path.resolve()),
+             "parent_integrity": manifest_hash, "row_id": row["row_id"]}
+            for row in manifest["rows"]]
+
+
+def resolve_unit(unit: Any) -> tuple[dict[str, Any], str, dict[str, Any]]:
+    unit = exact_fields(unit, {"schema", "parent_manifest", "parent_integrity", "row_id"}, "execution_unit")
+    if unit["schema"] != UNIT_SCHEMA:
+        raise RunnerError("unit_schema_error", "unsupported execution-unit schema")
+    manifest, manifest_hash = load_manifest(absolute(unit["parent_manifest"], "parent_manifest"))
+    if unit["parent_integrity"] != manifest_hash:
+        raise RunnerError("stale_dispatch_input", "parent manifest bytes changed after unit derivation")
+    return manifest, manifest_hash, select_row(manifest, unit["row_id"])
+
+
+def select_row(manifest: dict[str, Any], row_id: str) -> dict[str, Any]:
+    for row in manifest["rows"]:
+        if row["row_id"] == row_id:
+            return row
+    raise RunnerError("unit_schema_error", f"unknown execution unit: {row_id}")
+
+
+def unit_lock_path(row: dict[str, Any]) -> Path:
+    output = Path(row["output_root"])
+    if output.is_symlink():
+        raise RunnerError("canonical_collision_or_ambiguous_state", "output root is a symlink")
+    output = output.resolve()
+    return output.parent / f".{output.name}.datacard.lock"
+
+
+def unit_owner_path(row: dict[str, Any]) -> Path:
+    return unit_lock_path(row).with_suffix(".owner.json")
+
+
+def unit_owner(row: dict[str, Any]) -> dict[str, Any] | None:
+    try:
+        value = json.loads(unit_owner_path(row).read_text())
+        return value if isinstance(value, dict) else None
+    except (OSError, ValueError):
+        return None
+
+
+def reject_nested_domain(output: Path) -> None:
+    for ancestor in output.parents:
+        if ancestor == ancestor.parent:
+            continue
+        marker = ancestor / INTENT_MARKER
+        lock = ancestor.parent / f".{ancestor.name}.datacard.lock"
+        if lock.exists() or lock.is_symlink() or marker.exists():
+            raise RunnerError("canonical_collision_or_ambiguous_state", f"output is nested in an existing ownership domain: {ancestor}")
+
+
+def existing_parent(path: Path) -> Path:
+    parent = path.parent
+    while not parent.is_dir():
+        parent = parent.parent
+    return parent
+
+
+@contextmanager
+def unit_lease(manifest: dict[str, Any], row: dict[str, Any]):
+    """Lease one output domain; initialize paths under a short filesystem mutex.
+
+    The setup mutex prevents a rejected nested unit from creating the active
+    owner's canonical directory. It is released before execution. Persistent
+    lock inodes are never removed. Producer inheritance keeps ownership alive
+    if the manager dies. The shared legacy lock excludes older global runners.
+    """
+    legacy = Path(manifest["lock_path"])
+    lock = unit_lock_path(row)
+    output = Path(row["output_root"]).resolve()
+    with ExitStack() as handles:
+        while True:
+            reject_nested_domain(output)
+            parent = existing_parent(output)
+            setup_path = parent / ".datacard_lease_setup.lock"
+            if setup_path.is_symlink():
+                raise RunnerError("canonical_collision_or_ambiguous_state", "setup lock is a symlink")
+            with setup_path.open("a+b") as setup:
+                fcntl.flock(setup.fileno(), fcntl.LOCK_EX)
+                if existing_parent(output) != parent:
+                    continue  # Parent creation won a race; use its setup mutex.
+                reject_nested_domain(output)
+                legacy.parent.mkdir(parents=True, exist_ok=True)
+                lock.parent.mkdir(parents=True, exist_ok=True)
+                if lock.is_symlink() or legacy.is_symlink():
+                    raise RunnerError("canonical_collision_or_ambiguous_state", "lock path is a symlink", row_id=row["row_id"])
+                legacy_handle = handles.enter_context(legacy.open("a+b"))
+                unit_handle = handles.enter_context(lock.open("a+b"))
+                try:
+                    fcntl.flock(legacy_handle.fileno(), fcntl.LOCK_SH | fcntl.LOCK_NB)
+                    fcntl.flock(unit_handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError as exc:
+                    raise RunnerError("execution_lock_held", f"execution ownership unavailable: {lock}", row_id=row["row_id"]) from exc
+                break
+        yield (legacy_handle.fileno(), unit_handle.fileno())
 
 
 def receipt_path(manifest: dict[str, Any], row: dict[str, Any]) -> Path:
@@ -437,12 +547,17 @@ def classify(manifest: dict[str, Any], manifest_hash: str, row: dict[str, Any], 
         except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
             valid, reason = False, str(exc)
         return {**base, "status": "complete" if valid else "invalid_receipt", "reason": reason}
-    held = probe_lock(Path(manifest["lock_path"]))[0] if held is None else held
-    owner = read_owner(manifest) if owner is None else owner
+    if held is None:
+        legacy_held = probe_lock(Path(manifest["lock_path"]))[0]
+        unit_held = probe_lock(unit_lock_path(row))[0]
+        held = True if True in (legacy_held, unit_held) else None if None in (legacy_held, unit_held) else False
+    owner = (unit_owner(row) or read_owner(manifest)) if owner is None else owner
     active = held is True and isinstance(owner, dict) and owner.get("schema_version") == OWNER_SCHEMA and owner.get("manifest_sha256") == manifest_hash and owner.get("current_row_id") == row["row_id"] and owner.get("current_attempt_id") == row["attempt_id"]
     stale_owner = held is False and isinstance(owner, dict) and owner.get("schema_version") == OWNER_SCHEMA and owner.get("manifest_sha256") == manifest_hash and owner.get("current_row_id") == row["row_id"] and owner.get("current_attempt_id") == row["attempt_id"]
     if active:
         return {**base, "status": "active", "reason": "lock and owner identify current row", "active_log_path": owner.get("current_log_path"), "stale_owner_free_lock": False}
+    if held is not False:
+        return {**base, "status": "held_lock_active_or_unknown", "reason": "output ownership held or unknown", "stale_owner_free_lock": False}
     try:
         entries = attempts(manifest_hash, row)
         candidate = candidate_attempt(manifest, manifest_hash, row, entries)
@@ -467,12 +582,21 @@ def classify(manifest: dict[str, Any], manifest_hash: str, row: dict[str, Any], 
     return {**base, "status": "not_started", "reason": "no row-owned artifacts", "stale_owner_free_lock": False}
 
 
-def read_only(mode: str, manifest: dict[str, Any], manifest_hash: str) -> dict[str, Any]:
+def read_only(mode: str, manifest: dict[str, Any], manifest_hash: str, row_id: str | None = None) -> dict[str, Any]:
     held, lock_probe_error = probe_lock(Path(manifest["lock_path"]))
     owner = read_owner(manifest)
-    rows = [classify(manifest, manifest_hash, row, held, owner) for row in manifest["rows"]]
+    selected = [select_row(manifest, row_id)] if row_id else manifest["rows"]
+    rows = []
+    for row in selected:
+        unit_held, unit_error = probe_lock(unit_lock_path(row))
+        row_held = True if True in (held, unit_held) else None if None in (held, unit_held) else False
+        row_owner = unit_owner(row) or owner
+        state = classify(manifest, manifest_hash, row, row_held, row_owner)
+        state.update(lock_path=str(unit_lock_path(row)), lock_held=row_held,
+                     lock_probe_error=unit_error or lock_probe_error, owner_metadata=row_owner)
+        rows.append(state)
     if mode == "plan_only":
-        for row, status in zip(manifest["rows"], rows):
+        for row, status in zip(selected, rows):
             status["action"] = "skip" if status["status"] == "complete" else "execute" if status["status"] in {"not_started", "stale_owner_free_lock", "partial_staging_attempt"} else "reconcile" if status["status"] in {"complete_validated_staging_not_promoted", "promoted_incomplete", "promoted_complete_without_receipt"} else "block"
             status["resolved_argv"] = resolved_argv(manifest, row)
             if status["action"] == "execute":
@@ -488,7 +612,7 @@ def read_only(mode: str, manifest: dict[str, Any], manifest_hash: str) -> dict[s
                     "ready": status["action"] in {"skip", "reconcile"},
                     "reason": "valid receipt permits skip without historical execution inputs" if status["action"] == "skip" else "validated attempt permits reconciliation without historical execution inputs" if status["action"] == "reconcile" else "row state blocks before execution-input checks",
                 }
-    result = {"schema": "topeft_datacard_matrix_read_only_result_v2", "mode": mode, "manifest_sha256": manifest_hash, "runtime_contract_digest": runtime_digest(manifest["runtime_contract"]), "lock_held": held, "lock_probe_error": lock_probe_error, "owner_metadata": owner, "mutated": False, "rows": rows}
+    result = {"schema": "topeft_datacard_matrix_read_only_result_v2", "mode": mode, "manifest_sha256": manifest_hash, "runtime_contract_digest": runtime_digest(manifest["runtime_contract"]), "lock_held": True if any(row["lock_held"] is True for row in rows) else None if any(row["lock_held"] is None for row in rows) else False, "lock_probe_error": lock_probe_error, "owner_metadata": owner, "mutated": False, "rows": rows}
     if mode == "plan_only":
         result["launch_ready"] = all(row["action"] in {"skip", "execute", "reconcile"} for row in rows)
     return result
@@ -601,7 +725,7 @@ def reconcile_row(manifest: dict[str, Any], manifest_hash: str, row: dict[str, A
     return {"row_id": row["row_id"], "attempt_id": row["attempt_id"], "physical_attempt_id": attempt.name, "action": "reconciled", "receipt_path": str(final)}
 
 
-def execute_row(manifest: dict[str, Any], manifest_hash: str, row: dict[str, Any], owner_started_at: str) -> dict[str, Any]:
+def execute_row(manifest: dict[str, Any], manifest_hash: str, row: dict[str, Any], owner_started_at: str, *, lease_fds: tuple[int, ...] = (), backend: str = "local", scheduler_id: str | None = None) -> dict[str, Any]:
     entries = attempts(manifest_hash, row)
     next_index = int(entries[-1].name[-6:]) + 1 if entries else 1
     if next_index > 999999:
@@ -611,7 +735,7 @@ def execute_row(manifest: dict[str, Any], manifest_hash: str, row: dict[str, Any
     attempt = root / f"attempt_{next_index:06d}"
     attempt.mkdir()
     log = attempt / "producer.log"
-    atomic_json(owner_payload(manifest, manifest_hash, owner_started_at, row, log), owner_path(manifest), True)
+    atomic_json({**owner_payload(manifest, manifest_hash, owner_started_at, row, log), "lock_path": str(unit_lock_path(row)), "backend": backend, "scheduler_id": scheduler_id}, unit_owner_path(row), True)
     try:
         handle = log.open("xb")
     except FileExistsError as exc:
@@ -620,7 +744,7 @@ def execute_row(manifest: dict[str, Any], manifest_hash: str, row: dict[str, Any
     with handle:
         handle.write((json.dumps({"row_id": row["row_id"], "attempt_id": row["attempt_id"], "physical_attempt_id": attempt.name, "resolved_argv": resolved_argv(manifest, row), "execution_argv": argv, "start_timestamp": started}, sort_keys=True) + "\n").encode())
         handle.flush()
-        completed = subprocess.run(argv, cwd=row["working_directory"], stdout=handle, stderr=subprocess.STDOUT, check=False)
+        completed = subprocess.run(argv, cwd=row["working_directory"], stdout=handle, stderr=subprocess.STDOUT, check=False, pass_fds=lease_fds)
         os.fsync(handle.fileno())
     if completed.returncode:
         raise RunnerError("row_command_failed", f"direct producer argv returned {completed.returncode}; no retry was attempted", row_id=row["row_id"])
@@ -647,52 +771,104 @@ def execute_row(manifest: dict[str, Any], manifest_hash: str, row: dict[str, Any
     return result
 
 
-def execute(manifest: dict[str, Any], manifest_hash: str) -> dict[str, Any]:
-    root, lock = Path(manifest["control_root"]), Path(manifest["lock_path"])
-    root.mkdir(parents=True, exist_ok=True); lock.parent.mkdir(parents=True, exist_ok=True)
-    with lock.open("a+b") as handle:
+def execute_unit(manifest: dict[str, Any], manifest_hash: str, row: dict[str, Any], *, backend: str = "local", scheduler_id: str | None = None) -> dict[str, Any]:
+    """The sole mutating primitive: acquire ownership, reconcile, then execute."""
+    with unit_lease(manifest, row) as lease_fds:
         try:
-            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError as exc:
-            raise RunnerError("execution_lock_held", f"another runner owns lock: {lock}") from exc
-        owner_started_at = now()
-        try:
-            for row in manifest["rows"]:
-                state = classify(manifest, manifest_hash, row, False, read_owner(manifest))
-                if state["status"] not in {"not_started", "complete", "stale_owner_free_lock", "partial_staging_attempt", "complete_validated_staging_not_promoted", "promoted_incomplete", "promoted_complete_without_receipt"}:
-                    raise RunnerError(state["status"], state["reason"], row_id=row["row_id"])
-            atomic_json(owner_payload(manifest, manifest_hash, owner_started_at), owner_path(manifest), True)
-            results: list[dict[str, Any]] = []
-            for row in manifest["rows"]:
-                state = classify(manifest, manifest_hash, row, False, read_owner(manifest))
-                if state["status"] == "complete":
-                    results.append({"row_id": row["row_id"], "attempt_id": row["attempt_id"], "action": "skipped_valid_receipt", "receipt_path": state["receipt_path"]}); continue
-                if state["status"] in {"complete_validated_staging_not_promoted", "promoted_incomplete", "promoted_complete_without_receipt"}:
-                    results.append(reconcile_row(manifest, manifest_hash, row))
-                    continue
-                if state["status"] not in {"not_started", "stale_owner_free_lock", "partial_staging_attempt"}:
-                    raise RunnerError(state["status"], state["reason"], row_id=row["row_id"])
-                validate_runtime(manifest["runtime_contract"])
-                validate_row_inputs(row)
-                fresh = classify(manifest, manifest_hash, row, False, read_owner(manifest))
-                if fresh["status"] not in {"not_started", "stale_owner_free_lock", "partial_staging_attempt"}:
-                    raise RunnerError(fresh["status"], fresh["reason"], row_id=row["row_id"])
-                results.append(execute_row(manifest, manifest_hash, row, owner_started_at))
-                atomic_json(owner_payload(manifest, manifest_hash, owner_started_at), owner_path(manifest), True)
-            return {"schema": "topeft_datacard_matrix_execution_result_v2", "manifest_sha256": manifest_hash, "rows": results}
+            state = classify(manifest, manifest_hash, row, False, unit_owner(row) or read_owner(manifest))
+            if state["status"] == "complete":
+                return {"row_id": row["row_id"], "attempt_id": row["attempt_id"], "action": "skipped_valid_receipt", "receipt_path": state["receipt_path"]}
+            if state["status"] in {"complete_validated_staging_not_promoted", "promoted_incomplete", "promoted_complete_without_receipt"}:
+                return reconcile_row(manifest, manifest_hash, row)
+            if state["status"] not in {"not_started", "stale_owner_free_lock", "partial_staging_attempt"}:
+                raise RunnerError(state["status"], state["reason"], row_id=row["row_id"])
+            validate_unit_layout(manifest)
+            validate_runtime(manifest["runtime_contract"])
+            validate_row_inputs(row)
+            fresh = classify(manifest, manifest_hash, row, False, unit_owner(row) or read_owner(manifest))
+            if fresh["status"] not in {"not_started", "stale_owner_free_lock", "partial_staging_attempt"}:
+                raise RunnerError(fresh["status"], fresh["reason"], row_id=row["row_id"])
+            return execute_row(manifest, manifest_hash, row, now(), lease_fds=lease_fds, backend=backend, scheduler_id=scheduler_id)
         finally:
-            owner_path(manifest).unlink(missing_ok=True)
+            unit_owner_path(row).unlink(missing_ok=True)
+
+
+def execute(manifest: dict[str, Any], manifest_hash: str, *, backend: str = "local", scheduler_id: str | None = None) -> dict[str, Any]:
+    """Sequential convenience orchestration over the canonical unit primitive."""
+    return {"schema": "topeft_datacard_matrix_execution_result_v2", "manifest_sha256": manifest_hash,
+            "rows": [execute_unit(manifest, manifest_hash, row, backend=backend, scheduler_id=scheduler_id) for row in manifest["rows"]]}
+
+
+def overlay_scheduler(result: dict[str, Any], overlay: Any) -> None:
+    """Attach supplied observations without deriving producer completion/retry."""
+    overlay = exact_fields(overlay, {"schema", "parent_integrity", "observed_at", "units"}, "scheduler_status")
+    if overlay["schema"] != "topeft_datacard_scheduler_status_v1" or overlay["parent_integrity"] != result["manifest_sha256"]:
+        raise RunnerError("scheduler_status_error", "scheduler observation parent binding differs")
+    text(overlay["observed_at"], "observed_at")
+    if not isinstance(overlay["units"], list):
+        raise RunnerError("scheduler_status_error", "units must be a list")
+    states = {row["row_id"]: row for row in result["rows"]}
+    seen = set()
+    for item in overlay["units"]:
+        exact_fields(item, {"row_id", "scheduler_id", "state"}, "scheduler_unit")
+        row_id = text(item["row_id"], "row_id")
+        if row_id not in states or row_id in seen:
+            raise RunnerError("scheduler_status_error", "unknown or duplicate scheduler row")
+        seen.add(row_id)
+        for key in ("scheduler_id", "state"):
+            text(item[key], key)
+        states[row_id]["scheduler_metadata"] = {**item, "observed_at": overlay["observed_at"], "completion_authority": False}
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Run a prequalified datacard matrix with byte-bound receipts.")
     modes = parser.add_mutually_exclusive_group(); modes.add_argument("--plan-only", action="store_true"); modes.add_argument("--status", action="store_true")
-    parser.add_argument("manifest", type=Path); args = parser.parse_args(argv)
+    parser.add_argument("manifest", type=Path, nargs="?")
+    parser.add_argument("--unit", type=Path, help="Derived execution-unit descriptor")
+    parser.add_argument("--row-id", help="Select one row from the original manifest")
+    modes.add_argument("--derive-units", action="store_true", help="Print deterministic descriptors without writing state")
+    parser.add_argument("--backend", choices=("local", "condor", "manual"), default="local")
+    parser.add_argument("--scheduler-id", help="Observational scheduler identity")
+    parser.add_argument("--unit-integrity", help="Dispatch guard for descriptor bytes")
+    parser.add_argument("--scheduler-status", type=Path, help="Read-only operational metadata overlay")
+    parser.add_argument("--runner-integrity", help="Dispatch guard for the worker runner bytes")
+    args = parser.parse_args(argv)
+    if bool(args.manifest) == bool(args.unit) or (args.unit and (args.row_id or args.derive_units)):
+        parser.error("supply either MANIFEST [--row-id ROW] or --unit DESCRIPTOR")
+    if args.row_id and args.derive_units:
+        parser.error("--derive-units describes the whole workload; use --row-id for execution/status")
+    if args.scheduler_status and not args.status:
+        parser.error("--scheduler-status requires --status")
+    if args.unit_integrity and not args.unit:
+        parser.error("--unit-integrity requires --unit")
     try:
-        manifest, manifest_hash = load_manifest(args.manifest)
-        result = read_only("plan_only" if args.plan_only else "status", manifest, manifest_hash) if (args.plan_only or args.status) else execute(manifest, manifest_hash)
+        if args.runner_integrity and hash_file(Path(__file__)) != args.runner_integrity:
+            raise RunnerError("stale_dispatch_input", "worker runner bytes changed")
+        if args.derive_units:
+            print(json.dumps(derive_units(args.manifest), indent=2, sort_keys=True))
+            return 0
+        if args.unit:
+            raw_unit = args.unit.read_bytes()
+            if args.unit_integrity and hashlib.sha256(raw_unit).hexdigest() != args.unit_integrity:
+                raise RunnerError("stale_dispatch_input", "execution-unit descriptor bytes changed")
+            manifest, manifest_hash, row = resolve_unit(json.loads(raw_unit))
+        else:
+            manifest, manifest_hash = load_manifest(args.manifest)
+            row = select_row(manifest, args.row_id) if args.row_id else None
+        if args.plan_only or args.status:
+            result = read_only("plan_only" if args.plan_only else "status", manifest, manifest_hash, row["row_id"] if row else None)
+        elif row:
+            result = {"schema": "topeft_datacard_matrix_execution_result_v2", "manifest_sha256": manifest_hash,
+                      "rows": [execute_unit(manifest, manifest_hash, row, backend=args.backend, scheduler_id=args.scheduler_id)]}
+        else:
+            result = execute(manifest, manifest_hash, backend=args.backend, scheduler_id=args.scheduler_id)
+        if args.scheduler_status:
+            overlay_scheduler(result, json.loads(args.scheduler_status.read_text()))
         print(json.dumps(result, indent=2, sort_keys=True))
         return 2 if args.plan_only and not result["launch_ready"] else 0
+    except (OSError, ValueError) as exc:
+        print(json.dumps({"schema": "topeft_datacard_matrix_error_v2", "status": "dispatch_read_error", "message": str(exc)}), file=sys.stderr)
+        return 2
     except RunnerError as exc:
         error = {"schema": "topeft_datacard_matrix_error_v2", "status": exc.code, "message": str(exc)}
         if exc.row_id is not None: error["row_id"] = exc.row_id

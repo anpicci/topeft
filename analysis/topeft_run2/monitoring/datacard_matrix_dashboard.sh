@@ -3,7 +3,7 @@
 set -euo pipefail
 
 usage() {
-  printf 'Usage: %s [--once] [--refresh-seconds N] [--log-lines N] MANIFEST.json\n' "${0##*/}"
+  printf 'Usage: %s [--once] [--refresh-seconds N] [--log-lines N] [--scheduler-status FILE] MANIFEST.json\n' "${0##*/}"
 }
 
 die() {
@@ -20,6 +20,7 @@ once=false
 refresh_seconds=5
 log_lines=20
 manifest=
+scheduler_args=()
 while (( $# )); do
   case $1 in
     --once) once=true; shift ;;
@@ -29,6 +30,9 @@ while (( $# )); do
     --log-lines)
       (( $# >= 2 )) || die '--log-lines needs a value'
       log_lines=$2; shift 2 ;;
+    --scheduler-status)
+      (( $# >= 2 )) || die '--scheduler-status needs a value'
+      scheduler_args=(--scheduler-status "$2"); shift 2 ;;
     -h|--help) usage; exit 0 ;;
     -*) die "unknown option: $1" ;;
     *) [[ -z $manifest ]] || die 'exactly one manifest path is required'
@@ -68,7 +72,7 @@ render_once() {
   local status_json summary complete_units active_units pending_units problem_units
   local total_units complete_targets active_targets total_targets lock_state
   local active_row active_attempt started_at log_path table row_state row_id attempt logical_row target_count channels
-  if ! status_json=$("$runner" --status "$manifest" 2>&1); then
+  if ! status_json=$("$runner" --status "$manifest" "${scheduler_args[@]}" 2>&1); then
     die "canonical --status failed: $status_json"
   fi
   if ! jq -e --arg manifest_hash "$manifest_hash" --slurpfile manifest "$manifest" '
@@ -80,7 +84,6 @@ render_once() {
     ([.rows[] | [.row_id, .attempt_id]] | sort) ==
       ([$source.rows[] | [.row_id, .attempt_id]] | sort) and
     ([.rows[].row_id] | unique | length) == ($source.rows | length) and
-    ([.rows[] | select(.status == "active")] | length) <= 1 and
     ([.rows[] | .status] | all(. == "complete" or . == "active" or
       . == "not_started" or . == "stale_owner_free_lock" or
       . == "partial_staging_attempt" or . == "complete_validated_staging_not_promoted" or
@@ -134,7 +137,10 @@ render_once() {
   printf ' %s%%\n' "$((complete_targets * 100 / total_targets))"
   printf 'Active units   : %s (%s targets)  Pending: %s  Problems: %s  Lock: %s\n' \
     "$active_units" "$active_targets" "$pending_units" "$problem_units" "$lock_state"
-  printf 'Current unit   : %s  Attempt: %s  Started: %s\n\n' "$active_row" "$active_attempt" "$started_at"
+  jq -r '.owner_metadata as $legacy | .rows[] | select(.status == "active") |
+    (.owner_metadata // $legacy // {}) as $owner |
+    "Current unit   : \(.row_id)  Attempt: \(.attempt_id)  Started: \($owner.current_row_started_at // "-")  Backend: \($owner.backend // "unknown")  Scheduler: \($owner.scheduler_id // "-")"' <<<"$status_json"
+  printf '\n'
   printf 'Status source  : runner --status and validated receipts only; this view does not establish physics validation, memory/resource validation, scheduler state, or topology suitability.\n\n'
 
   printf '%-22s %-31s %-16s %-16s %4s  %s\n' STATE EXECUTION_UNIT LOGICAL_ROW ATTEMPT NCH PHYSICAL_CHANNELS
@@ -157,11 +163,15 @@ render_once() {
     printf '%-22s %-31s %-16s %-16s %4s  %s\n' "$row_state" "$row_id" "$logical_row" "$attempt" "$target_count" "$channels"
   done <<<"$table"
 
+  jq -r '.rows[] | select(.scheduler_metadata != null) |
+    "Scheduler observation: \(.row_id) \(.scheduler_metadata.scheduler_id) \(.scheduler_metadata.state) at \(.scheduler_metadata.observed_at) (operational only)"' <<<"$status_json"
+
   printf '\nCURRENT LOG\n-----------\n'
   if [[ $active_row == - ]]; then
     printf 'No active execution unit.\n'
     return
   fi
+  while IFS=$'\t' read -r active_row active_attempt; do
   log_path=$(jq -r --arg row "$active_row" --arg attempt "$active_attempt" \
     '[.rows[] | select(.row_id == $row and .attempt_id == $attempt) | .active_log_path][0] // empty' <<<"$status_json")
   if [[ -z $log_path ]]; then
@@ -177,6 +187,8 @@ render_once() {
     printf '%s\n' "$log_path"
     tail -n "$log_lines" -- "$log_path" || die "cannot read active log: $log_path"
   fi
+  done < <(jq -r '.rows[] | select(.status == "active") | [.row_id, .attempt_id] | @tsv' <<<"$status_json")
+
 }
 
 while :; do
