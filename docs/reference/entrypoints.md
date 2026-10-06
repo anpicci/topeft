@@ -36,7 +36,7 @@ state to resume without confusing partial, stale, or mismatched output.
 | Input | Type/requirement/default | Semantics |
 | --- | --- | --- |
 | `--production-profile` | Required public profile: `run2_full`, `run3_full`, `run2_full_CR`, `run3_full_CR`, `run2_run3_full`, `run2_run3_full_CR`, `run2_sr_ext`, `run3_sr_ext`, `t0_sr_statonly`, or `t0_cr_statonly` | Selects the maintained block plan. `run2_sr_ext` uses inline data-driven production; `run3_sr_ext` uses a deferred local stage. `rebin_fine` remains a specialist legacy profile with its own explicit environment requirement. |
-| `--output-dir` | Required absolute path; fresh for a new campaign root | Owns state, logs, and produced artifacts. The SR-reco Run 3 component follows successful Run 2 in its reviewed shared root; it does not repeat the initial root-absence gate. Existing state otherwise follows profile-specific compatibility and resume behavior. |
+| `--output-dir` | Required absolute path; fresh for a new campaign root | Owns state, logs, and produced artifacts. The SR-reco Run 3 component follows successful Run 2 in the shared root established by Run 2; it does not repeat the initial root-absence gate. Existing state otherwise follows profile-specific compatibility and resume behavior. |
 | `--campaign-tag` | Required non-empty string | Portable campaign identity recorded with state. |
 | `--env-file` | Optional absolute path | When omitted, resolves or creates the current worker environment. When supplied, selects exactly that archive as an intentional snapshot: integrity/provenance validation remains required, but current-checkout compatibility does not. The wrapper freezes the mode, resolved path, hash, fingerprint, and source identity; combined profiles forward the same explicit snapshot to both components. |
 | `--resume` | Boolean, default false | Reopens compatible campaign state and mechanically selects incomplete blocks/stages. |
@@ -260,7 +260,7 @@ legacy `run2_full` alias.
 `rebin_fine` is a specialist legacy profile and requires an explicit
 environment archive. New campaign roots require fresh output namespaces, an
 absolute output directory, and a campaign tag; the SR-reco Run 3 component
-uses the reviewed root already established by Run 2.
+uses the root already established by Run 2.
 
 For a fresh maintained campaign, no `--env-file` means resolve or create the
 current worker environment for the checkout. An explicit absolute

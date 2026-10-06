@@ -1,11 +1,12 @@
 # Produce and qualify SR-reco extension PKLs
 
 Use `run2_sr_ext` and `run3_sr_ext` in `analysis/topeft_run2/run_cr.sh`
-for the maintained SR-reco extension source campaigns. The current profiles
-materialize 15 fragments per era/profile from five SR category groups and
-three variable chunks per group. This is the current production profile plan,
-not a fixed fragment count for every future SR campaign. The exact block and
-artifact names come from the reviewed profile plan; see
+for the maintained SR-reco extension source campaigns. The current
+`run2_sr_ext` and `run3_sr_ext` profiles each materialize 15 fragments from
+five SR category groups and three variable chunks per group. This is the
+current profile grouping, not a fixed fragment count for every future SR
+campaign. The exact block and artifact names come from the maintained profile
+configuration; see
 [production configuration](../reference/production_configuration.md) for the
 category/variable matrix.
 
@@ -48,19 +49,19 @@ the workflow does not prescribe a universal date or short-SHA spelling.
 
 ## Run 2, then Run 3
 
-Use the reviewed `run_cr.sh` plan and one campaign output root. Keep the
+Use the maintained `run_cr.sh` workflow and one campaign output root. Keep the
 terminal transcript and exact process exit status for each profile. Workers
 are provisioned separately with the manager name printed for each Work Queue
 source invocation.
 
 1. Before `run2_sr_ext`, rerun the applicable launch-compatibility preflight;
    require the fresh output root to be absent; inspect the scheduler situation;
-   then run the reviewed Run 2 command with the explicit `--env-file`, absolute
+   then run the Run 2 command with the explicit `--env-file`, absolute
    `--output-dir`, and `--campaign-tag`.
 2. Start `run3_sr_ext` only after the Run 2 process returns zero. Rerun the
    compatibility preflight and inspect the scheduler situation immediately
-   before Run 3. Use the same reviewed campaign namespace and archive. There
-   is no second fresh-root absence gate: Run 2 has already established the
+   before Run 3. Use the same campaign namespace and archive. There is no
+   second fresh-root absence gate: Run 2 has already established the
    shared output root.
 
 A zero process status is necessary, but campaign state, receipts, artifacts,
@@ -99,13 +100,13 @@ presence of a source PKL alone does not establish that its sidecar or deferred
 For each profile, retain its command transcript and exact exit status, final
 `run_cr.sh` campaign state and block receipts, any campaign summary or failure
 snapshot, and the exact source/`_np` PKL and sidecar inventory with paths and
-sizes. Return the archive and live-source provenance bound to the campaign,
-plus native Work Queue logs when needed to explain completion or recovery.
-Use the runner's serialized state as the primary completion record; do not
-reconstruct it from filenames alone.
+sizes. Return the worker-archive identity and live-source provenance bound to
+the campaign, plus native Work Queue logs when needed to explain completion or
+recovery. Use the runner's serialized state as the primary completion record;
+do not reconstruct it from filenames alone.
 
 After successful Run 2 and Run 3 production, qualify the extension campaign
-with bounded checks against the reviewed profile plan:
+with the checks below against the maintained profile configuration:
 
 - Match expected fragment membership for each current 15-fragment profile,
   including source and `_np` realization. Confirm Run 2 inline and Run 3
@@ -124,5 +125,5 @@ with bounded checks against the reviewed profile plan:
   extension profiles use systematics, implicit production `sumw2`, and no
   raw-count recording.
 
-Qualification is a separate evidence decision. This checklist does not imply
+Qualification is a separate post-production step. This checklist does not imply
 that any current production run or artifact set has passed it.

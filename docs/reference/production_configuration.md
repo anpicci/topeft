@@ -188,13 +188,13 @@ The first six profiles are the ordinary full-production profiles. They use the
 implicit `production` sumw2 policy and leave raw-count recording disabled.
 
 `run2_sr_ext` and `run3_sr_ext` produce extension-only SR source fragments.
-The current profiles reuse five category groups from the full SR profile and
-split each group's extension variables into three chunks, materializing 15
-fragments per era/profile. This is the maintained grouping, not a general
-fixed-count SR campaign interface. Both profiles enable systematic variations,
-use implicit production `sumw2`, and leave raw event counts disabled. Run 2
-uses inline local `DataDrivenProducer`; Run 3 runs local `run_data_driven.py`
-after successful source publication.
+The current `run2_sr_ext` and `run3_sr_ext` profiles each reuse five category
+groups from the full SR profile and split each group's extension variables into
+three chunks, materializing 15 fragments per profile. This is the maintained
+grouping, not a general fixed-count SR campaign interface. Both profiles enable
+systematic variations, use implicit production `sumw2`, and leave raw event
+counts disabled. Run 2 uses inline local `DataDrivenProducer`; Run 3 runs local
+`run_data_driven.py` after successful source publication.
 
 | SR category group | Extension variable chunks |
 | --- | --- |
