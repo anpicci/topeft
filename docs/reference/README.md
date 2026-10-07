@@ -117,3 +117,10 @@ between the reference and executable source before production.
 The [systematics nuisance catalog](systematics_nuisance_catalog.md) is generated
 from maintained static authorities. Other reference pages remain curated;
 source docstrings and annotations remain machine-near authority where substantive.
+
+## API publication
+
+The repository does not currently publish generated API documentation. The
+nuisance catalog is a generated reference page, not a generated callable API.
+Source docstrings and annotations remain machine-near authority where they are
+substantive; these pages supply stable contracts where they are shallow.

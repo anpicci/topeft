@@ -5,7 +5,8 @@ import json
 
 from analysis.topeft_run2.standardize_systematics import SYST_NAMING_MAP
 from topeft.modules.datacard_tools import (
-    DatacardMaker, resolve_shape_nuisance_identity,
+    DatacardMaker, FULLY_SPECIFIED_TAU_NUISANCE_PREFIXES,
+    resolve_shape_nuisance_identity, run2_luminosity_excluded_processes,
     run2_luminosity_shape_factors, run3_luminosity_shape_factors,
 )
 from tools.generate_systematics_nuisance_catalog import (
@@ -45,9 +46,22 @@ def test_datacard_static_registries_are_complete():
         for base in maker.run_decorrelate
     ))
     assert model["shape"] == tuple(sorted(
-        (base, pattern, rule["group"])
+        (base, pattern, rule["group"],
+         f"{base}_{rule['group']}" if rule["group"] else f"{base}_<matched process>")
         for base, rules in maker.syst_shape_decorrelate.items()
         for rule in rules for pattern in rule["matches"]
+    ))
+    assert model["tau_precedence"] == tuple(sorted(
+        (prefix, "preserve base; bypass generic run suffix")
+        for prefix in FULLY_SPECIFIED_TAU_NUISANCE_PREFIXES
+    ))
+    for prefix in FULLY_SPECIFIED_TAU_NUISANCE_PREFIXES:
+        assert resolve_shape_nuisance_identity(f"{prefix}exampleUp", "_run3", maker.run_decorrelate) == (
+            f"{prefix}example", f"{prefix}exampleUp"
+        )
+    assert model["luminosity_exclusions"] == tuple(sorted(
+        (process, "all maintained Run 2 and Run 3 luminosity shape components")
+        for process in run2_luminosity_excluded_processes
     ))
     for run, factors in (("run2", run2_luminosity_shape_factors),
                          ("run3", run3_luminosity_shape_factors)):
@@ -63,9 +77,10 @@ def test_rate_json_sections_are_complete():
     for run in ("run2", "run3"):
         config = json.loads((REPO_ROOT / f"topeft/params/rate_systs_{run}.json").read_text())
         assert model["rates"][run] == tuple(sorted(
-            (family, process, str(value), config["correlations"].get(process, {}).get(family, ""))
+            (family, process, tag, f"{family}_{tag}" if tag else family, str(value))
             for family, processes in config["rate_uncertainties"].items()
             for process, value in processes.items()
+            for tag in (config["correlations"].get(process, {}).get(family, ""),)
         ))
         assert model["correlations"][run] == tuple(sorted(
             (process, family, tag)
@@ -79,6 +94,20 @@ def test_rate_json_sections_are_complete():
         ))
     assert model["missing_parton"][0] == DatacardMaker.MISSING_PARTON_NUISANCE_NAME
     assert dict(model["missing_parton"][1]) == DatacardMaker.MISSING_PARTON_DEFAULT_PAYLOADS
+
+
+def test_generated_policy_tables_match_normalized_model():
+    model = build_catalog_model()
+    page = OUTPUT.read_text(encoding="utf-8")
+    for prefix, rule in model["tau_precedence"]:
+        assert f"| {prefix} | {rule} |" in page
+    for process, applicability in model["luminosity_exclusions"]:
+        assert f"| {process} | {applicability} |" in page
+    for base, pattern, group, identity in model["shape"]:
+        assert f"| {base} | {pattern} | {group} | {identity} |" in page
+    for run in ("run2", "run3"):
+        for family, process, tag, identity, uncertainty in model["rates"][run]:
+            assert f"| {family} | {process} | {tag} | {identity} | {uncertainty} |" in page
 
 
 def test_check_detects_stale_and_missing_without_mutation(tmp_path):

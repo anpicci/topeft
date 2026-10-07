@@ -35,7 +35,8 @@ def _rows_unique(rows, name):
 def build_catalog_model():
     """Read maintained runtime/config authorities and normalize all static rows."""
     from topeft.modules.datacard_tools import (
-        DatacardMaker, resolve_shape_nuisance_identity,
+        DatacardMaker, FULLY_SPECIFIED_TAU_NUISANCE_PREFIXES,
+        resolve_shape_nuisance_identity, run2_luminosity_excluded_processes,
         run2_luminosity_shape_factors, run3_luminosity_shape_factors,
     )
     from analysis.topeft_run2.standardize_systematics import SYST_NAMING_MAP
@@ -82,8 +83,29 @@ def build_catalog_model():
             if not isinstance(rule, dict) or set(rule) != {"matches", "group"} or not isinstance(rule["matches"], list):
                 raise ValueError(f"Unsupported shape decorrelation rule: {base}")
             for pattern in rule["matches"]:
-                shape_rows.append((base, _text(pattern), _text(rule["group"])))
+                group = _text(rule["group"])
+                final_identity = f"{base}_{group}" if group else f"{base}_<matched process>"
+                shape_rows.append((base, _text(pattern), group, final_identity))
     shape_rows = _rows_unique(shape_rows, "shape decorrelation")
+
+    tau_prefixes = FULLY_SPECIFIED_TAU_NUISANCE_PREFIXES
+    if not isinstance(tau_prefixes, tuple) or not all(isinstance(prefix, str) and prefix for prefix in tau_prefixes):
+        raise ValueError("Unsupported fully specified Tau prefixes")
+    tau_rows = _rows_unique(
+        [(prefix, "preserve base; bypass generic run suffix") for prefix in tau_prefixes],
+        "fully specified Tau precedence",
+    )
+    if len(tau_rows) != len(tau_prefixes):
+        raise ValueError("Duplicate fully specified Tau prefix")
+    if not isinstance(run2_luminosity_excluded_processes, (set, frozenset)) or not all(
+        isinstance(process, str) for process in run2_luminosity_excluded_processes
+    ):
+        raise ValueError("Unsupported luminosity process exclusions")
+    luminosity_exclusion_rows = _rows_unique(
+        [(process, "all maintained Run 2 and Run 3 luminosity shape components")
+         for process in run2_luminosity_excluded_processes],
+        "luminosity exclusions",
+    )
 
     luminosity_rows = {}
     for run, factors in (("run2", run2_luminosity_shape_factors), ("run3", run3_luminosity_shape_factors)):
@@ -115,7 +137,8 @@ def build_catalog_model():
                 if isinstance(uncertainty, bool) or not isinstance(uncertainty, (int, float, str)):
                     raise ValueError("Unsupported rate uncertainty")
                 tag = correlations.get(process, {}).get(family, "")
-                rows.append((family, process, str(uncertainty), tag))
+                identity = f"{family}_{tag}" if tag else family
+                rows.append((family, process, tag, identity, str(uncertainty)))
         rate_rows[run] = _rows_unique(rows, "rate uncertainty")
         special = []
         for process, bins in _mapping(config["diboson_njets"], "diboson njets").items():
@@ -140,6 +163,7 @@ def build_catalog_model():
         raise ValueError("Unsupported missing parton run domains")
     return {
         "year": year_rows, "run": run_rows, "shape": shape_rows,
+        "tau_precedence": tau_rows, "luminosity_exclusions": luminosity_exclusion_rows,
         "luminosity": luminosity_rows, "rates": rate_rows,
         "correlations": correlation_rows, "diboson": diboson_rows,
         "standardizer": standardizer_rows,
@@ -163,7 +187,9 @@ def render_catalog(model):
     index = [
         ("Year correlation", "Run 2 / Run 3", len(model["year"]), "Groups source periods", "DatacardMaker.syst_year_corr"),
         ("Run decorrelation", "Run 2 / Run 3", len(model["run"]), "Resolves final base by run", "DatacardMaker.run_decorrelate; resolve_shape_nuisance_identity"),
+        ("Fully specified Tau precedence", "Both runs", len(model["tau_precedence"]), "Preserves already specified nuisance bases", "FULLY_SPECIFIED_TAU_NUISANCE_PREFIXES; resolve_shape_nuisance_identity"),
         ("Process shape decorrelation", "Both runs", len(model["shape"]), "Matches processes and group tokens", "DatacardMaker.syst_shape_decorrelate"),
+        ("Luminosity process exclusions", "Run 2 / Run 3", len(model["luminosity_exclusions"]), "Excludes logical processes from luminosity templates", "run2_luminosity_excluded_processes"),
     ]
     for run in ("run2", "run3"):
         label = "Run 2" if run == "run2" else "Run 3"
@@ -190,10 +216,17 @@ def render_catalog(model):
                ((base, group, "syst_year_corr") for base, group in model["year"])), "\n",
         "## DatacardMaker run-domain decorrelation\n\n",
         _table(("Source base", "Run 2 final base", "Run 3 final base"), model["run"]), "\n",
+        "## Fully specified Tau identity precedence\n\n",
+        "A nuisance base beginning with a maintained prefix is already fully specified. "
+        "`resolve_shape_nuisance_identity` preserves that base before the generic `run_decorrelate` suffix path.\n\n",
+        _table(("Maintained prefix", "Final identity rule"), model["tau_precedence"]), "\n",
         "## Process-conditioned shape decorrelation\n\n",
         "An empty group token appends the matched process name; unmatched processes retain the original systematic identity.\n\n",
-        _table(("Systematic base", "Process match pattern", "Group token"), model["shape"]), "\n",
+        _table(("Systematic base", "Process match pattern", "Group token", "Final identity rule"), model["shape"]), "\n",
         "## Luminosity shape nuisances\n\n",
+        "The maintained luminosity components are not applied to these logical process identities. "
+        "The exclusion authority is shared by the Run 2 and Run 3 template paths.\n\n",
+        _table(("Excluded logical process", "Applies to"), model["luminosity_exclusions"]), "\n",
     ]
     for run in ("run2", "run3"):
         label = "Run 2" if run == "run2" else "Run 3"
@@ -201,7 +234,7 @@ def render_catalog(model):
     parts += ["## Configured rate nuisances\n\n"]
     for run in ("run2", "run3"):
         label = "Run 2" if run == "run2" else "Run 3"
-        parts += [f"### {label} rate uncertainties\n\n", _table(("Nuisance family", "Process", "Uncertainty", "Correlation tag"), model["rates"][run]), "\n",
+        parts += [f"### {label} rate uncertainties\n\n", _table(("Source/config family", "Process", "Correlation tag", "Resolved DatacardMaker nuisance identity", "Uncertainty"), model["rates"][run]), "\n",
                   f"### {label} correlation tags\n\n", _table(("Process", "Nuisance family", "Tag"), model["correlations"][run]), "\n",
                   f"### {label} diboson_njets\n\n", _table(("Process", "Jet count", "Factor"), model["diboson"][run]), "\n"]
     missing_name, payloads = model["missing_parton"]
@@ -214,9 +247,10 @@ def render_catalog(model):
         label = "Run 2" if run == "run2" else "Run 3"
         parts += [f"### {label} SYST_NAMING_MAP\n\n", _table(("Input final nuisance identity", "Standardized nuisance identity", "Renamed"), model["standardizer"][run]), "\n"]
     parts += ["## Scope boundary\n\n",
-              "The DatacardMaker sections exhaust the maintained static policy registries and configuration rendered above. "
-              "Input-histogram-discovered shape labels are not a static universal inventory. "
-              "The standardizer tables exhaust `SYST_NAMING_MAP`. Actual package and card nuisance populations are artifacts, "
+              "This generated catalog is exhaustive for the current active static nuisance policy authorities rendered here "
+              "and for `SYST_NAMING_MAP`. Nuisance labels discovered only from concrete input histograms or artifacts "
+              "are not presented as a universal static inventory. Alternative nuisance representations intentionally "
+              "not written to current datacards are outside the active inventory. Actual package and card nuisance populations are artifacts, "
               "not source registries. Standardization does not decide scientific correlation topology.\n"]
     return "".join(parts)
 

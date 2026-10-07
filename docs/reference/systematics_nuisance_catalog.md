@@ -8,7 +8,9 @@
 | --- | --- | --- | --- | --- |
 | Year correlation | Run 2 / Run 3 | 37 | Groups source periods | DatacardMaker.syst_year_corr |
 | Run decorrelation | Run 2 / Run 3 | 16 | Resolves final base by run | DatacardMaker.run_decorrelate; resolve_shape_nuisance_identity |
+| Fully specified Tau precedence | Both runs | 4 | Preserves already specified nuisance bases | FULLY_SPECIFIED_TAU_NUISANCE_PREFIXES; resolve_shape_nuisance_identity |
 | Process shape decorrelation | Both runs | 11 | Matches processes and group tokens | DatacardMaker.syst_shape_decorrelate |
+| Luminosity process exclusions | Run 2 / Run 3 | 6 | Excludes logical processes from luminosity templates | run2_luminosity_excluded_processes |
 | Luminosity shapes | Run 2 | 12 | Component factors by period | run2_luminosity_shape_factors |
 | Rate uncertainties | Run 2 | 15 | Configured process values | rate_systs_run2.json |
 | Rate correlation tags | Run 2 | 18 | Configured process-family tags | rate_systs_run2.json |
@@ -85,25 +87,47 @@ Each row is one normalized group; no particular textual year label is guaranteed
 | lepSF_taus_fake | lepSF_taus_fake_run2 | lepSF_taus_fake_run3 |
 | lepSF_taus_real | lepSF_taus_real_run2 | lepSF_taus_real_run3 |
 
+## Fully specified Tau identity precedence
+
+A nuisance base beginning with a maintained prefix is already fully specified. `resolve_shape_nuisance_identity` preserves that base before the generic `run_decorrelate` suffix path.
+
+| Maintained prefix | Final identity rule |
+| --- | --- |
+| CMS_eff_t_DeepTau | preserve base; bypass generic run suffix |
+| CMS_fake_t_DeepTau | preserve base; bypass generic run suffix |
+| CMS_scale_t_DeepTau | preserve base; bypass generic run suffix |
+| lepSF_taus_fake_run | preserve base; bypass generic run suffix |
+
 ## Process-conditioned shape decorrelation
 
 An empty group token appends the matched process name; unmatched processes retain the original systematic identity.
 
-| Systematic base | Process match pattern | Group token |
-| --- | --- | --- |
-| ISR | Diboson | qq |
-| ISR | Triboson | qq |
-| ISR | convs | gg |
-| ISR | tHq | qg |
-| ISR | tllq | qq |
-| ISR | ttH | gg |
-| ISR | ttll | gg |
-| ISR | ttlnu | qq |
-| ISR | tttt | gg |
-| fact | .* |  |
-| renorm | .* |  |
+| Systematic base | Process match pattern | Group token | Final identity rule |
+| --- | --- | --- | --- |
+| ISR | Diboson | qq | ISR_qq |
+| ISR | Triboson | qq | ISR_qq |
+| ISR | convs | gg | ISR_gg |
+| ISR | tHq | qg | ISR_qg |
+| ISR | tllq | qq | ISR_qq |
+| ISR | ttH | gg | ISR_gg |
+| ISR | ttll | gg | ISR_gg |
+| ISR | ttlnu | qq | ISR_qq |
+| ISR | tttt | gg | ISR_gg |
+| fact | .* |  | fact_<matched process> |
+| renorm | .* |  | renorm_<matched process> |
 
 ## Luminosity shape nuisances
+
+The maintained luminosity components are not applied to these logical process identities. The exclusion authority is shared by the Run 2 and Run 3 template paths.
+
+| Excluded logical process | Applies to |
+| --- | --- |
+| charge_flips | all maintained Run 2 and Run 3 luminosity shape components |
+| data | all maintained Run 2 and Run 3 luminosity shape components |
+| data_obs | all maintained Run 2 and Run 3 luminosity shape components |
+| fakes | all maintained Run 2 and Run 3 luminosity shape components |
+| flips | all maintained Run 2 and Run 3 luminosity shape components |
+| nonprompt | all maintained Run 2 and Run 3 luminosity shape components |
 
 ### Run 2 luminosity components
 
@@ -139,23 +163,23 @@ An empty group token appends the matched process name; unmatched processes retai
 
 ### Run 2 rate uncertainties
 
-| Nuisance family | Process | Uncertainty | Correlation tag |
-| --- | --- | --- | --- |
-| charge_flips | charge_flips_sm | 1.3 |  |
-| pdf_scale | Diboson | 1.014 | qq |
-| pdf_scale | tHq | 1.051 | qg |
-| pdf_scale | tllq | 1.027 | qq |
-| pdf_scale | ttH | 1.024 | gg |
-| pdf_scale | tttt | 0.9312/1.0688 | gg |
-| qcd_scale | Diboson | 1.023 | VV |
-| qcd_scale | Triboson | 1.5 | VVV |
-| qcd_scale | tHq | 0.851/1.065 | tHq |
-| qcd_scale | tWZ | 1.5 | tWZ |
-| qcd_scale | tllq | 1.02 | V |
-| qcd_scale | ttH | 0.929/1.076 | ttH |
-| qcd_scale | ttll | 0.898/1.117 | ttll |
-| qcd_scale | ttlnu | 0.89/1.10 | ttlnu |
-| qcd_scale | tttt | 0.8863/1.0359 | tttt |
+| Source/config family | Process | Correlation tag | Resolved DatacardMaker nuisance identity | Uncertainty |
+| --- | --- | --- | --- | --- |
+| charge_flips | charge_flips_sm |  | charge_flips | 1.3 |
+| pdf_scale | Diboson | qq | pdf_scale_qq | 1.014 |
+| pdf_scale | tHq | qg | pdf_scale_qg | 1.051 |
+| pdf_scale | tllq | qq | pdf_scale_qq | 1.027 |
+| pdf_scale | ttH | gg | pdf_scale_gg | 1.024 |
+| pdf_scale | tttt | gg | pdf_scale_gg | 0.9312/1.0688 |
+| qcd_scale | Diboson | VV | qcd_scale_VV | 1.023 |
+| qcd_scale | Triboson | VVV | qcd_scale_VVV | 1.5 |
+| qcd_scale | tHq | tHq | qcd_scale_tHq | 0.851/1.065 |
+| qcd_scale | tWZ | tWZ | qcd_scale_tWZ | 1.5 |
+| qcd_scale | tllq | V | qcd_scale_V | 1.02 |
+| qcd_scale | ttH | ttH | qcd_scale_ttH | 0.929/1.076 |
+| qcd_scale | ttll | ttll | qcd_scale_ttll | 0.898/1.117 |
+| qcd_scale | ttlnu | ttlnu | qcd_scale_ttlnu | 0.89/1.10 |
+| qcd_scale | tttt | tttt | qcd_scale_tttt | 0.8863/1.0359 |
 
 ### Run 2 correlation tags
 
@@ -194,23 +218,23 @@ An empty group token appends the matched process name; unmatched processes retai
 
 ### Run 3 rate uncertainties
 
-| Nuisance family | Process | Uncertainty | Correlation tag |
-| --- | --- | --- | --- |
-| charge_flips_run3 | charge_flips_sm | 1.3 |  |
-| pdf_scale | Diboson | 1.014 | qq |
-| pdf_scale | tHq | 1.051 | qg |
-| pdf_scale | tllq | 1.027 | qq |
-| pdf_scale | ttH | 1.024 | gg |
-| pdf_scale | tttt | 0.9312/1.0688 | gg |
-| qcd_scale | Diboson | 1.023 | VV |
-| qcd_scale | Triboson | 1.5 | VVV |
-| qcd_scale | tHq | 0.851/1.065 | tHq |
-| qcd_scale | tWZ | 1.5 | tWZ |
-| qcd_scale | tllq | 1.02 | V |
-| qcd_scale | ttH | 0.929/1.076 | ttH |
-| qcd_scale | ttll | 0.898/1.117 | ttll |
-| qcd_scale | ttlnu | 0.89/1.10 | ttlnu |
-| qcd_scale | tttt | 0.8863/1.0359 | tttt |
+| Source/config family | Process | Correlation tag | Resolved DatacardMaker nuisance identity | Uncertainty |
+| --- | --- | --- | --- | --- |
+| charge_flips_run3 | charge_flips_sm |  | charge_flips_run3 | 1.3 |
+| pdf_scale | Diboson | qq | pdf_scale_qq | 1.014 |
+| pdf_scale | tHq | qg | pdf_scale_qg | 1.051 |
+| pdf_scale | tllq | qq | pdf_scale_qq | 1.027 |
+| pdf_scale | ttH | gg | pdf_scale_gg | 1.024 |
+| pdf_scale | tttt | gg | pdf_scale_gg | 0.9312/1.0688 |
+| qcd_scale | Diboson | VV | qcd_scale_VV | 1.023 |
+| qcd_scale | Triboson | VVV | qcd_scale_VVV | 1.5 |
+| qcd_scale | tHq | tHq | qcd_scale_tHq | 0.851/1.065 |
+| qcd_scale | tWZ | tWZ | qcd_scale_tWZ | 1.5 |
+| qcd_scale | tllq | V | qcd_scale_V | 1.02 |
+| qcd_scale | ttH | ttH | qcd_scale_ttH | 0.929/1.076 |
+| qcd_scale | ttll | ttll | qcd_scale_ttll | 0.898/1.117 |
+| qcd_scale | ttlnu | ttlnu | qcd_scale_ttlnu | 0.89/1.10 |
+| qcd_scale | tttt | tttt | qcd_scale_tttt | 0.8863/1.0359 |
 
 ### Run 3 correlation tags
 
@@ -682,4 +706,4 @@ Static nuisance identity: `missing_parton`. DatacardMaker selects the run-era pa
 
 ## Scope boundary
 
-The DatacardMaker sections exhaust the maintained static policy registries and configuration rendered above. Input-histogram-discovered shape labels are not a static universal inventory. The standardizer tables exhaust `SYST_NAMING_MAP`. Actual package and card nuisance populations are artifacts, not source registries. Standardization does not decide scientific correlation topology.
+This generated catalog is exhaustive for the current active static nuisance policy authorities rendered here and for `SYST_NAMING_MAP`. Nuisance labels discovered only from concrete input histograms or artifacts are not presented as a universal static inventory. Alternative nuisance representations intentionally not written to current datacards are outside the active inventory. Actual package and card nuisance populations are artifacts, not source registries. Standardization does not decide scientific correlation topology.
