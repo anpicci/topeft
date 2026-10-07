@@ -54,11 +54,24 @@ package.
 | `selectedWCs.txt` | Consolidated selected-WC JSON from row snapshots. |
 | `scalings.json` | Consolidated scaling records with channels relabeled to this era's `chN` map. |
 | `physical_to_chN.json` | Ordered physical target to per-era `chN` rows. |
-| `package-provenance.json` | Analysis/era, source manifest hashes and unit count, builder identity, member hashes and card counts. |
+| `package-provenance.json` | Analysis/era and package identity, card/template counts, metadata-file hashes, source manifest hashes and unit count, and builder identity. It has no per-card or per-template hash inventory. |
 
 Row-local `scalings-preselect.json`, receipts, matrix manifests, and runner logs
 remain source artifacts. There is no `ordered_card_inputs.txt`, combined
 `selectedWCs.txt`, `combinedcard.txt`, or workspace at this layer.
+
+| Evidence | Verified at build time? | Persisted in package? | Where | What it proves |
+| --- | --- | --- | --- | --- |
+| Receipt-bound TXT/ROOT `size_bytes` and `sha256` | Yes, for every copied payload before publication | No per-card/template inventory | Successful source receipts and builder checks | Copied payloads matched the selected receipt records during construction. |
+| Package metadata hashes | Yes | Yes | `package-provenance.json`: `selected_wcs_sha256`, `scalings_sha256`, `physical_to_chN_sha256` | Identity of the three named metadata files. |
+| Package, source and builder identities | Yes | Yes | `package-provenance.json`: `schema`, `artifact_type`, `analysis`, `era`, `package_root`, `packaged_txt_count`, `packaged_root_count`, `source_manifest_sha256s`, `source_unit_count`, `builder_git_head`, `builder_source_sha256`, `builder_git_dirty` | Declared package scope and construction identity, not individual receipt selection. |
+
+A published per-era package is not a self-contained archive of its exact
+selected receipt identities. It retains `source_manifest_sha256s` and
+`source_unit_count`, but no individual `row_id`, `attempt_id`, selected-unit
+`MANIFEST_SHA256:ROW_ID:ATTEMPT_ID` keys, or receipt contents. Preserve the
+original manifests, successful receipts, and selected-unit invocation/build
+report externally to reconstruct exact receipt-level lineage.
 
 ## Build the original combined package
 
@@ -85,8 +98,14 @@ it does not run Combine or validate physics.
 | `scalings.json` | Per-era records relabeled to combined channels. |
 | `combined_mapping_manifest.json` | Ordered rows connecting physical, per-era, and combined identities; includes the package root. |
 | `ordered_card_inputs.txt` | One `cards/...txt` path per mapping row, in combination order. |
-| `package-provenance.json` | Input identities and hashes, assembler identity, output counts and metadata hashes. |
+| `package-provenance.json` | Compact metadata snapshot: `schema`, `artifact_type`, `analysis`, `package_version`, `package_date`, `package_root`, `assembler_commit`, `assembler_source_sha256`, `manifest_sha256`, `ordered_card_inputs_sha256`, `scalings_sha256`, `source_mapping_sha256`, `source_scalings_sha256`, `packaged_txt_count`, and `packaged_root_count`. |
 | `README.md` | Package-local consumer instructions. |
+
+This provenance does not embed either complete per-era provenance object, a
+per-card source inventory, or receipt lineage. `certify` is stronger than
+reading this snapshot: it reopens the supplied Run 2 and Run 3 packages and
+rechecks their mappings, card payloads, scalings, package metadata, and
+consumer references against the combined package. It does not validate physics.
 
 There is no combined `selectedWCs.txt`, `combinedcard.txt`, or workspace.
 
@@ -168,6 +187,18 @@ package root is updated. Provenance is regenerated with the new package root,
 metadata hashes, version/date, source-package link, standardizer identity and
 member inventory. ROOT files are rewritten, so serialization bytes can differ.
 
+The nested `standardization` block records `source_package_root`,
+`source_package_provenance_sha256`, `accepted_mapping_commit`,
+`standardizer_file_sha256`, `member_inventory_scope`, and `member_inventory`;
+the inventory covers every standardized package file except the newly written
+`package-provenance.json`.
+
+The standardizer requires a fresh absent destination, then writes directly into
+that final directory after preflight. It does not publish through a staging
+rename or roll back the whole output on failure. If it fails after creating the
+destination, treat the partial directory as incomplete; diagnose the failure
+and retry only with a clean absent destination.
+
 **DatacardMaker has already realized the correlation topology before
 standardization.** This transformation changes final names consistently; it
 does not manufacture correlations or reconstruct them from PKLs. It creates
@@ -208,9 +239,16 @@ TXT/ROOT members under `datacards/cards/`. It also preserves
 `datacards/ordered_card_inputs.txt` and `datacards/scalings.json` byte for byte.
 The fresh output contains `config/TOP_26_006.yml`,
 `fit-input-manifest.json`, and `README.md` in addition to `datacards/`.
-The manifest records the selected file inventory, ordered channel mapping,
-input snapshot hash, config hash, and source package provenance. Package
-metadata are represented there rather than copied wholesale into `datacards/`.
+The manifest stores only selected source-package provenance fields under
+`provenance.source_datacard_package`: `package_version`, `package_date`,
+`assembler_commit`, `assembler_source_sha256`, `source_mapping_sha256`, and
+`source_scalings_sha256`. It does not copy the complete source
+`package-provenance.json`. For a standardized source package, the fit-input
+manifest does not copy the full nested `standardization` lineage block.
+Separately, `datacards.files`, `datacards.input_snapshot_sha256`,
+`datacards.channel_mapping`, and `fit_config.sha256` bind the copied input bytes,
+ordered mapping, and fit configuration. This fit-input byte binding does not
+preserve complete upstream lineage; the listed source identity fields remain.
 
 This projection does not run `combineCards.py` or construct a workspace.
 EFTFit owns its writable card directory and subsequent Combine products.
@@ -221,10 +259,12 @@ relative to `datacards/`.
 
 **Structural/package validation**
 
-1. Before using a per-era package, confirm its original manifest/receipt
-   identities, exact requested physical coverage, paired TXT/ROOT files,
-   `physical_to_chN.json`, scaling identities and provenance hashes. Use a
-   fresh output; a runner's last shared metadata files are not an era package.
+1. Before using a per-era package, confirm exact requested physical coverage,
+   paired TXT/ROOT files, `physical_to_chN.json`, scaling identities and
+   persisted metadata hashes. Reopen the external original manifests, successful
+   receipts, and selected-unit invocation/build report for exact receipt
+   identities; the package alone cannot recover them. Use a fresh output; a
+   runner's last shared metadata files are not an era package.
 2. Before combining, confirm both eras declare the same physical target set
    and analysis identity. The combined builder certifies staging and final
    output against those exact inputs.

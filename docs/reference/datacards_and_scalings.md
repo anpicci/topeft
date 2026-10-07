@@ -434,8 +434,12 @@ coverage mismatch, and the builder does not execute the runner.
 
 The published package contains only `cards/`, `selectedWCs.txt`,
 `scalings.json`, `physical_to_chN.json`, and
-`package-provenance.json`. The provenance records the source manifest hashes,
-builder identity, and output hashes. The package does not contain
+`package-provenance.json`. Its provenance records source manifest hashes,
+source unit count, builder identity, card/template counts, and hashes of the
+three metadata files; it does not record per-card/template hashes or exact
+selected receipt keys. Preserve original manifests, successful receipts, and
+the selected-unit invocation/build report for receipt-level lineage; see the
+[package procedure](../how_to/datacard_packages.md). The package does not contain
 `scalings-preselect.json` or `combinedcard.txt`. The builder writes and
 verifies a private sibling staging tree, then publishes to a previously absent
 output directory. The per-era scaling payload preserves producer-owned fields
