@@ -1,5 +1,7 @@
 """Synthetic execution-unit tests; no real producer or scheduler is invoked."""
 import json
+import os
+from unittest.mock import patch
 from pathlib import Path
 import subprocess
 import sys
@@ -140,20 +142,26 @@ def scheduler(monkeypatch):
     observations = {}
     def query(reservation):
         return observations.get(reservation["owner_id"], {
-            "state": "GONE" if reservation["scheduler_id"] else "PENDING_UNBOUND",
+            "state": "GONE",
             "scheduler_id": reservation["scheduler_id"]})
     monkeypatch.setattr(runner, "query_reservation", query)
     return observations
 
 
 def reserve(data, path, row):
-    return runner.reserve_condor(data, sha(path), row, {
-        "pool": "synthetic.pool", "schedd": "synthetic.schedd", "query_executable": "/bin/false"})
+    with runner.reserve_condor(data, sha(path), [row], {
+            "pool": "synthetic.pool", "schedd": "synthetic.schedd", "query_executable": "/bin/false"}) as transaction:
+        transaction.mark_submission_started()
+        return transaction.reservations[0]
 
 
 def worker(data, path, row, reservation, scheduler_id="123.7"):
-    return runner.execute_unit(data, sha(path), row, backend="condor", scheduler_id=scheduler_id,
-                               reservation_token=reservation["owner_id"])
+    job_ad = path.parent / "worker.ad"
+    cluster, proc = map(int, scheduler_id.split("."))
+    job_ad.write_text(f'DatacardUnit = {json.dumps(row["row_id"])}\nDatacardReservation = {json.dumps(reservation["owner_id"])}\nClusterId = {cluster}\nProcId = {proc}\n')
+    with patch.dict(os.environ, {"_CONDOR_JOB_AD": str(job_ad)}):
+        return runner.execute_unit(data, sha(path), row, backend="condor", scheduler_id="999.999",
+                                   reservation_token=reservation["owner_id"])
 
 
 @pytest.mark.parametrize("state", list(runner.SCHEDULER_STATES.values()))
@@ -178,20 +186,21 @@ def test_all_live_queue_states_preserve_logical_owner_without_physical_lease(tmp
     assert runner.read_only("plan_only", data, sha(path))["rows"][0]["action"] == "block"
 
 
-def test_pending_dispatch_and_ambiguous_query_fail_closed(tmp_path, fake_script, scheduler, monkeypatch):
+def test_ambiguous_query_fail_closed_but_worker_never_queries(tmp_path, fake_script, scheduler, monkeypatch):
     row = make_row(tmp_path, fake_script)
     path, data = manifest(tmp_path, fake_script, [row])
     reservation = reserve(data, path, row)
-    with pytest.raises(runner.RunnerError, match="logical execution owner"):
-        runner.execute_unit(data, sha(path), row)
-    assert runner.read_reservation(row)["scheduler_id"] is None
     def unavailable(_):
-        raise runner.RunnerError("scheduler_ambiguous", "synthetic query timeout")
+        raise runner.RunnerError("SCHEDULER_OBSERVABILITY_UNAVAILABLE", "synthetic query timeout")
     monkeypatch.setattr(runner, "query_reservation", unavailable)
     with pytest.raises(runner.RunnerError, match="timeout"):
-        worker(data, path, row, reservation)
-    assert runner.read_only("status", data, sha(path))["rows"][0]["reservation"]["state"] == "UNKNOWN"
+        runner.execute_unit(data, sha(path), row)
+    status = runner.read_only("status", data, sha(path))["rows"][0]["reservation"]
+    assert status["state"] == "UNKNOWN"
+    assert status["error_code"] == "SCHEDULER_OBSERVABILITY_UNAVAILABLE"
     assert runner.read_reservation(row)["owner_id"] == reservation["owner_id"]
+    assert worker(data, path, row, reservation)["action"] == "executed"
+    assert runner.read_reservation(row)["scheduler_id"] == "123.7"
 
 
 def test_eviction_keeps_owner_then_same_job_restarts_and_receipt_completes(tmp_path, fake_script, scheduler):
@@ -299,38 +308,108 @@ def test_corrupt_reservation_never_grants_execution(tmp_path, fake_script, conte
     assert reservation.read_text() == contents
 
 
-def test_queue_identity_validation_and_current_id_query(tmp_path, fake_script, monkeypatch):
+def test_token_query_accepts_changed_locator_and_reports_failures(tmp_path, fake_script, monkeypatch):
     row = make_row(tmp_path, fake_script)
     path, data = manifest(tmp_path, fake_script, [row])
     reservation = reserve(data, path, row)
     reservation["scheduler_id"] = "123.7"
-    ad = {"ClusterId": 123, "ProcId": 7, "JobStatus": 1, "DatacardUnit": row["row_id"],
+    ad = {"ClusterId": 456, "ProcId": 2, "JobStatus": 1, "DatacardUnit": row["row_id"],
           "DatacardReservation": reservation["owner_id"]}
     def install(ads, returncode=0):
         def query(argv, **kwargs):
             assert argv[:5] == ["/bin/false", "-pool", "synthetic.pool", "-name", "synthetic.schedd"]
             assert "-allusers" in argv
-            assert "ClusterId == 123 && ProcId == 7" in argv[argv.index("-constraint") + 1]
+            assert argv[argv.index("-constraint") + 1] == f'DatacardReservation == "{reservation["owner_id"]}"'
             assert kwargs["timeout"] == 30
-            return subprocess.CompletedProcess(argv, returncode, json.dumps(ads), "")
+            return subprocess.CompletedProcess(argv, returncode, json.dumps(ads), "specific synthetic failure")
         monkeypatch.setattr(runner.subprocess, "run", query)
     install([ad])
-    assert runner.query_reservation(reservation) == {"state": "IDLE", "scheduler_id": "123.7"}
-    for ads in ([ad, ad], [{**ad, "ProcId": 1}], [{**ad, "DatacardUnit": "other"}],
-                [{**ad, "DatacardReservation": "other"}], [{**ad, "JobStatus": 99}],
-                [{**ad, "ClusterId": True}], {}, [None]):
+    observation = runner.query_reservation(reservation)
+    assert observation["state"] == "IDLE" and observation["ownership"] == "ACTIVE"
+    assert observation["scheduler_id"] == "456.2"
+    install([ad, {**ad, "ClusterId": 789, "ProcId": 8}])
+    with pytest.raises(runner.RunnerError) as error:
+        runner.query_reservation(reservation)
+    assert error.value.code == "DUPLICATE_SCHEDULER_OWNERSHIP"
+    assert "456.2" in str(error.value) and "789.8" in str(error.value)
+    before = runner.reservation_path(row).read_bytes()
+    with pytest.raises(runner.RunnerError) as error:
+        runner.execute_unit(data, sha(path), row)
+    assert error.value.code == "DUPLICATE_SCHEDULER_OWNERSHIP"
+    assert runner.reservation_path(row).read_bytes() == before
+    for ads in ([{**ad, "DatacardUnit": "other"}], [{**ad, "DatacardReservation": "other"}],
+                [{**ad, "JobStatus": 99}], [{**ad, "ClusterId": True}], [None]):
         install(ads)
         with pytest.raises(runner.RunnerError) as error:
             runner.query_reservation(reservation)
-        assert error.value.code == "scheduler_ambiguous"
+        assert error.value.code == "scheduler_observation_invalid"
     install([], 1)
-    with pytest.raises(runner.RunnerError):
-        runner.query_reservation(reservation)
+    before = runner.reservation_path(row).read_bytes()
+    with pytest.raises(runner.RunnerError) as error:
+        runner.execute_unit(data, sha(path), row)
+    assert error.value.code == "SCHEDULER_OBSERVABILITY_UNAVAILABLE"
+    assert all(text in str(error.value) for text in ("specific synthetic failure", "observed_at=", "-constraint", "exit=1"))
+    assert runner.reservation_path(row).read_bytes() == before
     install([])
-    assert runner.query_reservation(reservation)["state"] == "GONE"
-    reservation["scheduler_id"] = None
-    monkeypatch.setattr(runner.subprocess, "run", lambda *a, **k: subprocess.CompletedProcess(a, 0, "[]", ""))
-    assert runner.query_reservation(reservation)["state"] == "PENDING_UNBOUND"
+    for cached_locator in (None, "123.7", "obsolete locator"):
+        reservation["scheduler_id"] = cached_locator
+        assert runner.query_reservation(reservation)["state"] == "GONE"
+
+
+@pytest.mark.parametrize("failure", [OSError("missing condor_q"), subprocess.TimeoutExpired(["condor_q"], 30), "{bad", "{}"])
+def test_unobservable_scheduler_preserves_reservation(tmp_path, fake_script, monkeypatch, failure):
+    row = make_row(tmp_path, fake_script)
+    path, data = manifest(tmp_path, fake_script, [row])
+    reserve(data, path, row)
+    before = runner.reservation_path(row).read_bytes()
+    def query(argv, **kwargs):
+        if isinstance(failure, Exception):
+            raise failure
+        return subprocess.CompletedProcess(argv, 0, failure, "")
+    monkeypatch.setattr(runner.subprocess, "run", query)
+    with pytest.raises(runner.RunnerError) as error:
+        runner.execute_unit(data, sha(path), row)
+    assert error.value.code == "SCHEDULER_OBSERVABILITY_UNAVAILABLE"
+    assert "query=" in str(error.value) and "observed_at=" in str(error.value)
+    assert runner.reservation_path(row).read_bytes() == before
+
+
+@pytest.mark.parametrize("token", [None, "", "abc", "A" * 32, '" || true || "', "0" * 33, "0" * 32 + "\n"])
+def test_unsafe_token_rejected_before_query(tmp_path, fake_script, monkeypatch, token):
+    row = make_row(tmp_path, fake_script)
+    reservation = runner.new_reservation(row, "condor", {})
+    reservation["owner_id"] = token
+    def forbidden(*a, **k):
+        pytest.fail("unsafe token reached scheduler")
+    monkeypatch.setattr(runner.subprocess, "run", forbidden)
+    with pytest.raises(runner.RunnerError) as error:
+        runner.query_reservation(reservation)
+    assert error.value.code == "invalid_reservation_token"
+
+
+@pytest.mark.parametrize("path_kind", ["unit", "full", "condor", "maintenance"])
+def test_never_observed_job_disappearance_automatically_reconciles(tmp_path, fake_script, scheduler, monkeypatch, path_kind):
+    row = make_row(tmp_path, fake_script)
+    path, data = manifest(tmp_path, fake_script, [row])
+    old = reserve(data, path, row)
+    assert old["scheduler_id"] is None
+    calls = []
+    original = runner.reconcile_h2
+    def observe(*args):
+        calls.append(args[2]["row_id"])
+        return original(*args)
+    monkeypatch.setattr(runner, "reconcile_h2", observe)
+    if path_kind == "unit":
+        assert runner.execute_unit(data, sha(path), row)["action"] == "executed"
+    elif path_kind == "full":
+        assert runner.execute(data, sha(path))["rows"][0]["action"] == "executed"
+    elif path_kind == "condor":
+        assert reserve(data, path, row)["owner_id"] != old["owner_id"]
+    else:
+        assert runner.main([str(path), "--reconcile-reservations"]) == 0
+        assert runner.read_reservation(row) is None
+    assert row["row_id"] in calls
+
 
 
 def test_missing_scheduler_id_is_ambiguous_reservation_not_status_crash(tmp_path, fake_script):
@@ -371,3 +450,89 @@ def test_h2_private_producer_domain_supports_direct_guard(tmp_path, fake_script)
     path, data = manifest(tmp_path, fake_script, [row])
     assert runner.execute_unit(data, sha(path), row)["action"] == "executed"
     assert runner.validate_receipt(json.loads(runner.receipt_path(data, row).read_text()), data, sha(path), row)[0]
+
+
+def test_live_hold_reason_evidence_and_changed_locator_cache(tmp_path, fake_script, monkeypatch):
+    row = make_row(tmp_path, fake_script)
+    path, data = manifest(tmp_path, fake_script, [row])
+    reservation = reserve(data, path, row)
+    reservation["scheduler_id"] = "123.7"
+    runner.reservation_path(row).write_text(json.dumps(reservation))
+    hold = {"HoldReason": "synthetic site hold", "HoldReasonCode": 1, "HoldReasonSubCode": 17}
+    ad = {"ClusterId": 456, "ProcId": 2, "JobStatus": 5, "DatacardUnit": row["row_id"],
+          "DatacardReservation": reservation["owner_id"], **hold}
+    monkeypatch.setattr(runner.subprocess, "run", lambda *a, **k: subprocess.CompletedProcess(a, 0, json.dumps([ad]), ""))
+    before = runner.reservation_path(row).read_bytes()
+    status = runner.read_only("status", data, sha(path))["rows"][0]["reservation"]
+    assert status["state"] == "HELD" and status["ownership"] == "ACTIVE"
+    assert status["hold_evidence"] == hold
+    assert runner.reservation_path(row).read_bytes() == before
+    with pytest.raises(runner.RunnerError) as error:
+        runner.execute_unit(data, sha(path), row)
+    assert error.value.code == "row_reserved"
+    assert runner.read_reservation(row)["scheduler_id"] == "456.2"
+    # Removal does not itself mutate the reservation; a later claim invokes H2.
+    monkeypatch.setattr(runner.subprocess, "run", lambda *a, **k: subprocess.CompletedProcess(a, 0, "[]", ""))
+    with runner.unit_lease(data, row):
+        assert runner.reconcile_reservation(data, sha(path), row) is None
+    assert runner.classify(data, sha(path), row)["status"] == "not_started"
+
+
+def test_transaction_holds_leases_before_submit_so_zero_query_cannot_reclaim(tmp_path, fake_script, monkeypatch):
+    row = make_row(tmp_path, fake_script)
+    path, data = manifest(tmp_path, fake_script, [row])
+    scheduler = {"pool": "synthetic.pool", "schedd": "synthetic.schedd", "query_executable": "/bin/false"}
+    def forbidden(*args):
+        pytest.fail("pending transaction reached scheduler observation")
+    with runner.reserve_condor(data, sha(path), [row], scheduler) as transaction:
+        monkeypatch.setattr(runner, "query_reservation", forbidden)
+        before = runner.reservation_path(row).read_bytes()
+        with pytest.raises(runner.RunnerError) as error:
+            runner.execute_unit(data, sha(path), row)
+        assert error.value.code == "execution_lock_held"
+        assert runner.reservation_path(row).read_bytes() == before
+        assert transaction.lease_fds
+    assert runner.read_reservation(row) is None
+
+
+def test_reservation_publication_failure_rolls_back_exact_owned_token(tmp_path, fake_script, monkeypatch):
+    row = make_row(tmp_path, fake_script)
+    path, data = manifest(tmp_path, fake_script, [row])
+    original = runner.atomic_json
+    def fail_after_publication(payload, destination, overwrite):
+        original(payload, destination, overwrite)
+        if destination == runner.reservation_path(row):
+            raise OSError("synthetic failure after reservation publication")
+    monkeypatch.setattr(runner, "atomic_json", fail_after_publication)
+    with pytest.raises(OSError, match="after reservation publication"):
+        with runner.reserve_condor(data, sha(path), [row], {
+                "pool": "synthetic.pool", "schedd": "synthetic.schedd", "query_executable": "/bin/false"}):
+            pytest.fail("failed reservation transaction yielded")
+    assert runner.read_reservation(row) is None
+
+
+def test_proven_spawn_failure_rolls_back_even_after_possible_start_marker(tmp_path, fake_script):
+    row = make_row(tmp_path, fake_script)
+    path, data = manifest(tmp_path, fake_script, [row])
+    with runner.reserve_condor(data, sha(path), [row], {
+            "pool": "synthetic.pool", "schedd": "synthetic.schedd", "query_executable": "/bin/false"}) as transaction:
+        transaction.mark_submission_started()
+        try:
+            subprocess.Popen([str(tmp_path / "nonexistent_synthetic_submitter")], pass_fds=transaction.lease_fds)
+        except OSError as error:
+            transaction.record_definite_spawn_failure(error)
+        else:
+            pytest.fail("nonexistent executable started")
+    assert runner.read_reservation(row) is None
+
+
+def test_timeout_is_not_a_definite_spawn_failure(tmp_path, fake_script):
+    row = make_row(tmp_path, fake_script)
+    path, data = manifest(tmp_path, fake_script, [row])
+    with pytest.raises(runner.RunnerError) as error:
+        with runner.reserve_condor(data, sha(path), [row], {
+                "pool": "synthetic.pool", "schedd": "synthetic.schedd", "query_executable": "/bin/false"}) as transaction:
+            transaction.mark_submission_started()
+            transaction.record_definite_spawn_failure(subprocess.TimeoutExpired("synthetic_submit", 1))
+    assert error.value.code == "submission_outcome_error"
+    assert runner.read_reservation(row) is not None

@@ -33,6 +33,12 @@ def running_ad(row_id, token, cluster=123, proc=7):
             "ClusterId": cluster, "ProcId": proc, "JobStatus": 2}
 
 
+def write_worker_ad(path, row_id, token, **overrides):
+    fields = {**running_ad(row_id, token), **overrides}
+    path.write_text("".join(f"{key} = {json.dumps(value)}\n" for key, value in fields.items()))
+    return {"PATH": "/usr/bin:/bin", "LANG": "C", "_CONDOR_JOB_AD": str(path)}
+
+
 def test_material_identity_worker_command_and_no_submit(tmp_path, fake_script, fake_query, monkeypatch):
     rows = [make_row(tmp_path, fake_script, name) for name in ("a", "b")]
     path, data = manifest(tmp_path, fake_script, rows)
@@ -55,15 +61,28 @@ def test_material_identity_worker_command_and_no_submit(tmp_path, fake_script, f
     assert "transfer_output_files" not in submit and "on_exit_hold" not in submit
     assert "condor_submit" not in (destination / "worker.sh").read_text()
     assert not any(Path(row["output_root"]).exists() for row in rows)
-    row_id, integrity, token = items[0].split()
+    assert all(item.split()[2] == "unreserved" for item in items)
+    assert all(runner.read_reservation(row) is None for row in rows)
+    with condor.submission_transaction(path, destination, result["scheduler"]) as transaction:
+        assert len(transaction.reservations) == 2
+        assert transaction.lease_fds
+        assert all(runner.probe_lock(runner.unit_lock_path(row))[0] for row in rows)
+        transaction.mark_submission_started()
+    row_id, integrity, token = (destination / "items.txt").read_text().splitlines()[0].split()
     reservation = runner.read_reservation(rows[0])
     assert reservation["owner_id"] == token and reservation["scheduler_id"] is None
-    fake_query[1].write_text(json.dumps([running_ad(row_id, token)]))
-    worker = subprocess.run([str(destination / "worker.sh"), row_id, integrity, "123.7", token],
-                            env={"PATH": "/usr/bin:/bin", "LANG": "C"}, text=True, capture_output=True)
+    reservation["scheduler_id"] = "42.0"
+    runner.atomic_json(reservation, runner.reservation_path(rows[0]), True)
+    # Execute nodes have no scheduler control-plane capability.
+    fake_query[0].write_text('#!/bin/sh\necho forbidden_worker_query >&2\nexit 93\n')
+    worker_env = write_worker_ad(tmp_path / "worker.ad", row_id, token)
+    worker = subprocess.run([str(destination / "worker.sh"), row_id, integrity, "999.9", token],
+                            env=worker_env, text=True, capture_output=True)
     assert worker.returncode == 0, worker.stderr
     assert runner.validate_receipt(json.loads(runner.receipt_path(data, rows[0]).read_text()), data, sha(path), rows[0])[0]
     assert not Path(rows[1]["output_root"]).exists()
+    assert "forbidden_worker_query" not in worker.stderr
+    assert runner.read_reservation(rows[0])["owner_id"] == token
     assert runner.read_reservation(rows[0])["scheduler_id"] == "123.7"
     with pytest.raises(runner.RunnerError, match="exists"):
         condor.prepare_material(path, destination, **resources)
@@ -158,24 +177,143 @@ def test_scheduler_overlay_rejects_wrong_parent_or_duplicate(tmp_path, fake_scri
         runner.overlay_scheduler(runner.read_only("status", data, sha(path)), overlay)
 
 
-def test_pending_dispatch_blocks_duplicate_and_local_without_producer(tmp_path, fake_script, fake_query):
+def test_prepared_material_is_ownership_free_and_permits_local_execution(tmp_path, fake_script, fake_query):
     counter = tmp_path / "producer_count"
     row = make_row(tmp_path, fake_script, extra=["--counter", str(counter)])
     path, data = manifest(tmp_path, fake_script, [row])
     condor.prepare_material(path, tmp_path / "dispatch", **resources, query_executable=str(fake_query[0]))
-    with pytest.raises(runner.RunnerError, match="logical owner"):
-        condor.prepare_material(path, tmp_path / "duplicate", **resources, query_executable=str(fake_query[0]))
-    with pytest.raises(runner.RunnerError, match="logical execution owner"):
-        runner.execute_unit(data, sha(path), row)
-    assert not (tmp_path / "duplicate" / "datacards.sub").exists()
-    assert not counter.exists()
-    assert runner.read_reservation(row)["scheduler_id"] is None
+    condor.prepare_material(path, tmp_path / "duplicate", **resources, query_executable=str(fake_query[0]))
+    assert runner.read_reservation(row) is None
+    runner.execute_unit(data, sha(path), row)
+    assert counter.read_text() == "1"
+    assert runner.read_reservation(row) is None
+
+
+@pytest.mark.parametrize("outcome", ["no_submit", "local_failure", "success", "timeout", "nonzero", "interrupted"])
+def test_submission_transaction_outcomes(tmp_path, fake_script, fake_query, outcome):
+    rows = [make_row(tmp_path, fake_script, name) for name in ("a", "b")]
+    path, _ = manifest(tmp_path, fake_script, rows)
+    destination = tmp_path / "dispatch"
+    material = condor.prepare_material(path, destination, **resources, query_executable=str(fake_query[0]))
+    started = outcome in {"success", "timeout", "nonzero", "interrupted"}
+    failure = {"local_failure": RuntimeError("synthetic pre-submit failure"),
+               "timeout": subprocess.TimeoutExpired("synthetic_submit", 1),
+               "nonzero": subprocess.CalledProcessError(1, "synthetic_submit"),
+               "interrupted": KeyboardInterrupt()}.get(outcome)
+
+    def exercise():
+        with condor.submission_transaction(path, destination, material["scheduler"]) as transaction:
+            assert len(transaction.reservations) == len(rows)
+            assert all(runner.probe_lock(runner.unit_lock_path(row))[0] for row in rows)
+            if started:
+                transaction.mark_submission_started()
+            if failure is not None:
+                raise failure
+
+    if failure is None:
+        exercise()
+    else:
+        with pytest.raises(type(failure)):
+            exercise()
+    assert all((runner.read_reservation(row) is not None) == started for row in rows)
+    assert all(runner.probe_lock(runner.unit_lock_path(row))[0] is False for row in rows)
+    assert not any(Path(row["output_root"]).exists() for row in rows)
+
+
+def test_submission_transaction_rolls_back_partial_row_acquisition(tmp_path, fake_script, fake_query):
+    rows = [make_row(tmp_path, fake_script, name) for name in ("a", "b")]
+    path, data = manifest(tmp_path, fake_script, rows)
+    destination = tmp_path / "dispatch"
+    material = condor.prepare_material(path, destination, **resources, query_executable=str(fake_query[0]))
+    with runner.unit_lease(data, rows[1]):
+        with pytest.raises(runner.RunnerError) as error:
+            with condor.submission_transaction(path, destination, material["scheduler"]):
+                pytest.fail("transaction acquired occupied second row")
+        assert error.value.code == "execution_lock_held"
+        assert all(runner.read_reservation(row) is None for row in rows)
+        assert runner.probe_lock(runner.unit_lock_path(rows[1]))[0] is True
+    assert all(line.split()[2] == "unreserved" for line in (destination / "items.txt").read_text().splitlines())
+
+
+def test_submission_transaction_itemdata_failure_rolls_back(tmp_path, fake_script, fake_query, monkeypatch):
+    row = make_row(tmp_path, fake_script)
+    path, _ = manifest(tmp_path, fake_script, [row])
+    destination = tmp_path / "dispatch"
+    material = condor.prepare_material(path, destination, **resources, query_executable=str(fake_query[0]))
+    original = Path.write_text
+
+    def fail_items(target, *args, **kwargs):
+        if target == destination / "items.txt":
+            raise OSError("synthetic itemdata write failure")
+        return original(target, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "write_text", fail_items)
+    with pytest.raises(OSError, match="itemdata"):
+        with condor.submission_transaction(path, destination, material["scheduler"]):
+            pytest.fail("transaction yielded before itemdata publication")
+    assert runner.read_reservation(row) is None
+
+
+def test_transaction_tokens_are_safe_unique_and_bind_itemdata(tmp_path, fake_script, fake_query):
+    rows = [make_row(tmp_path, fake_script, name) for name in ("a", "b")]
+    path, _ = manifest(tmp_path, fake_script, rows)
+    destination = tmp_path / "dispatch"
+    material = condor.prepare_material(path, destination, **resources, query_executable=str(fake_query[0]))
+    seen = set()
+    for _ in range(2):
+        with condor.submission_transaction(path, destination, material["scheduler"]) as transaction:
+            tokens = {item["owner_id"] for item in transaction.reservations}
+            assert len(tokens) == len(rows) and tokens.isdisjoint(seen)
+            assert all(re.fullmatch(r"[0-9a-f]{32}", token) for token in tokens)
+            assert {line.split()[2] for line in (destination / "items.txt").read_text().splitlines()} == tokens
+            seen.update(tokens)
+
+
+@pytest.mark.parametrize("fault,code", [
+    ("missing", "worker_job_ad_missing"),
+    ("unreadable", "worker_job_ad_malformed"),
+    ("expression", "worker_job_ad_malformed"),
+    ("duplicate", "worker_job_ad_malformed"),
+    ("row", "worker_job_ad_identity_conflict"),
+    ("token", "worker_job_ad_identity_conflict"),
+])
+def test_worker_requires_local_job_ad_identity(tmp_path, fake_script, fake_query, fault, code):
+    row = make_row(tmp_path, fake_script)
+    path, _ = manifest(tmp_path, fake_script, [row])
+    destination = tmp_path / "dispatch"
+    material = condor.prepare_material(path, destination, **resources, query_executable=str(fake_query[0]))
+    with condor.submission_transaction(path, destination, material["scheduler"]) as transaction:
+        transaction.mark_submission_started()
+    row_id, integrity, token = (destination / "items.txt").read_text().split()
+    ad_path = tmp_path / "worker.ad"
+    worker_env = write_worker_ad(ad_path, row_id, token)
+    if fault == "missing":
+        del worker_env["_CONDOR_JOB_AD"]
+    elif fault == "unreadable":
+        ad_path.unlink()
+    elif fault == "expression":
+        ad_path.write_text(ad_path.read_text().replace("ClusterId = 123", "ClusterId = 100 + 23"))
+    elif fault == "duplicate":
+        ad_path.write_text(ad_path.read_text() + "clusterid = 456\n")
+    else:
+        worker_env = write_worker_ad(ad_path, "other_row" if fault == "row" else row_id,
+                                    "0" * 32 if fault == "token" else token)
+    fake_query[0].write_text('#!/bin/sh\necho forbidden_worker_query >&2\nexit 93\n')
+    result = subprocess.run([str(destination / "worker.sh"), row_id, integrity, "999.9", token],
+                            env=worker_env, capture_output=True, text=True)
+    assert result.returncode == 2 and code in result.stderr
+    assert "forbidden_worker_query" not in result.stderr
+    assert not Path(row["output_root"]).exists()
+    assert runner.read_reservation(row)["owner_id"] == token
 
 
 def test_direct_make_cards_refuses_reserved_output_before_producer(tmp_path, fake_script, fake_query, monkeypatch, capsys):
     row = make_row(tmp_path, fake_script)
     path, _ = manifest(tmp_path, fake_script, [row])
-    condor.prepare_material(path, tmp_path / "dispatch", **resources, query_executable=str(fake_query[0]))
+    destination = tmp_path / "dispatch"
+    material = condor.prepare_material(path, destination, **resources, query_executable=str(fake_query[0]))
+    with condor.submission_transaction(path, destination, material["scheduler"]) as transaction:
+        transaction.mark_submission_started()
     reservation_before = runner.reservation_path(row).read_bytes()
 
     def forbidden(*args, **kwargs):
@@ -203,10 +341,11 @@ def test_direct_make_cards_holds_domain_lease_until_producer_returns(tmp_path, f
         assert pkl_files == [rows[0]["input_pkl"]]
         assert runner.probe_lock(runner.unit_lock_path(rows[0]))[0] is True
         with pytest.raises(runner.RunnerError) as error:
-            runner.reserve_condor(data, sha(path), rows[0], scheduler)
+            with runner.reserve_condor(data, sha(path), [rows[0]], scheduler):
+                pytest.fail("reserved row accepted")
         assert error.value.code == "execution_lock_held"
-        independent = runner.reserve_condor(data, sha(path), rows[1], scheduler)
-        assert independent["row_id"] == rows[1]["row_id"]
+        with runner.reserve_condor(data, sha(path), [rows[1]], scheduler) as independent:
+            assert independent.reservations[0]["row_id"] == rows[1]["row_id"]
         observed.append("producer_entered_with_exclusion")
 
     monkeypatch.setattr(make_cards, "_run_producer", synthetic_producer)
@@ -214,7 +353,8 @@ def test_direct_make_cards_holds_domain_lease_until_producer_returns(tmp_path, f
     make_cards.main()
     assert observed == ["producer_entered_with_exclusion"]
     assert runner.probe_lock(runner.unit_lock_path(rows[0]))[0] is False
-    assert runner.reserve_condor(data, sha(path), rows[0], scheduler)["row_id"] == rows[0]["row_id"]
+    with runner.reserve_condor(data, sha(path), [rows[0]], scheduler) as transaction:
+        assert transaction.reservations[0]["row_id"] == rows[0]["row_id"]
 
 
 def test_direct_make_cards_preserves_completed_h2_outputs_without_reservation(tmp_path, fake_script, monkeypatch, capsys):
@@ -265,8 +405,12 @@ def test_installed_parser_and_native_policy_evaluation(tmp_path, fake_script, fa
     rows = [make_row(tmp_path, fake_script, name) for name in ("z_last", "a_first")]
     path, _ = manifest(tmp_path, fake_script, rows)
     destination = tmp_path / "dispatch"
-    condor.prepare_material(path, destination, **resources, max_runtime=21600,
-                            query_executable=str(fake_query[0]))
+    material = condor.prepare_material(path, destination, **resources, max_runtime=21600,
+                                       query_executable=str(fake_query[0]))
+    with condor.submission_transaction(path, destination, material["scheduler"]):
+        # Binding is tested without any possible submission side effect.
+        pass
+    assert all(runner.read_reservation(row) is None for row in rows)
     # This is parser input only. No submitter variables or real credentials enter
     # generated material; the loopback override needs no network connection.
     parser_env = {"PATH": "/usr/bin:/bin", "LANG": "C", "_CONDOR_NETWORK_INTERFACE": "127.0.0.1"}
@@ -342,8 +486,12 @@ def test_installed_parser_and_native_policy_evaluation(tmp_path, fake_script, fa
     periodic = ads[0]["PeriodicRemove"]
     assert evaluate(periodic, JobStatus=1, NumJobStarts=2) == "false"
     assert evaluate(periodic, JobStatus=1, NumJobStarts=3) == "true"
-    for status in (2, 5, 6, 7):
+    for code in (0, 1, 3, 6, 12, 13, 26, 32, 33, 34, 46, 47, 999, "undefined"):
+        assert evaluate(periodic, JobStatus=5, NumJobStarts=0, HoldReasonCode=code) == "true"
+        assert evaluate(periodic, JobStatus=5, NumJobStarts="undefined", HoldReasonCode=code) == "true"
+    for status in (2, 6, 7):
         assert evaluate(periodic, JobStatus=status, NumJobStarts=3) == "false"
+    assert ads[0].get("PeriodicRelease", "false") == "false"
     # Final permitted activation may finish; no further match is eligible.
     assert evaluate("MY.NumJobStarts < 3", NumJobStarts=2) == "true"
     assert evaluate("MY.NumJobStarts < 3", NumJobStarts=3) == "false"

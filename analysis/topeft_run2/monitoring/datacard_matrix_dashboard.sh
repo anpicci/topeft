@@ -138,11 +138,13 @@ render_once() {
   printf 'Active units   : %s (%s targets)  Pending: %s  Problems: %s  Lock: %s\n' \
     "$active_units" "$active_targets" "$pending_units" "$problem_units" "$lock_state"
   jq -r '.rows[] | select(.reservation != null) |
-    "[\(.reservation.state)] Logical reservation: \(.row_id) Backend: \(.reservation.backend // "unknown") Scheduler: \(.reservation.scheduler_id // "unbound") (H2 receipt alone establishes completion)",
-    (if .reservation.state == "HELD" then "  HELD anomaly: ownership retained; no automatic release."
-     elif .reservation.state == "UNKNOWN" or .reservation.state == "PENDING_UNBOUND" then "  BLOCKED: scheduler ownership is unresolved."
-     elif .reservation.state == "GONE" then "  Reconcile H2 before a new execution claim."
-     else empty end)' <<<"$status_json"
+    "[\(.reservation.state)] Logical reservation: \(.row_id) Backend: \(.reservation.backend // "unknown") Scheduler: \(.reservation.scheduler_id // "not observed") (H2 receipt alone establishes completion)",
+    (if .reservation.state == "HELD" then "  HELD terminal: removal pending; hold reason remains scheduler evidence; no automatic release."
+     elif .reservation.state == "UNKNOWN" then "  BLOCKED: scheduler ownership is unresolved."
+     elif .reservation.state == "GONE" then "  Next ownership attempt automatically reconciles H2 before reclaiming."
+     else empty end),
+    (if .reservation.reason then "  \(.reservation.error_code // "reservation_error"): \(.reservation.reason)" else empty end),
+    (if .reservation.hold_evidence then "  Hold evidence: \(.reservation.hold_evidence | tojson)" else empty end)' <<<"$status_json"
   jq -r '.owner_metadata as $legacy | .rows[] | select(.status == "active") |
     (.owner_metadata // $legacy // {}) as $owner |
     "Current unit   : \(.row_id)  Attempt: \(.attempt_id)  Started: \($owner.current_row_started_at // "-")  Backend: \($owner.backend // "unknown")  Scheduler: \($owner.scheduler_id // "-")"' <<<"$status_json"

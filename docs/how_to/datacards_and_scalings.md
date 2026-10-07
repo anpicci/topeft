@@ -299,33 +299,41 @@ python analysis/topeft_run2/make_cards.py --condor \
 This writes `units/*.json`, `items.txt`, `worker.sh`, `datacards.sub`, and an
 empty `logs/` directory. Each queue item identifies exactly one unit. The
 worker enters `datacard_matrix_runner.py --unit DESCRIPTOR`; its producer runs
-without `--condor`. No parent producer, package builder or submission command
-runs during preparation. Preparation also establishes an atomic reservation
-beside each canonical output root, before publishing usable submit material.
-Existing dispatch destinations and reserved rows are rejected. Preparation can
-reconcile previously bound, disappeared owners through H2 without a producer.
-Already complete rows retain their queue item and skip production by receipt.
+without `--condor`. Material generation is ownership-free: it creates no row
+reservation, queries no scheduler, and cannot block later local execution.
+Existing dispatch destinations are rejected. Items initially carry an
+`unreserved` placeholder, which cannot authorize a worker. Already complete
+rows retain their queue item and skip production by valid H2 receipt.
 
-A pending reservation is distinct from a live scheduler binding. Submit the
-material only once, under separate execution authorization, to the exact
-declared pool/schedd. Bind the native IDs promptly using:
+Submission ownership belongs to the separate submission transaction, not
+material generation. The maintained `submission_transaction()` API reconciles
+target rows, creates fresh reservation tokens and binds itemdata while holding
+all row leases. It never invokes a submitter. A future authorized launch adapter
+must hold those leases through the submission boundary and pass their file
+descriptors into its subprocess; prepared material must not be submitted
+directly or replayed outside that transaction. There is no launch CLI here.
+
+A definite local failure before submission rolls back newly created
+reservations. Definite success retains them. A timeout, nonzero exit or
+interruption after possible scheduler side effects also retains them until a
+later authoritative token query and H2 reconciliation. A process-creation
+failure that proves the submit executable never started can be recorded
+explicitly for rollback; an error after launch is not such proof. No stored
+ClusterId.ProcId binding is required for reservation validity.
+
+Normal ownership attempts reconcile automatically. The explicit maintenance
+command is optional and proactive; it is not required for backend switching:
 
 ```bash
 analysis/topeft_run2/run_datacard_matrix_resumable.sh \
   --reconcile-reservations /absolute/path/to/manifest.json
 ```
 
-This queries current ownership and reconciles H2; it never starts a producer.
-Use `--row-id "$row_id"` to select one row. A worker also binds itself before
-production. Reconciliation cannot acquire a row's physical lease while its
-producer is active; inspect that row with `--status` and reconcile after it
-stops. Status queries are read-only and do not persist a first binding.
-
-Failed preparation may leave pending reservations with no published submit
-file. A job removed before any binding is likewise indistinguishable from an
-unsubmitted dispatch. Both remain `PENDING_UNBOUND` and require explicit
-operator investigation; a fresh directory alone does not clear ownership.
-Never delete reservation or lock files to bypass an unresolved handoff.
+This queries current ownership and reconciles H2 without starting a producer.
+Use `--row-id "$row_id"` to select one row. Reconciliation cannot acquire a
+physical lease while its producer or submission transaction is active. Status
+queries remain read-only. Never delete reservation or lock files to bypass
+unresolved ownership.
 
 The adapter currently requires a shared filesystem: original manifests,
 inputs, runtime, dispatch and output paths must be visible at the same absolute
@@ -338,10 +346,16 @@ separate step. Material generation alone does not qualify submission.
 The worker invokes the manifest's absolute Python interpreter and the absolute
 maintained runner; no Conda activation, inherited `PYTHONPATH`, credentials or
 EFTFit bootstrap is serialized. The interpreter's installed packages must
-resolve TopEFT and its dependencies. The adapter also resolves an absolute
-`condor_q`; workers and operators need that client and read access to the
-declared scheduler endpoint. A sanitized submit-host import/CLI probe does not
-qualify the execute-node environment or the site's job wrapper.
+resolve TopEFT and its dependencies. The adapter resolves an absolute
+`condor_q` for submit-side reconciliation only. Workers do not run it or contact
+the schedd to prove identity. They require `_CONDOR_JOB_AD`: local literal
+`DatacardUnit` and `DatacardReservation` must match the submitted row/token and
+shared reservation. Missing, malformed and conflicting local context have
+specific diagnostics. A sanitized submit-host import/CLI probe does not
+qualify the execute-node environment or the site's job wrapper. First qualify
+the shared absolute interpreter; if that fails while common Conda paths are
+visible, evaluate an explicit `conda run -p <resolved-prefix>` bootstrap before
+considering a frozen environment archive.
 
 CPU requests are positive integers. Memory/disk are positive quantities with
 optional HTCondor unit suffixes; explicit suffixes avoid unit ambiguity.
@@ -351,7 +365,9 @@ limits one activation, excludes file-transfer time and resets for a later
 activation after eviction/restart. `RemoteWallClockTime` instead accumulates
 remote allocation across attempts. A value of `21600` represents six hours per
 activation exactly; it is supported, not a universal workload recommendation.
-Exceeding the native duration limit places the job Held, which must be inspected.
+The first successful lifecycle canary must allow at least 21600 seconds per
+activation. Exceeding the native limit causes a Held transition followed by
+periodic removal; inspect its event-log reason.
 Use one common resource request initially and measure it before normal
 scheduling. Cards per unit come from workload decomposition; jobs in flight
 come from operator/site policy. This adapter sets no concurrency cap.
@@ -365,39 +381,54 @@ consume terminal-exit retries, so positive `--max-starts` separately caps
 permitted activation may finish. Its terminal exit removes the job, and an
 evicted job left Idle at the cap is removed on the scheduler's next periodic
 policy evaluation. Exhausted retries/starts are not deliberately parked Held
-or permanently Idle. Unexpected/site-induced Held and native duration holds
-remain visible, reserved anomalies; there is no automatic release. No policy
-creates a replacement scheduler job.
+or permanently Idle. Every Held state is terminal for the current TopEFT job,
+including duration, memory/disk, process-creation, input/output, site and manual
+holds. `JobStatus == 5` triggers periodic removal regardless of reason code;
+there is no automatic release or replacement scheduler job. Hold-to-removal
+timing follows scheduler policy evaluation.
 
-The canonical row identifies the workload; current `ClusterId.ProcId` identifies
-one operational scheduler owner. The live mapping must be one row to one job
-and one job to one row. ProcId order is not row identity, and neither ID is an
-H2 physical attempt number. The per-unit dispatch token binds these observations;
-duplicate or contradictory jobs and failed queries block execution. An explicit
-later resubmission can assign a new scheduler ID to the same unchanged row.
+The canonical row/output domain identifies the workload. A unique reservation
+token is the current operational correlation key, not workload or completion
+authority. `ClusterId.ProcId` is only a scheduler locator for status and logs;
+ProcId never defines a row or an H2 physical attempt. A changed cached locator
+does not invalidate a reservation. Local worker metadata uses its job-ad locator.
 
-Logical reservations survive Idle, Running, Held, Suspended, Transferring and
-post-eviction Idle states. Eviction and physical flock release do not free the
-row. Local/manual/full-workload execution and repeated Condor preparation obey
-the same reservation. Raw `make_cards.py` also holds the output-domain lease
-through production and refuses reserved or H2-published canonical roots.
+Submit-side ownership queries select `DatacardReservation == "<safe token>"`
+and cross-check `DatacardUnit`. One live match means active ownership; multiple
+matches fail closed with all locators. A failed/unavailable query reports
+`SCHEDULER_OBSERVABILITY_UNAVAILABLE` with its command, error and observation
+time and preserves the reservation. A successful empty query means the owner
+is gone, even if its locator was never previously observed.
+
+Logical reservations survive live Idle, Running, Held-pending-removal,
+Suspended, Transferring and post-eviction Idle states. Eviction, job removal and
+physical flock release do not directly free a row. Local/manual unit execution,
+full-workload execution and Condor reservation all reconcile before a new
+claim. Raw `make_cards.py` holds the output-domain lease through production and
+refuses reserved or H2-published roots; use the matrix runner for those domains.
 Unit output roots must be disjoint; nested ownership domains are rejected.
 
-After a previously bound job disappears from a successful live query, the
-runner acquires the physical lease and inspects H2. A valid receipt means
-complete. Otherwise validated staging is reconciled, or an incomplete attempt
-is preserved and made eligible only if H2 permits it. Held/unknown physical
+On the next ownership attempt after scheduler disappearance, the runner
+automatically acquires the physical lease and inspects H2. A valid receipt
+means complete. Otherwise validated staging is reconciled, or an incomplete
+attempt is preserved and eligible only if H2 permits it. Unavailable physical
 ownership, malformed state or collisions block retirement. A surviving producer
-retains its inherited physical lease even after manager death. Only successful
-owner/H2 reconciliation permits a subsequent local or Condor claim without
-regenerating the workload. Job disappearance and exit zero are not completion.
+retains its inherited lease even after manager death. Only safe H2 reconciliation
+permits another backend to claim the unchanged workload. Neither disappearance
+nor exit zero establishes completion.
 
 Shared-filesystem persistence remains `should_transfer_files = NO`: worker ->
 H2 private staging -> validation -> no-overwrite publication -> receipt last.
 There is no authoritative HTCondor output transfer or wrapper `cp`/`rsync` step.
 Scheduler logs are `logs/<row>__<ClusterId>.<ProcId>.out`, `.err`, and
 `.events.log`. H2 producer logs remain separately scoped to physical attempts;
-restarts of the same scheduler job can share its scheduler logs.
+restarts of the same scheduler job can share its scheduler logs. The event log
+is primary durable evidence of submission, executions/evictions, holds with
+reason information, removal and termination as applicable. The fault canary
+must prove useful hold reasons survive removal. Live status also exposes
+`HoldReason`, `HoldReasonCode` and `HoldReasonSubCode` when present. Optional
+post-mortem history may add removal/terminal details; unavailable history must
+never prevent safe H2 reconciliation.
 
 Runner `--status` and the dashboard expose live reservations and prominently
 show Held/unknown ownership, even when a valid H2 receipt already exists.

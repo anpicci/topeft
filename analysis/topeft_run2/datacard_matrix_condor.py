@@ -5,6 +5,7 @@ module only serializes an explicit common resource request and unit dispatch.
 """
 from __future__ import annotations
 
+from contextlib import contextmanager
 import json
 import os
 from pathlib import Path
@@ -56,7 +57,7 @@ def prepare_material(manifest_path: Path, destination: Path, *, request_cpus: in
         raise runner.RunnerError("condor_configuration_error", "an absolute maintained condor_q executable is required")
     scheduler = {"schedd": schedd, "pool": pool, "query_executable": submit_path(Path(query_executable))}
     units = runner.derive_units(manifest_path)
-    manifest, manifest_hash, _ = runner.resolve_unit(units[0])
+    manifest, _, _ = runner.resolve_unit(units[0])
     destination = Path(submit_path(destination))
     engine = Path(runner.__file__).resolve()
     python = manifest["runtime_contract"]["python_executable"]
@@ -71,11 +72,9 @@ def prepare_material(manifest_path: Path, destination: Path, *, request_cpus: in
     (destination / "logs").mkdir()
     items = []
     for unit in units:
-        row = runner.select_row(manifest, unit["row_id"])
-        reservation = runner.reserve_condor(manifest, manifest_hash, row, scheduler)
         unit_path = destination / "units" / (unit["row_id"] + ".json")
         runner.atomic_json(unit, unit_path, False)
-        items.append(f"{unit['row_id']} {runner.hash_file(unit_path)} {reservation['owner_id']}")
+        items.append(f"{unit['row_id']} {runner.hash_file(unit_path)} unreserved")
     (destination / "items.txt").write_text("\n".join(items) + "\n")
     worker = destination / "worker.sh"
     command = " ".join(shlex.quote(value) for value in (python, str(engine)))
@@ -102,7 +101,7 @@ def prepare_material(manifest_path: Path, destination: Path, *, request_cpus: in
         f"max_retries = {max_retries}", "success_exit_code = 0",
         f"requirements = MY.NumJobStarts < {max_starts}",
         f"on_exit_remove = NumJobStarts >= {max_starts}",
-        f"periodic_remove = JobStatus == 1 && NumJobStarts >= {max_starts}",
+        f"periodic_remove = (JobStatus == 5) || (JobStatus == 1 && NumJobStarts >= {max_starts})",
     ]
     if max_runtime is not None:
         lines.append(f"allowed_execute_duration = {max_runtime}")
@@ -115,6 +114,30 @@ def prepare_material(manifest_path: Path, destination: Path, *, request_cpus: in
     pending.unlink()
     return {"submitted": False, "submit_file": str(destination / "datacards.sub"),
             "unit_ids": [unit["row_id"] for unit in units],
-            "reservation_state": "pending_submission_and_live_binding",
+            "reservation_state": "unreserved_material_only",
             "scheduler": scheduler,
             "storage_model": "shared_filesystem", "receipt_authority": "matrix_runner"}
+
+
+@contextmanager
+def submission_transaction(manifest_path: Path, destination: Path, scheduler: dict):
+    """Bind prepared itemdata inside a reservation transaction; never submit.
+
+    A future submit caller must mark_submission_started immediately before any
+    possible scheduler side effect, inherit transaction.lease_fds into the
+    submit subprocess, and wait for it to terminate before exiting. Exceptions,
+    timeout and nonzero exit after that marker preserve all reservations.
+    """
+    units = runner.derive_units(manifest_path)
+    manifest, manifest_hash, _ = runner.resolve_unit(units[0])
+    items = []
+    for unit in units:
+        unit_path = destination / "units" / (unit["row_id"] + ".json")
+        if json.loads(unit_path.read_text()) != unit:
+            raise runner.RunnerError("stale_dispatch_input", "prepared descriptor differs from canonical unit")
+        items.append((unit["row_id"], runner.hash_file(unit_path)))
+    with runner.reserve_condor(manifest, manifest_hash, manifest["rows"], scheduler) as transaction:
+        tokens = {item["row_id"]: item["owner_id"] for item in transaction.reservations}
+        (destination / "items.txt").write_text("".join(
+            f"{row_id} {integrity} {tokens[row_id]}\n" for row_id, integrity in items))
+        yield transaction

@@ -196,8 +196,8 @@ def test_dashboard_displays_observations_without_changing_completion(tmp_path):
     assert "removed at synthetic (operational only)" in result.stdout
 
 
-@pytest.mark.parametrize("state,label", [("HELD", "HELD anomaly"), ("UNKNOWN", "BLOCKED"),
-                                         ("PENDING_UNBOUND", "BLOCKED"), ("GONE", "Reconcile H2")])
+@pytest.mark.parametrize("state,label", [("HELD", "HELD terminal"), ("UNKNOWN", "BLOCKED"),
+                                         ("GONE", "automatically reconciles H2")])
 def test_dashboard_prominently_surfaces_reservation_anomalies_even_with_receipt(tmp_path, state, label):
     dashboard, manifest, status_path, _ = dashboard_case(tmp_path)
     status = json.loads(status_path.read_text())
@@ -210,3 +210,19 @@ def test_dashboard_prominently_surfaces_reservation_anomalies_even_with_receipt(
     assert label in result.stdout
     assert "Execution units: 1 / 3" in result.stdout
     assert status_path.read_bytes() == before
+
+
+def test_dashboard_displays_exact_scheduler_error_and_hold_evidence(tmp_path):
+    dashboard, manifest, status_path, _ = dashboard_case(tmp_path)
+    status = json.loads(status_path.read_text())
+    status["rows"][0]["reservation"] = {
+        "state": "UNKNOWN", "backend": "condor", "error_code": "SCHEDULER_OBSERVABILITY_UNAVAILABLE",
+        "reason": "query=['condor_q']; observed_at=2026-10-07; error=authentication failed",
+        "hold_evidence": {"HoldReason": "synthetic disk failure", "HoldReasonCode": 34, "HoldReasonSubCode": 2},
+    }
+    status_path.write_text(json.dumps(status))
+    result = run_once(dashboard, manifest)
+    assert result.returncode == 0, result.stderr
+    assert "SCHEDULER_OBSERVABILITY_UNAVAILABLE" in result.stdout
+    assert "observed_at=2026-10-07" in result.stdout and "authentication failed" in result.stdout
+    assert "synthetic disk failure" in result.stdout and "HoldReasonSubCode" in result.stdout

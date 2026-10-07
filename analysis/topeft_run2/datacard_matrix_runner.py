@@ -34,7 +34,7 @@ INTENT_SCHEMA = "topeft_datacard_attempt_intent_v1"
 INTENT_MARKER = ".datacard_attempt_intent.json"
 ATTEMPT_RE = re.compile(r"^attempt_([0-9]{6})$")
 RESERVATION_SCHEMA = "topeft_datacard_reservation_v1"
-SCHEDULER_ID_RE = re.compile(r"^[0-9]+\.[0-9]+$")
+RESERVATION_TOKEN_RE = re.compile(r"^[0-9a-f]{32}$")
 SCHEDULER_STATES = {1: "IDLE", 2: "RUNNING", 3: "REMOVING", 4: "COMPLETED_IN_QUEUE",
                     5: "HELD", 6: "TRANSFERRING", 7: "SUSPENDED"}
 
@@ -259,20 +259,13 @@ def read_reservation(row: dict[str, Any]) -> dict[str, Any] | None:
                 or value.get("row_id") != row["row_id"]
                 or value.get("output_root") != str(Path(row["output_root"]).resolve())
                 or value.get("backend") not in {"local", "manual", "condor"}
-                or not isinstance(value.get("created_at"), str) or not value["created_at"]
-                or not isinstance(value.get("owner_id"), str)
-                or not re.fullmatch(r"[0-9a-f]{32}", value["owner_id"])):
+                or not isinstance(value.get("created_at"), str) or not value["created_at"]):
             raise ValueError("reservation identity/schema differs")
+        validate_reservation_token(value.get("owner_id"))
         if value["backend"] == "condor":
-            scheduler = value["scheduler"]
-            if (not isinstance(scheduler, dict) or set(scheduler) != {"pool", "schedd", "query_executable"}
-                    or any(not isinstance(v, str) or not v or v.startswith("-") for v in scheduler.values())
-                    or not Path(scheduler["query_executable"]).is_absolute()
-                    or (value.get("scheduler_id") is not None
-                        and not SCHEDULER_ID_RE.fullmatch(str(value["scheduler_id"])))):
-                raise ValueError("invalid scheduler identity")
-        elif value["scheduler"] is not None or value["scheduler_id"] is not None:
-            raise ValueError("local reservation carries a scheduler identity")
+            validate_scheduler(value["scheduler"])
+        elif value["scheduler"] is not None:
+            raise ValueError("local reservation carries a scheduler endpoint")
         return value
     except FileNotFoundError:
         return None
@@ -280,49 +273,67 @@ def read_reservation(row: dict[str, Any]) -> dict[str, Any] | None:
         raise RunnerError("reservation_ambiguous", str(exc), row_id=row["row_id"]) from exc
 
 
+def validate_reservation_token(token: str) -> None:
+    if not isinstance(token, str) or not RESERVATION_TOKEN_RE.fullmatch(token):
+        raise RunnerError("invalid_reservation_token", "reservation token must be 32 lowercase hex digits")
+
+
+def validate_scheduler(scheduler: dict) -> None:
+    if (not isinstance(scheduler, dict) or set(scheduler) != {"pool", "schedd", "query_executable"}
+            or any(not isinstance(value, str) or not value for value in scheduler.values())
+            or any(not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:@+-]*", scheduler[key]) for key in ("pool", "schedd"))
+            or not Path(scheduler["query_executable"]).is_absolute()):
+        raise RunnerError("condor_configuration_error", "invalid scheduler endpoint/query executable")
+
+
 def new_reservation(row: dict[str, Any], backend: str, scheduler: dict | None = None) -> dict:
     return {"schema": RESERVATION_SCHEMA, "row_id": row["row_id"],
             "output_root": str(Path(row["output_root"]).resolve()), "backend": backend,
             "owner_id": uuid.uuid4().hex, "created_at": now(),
+            # scheduler_id is only the last observed locator, never an equality gate.
             "scheduler": scheduler, "scheduler_id": None}
 
 
 def query_reservation(reservation: dict) -> dict:
-    """Fresh bounded query at the reservation's explicit scheduler endpoint.
-
-    Never use an observation file or scheduler history as live-owner authority.
-    A per-unit token finds Idle jobs before a worker has bound its native ID.
-    """
+    """Submit-side only: discover current ownership by safe transaction token."""
+    validate_reservation_token(reservation["owner_id"])
     scheduler = reservation["scheduler"]
     constraint = f'DatacardReservation == "{reservation["owner_id"]}"'
-    if reservation["scheduler_id"]:
-        cluster, proc = reservation["scheduler_id"].split(".")
-        constraint += f" || (ClusterId == {cluster} && ProcId == {proc})"
     argv = [scheduler["query_executable"], "-pool", scheduler["pool"], "-name", scheduler["schedd"],
             "-allusers", "-constraint", constraint,
-            "-json", "-attributes", "ClusterId,ProcId,JobStatus,DatacardUnit,DatacardReservation"]
+            "-json", "-attributes", "ClusterId,ProcId,JobStatus,DatacardUnit,DatacardReservation,HoldReason,HoldReasonCode,HoldReasonSubCode"]
+    observed_at = now()
+    result = None
     try:
         result = subprocess.run(argv, capture_output=True, text=True, timeout=30, check=False)
         if result.returncode:
-            raise ValueError(f"scheduler query failed with exit {result.returncode}")
+            raise ValueError(f"exit={result.returncode}; stderr={result.stderr!r}; stdout={result.stdout!r}")
         ads = json.loads(result.stdout)
-        if not isinstance(ads, list) or len(ads) > 1:
-            raise ValueError("reservation requires at most one current scheduler job")
-        if not ads:
-            return {"state": "GONE" if reservation["scheduler_id"] else "PENDING_UNBOUND",
-                    "scheduler_id": reservation["scheduler_id"]}
-        ad = ads[0]
-        if (not isinstance(ad, dict) or ad.get("DatacardUnit") != reservation["row_id"]
-                or ad.get("DatacardReservation") != reservation["owner_id"]
-                or any(type(ad.get(k)) is not int or ad[k] < 0 for k in ("ClusterId", "ProcId"))
-                or type(ad.get("JobStatus")) is not int or ad["JobStatus"] not in SCHEDULER_STATES):
-            raise ValueError("scheduler row/job identity or state is invalid")
-        scheduler_id = f'{ad["ClusterId"]}.{ad["ProcId"]}'
-        if reservation["scheduler_id"] not in (None, scheduler_id):
-            raise ValueError("current scheduler identity changed without a new reservation")
-        return {"state": SCHEDULER_STATES[ad["JobStatus"]], "scheduler_id": scheduler_id}
+        if not isinstance(ads, list):
+            raise ValueError("scheduler reply is not a JSON list")
     except (OSError, ValueError, subprocess.TimeoutExpired) as exc:
-        raise RunnerError("scheduler_ambiguous", str(exc), row_id=reservation["row_id"]) from exc
+        raise RunnerError("SCHEDULER_OBSERVABILITY_UNAVAILABLE",
+                          f"query={argv!r}; observed_at={observed_at}; error={exc}; "
+                          f"stdout={getattr(result, 'stdout', getattr(exc, 'stdout', None))!r}; "
+                          f"stderr={getattr(result, 'stderr', getattr(exc, 'stderr', None))!r}",
+                          row_id=reservation["row_id"]) from exc
+    if len(ads) > 1:
+        locators = [f'{ad.get("ClusterId")}.{ad.get("ProcId")}' if isinstance(ad, dict) else repr(ad) for ad in ads]
+        raise RunnerError("DUPLICATE_SCHEDULER_OWNERSHIP",
+                          f"token={reservation['owner_id']}; jobs={locators}; observed_at={observed_at}",
+                          row_id=reservation["row_id"])
+    if not ads:
+        return {"state": "GONE", "scheduler_id": reservation["scheduler_id"],
+                "ownership": "GONE", "observed_at": observed_at}
+    ad = ads[0]
+    if (not isinstance(ad, dict) or ad.get("DatacardUnit") != reservation["row_id"]
+            or ad.get("DatacardReservation") != reservation["owner_id"]
+            or any(type(ad.get(k)) is not int or ad[k] < 0 for k in ("ClusterId", "ProcId"))
+            or type(ad.get("JobStatus")) is not int or ad["JobStatus"] not in SCHEDULER_STATES):
+        raise RunnerError("scheduler_observation_invalid", f"invalid token/row/state reply: {ad!r}; query={argv!r}; observed_at={observed_at}", row_id=reservation["row_id"])
+    return {"state": SCHEDULER_STATES[ad["JobStatus"]], "ownership": "ACTIVE",
+            "scheduler_id": f'{ad["ClusterId"]}.{ad["ProcId"]}', "observed_at": observed_at,
+            "hold_evidence": {key: ad[key] for key in ("HoldReason", "HoldReasonCode", "HoldReasonSubCode") if key in ad}}
 
 
 def reconcile_h2(manifest: dict, manifest_hash: str, row: dict) -> dict:
@@ -337,34 +348,101 @@ def reconcile_h2(manifest: dict, manifest_hash: str, row: dict) -> dict:
 
 
 def reconcile_reservation(manifest: dict, manifest_hash: str, row: dict) -> dict | None:
-    """Under unit_lease, bind live ownership or retire it after H2 reconciliation.
-
-    Local process death is established by the acquired inherited lease, never by
-    PID metadata. A never-bound Condor dispatch cannot be retired from absence.
-    """
+    """Under unit_lease, observe ownership or retire it only after safe H2."""
     reservation = read_reservation(row)
     if reservation is None:
         return None
     if reservation["backend"] == "condor":
         observation = query_reservation(reservation)
         if observation["state"] != "GONE":
-            if observation["scheduler_id"] and reservation["scheduler_id"] is None:
-                reservation["scheduler_id"] = observation["scheduler_id"]
-                atomic_json(reservation, reservation_path(row), True)
-            return {**reservation, "state": observation["state"]}
+            reservation["scheduler_id"] = observation["scheduler_id"]
+            atomic_json(reservation, reservation_path(row), True)
+            return {**reservation, **observation}
     reconcile_h2(manifest, manifest_hash, row)
     reservation_path(row).unlink()
     return None
 
 
-def reserve_condor(manifest: dict, manifest_hash: str, row: dict, scheduler: dict) -> dict:
-    with unit_lease(manifest, row):
-        if reconcile_reservation(manifest, manifest_hash, row) is not None:
-            raise RunnerError("row_reserved", "row already has a logical owner", row_id=row["row_id"])
-        reconcile_h2(manifest, manifest_hash, row)
-        reservation = new_reservation(row, "condor", scheduler)
-        atomic_json(reservation, reservation_path(row), False)
-        return reservation
+class submission_transaction:
+    """No-submit lifecycle context; callers mark possible side effects first.
+
+    Future submit integration must pass lease_fds to its subprocess and await
+    its termination before leaving this context. A timeout/nonzero result after
+    mark_submission_started is ambiguous, never permission to roll back.
+    """
+    def __init__(self):
+        self.reservations = []
+        self.lease_fds = ()
+        self.submission_started = False
+
+    def mark_submission_started(self):
+        self.submission_started = True
+
+    def record_definite_spawn_failure(self, error: OSError):
+        """Only for an OSError raised directly by process creation (Popen).
+
+        The future caller must establish that no submit executable started.
+        Never use this for a nonzero exit, timeout, interruption, or an error
+        from I/O/status handling after launch; those retain possible effects.
+        """
+        if not isinstance(error, OSError) or not self.submission_started:
+            raise RunnerError("submission_outcome_error", "definite spawn failure requires a process-creation OSError after the start marker")
+        self.submission_started = False
+
+
+@contextmanager
+def reserve_condor(manifest: dict, manifest_hash: str, rows: list[dict], scheduler: dict):
+    """Own all row reservations for one transaction; never invoke a submitter."""
+    validate_scheduler(scheduler)
+    transaction = submission_transaction()
+    with ExitStack() as leases:
+        try:
+            for row in sorted(rows, key=lambda item: str(unit_lock_path(item))):
+                transaction.lease_fds += leases.enter_context(unit_lease(manifest, row))
+                if reconcile_reservation(manifest, manifest_hash, row) is not None:
+                    raise RunnerError("row_reserved", "row already has a logical owner", row_id=row["row_id"])
+                reconcile_h2(manifest, manifest_hash, row)
+                reservation = new_reservation(row, "condor", scheduler)
+                transaction.reservations.append(reservation)
+                atomic_json(reservation, reservation_path(row), False)
+            yield transaction
+        finally:
+            if not transaction.submission_started:
+                for reservation in transaction.reservations:
+                    current = read_reservation(reservation)
+                    if current and current["owner_id"] == reservation["owner_id"]:
+                        reservation_path(reservation).unlink()
+
+
+def worker_identity(row: dict, reservation_token: str) -> str:
+    """Read only literal identity attributes from the starter's local job ad.
+
+    Other ClassAd expressions are deliberately neither evaluated nor imported.
+    This backend requires _CONDOR_JOB_AD; missing context is a specific error.
+    """
+    validate_reservation_token(reservation_token)
+    job_ad_path = os.environ.get("_CONDOR_JOB_AD")
+    if not job_ad_path:
+        raise RunnerError("worker_job_ad_missing", "_CONDOR_JOB_AD is required")
+    fields = {}
+    required = {"datacardunit", "datacardreservation", "clusterid", "procid"}
+    try:
+        for line in Path(job_ad_path).read_text().splitlines():
+            key, separator, value = line.partition("=")
+            key = key.strip().lower()
+            if separator and key in required:
+                if key in fields:
+                    raise ValueError(f"duplicate {key}")
+                fields[key] = json.loads(value.strip())
+        if set(fields) != required or any(type(fields[k]) is not int or fields[k] < 0 for k in ("clusterid", "procid")):
+            raise ValueError("missing attributes or invalid ClusterId/ProcId literals")
+        if not all(isinstance(fields[k], str) for k in ("datacardunit", "datacardreservation")):
+            raise ValueError("row/token must be string literals")
+    except (OSError, ValueError) as exc:
+        raise RunnerError("worker_job_ad_malformed", f"{job_ad_path}: {exc}", row_id=row["row_id"]) from exc
+    if fields["datacardunit"] != row["row_id"] or fields["datacardreservation"] != reservation_token:
+        raise RunnerError("worker_job_ad_identity_conflict", "itemdata row/token differs from local job ad", row_id=row["row_id"])
+    return f'{fields["clusterid"]}.{fields["procid"]}'
 
 
 def unit_owner(row: dict[str, Any]) -> dict[str, Any] | None:
@@ -753,7 +831,7 @@ def read_only(mode: str, manifest: dict[str, Any], manifest_hash: str, row_id: s
                 state["reservation"] = {**observation, "backend": reservation["backend"],
                                         "completion_authority": False}
         except RunnerError as exc:
-            state["reservation"] = {"state": "UNKNOWN", "reason": str(exc), "completion_authority": False}
+            state["reservation"] = {"state": "UNKNOWN", "error_code": exc.code, "reason": str(exc), "completion_authority": False}
         rows.append(state)
     if mode == "plan_only":
         for row, status in zip(selected, rows):
@@ -937,15 +1015,18 @@ def execute_row(manifest: dict[str, Any], manifest_hash: str, row: dict[str, Any
 def execute_unit(manifest: dict[str, Any], manifest_hash: str, row: dict[str, Any], *, backend: str = "local", scheduler_id: str | None = None, reservation_token: str | None = None) -> dict[str, Any]:
     """The sole mutating primitive: acquire ownership, reconcile, then execute."""
     with unit_lease(manifest, row) as lease_fds:
-        reservation = reconcile_reservation(manifest, manifest_hash, row)
         if backend == "condor":
+            scheduler_id = worker_identity(row, reservation_token)
+            reservation = read_reservation(row)
             if (reservation is None or reservation["backend"] != "condor"
-                    or reservation["owner_id"] != reservation_token
-                    or reservation["scheduler_id"] != scheduler_id or reservation["state"] != "RUNNING"):
-                raise RunnerError("row_reserved", "Condor worker requires its unique live Running reservation", row_id=row["row_id"])
-        elif backend not in {"local", "manual"} or reservation is not None:
-            raise RunnerError("row_reserved", "row has a logical execution owner", row_id=row["row_id"])
+                    or reservation["owner_id"] != reservation_token):
+                raise RunnerError("row_reserved", "Condor worker requires its row/token reservation", row_id=row["row_id"])
+            reservation["scheduler_id"] = scheduler_id
+            atomic_json(reservation, reservation_path(row), True)
         else:
+            reservation = reconcile_reservation(manifest, manifest_hash, row)
+            if backend not in {"local", "manual"} or reservation is not None:
+                raise RunnerError("row_reserved", "row has a logical execution owner", row_id=row["row_id"])
             reservation = new_reservation(row, backend)
             atomic_json(reservation, reservation_path(row), False)
         try:
@@ -1008,9 +1089,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--unit", type=Path, help="Derived execution-unit descriptor")
     parser.add_argument("--row-id", help="Select one row from the original manifest")
     modes.add_argument("--derive-units", action="store_true", help="Print deterministic descriptors without writing state")
-    modes.add_argument("--reconcile-reservations", action="store_true", help="Bind live jobs or reconcile disappeared owners through H2; never execute producers")
+    modes.add_argument("--reconcile-reservations", action="store_true", help="Reconcile current reservations through H2 proactively; claims also reconcile automatically")
     parser.add_argument("--backend", choices=("local", "condor", "manual"), default="local")
-    parser.add_argument("--scheduler-id", help="Current native ClusterId.ProcId for a reserved Condor worker")
+    parser.add_argument("--scheduler-id", help="Submitted scheduler locator for observability; local job ad supplies worker metadata")
     parser.add_argument("--reservation-token", help="Generated per-unit dispatch owner token")
     parser.add_argument("--unit-integrity", help="Dispatch guard for descriptor bytes")
     parser.add_argument("--scheduler-status", type=Path, help="Read-only operational metadata overlay")

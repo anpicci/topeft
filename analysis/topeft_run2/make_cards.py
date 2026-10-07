@@ -55,7 +55,7 @@ def build_arg_parser():
     parser.add_argument("--select-only",action="store_true",help="Only run the WC selection step")
     parser.add_argument("--skip-selected-wcs-check",action="store_true",help="Do not raise an error if the selected WCs disagree with ref")
     parser.add_argument("--use-selected",default="",help="Load selected process+WC combs from a file. Skips doing the normal selection step.")
-    parser.add_argument("--condor", "-C", action="store_true", help="Prepare no-submit unit dispatch from --matrix-manifest")
+    parser.add_argument("--condor", "-C", action="store_true", help="Prepare ownership-free, no-submit unit dispatch from --matrix-manifest")
     parser.add_argument("--matrix-manifest", help="Canonical v3 workload for Condor preparation")
     parser.add_argument("--condor-output", help="Fresh shared-filesystem directory for dispatch material")
     parser.add_argument("--request-cpus", type=int)
