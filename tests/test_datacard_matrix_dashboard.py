@@ -194,3 +194,19 @@ def test_dashboard_displays_observations_without_changing_completion(tmp_path):
     assert result.returncode == 0, result.stderr
     assert "Execution units: 1 / 3" in result.stdout
     assert "removed at synthetic (operational only)" in result.stdout
+
+
+@pytest.mark.parametrize("state,label", [("HELD", "HELD anomaly"), ("UNKNOWN", "BLOCKED"),
+                                         ("PENDING_UNBOUND", "BLOCKED"), ("GONE", "Reconcile H2")])
+def test_dashboard_prominently_surfaces_reservation_anomalies_even_with_receipt(tmp_path, state, label):
+    dashboard, manifest, status_path, _ = dashboard_case(tmp_path)
+    status = json.loads(status_path.read_text())
+    status["rows"][0]["reservation"] = {"backend": "condor", "scheduler_id": "123.7", "state": state}
+    status_path.write_text(json.dumps(status))
+    before = status_path.read_bytes()
+    result = run_once(dashboard, manifest)
+    assert result.returncode == 0, result.stderr
+    assert f"[{state}] Logical reservation: unit_1 Backend: condor Scheduler: 123.7" in result.stdout
+    assert label in result.stdout
+    assert "Execution units: 1 / 3" in result.stdout
+    assert status_path.read_bytes() == before

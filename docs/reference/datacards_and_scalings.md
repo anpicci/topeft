@@ -36,7 +36,7 @@ are:
 | WCs | POI list, reference/selected-WC files, select-only/check controls, optional WC values/scaling order | WC selection uses the card-facing fitting view; selected files must match the producer's supported process/WC structure. `--use-selected` materializes canonical signal-only `selectedWCs.txt` in `--out-dir`. |
 | Nuisances | Nuisance and MC-stat switches, `--rate-syst-json`, `--miss-parton-file`, and `--skip-missing-parton-rate-syst` | Run era selects maintained defaults when the override is omitted. An explicit `--rate-syst-json` is forwarded as `rate_systs_path`; worker arguments come from the canonical manifest. The missing-parton consumer infers the maintained payload layout and has no `--sr-registry` option. |
 | Data/negative bins | Asimov by default; `--unblind` for observed data; crop negative bins by default | These choices affect card contents and must be recorded with production evidence. |
-| Execution | Direct local default; `--condor` requires `--matrix-manifest`, `--condor-output`, and explicit CPU/memory/disk requests | Condor preparation emits one queue item per existing manifest row, without producer work or submission. |
+| Execution | Direct local default; `--condor` requires `--matrix-manifest`, `--condor-output`, explicit CPU/memory/disk requests, `--max-retries`, `--max-starts`, `--condor-schedd`, `--condor-pool` | Reserves output domains and emits one queue item per existing manifest row, without producer work or submission. |
 
 In direct mode, `make_cards.main()` resolves inputs, validates/merges them,
 constructs one `DatacardMaker`, selects or loads WCs, calls `run_local()`, and
@@ -146,7 +146,8 @@ by receipts and `--selected-unit MANIFEST_SHA256:ROW_ID:ATTEMPT_ID`. The runner
 derives a private numbered physical-attempt directory beside each row output
 directory; a failed physical attempt never acquires selected-unit authority.
 Already valid v2 receipts remain valid and are skipped without a new attempt.
-Direct `make_cards.py` production has no manifest requirement.
+Direct `make_cards.py` production has no manifest requirement, but holds the
+output-domain lease and refuses logical reservations or H2-published roots.
 
 The runner redirects row-owned producer output, merge report, and log writes
 into that private directory. After a zero return code it checks the declared
@@ -170,8 +171,8 @@ not establish physics validity or power-loss durability.
 new private attempt after incomplete staging, or reconciles a complete
 validated attempt without rerunning the producer. A valid receipt remains the
 only completion authority. The dashboard renders runner status and receipt
-counts; it does not independently validate completion, physics, resources,
-scheduler state, or topology suitability.
+counts plus live reservation observations; it does not independently validate
+completion, physics, resources, or topology suitability.
 
 ### Execution-unit and dispatch interfaces
 
@@ -179,10 +180,11 @@ scheduler state, or topology suitability.
 | --- | --- |
 | `datacard_matrix_runner.derive_units(path)` | Loads the original global v3 workload and deterministically returns one descriptor per existing row, in manifest order. New execution requires disjoint canonical output roots. |
 | `resolve_unit(descriptor)` | Validates exact descriptor fields and parent integrity, returning the unchanged full parent, its byte hash and selected row. Unknown rows and changed parent bytes fail closed. |
-| `execute_unit(manifest, manifest_hash, row, backend=..., scheduler_id=...)` | Sole mutating primitive: acquire unit ownership, validate receipt or reconcile H2 state, then execute only if eligible. Backend/ID are owner metadata. |
+| `execute_unit(manifest, manifest_hash, row, backend=..., scheduler_id=..., reservation_token=...)` | Canonical execution primitive: acquire physical lease, check/reconcile logical ownership, then apply H2 skip/reconcile/execute. Condor requires its token and unique live Running job ID. |
 | `execute(manifest, manifest_hash, ...)` | Sequential orchestration over `execute_unit`; stops at a blocked/failed unit. No second completion state machine. |
 | Runner `--unit FILE` or `MANIFEST --row-id ID` | Selects one unit without rewriting its parent or public identity. `--plan-only` and `--status` remain read-only. `--derive-units MANIFEST` prints descriptors only. |
-| `datacard_matrix_condor.prepare_material(manifest_path, destination, request_cpus=..., request_memory=..., request_disk=..., max_runtime=...)` | Fresh-only shared-filesystem material generation. CPU/memory/disk required; runtime optional. No producer, submission or package builder. |
+| Runner `--reconcile-reservations MANIFEST [--row-id ID]` | Under each physical lease, persist a live job binding or reconcile a disappeared owner through H2 before retiring its reservation. Never runs a producer. |
+| `datacard_matrix_condor.prepare_material(manifest_path, destination, request_cpus=..., request_memory=..., request_disk=..., max_retries=..., max_starts=..., schedd=..., pool=..., query_executable=..., max_runtime=...)` | Fresh-only shared-filesystem dispatch and per-row reservation. Resources, budgets and endpoints required; runtime optional. Absolute query executable defaults to resolved `condor_q`. No producer, submission or package builder. |
 
 Descriptor fields are exactly `schema` (`topeft_datacard_execution_unit_v1`),
 `parent_manifest` (absolute path), `parent_integrity` (SHA-256 of those current
@@ -206,11 +208,57 @@ unit execution and completion state remain entirely row-owned. Producers
 inherit both lifetime lock descriptors, so manager death alone cannot authorize
 a duplicate producer. Unknown/held ownership fails closed.
 
+`.<output_name>.datacard.reservation.json` is an atomic per-domain logical
+reservation, not a global registry or completion record. Its schema is
+`topeft_datacard_reservation_v1`; fields are `schema`, `row_id`, `output_root`,
+`backend`, `owner_id`, `created_at`, `scheduler`, and `scheduler_id`. The last two
+are null for local/manual ownership. Condor's scheduler object records explicit
+`pool`, `schedd` and absolute `query_executable`; its native ID starts null and
+is bound from a fresh query. The random owner token is dispatch metadata and
+adds only `DatacardReservation` to the existing `DatacardUnit` and
+`DatacardParentIntegrity` ClassAds. Native ClusterId, ProcId, JobStatus and
+start/completion counters are not duplicated.
+
+All reservation mutation is serialized under the output-domain physical lease.
+That lease lasts for a worker activation; the Condor logical reservation lasts
+while its job remains in the live queue, including Idle, Running, Held,
+Suspended, Transferring, and post-eviction Idle. Canonical row, logical owner,
+current scheduler ID, physical lease, numbered physical attempt, and valid
+receipt remain distinct. Each live reserved row has exactly one current job;
+each current job identifies one row. Neither ProcId order nor an historical
+manifest hash defines the row. Sequential explicit resubmission can change
+the scheduler ID without changing the canonical workload.
+
+Queries use the explicit endpoint, `-allusers` with a narrow token/current-ID
+constraint, JSON projection and a 30-second timeout. Duplicate jobs, changed
+IDs, malformed results and query errors fail closed. Worker activation requires
+the matching token and Running identity; local/manual execution cannot borrow
+it. A successful empty query proves disappearance only after a durable binding.
+Never-bound preparation remains `PENDING_UNBOUND`, including failed partial
+preparation or removal before the first binding; explicit operator investigation
+is required. Generated submit material is single-use, and status observations
+do not persist a binding. Use explicit reservation reconciliation promptly after
+separately authorized submission to the declared endpoint; workers also bind.
+
+For a bound disappeared job, existing H2 classification and reconciliation run
+under the physical lease before reservation retirement. A validated receipt
+means complete; incomplete staging can become eligible, and validated staging
+can publish without rerunning its producer. Ambiguity, invalid receipts,
+collisions or an unavailable physical lease block. Local stale ownership uses
+the same H2 gate and acquired inherited lease, never cross-host PID inference.
+Only then may a different backend claim the row. There is no scheduler release
+or automatic new job creation. Raw producer calls without a manifest cannot
+reconcile these records and refuse reserved or H2-marked roots; H2 workers
+produce inside their separate private staging domain.
+
 Status rows carry unit `lock_path`, `lock_held`, `lock_probe_error` and
 `owner_metadata`; aggregate `lock_held` means any unit is held, or unknown if
 none is held and a probe failed. The legacy top-level `owner_metadata` may be
 null. Consumers must use row metadata for multiple active units. Owner backend
 and scheduler ID are observations, not receipt fields.
+Rows with logical ownership additionally expose `reservation`, including
+backend, current scheduler ID and observed state. `HELD`, `UNKNOWN`,
+`PENDING_UNBOUND` and `GONE` are visible independently of H2 completion.
 
 `--scheduler-status FILE` on runner status or dashboard accepts an externally
 collected observation with exactly these keys:
@@ -224,29 +272,71 @@ collected observation with exactly these keys:
 }
 ```
 
-Unknown/duplicate rows or a mismatched parent fail. The runner attaches
+Unknown/duplicate rows, duplicate job IDs or a mismatched parent fail. The runner attaches
 `scheduler_metadata` with `completion_authority: false` and preserves its own
 row status. Observations may cover a subset; with `--row-id`, supply only that
-row. No scheduler query or persistent scheduler registry is maintained here.
-Held, removed or disappeared jobs require runner state inspection before retry;
-exit zero alone provides no producer completion authority.
+row. This supplied overlay cannot replace live reservation queries or authorize
+execution. Exit zero alone provides no producer completion authority.
 
 Generated material consists of `units/*.json`, `items.txt`, `worker.sh`,
-`datacards.sub`, and `logs/`. Queue items bind row IDs to descriptor byte hashes.
+`datacards.sub`, and `logs/`. Queue items bind row IDs to descriptor byte hashes
+and reservation tokens. Scheduler logs use
+`logs/$(row_id)__$(Cluster).$(Process).out`, `.err`, and `.events.log`;
+each row/current job has distinct paths. H2 physical-attempt logs remain separate.
 The worker checks descriptor/parent/runner integrity and enters the same unit
 executor, with the producer's recorded arguments and no recursive Condor mode.
 The submit file is published last using the existing no-overwrite copy helper.
 Existing destinations and invalid resource quantities are rejected. Generated
 paths have the restricted character set documented in the operator guide.
 
-The adapter uses `should_transfer_files = NO`; absolute paths and the selected
-runtime/environment must be available on workers. `request_cpus` is a positive
-integer; `request_memory` and `request_disk` accept positive integer quantities
-and optional unit suffixes. Optional positive `max_runtime` sets `+MaxRuntime`
-for sites supporting it. There are no resource defaults or jobs-in-flight caps.
-One common resource request covers the derived units. Resource/site validation,
-a real worker canary, telemetry, and later optimization are separate work;
-this interface prepares material and never submits it.
+This is TopEFT producer orchestration; EFTFit/Combine runtime and fit scheduling
+remain outside this interface. `getenv = false` disables wholesale submitter
+inheritance. Absolute manifest interpreter/runner paths construct the TopEFT
+worker runtime without serializing shell state, secrets or credentials. A
+sanitized import/CLI probe verifies the submit-host installation; execute-node
+packages, site wrapper environment, client query access and shared mounts still
+require qualification. No additional `environment` variables are currently
+required or emitted.
+
+`should_transfer_files = NO` preserves shared-filesystem H2 private staging,
+validation, no-overwrite publication and receipt-last authority. Absolute paths
+must be available on workers. No authoritative `transfer_output_files`, wrapper
+copy or post-producer publication path is introduced. Native scheduler logs are
+operational evidence only.
+
+`request_cpus` is a positive integer; memory/disk accept positive integer
+quantities and optional unit suffixes. Optional positive `max_runtime` maps to
+native `allowed_execute_duration`, parsed by HTCondor 25.0.1. Its seconds limit
+one activation, exclude transfer time and reset for a later activation after
+eviction/restart. `21600` is representable exactly. It is not cumulative
+`RemoteWallClockTime`, and the native timeout puts the job Held.
+
+For explicit terminal retry budget R >= 0 and total-start budget N > 0, the
+adapter emits:
+
+```text
+max_retries = R
+success_exit_code = 0
+requirements = MY.NumJobStarts < N
+on_exit_remove = NumJobStarts >= N
+periodic_remove = JobStatus == 1 && NumJobStarts >= N
+```
+
+Native HTCondor combines the removal condition with
+`NumJobCompletions > JobMaxRetries || ExitCode =?= JobSuccessExitCode` and
+retains its ordinary resource requirements. No unconditional `on_exit_hold`
+intercepts failed terminal exits. Native retry exhaustion removes the job.
+Evictions count toward starts separately from terminal retries: the match guard
+prevents another activation at N, the last Running activation can finish, its
+terminal exit removes the job, and capped Idle jobs leave the queue at the next
+periodic evaluation. The guard alone would strand an Idle job; periodic removal
+alone would permit starts before evaluation. Unexpected/site Held and native
+duration holds remain visible and reserved, without automatic release.
+
+There are no production resource/retry defaults or jobs-in-flight caps. One
+common configuration covers the existing rows, including valid-receipt skips.
+Real eviction, removal, start-limit enforcement, resources and worker runtime
+remain separate live validation; this interface never submits a job.
 
 ## Per-era package interface
 

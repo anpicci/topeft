@@ -137,11 +137,17 @@ render_once() {
   printf ' %s%%\n' "$((complete_targets * 100 / total_targets))"
   printf 'Active units   : %s (%s targets)  Pending: %s  Problems: %s  Lock: %s\n' \
     "$active_units" "$active_targets" "$pending_units" "$problem_units" "$lock_state"
+  jq -r '.rows[] | select(.reservation != null) |
+    "[\(.reservation.state)] Logical reservation: \(.row_id) Backend: \(.reservation.backend // "unknown") Scheduler: \(.reservation.scheduler_id // "unbound") (H2 receipt alone establishes completion)",
+    (if .reservation.state == "HELD" then "  HELD anomaly: ownership retained; no automatic release."
+     elif .reservation.state == "UNKNOWN" or .reservation.state == "PENDING_UNBOUND" then "  BLOCKED: scheduler ownership is unresolved."
+     elif .reservation.state == "GONE" then "  Reconcile H2 before a new execution claim."
+     else empty end)' <<<"$status_json"
   jq -r '.owner_metadata as $legacy | .rows[] | select(.status == "active") |
     (.owner_metadata // $legacy // {}) as $owner |
     "Current unit   : \(.row_id)  Attempt: \(.attempt_id)  Started: \($owner.current_row_started_at // "-")  Backend: \($owner.backend // "unknown")  Scheduler: \($owner.scheduler_id // "-")"' <<<"$status_json"
   printf '\n'
-  printf 'Status source  : runner --status and validated receipts only; this view does not establish physics validation, memory/resource validation, scheduler state, or topology suitability.\n\n'
+  printf 'Status source  : runner --status; live reservations are operational observations, validated H2 receipts establish completion. This view does not establish physics validation, memory/resource validation, or topology suitability.\n\n'
 
   printf '%-22s %-31s %-16s %-16s %4s  %s\n' STATE EXECUTION_UNIT LOGICAL_ROW ATTEMPT NCH PHYSICAL_CHANNELS
   printf '%-22s %-31s %-16s %-16s %4s  %s\n' ---------------------- ------------------------------- ---------------- ---------------- ---- -----------------

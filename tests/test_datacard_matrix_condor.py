@@ -1,6 +1,8 @@
 """No-submit adapter tests use synthetic producers and explicit fixture resources."""
 import json
 from pathlib import Path
+import re
+import shutil
 import subprocess
 import sys
 
@@ -12,10 +14,26 @@ from analysis.topeft_run2 import make_cards
 from test_datacard_matrix_resumable_runner import fake_script, make_row, manifest, sha
 
 
-resources = dict(request_cpus=1, request_memory="1GB", request_disk="1GB")
+resources = dict(request_cpus=1, request_memory="1GB", request_disk="1GB",
+                 max_retries=2, max_starts=3, schedd="synthetic_schedd", pool="synthetic_pool")
 
 
-def test_material_identity_worker_command_and_no_submit(tmp_path, fake_script, monkeypatch):
+@pytest.fixture
+def fake_query(tmp_path):
+    ads = tmp_path / "live_ads.json"
+    ads.write_text("[]")
+    query = tmp_path / "condor_q"
+    query.write_text(f'#!/bin/sh\nexec /bin/cat "{ads}"\n')
+    query.chmod(0o755)
+    return query, ads
+
+
+def running_ad(row_id, token, cluster=123, proc=7):
+    return {"DatacardUnit": row_id, "DatacardReservation": token,
+            "ClusterId": cluster, "ProcId": proc, "JobStatus": 2}
+
+
+def test_material_identity_worker_command_and_no_submit(tmp_path, fake_script, fake_query, monkeypatch):
     rows = [make_row(tmp_path, fake_script, name) for name in ("a", "b")]
     path, data = manifest(tmp_path, fake_script, rows)
     destination = tmp_path / "dispatch"
@@ -23,34 +41,43 @@ def test_material_identity_worker_command_and_no_submit(tmp_path, fake_script, m
         pytest.fail("material preparation invoked a subprocess")
     with monkeypatch.context() as patch:
         patch.setattr(subprocess, "run", forbidden)
-        result = condor.prepare_material(path, destination, **resources, max_runtime=100)
+        result = condor.prepare_material(path, destination, **resources, max_runtime=21600,
+                                        query_executable=str(fake_query[0]))
     assert result["submitted"] is False
     units = [json.loads((destination / "units" / (row["row_id"] + ".json")).read_text()) for row in rows]
     assert units == runner.derive_units(path)
     items = (destination / "items.txt").read_text().splitlines()
     assert [item.split()[0] for item in items] == ["a", "b"]
     submit = (destination / "datacards.sub").read_text()
-    assert "queue row_id, unit_integrity from " in submit
-    assert '+MaxRuntime = 100' in submit and "should_transfer_files = NO" in submit
+    assert "queue row_id, unit_integrity, reservation_token from " in submit
+    assert 'allowed_execute_duration = 21600' in submit and "should_transfer_files = NO" in submit
+    assert "getenv = false" in submit and "+MaxRuntime" not in submit
+    assert "transfer_output_files" not in submit and "on_exit_hold" not in submit
     assert "condor_submit" not in (destination / "worker.sh").read_text()
     assert not any(Path(row["output_root"]).exists() for row in rows)
-    worker = subprocess.run([str(destination / "worker.sh"), *items[0].split(), "123.0"], text=True, capture_output=True)
+    row_id, integrity, token = items[0].split()
+    reservation = runner.read_reservation(rows[0])
+    assert reservation["owner_id"] == token and reservation["scheduler_id"] is None
+    fake_query[1].write_text(json.dumps([running_ad(row_id, token)]))
+    worker = subprocess.run([str(destination / "worker.sh"), row_id, integrity, "123.7", token],
+                            env={"PATH": "/usr/bin:/bin", "LANG": "C"}, text=True, capture_output=True)
     assert worker.returncode == 0, worker.stderr
     assert runner.validate_receipt(json.loads(runner.receipt_path(data, rows[0]).read_text()), data, sha(path), rows[0])[0]
     assert not Path(rows[1]["output_root"]).exists()
+    assert runner.read_reservation(rows[0])["scheduler_id"] == "123.7"
     with pytest.raises(runner.RunnerError, match="exists"):
         condor.prepare_material(path, destination, **resources)
 
 
-@pytest.mark.parametrize("field,value", [("request_cpus", None), ("request_cpus", 0), ("request_memory", None), ("request_memory", "1GB\nqueue 9"), ("request_disk", ""), ("max_runtime", 0)])
-def test_resources_are_explicit_and_fail_before_output(tmp_path, fake_script, field, value):
+@pytest.mark.parametrize("field,value", [("request_cpus", None), ("request_cpus", 0), ("request_memory", None), ("request_memory", "1GB\nqueue 9"), ("request_disk", ""), ("max_runtime", 0), ("max_runtime", True), ("max_retries", None), ("max_retries", -1), ("max_retries", True), ("max_starts", None), ("max_starts", 0), ("max_starts", True), ("schedd", ""), ("pool", None), ("pool", "-injected"), ("query_executable", "relative_condor_q")])
+def test_resources_are_explicit_and_fail_before_output(tmp_path, fake_script, fake_query, field, value):
     path, _ = manifest(tmp_path, fake_script, [make_row(tmp_path, fake_script)])
     with pytest.raises(runner.RunnerError):
-        condor.prepare_material(path, tmp_path / "dispatch", **{**resources, field: value})
+        condor.prepare_material(path, tmp_path / "dispatch", **{**resources, "query_executable": str(fake_query[0]), field: value})
     assert not (tmp_path / "dispatch").exists()
 
 
-def test_frontend_bypasses_all_parent_producer_work(tmp_path, fake_script, monkeypatch, capsys):
+def test_frontend_bypasses_all_parent_producer_work(tmp_path, fake_script, fake_query, monkeypatch, capsys):
     path, _ = manifest(tmp_path, fake_script, [make_row(tmp_path, fake_script)])
     def forbidden(*args, **kwargs):
         pytest.fail("Condor frontend entered parent producer work or submitted")
@@ -58,19 +85,20 @@ def test_frontend_bypasses_all_parent_producer_work(tmp_path, fake_script, monke
     monkeypatch.setattr(make_cards.datacard_tools, "load_and_merge_histogram_pkls", forbidden)
     monkeypatch.setattr(make_cards.datacard_tools, "DatacardMaker", forbidden)
     monkeypatch.setattr(subprocess, "run", forbidden)
-    monkeypatch.setattr(sys, "argv", ["make_cards.py", "--condor", "--matrix-manifest", str(path), "--condor-output", str(tmp_path / "dispatch"), "--request-cpus", "1", "--request-memory", "1GB", "--request-disk", "1GB"])
+    monkeypatch.setattr(condor.shutil, "which", lambda name: str(fake_query[0]))
+    monkeypatch.setattr(sys, "argv", ["make_cards.py", "--condor", "--matrix-manifest", str(path), "--condor-output", str(tmp_path / "dispatch"), "--request-cpus", "1", "--request-memory", "1GB", "--request-disk", "1GB", "--max-retries", "2", "--max-starts", "3", "--condor-schedd", "synthetic_schedd", "--condor-pool", "synthetic_pool"])
     make_cards.main()
     assert json.loads(capsys.readouterr().out)["submitted"] is False
 
 
-def test_worker_rejects_descriptor_mutation(tmp_path, fake_script):
+def test_worker_rejects_descriptor_mutation(tmp_path, fake_script, fake_query):
     rows = [make_row(tmp_path, fake_script, name) for name in ("a", "b")]
     path, _ = manifest(tmp_path, fake_script, rows)
     destination = tmp_path / "dispatch"
-    condor.prepare_material(path, destination, **resources)
+    condor.prepare_material(path, destination, **resources, query_executable=str(fake_query[0]))
     item = (destination / "items.txt").read_text().splitlines()[0].split()
     (destination / "units" / "a.json").write_text((destination / "units" / "b.json").read_text())
-    result = subprocess.run([str(destination / "worker.sh"), *item, "123.0"], capture_output=True, text=True)
+    result = subprocess.run([str(destination / "worker.sh"), *item[:2], "123.7", item[2]], capture_output=True, text=True)
     assert result.returncode == 2 and "stale_dispatch_input" in result.stderr
     assert not any(Path(row["output_root"]).exists() for row in rows)
 
@@ -78,7 +106,7 @@ def test_worker_rejects_descriptor_mutation(tmp_path, fake_script):
 @pytest.mark.parametrize("policy", ["warn", "error", "off"])
 @pytest.mark.parametrize("binning", ["fitting", "processing"])
 @pytest.mark.parametrize("skip", [False, True])
-def test_worker_preserves_canonical_producer_options(tmp_path, fake_script, policy, binning, skip):
+def test_worker_preserves_canonical_producer_options(tmp_path, fake_script, fake_query, policy, binning, skip):
     extras = ["--year-coverage-policy", policy, "--rate-syst-json", "custom/rates.json"]
     if skip:
         extras.append("--skip-missing-parton-rate-syst")
@@ -86,7 +114,7 @@ def test_worker_preserves_canonical_producer_options(tmp_path, fake_script, poli
     row["producer_args"][row["producer_args"].index("--binning") + 1] = binning
     path, data = manifest(tmp_path, fake_script, [row])
     destination = tmp_path / "dispatch"
-    condor.prepare_material(path, destination, **resources)
+    condor.prepare_material(path, destination, **resources, query_executable=str(fake_query[0]))
     unit = json.loads((destination / "units" / (row["row_id"] + ".json")).read_text())
     parent, _, selected = runner.resolve_unit(unit)
     assert runner.resolved_argv(parent, selected) == runner.resolved_argv(data, row)
@@ -128,3 +156,196 @@ def test_scheduler_overlay_rejects_wrong_parent_or_duplicate(tmp_path, fake_scri
     overlay.update(parent_integrity="0" * 64, units=[observation])
     with pytest.raises(runner.RunnerError, match="binding"):
         runner.overlay_scheduler(runner.read_only("status", data, sha(path)), overlay)
+
+
+def test_pending_dispatch_blocks_duplicate_and_local_without_producer(tmp_path, fake_script, fake_query):
+    counter = tmp_path / "producer_count"
+    row = make_row(tmp_path, fake_script, extra=["--counter", str(counter)])
+    path, data = manifest(tmp_path, fake_script, [row])
+    condor.prepare_material(path, tmp_path / "dispatch", **resources, query_executable=str(fake_query[0]))
+    with pytest.raises(runner.RunnerError, match="logical owner"):
+        condor.prepare_material(path, tmp_path / "duplicate", **resources, query_executable=str(fake_query[0]))
+    with pytest.raises(runner.RunnerError, match="logical execution owner"):
+        runner.execute_unit(data, sha(path), row)
+    assert not (tmp_path / "duplicate" / "datacards.sub").exists()
+    assert not counter.exists()
+    assert runner.read_reservation(row)["scheduler_id"] is None
+
+
+def test_direct_make_cards_refuses_reserved_output_before_producer(tmp_path, fake_script, fake_query, monkeypatch, capsys):
+    row = make_row(tmp_path, fake_script)
+    path, _ = manifest(tmp_path, fake_script, [row])
+    condor.prepare_material(path, tmp_path / "dispatch", **resources, query_executable=str(fake_query[0]))
+    reservation_before = runner.reservation_path(row).read_bytes()
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("reserved direct invocation reached producer or scheduler")
+
+    monkeypatch.setattr(make_cards, "_run_producer", forbidden)
+    monkeypatch.setattr(runner, "query_reservation", forbidden)
+    monkeypatch.setattr(sys, "argv", ["make_cards.py", row["input_pkl"], "--out-dir", row["output_root"]])
+    with pytest.raises(SystemExit) as error:
+        make_cards.main()
+    assert error.value.code == 2
+    assert "logical reservation" in capsys.readouterr().err
+    assert runner.reservation_path(row).read_bytes() == reservation_before
+    assert not Path(row["output_root"]).exists()
+
+
+def test_direct_make_cards_holds_domain_lease_until_producer_returns(tmp_path, fake_script, fake_query, monkeypatch):
+    rows = [make_row(tmp_path, fake_script, name) for name in ("direct", "independent")]
+    path, data = manifest(tmp_path, fake_script, rows)
+    scheduler = {"schedd": "synthetic_schedd", "pool": "synthetic_pool", "query_executable": str(fake_query[0])}
+    observed = []
+
+    def synthetic_producer(args, pkl_files):
+        assert args.out_dir == rows[0]["output_root"]
+        assert pkl_files == [rows[0]["input_pkl"]]
+        assert runner.probe_lock(runner.unit_lock_path(rows[0]))[0] is True
+        with pytest.raises(runner.RunnerError) as error:
+            runner.reserve_condor(data, sha(path), rows[0], scheduler)
+        assert error.value.code == "execution_lock_held"
+        independent = runner.reserve_condor(data, sha(path), rows[1], scheduler)
+        assert independent["row_id"] == rows[1]["row_id"]
+        observed.append("producer_entered_with_exclusion")
+
+    monkeypatch.setattr(make_cards, "_run_producer", synthetic_producer)
+    monkeypatch.setattr(sys, "argv", ["make_cards.py", rows[0]["input_pkl"], "--out-dir", rows[0]["output_root"]])
+    make_cards.main()
+    assert observed == ["producer_entered_with_exclusion"]
+    assert runner.probe_lock(runner.unit_lock_path(rows[0]))[0] is False
+    assert runner.reserve_condor(data, sha(path), rows[0], scheduler)["row_id"] == rows[0]["row_id"]
+
+
+def test_direct_make_cards_preserves_completed_h2_outputs_without_reservation(tmp_path, fake_script, monkeypatch, capsys):
+    row = make_row(tmp_path, fake_script)
+    path, data = manifest(tmp_path, fake_script, [row])
+    runner.execute_unit(data, sha(path), row)
+    assert runner.read_reservation(row) is None
+    receipt_before = runner.receipt_path(data, row).read_bytes()
+    outputs_before = {name: Path(name).read_bytes() for name in row["expected_output_paths"]}
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("direct producer entered an H2-published output domain")
+
+    monkeypatch.setattr(make_cards, "_run_producer", forbidden)
+    monkeypatch.setattr(sys, "argv", ["make_cards.py", row["input_pkl"], "--out-dir", row["output_root"]])
+    with pytest.raises(SystemExit) as error:
+        make_cards.main()
+    assert error.value.code == 2
+    assert "matrix runner" in capsys.readouterr().err
+    assert runner.receipt_path(data, row).read_bytes() == receipt_before
+    assert {name: Path(name).read_bytes() for name in row["expected_output_paths"]} == outputs_before
+    assert runner.validate_receipt(json.loads(receipt_before), data, sha(path), row)[0]
+
+
+def test_real_topeft_runtime_imports_with_sanitized_environment(tmp_path, record_property):
+    # The maintained interpreter resolves editable TopEFT/topcoffea packages
+    # without the interactive shell's PYTHONPATH, CONDA_PREFIX or library paths.
+    result = subprocess.run(
+        [sys.executable, "-B", str(Path(make_cards.__file__).resolve()), "--help"],
+        cwd=tmp_path, env={"PATH": "/usr/bin:/bin", "LANG": "C"},
+        capture_output=True, text=True, timeout=60,
+    )
+    record_property("sanitized_runtime_probe", json.dumps({
+        "argv": result.args, "returncode": result.returncode,
+        "environment": {"PATH": "/usr/bin:/bin", "LANG": "C"},
+        "stdout": result.stdout, "stderr": result.stderr,
+    }, sort_keys=True))
+    assert result.returncode == 0, result.stderr
+    assert "AllowedExecuteDuration seconds per activation" in " ".join(result.stdout.split())
+    assert "--max-retries" in result.stdout and "--max-starts" in result.stdout
+
+
+def test_installed_parser_and_native_policy_evaluation(tmp_path, fake_script, fake_query, record_property):
+    submit_executable = shutil.which("condor_submit")
+    evaluator = shutil.which("classad_eval")
+    if not submit_executable or not evaluator:
+        pytest.skip("installed HTCondor submit parser and ClassAd evaluator required")
+    rows = [make_row(tmp_path, fake_script, name) for name in ("z_last", "a_first")]
+    path, _ = manifest(tmp_path, fake_script, rows)
+    destination = tmp_path / "dispatch"
+    condor.prepare_material(path, destination, **resources, max_runtime=21600,
+                            query_executable=str(fake_query[0]))
+    # This is parser input only. No submitter variables or real credentials enter
+    # generated material; the loopback override needs no network connection.
+    parser_env = {"PATH": "/usr/bin:/bin", "LANG": "C", "_CONDOR_NETWORK_INTERFACE": "127.0.0.1"}
+    site_config = Path(submit_executable).resolve().parents[2] / "etc" / "condor_config"
+    if site_config.is_file():
+        parser_env["CONDOR_CONFIG"] = str(site_config)
+    ads_path = tmp_path / "parsed.ads"
+    parsed = subprocess.run([submit_executable, "-dry-run", str(ads_path), str(destination / "datacards.sub")],
+                            env=parser_env, text=True, capture_output=True, timeout=30)
+    record_property("native_parser_probe", json.dumps({
+        "argv": parsed.args, "returncode": parsed.returncode, "environment": parser_env,
+        "stdout": parsed.stdout, "stderr": parsed.stderr,
+    }, sort_keys=True))
+    assert parsed.returncode == 0, parsed.stderr
+    # The long format stores common fields in the first ad and subsequent proc
+    # deltas. Reopen the emitted bytes and apply inheritance for each queued row.
+    raw_ads = ads_path.read_text()
+    record_property("native_parser_raw_ads", raw_ads)
+    blocks = re.split(r"\n\s*\n", raw_ads.strip())
+    ads = []
+    common = {}
+    for block in blocks:
+        fields = dict(line.split("=", 1) for line in block.splitlines() if "=" in line)
+        fields = {key.strip(): value.strip() for key, value in fields.items()}
+        if not fields:
+            continue
+        if not ads:
+            common = fields
+        ads.append({**common, **fields})
+    record_property("native_parser_materialized_ads", json.dumps(ads, sort_keys=True))
+    assert len(ads) == len(rows)
+    items = [line.split() for line in (destination / "items.txt").read_text().splitlines()]
+    for ad, row, item in zip(ads, rows, items):
+        assert ad["AllowedExecuteDuration"] == "21600"
+        assert ad["ShouldTransferFiles"] == '"NO"'
+        assert ad.get("Environment", '""') == '""'
+        assert ad["OnExitHold"] == "false"
+        assert ad["JobMaxRetries"] == "2" and ad["JobSuccessExitCode"] == "0"
+        assert ad["NumJobStarts"] == "0"
+        assert json.loads(ad["DatacardUnit"]) == row["row_id"]
+        assert json.loads(ad["DatacardReservation"]) == item[2]
+        job_id = f'{ad["ClusterId"]}.{ad["ProcId"]}'
+        assert json.loads(ad["Arguments"]).split() == [item[0], item[1], job_id, item[2]]
+        for attribute, suffix in (("Out", "out"), ("Err", "err"), ("UserLog", "events.log")):
+            assert json.loads(ad[attribute]) == str(destination / "logs" / f'{row["row_id"]}__{job_id}.{suffix}')
+        assert "MaxRuntime" not in ad and "TransferOutput" not in ad
+    assert len({ad["UserLog"] for ad in ads}) == len(rows)
+    assert "MY.NumJobStarts < 3" in ads[0]["Requirements"]
+    assert "NumJobCompletions > JobMaxRetries" in ads[0]["OnExitRemove"]
+
+    policy_evaluations = []
+
+    def evaluate(expression, **values):
+        attributes = {"JobMaxRetries": 2, "JobSuccessExitCode": 0, "NumJobCompletions": 0,
+                      "NumJobStarts": 0, "JobStatus": 1, "ExitCode": 1, **values}
+        context = "[" + ";".join(f"{key}={value}" for key, value in attributes.items()) + "]"
+        result = subprocess.run([evaluator, "-quiet", context, expression], env=parser_env,
+                                text=True, capture_output=True, timeout=10)
+        policy_evaluations.append({"expression": expression, "context": attributes,
+                                   "returncode": result.returncode, "result": result.stdout.strip(),
+                                   "stderr": result.stderr})
+        assert result.returncode == 0, result.stderr
+        return result.stdout.strip()
+
+    remove = ads[0]["OnExitRemove"]
+    assert evaluate(remove, NumJobCompletions=1, NumJobStarts=1) == "false"
+    assert evaluate(remove, NumJobCompletions=2, NumJobStarts=2) == "false"
+    assert evaluate(remove, NumJobCompletions=3, NumJobStarts=2) == "true"
+    assert evaluate(remove, ExitCode=0, NumJobCompletions=1, NumJobStarts=1) == "true"
+    assert evaluate(remove, ExitCode="undefined", NumJobCompletions=1, NumJobStarts=1) == "false"
+    assert evaluate(remove, ExitCode="undefined", NumJobCompletions=3, NumJobStarts=2) == "true"
+    assert evaluate(remove, NumJobCompletions=1, NumJobStarts=3) == "true"
+    periodic = ads[0]["PeriodicRemove"]
+    assert evaluate(periodic, JobStatus=1, NumJobStarts=2) == "false"
+    assert evaluate(periodic, JobStatus=1, NumJobStarts=3) == "true"
+    for status in (2, 5, 6, 7):
+        assert evaluate(periodic, JobStatus=status, NumJobStarts=3) == "false"
+    # Final permitted activation may finish; no further match is eligible.
+    assert evaluate("MY.NumJobStarts < 3", NumJobStarts=2) == "true"
+    assert evaluate("MY.NumJobStarts < 3", NumJobStarts=3) == "false"
+    assert evaluate("MY.NumJobStarts < 3", NumJobStarts="undefined") == "undefined"
+    record_property("native_policy_evaluations", json.dumps(policy_evaluations, sort_keys=True))

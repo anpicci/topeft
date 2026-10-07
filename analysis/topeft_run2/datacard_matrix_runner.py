@@ -16,6 +16,7 @@ import socket
 import subprocess
 import sys
 import tempfile
+import uuid
 from typing import Any
 
 UNIT_SCHEMA = "topeft_datacard_execution_unit_v1"
@@ -32,6 +33,10 @@ SNAPSHOTS = {"selected_wcs": "selectedWCs.txt", "scalings": "scalings-preselect.
 INTENT_SCHEMA = "topeft_datacard_attempt_intent_v1"
 INTENT_MARKER = ".datacard_attempt_intent.json"
 ATTEMPT_RE = re.compile(r"^attempt_([0-9]{6})$")
+RESERVATION_SCHEMA = "topeft_datacard_reservation_v1"
+SCHEDULER_ID_RE = re.compile(r"^[0-9]+\.[0-9]+$")
+SCHEDULER_STATES = {1: "IDLE", 2: "RUNNING", 3: "REMOVING", 4: "COMPLETED_IN_QUEUE",
+                    5: "HELD", 6: "TRANSFERRING", 7: "SUSPENDED"}
 
 
 class RunnerError(Exception):
@@ -237,6 +242,131 @@ def unit_owner_path(row: dict[str, Any]) -> Path:
     return unit_lock_path(row).with_suffix(".owner.json")
 
 
+def reservation_path(row: dict[str, Any]) -> Path:
+    return unit_lock_path(row).with_suffix(".reservation.json")
+
+
+def read_reservation(row: dict[str, Any]) -> dict[str, Any] | None:
+    """A corrupt or foreign domain owner is never equivalent to no owner."""
+    path = reservation_path(row)
+    try:
+        if path.is_symlink():
+            raise ValueError("reservation is a symlink")
+        value = json.loads(path.read_text())
+        if (not isinstance(value, dict)
+                or set(value) != {"schema", "row_id", "output_root", "backend", "owner_id", "created_at", "scheduler", "scheduler_id"}
+                or value.get("schema") != RESERVATION_SCHEMA
+                or value.get("row_id") != row["row_id"]
+                or value.get("output_root") != str(Path(row["output_root"]).resolve())
+                or value.get("backend") not in {"local", "manual", "condor"}
+                or not isinstance(value.get("created_at"), str) or not value["created_at"]
+                or not isinstance(value.get("owner_id"), str)
+                or not re.fullmatch(r"[0-9a-f]{32}", value["owner_id"])):
+            raise ValueError("reservation identity/schema differs")
+        if value["backend"] == "condor":
+            scheduler = value["scheduler"]
+            if (not isinstance(scheduler, dict) or set(scheduler) != {"pool", "schedd", "query_executable"}
+                    or any(not isinstance(v, str) or not v or v.startswith("-") for v in scheduler.values())
+                    or not Path(scheduler["query_executable"]).is_absolute()
+                    or (value.get("scheduler_id") is not None
+                        and not SCHEDULER_ID_RE.fullmatch(str(value["scheduler_id"])))):
+                raise ValueError("invalid scheduler identity")
+        elif value["scheduler"] is not None or value["scheduler_id"] is not None:
+            raise ValueError("local reservation carries a scheduler identity")
+        return value
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        raise RunnerError("reservation_ambiguous", str(exc), row_id=row["row_id"]) from exc
+
+
+def new_reservation(row: dict[str, Any], backend: str, scheduler: dict | None = None) -> dict:
+    return {"schema": RESERVATION_SCHEMA, "row_id": row["row_id"],
+            "output_root": str(Path(row["output_root"]).resolve()), "backend": backend,
+            "owner_id": uuid.uuid4().hex, "created_at": now(),
+            "scheduler": scheduler, "scheduler_id": None}
+
+
+def query_reservation(reservation: dict) -> dict:
+    """Fresh bounded query at the reservation's explicit scheduler endpoint.
+
+    Never use an observation file or scheduler history as live-owner authority.
+    A per-unit token finds Idle jobs before a worker has bound its native ID.
+    """
+    scheduler = reservation["scheduler"]
+    constraint = f'DatacardReservation == "{reservation["owner_id"]}"'
+    if reservation["scheduler_id"]:
+        cluster, proc = reservation["scheduler_id"].split(".")
+        constraint += f" || (ClusterId == {cluster} && ProcId == {proc})"
+    argv = [scheduler["query_executable"], "-pool", scheduler["pool"], "-name", scheduler["schedd"],
+            "-allusers", "-constraint", constraint,
+            "-json", "-attributes", "ClusterId,ProcId,JobStatus,DatacardUnit,DatacardReservation"]
+    try:
+        result = subprocess.run(argv, capture_output=True, text=True, timeout=30, check=False)
+        if result.returncode:
+            raise ValueError(f"scheduler query failed with exit {result.returncode}")
+        ads = json.loads(result.stdout)
+        if not isinstance(ads, list) or len(ads) > 1:
+            raise ValueError("reservation requires at most one current scheduler job")
+        if not ads:
+            return {"state": "GONE" if reservation["scheduler_id"] else "PENDING_UNBOUND",
+                    "scheduler_id": reservation["scheduler_id"]}
+        ad = ads[0]
+        if (not isinstance(ad, dict) or ad.get("DatacardUnit") != reservation["row_id"]
+                or ad.get("DatacardReservation") != reservation["owner_id"]
+                or any(type(ad.get(k)) is not int or ad[k] < 0 for k in ("ClusterId", "ProcId"))
+                or type(ad.get("JobStatus")) is not int or ad["JobStatus"] not in SCHEDULER_STATES):
+            raise ValueError("scheduler row/job identity or state is invalid")
+        scheduler_id = f'{ad["ClusterId"]}.{ad["ProcId"]}'
+        if reservation["scheduler_id"] not in (None, scheduler_id):
+            raise ValueError("current scheduler identity changed without a new reservation")
+        return {"state": SCHEDULER_STATES[ad["JobStatus"]], "scheduler_id": scheduler_id}
+    except (OSError, ValueError, subprocess.TimeoutExpired) as exc:
+        raise RunnerError("scheduler_ambiguous", str(exc), row_id=reservation["row_id"]) from exc
+
+
+def reconcile_h2(manifest: dict, manifest_hash: str, row: dict) -> dict:
+    """Called only under the physical lease; never starts a producer."""
+    state = classify(manifest, manifest_hash, row, False, unit_owner(row) or read_owner(manifest))
+    if state["status"] in {"complete_validated_staging_not_promoted", "promoted_incomplete", "promoted_complete_without_receipt"}:
+        reconcile_row(manifest, manifest_hash, row)
+        state = classify(manifest, manifest_hash, row, False)
+    if state["status"] not in {"complete", "not_started", "stale_owner_free_lock", "partial_staging_attempt"}:
+        raise RunnerError(state["status"], state["reason"], row_id=row["row_id"])
+    return state
+
+
+def reconcile_reservation(manifest: dict, manifest_hash: str, row: dict) -> dict | None:
+    """Under unit_lease, bind live ownership or retire it after H2 reconciliation.
+
+    Local process death is established by the acquired inherited lease, never by
+    PID metadata. A never-bound Condor dispatch cannot be retired from absence.
+    """
+    reservation = read_reservation(row)
+    if reservation is None:
+        return None
+    if reservation["backend"] == "condor":
+        observation = query_reservation(reservation)
+        if observation["state"] != "GONE":
+            if observation["scheduler_id"] and reservation["scheduler_id"] is None:
+                reservation["scheduler_id"] = observation["scheduler_id"]
+                atomic_json(reservation, reservation_path(row), True)
+            return {**reservation, "state": observation["state"]}
+    reconcile_h2(manifest, manifest_hash, row)
+    reservation_path(row).unlink()
+    return None
+
+
+def reserve_condor(manifest: dict, manifest_hash: str, row: dict, scheduler: dict) -> dict:
+    with unit_lease(manifest, row):
+        if reconcile_reservation(manifest, manifest_hash, row) is not None:
+            raise RunnerError("row_reserved", "row already has a logical owner", row_id=row["row_id"])
+        reconcile_h2(manifest, manifest_hash, row)
+        reservation = new_reservation(row, "condor", scheduler)
+        atomic_json(reservation, reservation_path(row), False)
+        return reservation
+
+
 def unit_owner(row: dict[str, Any]) -> dict[str, Any] | None:
     try:
         value = json.loads(unit_owner_path(row).read_text())
@@ -263,7 +393,7 @@ def existing_parent(path: Path) -> Path:
 
 
 @contextmanager
-def unit_lease(manifest: dict[str, Any], row: dict[str, Any]):
+def unit_lease(manifest: dict[str, Any] | None, row: dict[str, Any]):
     """Lease one output domain; initialize paths under a short filesystem mutex.
 
     The setup mutex prevents a rejected nested unit from creating the active
@@ -271,7 +401,7 @@ def unit_lease(manifest: dict[str, Any], row: dict[str, Any]):
     lock inodes are never removed. Producer inheritance keeps ownership alive
     if the manager dies. The shared legacy lock excludes older global runners.
     """
-    legacy = Path(manifest["lock_path"])
+    legacy = Path(manifest["lock_path"]) if manifest else None
     lock = unit_lock_path(row)
     output = Path(row["output_root"]).resolve()
     with ExitStack() as handles:
@@ -286,19 +416,40 @@ def unit_lease(manifest: dict[str, Any], row: dict[str, Any]):
                 if existing_parent(output) != parent:
                     continue  # Parent creation won a race; use its setup mutex.
                 reject_nested_domain(output)
-                legacy.parent.mkdir(parents=True, exist_ok=True)
+                if legacy:
+                    legacy.parent.mkdir(parents=True, exist_ok=True)
                 lock.parent.mkdir(parents=True, exist_ok=True)
-                if lock.is_symlink() or legacy.is_symlink():
+                if lock.is_symlink() or (legacy and legacy.is_symlink()):
                     raise RunnerError("canonical_collision_or_ambiguous_state", "lock path is a symlink", row_id=row["row_id"])
-                legacy_handle = handles.enter_context(legacy.open("a+b"))
+                legacy_handle = handles.enter_context(legacy.open("a+b")) if legacy else None
                 unit_handle = handles.enter_context(lock.open("a+b"))
                 try:
-                    fcntl.flock(legacy_handle.fileno(), fcntl.LOCK_SH | fcntl.LOCK_NB)
+                    if legacy_handle:
+                        fcntl.flock(legacy_handle.fileno(), fcntl.LOCK_SH | fcntl.LOCK_NB)
                     fcntl.flock(unit_handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
                 except BlockingIOError as exc:
                     raise RunnerError("execution_lock_held", f"execution ownership unavailable: {lock}", row_id=row["row_id"]) from exc
                 break
-        yield (legacy_handle.fileno(), unit_handle.fileno())
+        yield tuple(handle.fileno() for handle in (legacy_handle, unit_handle) if handle is not None)
+
+
+@contextmanager
+def direct_output_lease(output_root: Path):
+    """Exclude raw producer calls from reserved canonical output domains.
+
+    Such calls have no manifest with which to reconcile H2. They may only enter
+    an unreserved domain and retain its physical lease throughout production.
+    An H2-managed producer operates on its private staging domain instead.
+    """
+    row = {"row_id": "direct", "output_root": str(output_root.absolute())}
+    with unit_lease(None, row):
+        path = reservation_path(row)
+        if path.exists() or path.is_symlink():
+            raise RunnerError("row_reserved", "canonical output has a logical reservation; use the matrix runner")
+        marker = output_root / INTENT_MARKER
+        if marker.exists() or marker.is_symlink():
+            raise RunnerError("canonical_collision_or_ambiguous_state", "canonical output belongs to H2; use the matrix runner")
+        yield
 
 
 def receipt_path(manifest: dict[str, Any], row: dict[str, Any]) -> Path:
@@ -594,10 +745,22 @@ def read_only(mode: str, manifest: dict[str, Any], manifest_hash: str, row_id: s
         state = classify(manifest, manifest_hash, row, row_held, row_owner)
         state.update(lock_path=str(unit_lock_path(row)), lock_held=row_held,
                      lock_probe_error=unit_error or lock_probe_error, owner_metadata=row_owner)
+        try:
+            reservation = read_reservation(row)
+            if reservation:
+                observation = query_reservation(reservation) if reservation["backend"] == "condor" else {
+                    "state": "LOCAL_ACTIVE" if row_held is True else "LOCAL_RECONCILE" if row_held is False else "UNKNOWN", "scheduler_id": None}
+                state["reservation"] = {**observation, "backend": reservation["backend"],
+                                        "completion_authority": False}
+        except RunnerError as exc:
+            state["reservation"] = {"state": "UNKNOWN", "reason": str(exc), "completion_authority": False}
         rows.append(state)
     if mode == "plan_only":
         for row, status in zip(selected, rows):
             status["action"] = "skip" if status["status"] == "complete" else "execute" if status["status"] in {"not_started", "stale_owner_free_lock", "partial_staging_attempt"} else "reconcile" if status["status"] in {"complete_validated_staging_not_promoted", "promoted_incomplete", "promoted_complete_without_receipt"} else "block"
+            if status.get("reservation") and status["status"] != "complete":
+                status["action"] = "block"
+                status["reason"] = "logical reservation requires owner/H2 reconciliation"
             status["resolved_argv"] = resolved_argv(manifest, row)
             if status["action"] == "execute":
                 availability = execution_input_availability(manifest, row)
@@ -771,9 +934,20 @@ def execute_row(manifest: dict[str, Any], manifest_hash: str, row: dict[str, Any
     return result
 
 
-def execute_unit(manifest: dict[str, Any], manifest_hash: str, row: dict[str, Any], *, backend: str = "local", scheduler_id: str | None = None) -> dict[str, Any]:
+def execute_unit(manifest: dict[str, Any], manifest_hash: str, row: dict[str, Any], *, backend: str = "local", scheduler_id: str | None = None, reservation_token: str | None = None) -> dict[str, Any]:
     """The sole mutating primitive: acquire ownership, reconcile, then execute."""
     with unit_lease(manifest, row) as lease_fds:
+        reservation = reconcile_reservation(manifest, manifest_hash, row)
+        if backend == "condor":
+            if (reservation is None or reservation["backend"] != "condor"
+                    or reservation["owner_id"] != reservation_token
+                    or reservation["scheduler_id"] != scheduler_id or reservation["state"] != "RUNNING"):
+                raise RunnerError("row_reserved", "Condor worker requires its unique live Running reservation", row_id=row["row_id"])
+        elif backend not in {"local", "manual"} or reservation is not None:
+            raise RunnerError("row_reserved", "row has a logical execution owner", row_id=row["row_id"])
+        else:
+            reservation = new_reservation(row, backend)
+            atomic_json(reservation, reservation_path(row), False)
         try:
             state = classify(manifest, manifest_hash, row, False, unit_owner(row) or read_owner(manifest))
             if state["status"] == "complete":
@@ -791,10 +965,14 @@ def execute_unit(manifest: dict[str, Any], manifest_hash: str, row: dict[str, An
             return execute_row(manifest, manifest_hash, row, now(), lease_fds=lease_fds, backend=backend, scheduler_id=scheduler_id)
         finally:
             unit_owner_path(row).unlink(missing_ok=True)
+            if backend != "condor":
+                reservation_path(row).unlink()
 
 
 def execute(manifest: dict[str, Any], manifest_hash: str, *, backend: str = "local", scheduler_id: str | None = None) -> dict[str, Any]:
     """Sequential convenience orchestration over the canonical unit primitive."""
+    if backend == "condor":
+        raise RunnerError("row_reserved", "Condor workers must select exactly one reserved unit")
     return {"schema": "topeft_datacard_matrix_execution_result_v2", "manifest_sha256": manifest_hash,
             "rows": [execute_unit(manifest, manifest_hash, row, backend=backend, scheduler_id=scheduler_id) for row in manifest["rows"]]}
 
@@ -808,7 +986,7 @@ def overlay_scheduler(result: dict[str, Any], overlay: Any) -> None:
     if not isinstance(overlay["units"], list):
         raise RunnerError("scheduler_status_error", "units must be a list")
     states = {row["row_id"]: row for row in result["rows"]}
-    seen = set()
+    seen, seen_jobs = set(), set()
     for item in overlay["units"]:
         exact_fields(item, {"row_id", "scheduler_id", "state"}, "scheduler_unit")
         row_id = text(item["row_id"], "row_id")
@@ -817,6 +995,9 @@ def overlay_scheduler(result: dict[str, Any], overlay: Any) -> None:
         seen.add(row_id)
         for key in ("scheduler_id", "state"):
             text(item[key], key)
+        if item["scheduler_id"] in seen_jobs:
+            raise RunnerError("scheduler_status_error", "duplicate scheduler job")
+        seen_jobs.add(item["scheduler_id"])
         states[row_id]["scheduler_metadata"] = {**item, "observed_at": overlay["observed_at"], "completion_authority": False}
 
 
@@ -827,8 +1008,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--unit", type=Path, help="Derived execution-unit descriptor")
     parser.add_argument("--row-id", help="Select one row from the original manifest")
     modes.add_argument("--derive-units", action="store_true", help="Print deterministic descriptors without writing state")
+    modes.add_argument("--reconcile-reservations", action="store_true", help="Bind live jobs or reconcile disappeared owners through H2; never execute producers")
     parser.add_argument("--backend", choices=("local", "condor", "manual"), default="local")
-    parser.add_argument("--scheduler-id", help="Observational scheduler identity")
+    parser.add_argument("--scheduler-id", help="Current native ClusterId.ProcId for a reserved Condor worker")
+    parser.add_argument("--reservation-token", help="Generated per-unit dispatch owner token")
     parser.add_argument("--unit-integrity", help="Dispatch guard for descriptor bytes")
     parser.add_argument("--scheduler-status", type=Path, help="Read-only operational metadata overlay")
     parser.add_argument("--runner-integrity", help="Dispatch guard for the worker runner bytes")
@@ -857,9 +1040,17 @@ def main(argv: list[str] | None = None) -> int:
             row = select_row(manifest, args.row_id) if args.row_id else None
         if args.plan_only or args.status:
             result = read_only("plan_only" if args.plan_only else "status", manifest, manifest_hash, row["row_id"] if row else None)
+        elif args.reconcile_reservations:
+            states = []
+            for selected in ([row] if row else manifest["rows"]):
+                with unit_lease(manifest, selected):
+                    reservation = reconcile_reservation(manifest, manifest_hash, selected)
+                    states.append({"row_id": selected["row_id"], "reservation": reservation,
+                                   "h2": classify(manifest, manifest_hash, selected, False)})
+            result = {"rows": states, "producer_executed": False}
         elif row:
             result = {"schema": "topeft_datacard_matrix_execution_result_v2", "manifest_sha256": manifest_hash,
-                      "rows": [execute_unit(manifest, manifest_hash, row, backend=args.backend, scheduler_id=args.scheduler_id)]}
+                      "rows": [execute_unit(manifest, manifest_hash, row, backend=args.backend, scheduler_id=args.scheduler_id, reservation_token=args.reservation_token)]}
         else:
             result = execute(manifest, manifest_hash, backend=args.backend, scheduler_id=args.scheduler_id)
         if args.scheduler_status:

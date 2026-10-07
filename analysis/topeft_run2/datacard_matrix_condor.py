@@ -6,9 +6,11 @@ module only serializes an explicit common resource request and unit dispatch.
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 import re
 import shlex
+import shutil
 
 try:
     from . import datacard_matrix_runner as runner
@@ -29,6 +31,8 @@ def submit_path(path: Path) -> str:
 
 def prepare_material(manifest_path: Path, destination: Path, *, request_cpus: int,
                      request_memory: str, request_disk: str,
+                     max_retries: int, max_starts: int, schedd: str, pool: str,
+                     query_executable: str | None = None,
                      max_runtime: int | None = None) -> dict:
     """Write fresh dispatch material with one item per canonical unit.
 
@@ -42,8 +46,17 @@ def prepare_material(manifest_path: Path, destination: Path, *, request_cpus: in
         raise runner.RunnerError("condor_configuration_error", "request_memory and request_disk require explicit positive quantities")
     if max_runtime is not None and (type(max_runtime) is not int or max_runtime <= 0):
         raise runner.RunnerError("condor_configuration_error", "max_runtime must be positive seconds when supplied")
+    if type(max_retries) is not int or max_retries < 0 or type(max_starts) is not int or max_starts <= 0:
+        raise runner.RunnerError("condor_configuration_error", "explicit max_retries >= 0 and max_starts > 0 are required")
+    if any(not isinstance(value, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:@+-]*", value) for value in (schedd, pool)):
+        raise runner.RunnerError("condor_configuration_error", "explicit schedd and pool endpoints are required")
+    query_executable = query_executable or shutil.which("condor_q")
+    if (not query_executable or not Path(query_executable).is_absolute()
+            or not Path(query_executable).is_file() or not os.access(query_executable, os.X_OK)):
+        raise runner.RunnerError("condor_configuration_error", "an absolute maintained condor_q executable is required")
+    scheduler = {"schedd": schedd, "pool": pool, "query_executable": submit_path(Path(query_executable))}
     units = runner.derive_units(manifest_path)
-    manifest, _, _ = runner.resolve_unit(units[0])
+    manifest, manifest_hash, _ = runner.resolve_unit(units[0])
     destination = Path(submit_path(destination))
     engine = Path(runner.__file__).resolve()
     python = manifest["runtime_contract"]["python_executable"]
@@ -58,9 +71,11 @@ def prepare_material(manifest_path: Path, destination: Path, *, request_cpus: in
     (destination / "logs").mkdir()
     items = []
     for unit in units:
+        row = runner.select_row(manifest, unit["row_id"])
+        reservation = runner.reserve_condor(manifest, manifest_hash, row, scheduler)
         unit_path = destination / "units" / (unit["row_id"] + ".json")
         runner.atomic_json(unit, unit_path, False)
-        items.append(f"{unit['row_id']} {runner.hash_file(unit_path)}")
+        items.append(f"{unit['row_id']} {runner.hash_file(unit_path)} {reservation['owner_id']}")
     (destination / "items.txt").write_text("\n".join(items) + "\n")
     worker = destination / "worker.sh"
     command = " ".join(shlex.quote(value) for value in (python, str(engine)))
@@ -68,25 +83,30 @@ def prepare_material(manifest_path: Path, destination: Path, *, request_cpus: in
         '#!/bin/sh\nset -eu\n'
         + f'exec {command} --unit {shlex.quote(str(destination / "units"))}/"$1".json '
         + '--unit-integrity "$2" --backend condor --scheduler-id "$3" '
+        + '--reservation-token "$4" '
         + f'--runner-integrity {runner.hash_file(engine)}\n'
     )
     worker.chmod(0o755)
     lines = [
         "universe = vanilla", f"executable = {worker}",
-        'arguments = "$(row_id) $(unit_integrity) $(Cluster).$(Process)"',
+        'arguments = "$(row_id) $(unit_integrity) $(Cluster).$(Process) $(reservation_token)"',
         f"initialdir = {destination}", "should_transfer_files = NO",
-        "getenv = true", f"request_cpus = {request_cpus}",
+        "getenv = false", f"request_cpus = {request_cpus}",
         f"request_memory = {request_memory}", f"request_disk = {request_disk}",
-        f"output = {destination}/logs/$(Cluster).$(Process).out",
-        f"error = {destination}/logs/$(Cluster).$(Process).err",
-        f"log = {destination}/logs/events.log",
+        f"output = {destination}/logs/$(row_id)__$(Cluster).$(Process).out",
+        f"error = {destination}/logs/$(row_id)__$(Cluster).$(Process).err",
+        f"log = {destination}/logs/$(row_id)__$(Cluster).$(Process).events.log",
         '+DatacardUnit = "$(row_id)"',
         '+DatacardParentIntegrity = "' + units[0]["parent_integrity"] + '"',
-        "on_exit_hold = (ExitBySignal == True) || (ExitCode != 0)",
+        '+DatacardReservation = "$(reservation_token)"',
+        f"max_retries = {max_retries}", "success_exit_code = 0",
+        f"requirements = MY.NumJobStarts < {max_starts}",
+        f"on_exit_remove = NumJobStarts >= {max_starts}",
+        f"periodic_remove = JobStatus == 1 && NumJobStarts >= {max_starts}",
     ]
     if max_runtime is not None:
-        lines.append(f"+MaxRuntime = {max_runtime}")
-    lines.append(f"queue row_id, unit_integrity from {destination}/items.txt")
+        lines.append(f"allowed_execute_duration = {max_runtime}")
+    lines.append(f"queue row_id, unit_integrity, reservation_token from {destination}/items.txt")
     # Publish the submit description last; failed preparation leaves no ready job.
     pending = destination / ".datacards.sub.pending"
     with pending.open("x") as handle:
@@ -95,4 +115,6 @@ def prepare_material(manifest_path: Path, destination: Path, *, request_cpus: in
     pending.unlink()
     return {"submitted": False, "submit_file": str(destination / "datacards.sub"),
             "unit_ids": [unit["row_id"] for unit in units],
+            "reservation_state": "pending_submission_and_live_binding",
+            "scheduler": scheduler,
             "storage_model": "shared_filesystem", "receipt_authority": "matrix_runner"}
