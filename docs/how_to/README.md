@@ -19,6 +19,7 @@ ownership boundaries.
 - [Run deferred nonprompt and charge-flip production](nonprompt.md)
 - [Run or extend plotting](plotting.md)
 - [Create cards and finalize EFT scalings](datacards_and_scalings.md)
+- [Build and use datacard packages](datacard_packages.md)
 - [Regenerate and validate missing-parton payloads](missing_parton_payloads.md)
 - [Select or change sumw2 storage](sumw2.md)
 - [Select or change processing and fitting binning](flexible_binning.md)

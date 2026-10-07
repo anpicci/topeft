@@ -8,6 +8,8 @@ signatures and executable behavior, check the source paths named on each page.
 For a guided analysis, start from the [documentation index](../README.md). For
 instructions that change or run something, use the linked how-to guide rather
 than treating an option table as a recipe.
+For package construction and handoff, follow the
+[datacard-package guide](../how_to/datacard_packages.md).
 
 ## Reference map
 

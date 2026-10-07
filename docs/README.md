@@ -52,6 +52,7 @@ and is not a substitute for these current tutorials.
 
 - [Make and configure analysis plots](how_to/plotting.md)
 - [Create cards and finalize scalings](how_to/datacards_and_scalings.md)
+- [Build and use datacard packages](how_to/datacard_packages.md)
 - [Maintain missing-parton payloads](how_to/missing_parton_payloads.md)
 
 ### Histogram policy and binning

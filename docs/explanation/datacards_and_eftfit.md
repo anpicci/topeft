@@ -70,5 +70,6 @@ channel/process pair has no external EFT morph; it is not a process-wide
 fallback or normalization. The packaged mapping and ordered list determine
 the combination order.
 
-See the [card and scaling how-to](../how_to/datacards_and_scalings.md) and the
+See the [package lifecycle how-to](../how_to/datacard_packages.md), the
+[card and scaling how-to](../how_to/datacards_and_scalings.md), and the
 [artifact reference](../reference/datacards_and_scalings.md).

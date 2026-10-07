@@ -1,5 +1,8 @@
 # Datacards and scalings
 
+For the end-to-end package procedure, artifact ladder, inspection checklist,
+and fit-input handoff, see [build and use datacard packages](../how_to/datacard_packages.md).
+
 ## Card-production interface
 
 `analysis/topeft_run2/make_cards.py` consumes one or more coherent histogram
@@ -571,7 +574,7 @@ It copies card order and EFT scalings, preserves logical mapping rows, and
 writes a fresh package with updated provenance. It does not reconstruct
 correlations from PKLs, choose scientific year groups, or construct a workspace.
 The card maker has already realized the correlation topology before this
-rename. The [package procedure](../how_to/datacards_and_scalings.md) and
+rename. The [package procedure](../how_to/datacard_packages.md) and
 [artifact boundary](../explanation/datacards_and_eftfit.md) give the operating
 context.
 

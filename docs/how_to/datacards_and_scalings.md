@@ -1,5 +1,9 @@
 # Create cards and build datacard packages
 
+For the complete package lifecycle and fit-input handoff, use
+[build and use datacard packages](datacard_packages.md). This page covers card
+production and matrix execution in detail.
+
 `analysis/topeft_run2/make_cards.py` produces cards directly from one or more
 compatible histogram PKLs—normally the nonprompt-transformed products—and
 writes individual text cards, ROOT template files, `selectedWCs.txt`, and
