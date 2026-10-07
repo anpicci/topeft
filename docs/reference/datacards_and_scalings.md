@@ -39,7 +39,7 @@ are:
 | WCs | POI list, reference/selected-WC files, select-only/check controls, optional WC values/scaling order | WC selection uses the card-facing fitting view; selected files must match the producer's supported process/WC structure. `--use-selected` materializes canonical signal-only `selectedWCs.txt` in `--out-dir`. |
 | Nuisances | Nuisance and MC-stat switches, `--rate-syst-json`, `--miss-parton-file`, and `--skip-missing-parton-rate-syst` | Run era selects maintained defaults when the override is omitted. An explicit `--rate-syst-json` is forwarded as `rate_systs_path`; worker arguments come from the canonical manifest. The missing-parton consumer infers the maintained payload layout and has no `--sr-registry` option. |
 | Data/negative bins | Asimov by default; `--unblind` for observed data; crop negative bins by default | These choices affect card contents and must be recorded with production evidence. |
-| Execution | Direct local default; `--condor` requires `--matrix-manifest`, `--condor-output`, explicit CPU/memory/disk requests, `--max-retries`, `--max-starts`, `--condor-schedd`, `--condor-pool` | Emits ownership-free material with one queue item per manifest row; no producer work or submission. |
+| Execution | Direct local default; `--condor` requires `--matrix-manifest`, `--condor-output`, explicit CPU/memory/disk requests, `--max-retries`, `--max-starts`, `--condor-schedd`, `--condor-pool`; optional `--max-runtime` and `--prepare-only` | Submits one queue item per manifest row after token reservation. Prepare-only emits ownership-free material and invokes no scheduler. |
 
 In direct mode, `make_cards.main()` resolves inputs, validates/merges them,
 constructs one `DatacardMaker`, selects or loads WCs, calls `run_local()`, and
@@ -47,7 +47,8 @@ writes `scalings-preselect.json`. It writes canonical signal-only
 `selectedWCs.txt` for both derived and `--use-selected` selection paths.
 `run_local()` selects physical channels by regex and calls `analyze()` per
 channel/distribution. `--condor` dispatches before these producer operations to
-`datacard_matrix_condor.prepare_material()`. The legacy `run_condor()` and
+`datacard_matrix_condor.prepare_material()` and, unless `--prepare-only` was
+selected, `submit_material()`. The legacy `run_condor()` and
 `--chunks` partitioning interface have been removed. Supported worker producer
 options are recorded in canonical manifest rows, never reconstructed by the
 scheduler frontend.
@@ -189,6 +190,7 @@ completion, physics, resources, or topology suitability.
 | Runner `--reconcile-reservations MANIFEST [--row-id ID]` | Optional proactive reconciliation under each physical lease. Every new ownership attempt also reconciles automatically. Never runs a producer. |
 | `datacard_matrix_condor.prepare_material(manifest_path, destination, request_cpus=..., request_memory=..., request_disk=..., max_retries=..., max_starts=..., schedd=..., pool=..., query_executable=..., max_runtime=...)` | Fresh-only shared-filesystem material with no row reservations. Resources, budgets and endpoints required; runtime optional. Absolute query executable defaults to resolved `condor_q`. No producer, submission or package builder. |
 | `datacard_matrix_condor.submission_transaction(manifest_path, destination, scheduler)` | Context manager: validate prepared descriptors, reconcile target rows, create reservations and bind itemdata under all row leases. Yields transaction state; never invokes a submitter. |
+| `datacard_matrix_condor.submit_material(manifest_path, destination, scheduler)` | Internal process adapter used by `make_cards.py --condor`; invokes installed `condor_submit` with argv and inherited row lease descriptors, and classifies command outcomes. Operators do not call it directly. |
 | `datacard_matrix_runner.reserve_condor(manifest, manifest_hash, rows, scheduler)` | Maintained reservation transaction context underlying dispatch. Reconciles stale ownership/H2 before claims; rolls back only definite no-start outcomes. |
 
 Descriptor fields are exactly `schema` (`topeft_datacard_execution_unit_v1`),
@@ -235,17 +237,20 @@ retains all leases through the caller's submission boundary, preventing another
 claimant from observing zero jobs before submission and reclaiming a row.
 
 The yielded transaction exposes `reservations`, `lease_fds`, and
-`mark_submission_started()`. A future launch adapter must call that marker
-**before** any possible submit side effect, pass `lease_fds` to its subprocess,
-and await subprocess termination before leaving the context. Definite success
+`mark_submission_started()`. The internal adapter calls that marker immediately
+before process creation, passes `lease_fds` to its subprocess, and awaits
+subprocess termination before leaving the context. A zero command exit
 and ambiguous timeout/nonzero/interruption preserve reservations. Exiting
 without possible effects rolls back newly created reservations, including
 partial acquisition/material-binding failure. If process creation itself
-raises `OSError` and no submit executable started, the caller may use
+raises `OSError` and no submit executable started, the adapter uses
 `record_definite_spawn_failure(error)` to restore rollback eligibility. Its
 proof obligation excludes later I/O/status errors, terminal nonzero exits and
-timeouts. The API never runs `condor_submit`; no actual launch adapter or CLI is
-provided. Prepared itemdata must not be replayed outside this transaction.
+timeouts. `submission_transaction()` itself never runs `condor_submit`;
+`submit_material()` owns that process. Prepared itemdata must not be replayed
+outside this transaction. Command stdout, including ClusterId.ProcId, is
+operator metadata only. A later frontend invocation automatically reconciles
+an ambiguous reservation by its token.
 
 All reservation mutation is serialized under the output-domain lease. Worker
 activations acquire the same lease. An unusually early worker may encounter

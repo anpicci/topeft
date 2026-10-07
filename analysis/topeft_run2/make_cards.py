@@ -55,7 +55,8 @@ def build_arg_parser():
     parser.add_argument("--select-only",action="store_true",help="Only run the WC selection step")
     parser.add_argument("--skip-selected-wcs-check",action="store_true",help="Do not raise an error if the selected WCs disagree with ref")
     parser.add_argument("--use-selected",default="",help="Load selected process+WC combs from a file. Skips doing the normal selection step.")
-    parser.add_argument("--condor", "-C", action="store_true", help="Prepare ownership-free, no-submit unit dispatch from --matrix-manifest")
+    parser.add_argument("--condor", "-C", action="store_true", help="Submit canonical datacard units to HTCondor from --matrix-manifest")
+    parser.add_argument("--prepare-only", action="store_true", help="With --condor, write and validate dispatch material without reserving or submitting")
     parser.add_argument("--matrix-manifest", help="Canonical v3 workload for Condor preparation")
     parser.add_argument("--condor-output", help="Fresh shared-filesystem directory for dispatch material")
     parser.add_argument("--request-cpus", type=int)
@@ -218,12 +219,12 @@ def main():
         # Dispatch before resolving PKLs, loading histograms or producer setup.
         from pathlib import Path
         try:
-            from .datacard_matrix_condor import prepare_material, runner
+            from .datacard_matrix_condor import prepare_material, submit_material, runner
         except ImportError:
-            from datacard_matrix_condor import prepare_material, runner
+            from datacard_matrix_condor import prepare_material, submit_material, runner
         if not args.matrix_manifest or not args.condor_output:
             parser.error("--condor requires --matrix-manifest and --condor-output; generate the workload with make_datacard_matrix_manifest.py")
-        allowed = {"condor", "matrix_manifest", "condor_output", "request_cpus", "request_memory", "request_disk", "max_runtime", "max_retries", "max_starts", "condor_schedd", "condor_pool"}
+        allowed = {"condor", "prepare_only", "matrix_manifest", "condor_output", "request_cpus", "request_memory", "request_disk", "max_runtime", "max_retries", "max_starts", "condor_schedd", "condor_pool"}
         allowed_options = {option for action in parser._actions if action.dest in allowed for option in action.option_strings}
         for token in sys.argv[1:]:
             if token.startswith("-") and token.split("=", 1)[0] not in allowed_options:
@@ -236,11 +237,16 @@ def main():
                                       request_disk=args.request_disk, max_runtime=args.max_runtime,
                                       max_retries=args.max_retries, max_starts=args.max_starts,
                                       schedd=args.condor_schedd, pool=args.condor_pool)
+            if not args.prepare_only:
+                result = {**result, **submit_material(Path(args.matrix_manifest),
+                            Path(args.condor_output), result["scheduler"])}
         except (runner.RunnerError, OSError) as exc:
             parser.error(str(exc))
         print(json.dumps(result, indent=2, sort_keys=True))
+        if not args.prepare_only and not result["submitted"]:
+            raise SystemExit(1)
         return
-    if any(value is not None for value in (args.matrix_manifest, args.condor_output, args.request_cpus, args.request_memory, args.request_disk, args.max_runtime, args.max_retries, args.max_starts, args.condor_schedd, args.condor_pool)):
+    if args.prepare_only or any(value is not None for value in (args.matrix_manifest, args.condor_output, args.request_cpus, args.request_memory, args.request_disk, args.max_runtime, args.max_retries, args.max_starts, args.condor_schedd, args.condor_pool)):
         parser.error("dispatch and resource options require --condor")
     pkl_files  = _resolve_pkl_paths(args, parser)
     from pathlib import Path

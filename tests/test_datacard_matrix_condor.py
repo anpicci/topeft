@@ -1,4 +1,4 @@
-"""No-submit adapter tests use synthetic producers and explicit fixture resources."""
+"""Condor frontend tests use synthetic producers and never submit real jobs."""
 import json
 from pathlib import Path
 import re
@@ -104,10 +104,97 @@ def test_frontend_bypasses_all_parent_producer_work(tmp_path, fake_script, fake_
     monkeypatch.setattr(make_cards.datacard_tools, "load_and_merge_histogram_pkls", forbidden)
     monkeypatch.setattr(make_cards.datacard_tools, "DatacardMaker", forbidden)
     monkeypatch.setattr(subprocess, "run", forbidden)
+    monkeypatch.setattr(subprocess, "Popen", forbidden)
     monkeypatch.setattr(condor.shutil, "which", lambda name: str(fake_query[0]))
-    monkeypatch.setattr(sys, "argv", ["make_cards.py", "--condor", "--matrix-manifest", str(path), "--condor-output", str(tmp_path / "dispatch"), "--request-cpus", "1", "--request-memory", "1GB", "--request-disk", "1GB", "--max-retries", "2", "--max-starts", "3", "--condor-schedd", "synthetic_schedd", "--condor-pool", "synthetic_pool"])
+    monkeypatch.setattr(sys, "argv", ["make_cards.py", "--condor", "--prepare-only", "--matrix-manifest", str(path), "--condor-output", str(tmp_path / "dispatch"), "--request-cpus", "1", "--request-memory", "1GB", "--request-disk", "1GB", "--max-retries", "2", "--max-starts", "3", "--condor-schedd", "synthetic_schedd", "--condor-pool", "synthetic_pool"])
     make_cards.main()
     assert json.loads(capsys.readouterr().out)["submitted"] is False
+    assert (tmp_path / "dispatch" / "datacards.sub").is_file()
+    assert (tmp_path / "dispatch" / "items.txt").read_text().split()[2] == "unreserved"
+    assert runner.read_reservation(make_row(tmp_path, fake_script)) is None
+
+
+@pytest.mark.parametrize("outcome", ["success", "spawn_error", "nonzero", "timeout", "interrupted", "io_error"])
+def test_canonical_frontend_classifies_submit_outcome(tmp_path, fake_script, fake_query,
+                                                      monkeypatch, capsys, outcome):
+    row = make_row(tmp_path, fake_script)
+    path, _ = manifest(tmp_path, fake_script, [row])
+    destination = tmp_path / "dispatch"
+    observed = []
+    original_mark = runner.submission_transaction.mark_submission_started
+
+    def mark_started(transaction):
+        observed.append("marked")
+        original_mark(transaction)
+
+    def executable(name):
+        return str(fake_query[0])
+
+    class FakeProcess:
+        returncode = 0 if outcome == "success" else 7
+
+        def __init__(self):
+            self.calls = 0
+
+        def communicate(self, timeout=None):
+            self.calls += 1
+            if self.calls == 1 and outcome == "timeout":
+                raise subprocess.TimeoutExpired("synthetic", 1)
+            if self.calls == 1 and outcome == "interrupted":
+                raise KeyboardInterrupt()
+            if self.calls == 1 and outcome == "io_error":
+                raise OSError("synthetic communication failure")
+            return "1 job(s) submitted to cluster 123.\n", "synthetic stderr"
+
+        def kill(self):
+            observed.append("killed")
+
+    def spawn(argv, **kwargs):
+        assert argv == [str(fake_query[0]), str(destination / "datacards.sub")]
+        assert kwargs["pass_fds"] and kwargs["text"] is True
+        assert kwargs["stdout"] == subprocess.PIPE
+        assert kwargs["stderr"] == subprocess.PIPE
+        assert runner.probe_lock(runner.unit_lock_path(row))[0] is True
+        token = (destination / "items.txt").read_text().split()[2]
+        assert runner.read_reservation(row)["owner_id"] == token
+        observed.append("spawned")
+        if outcome == "spawn_error":
+            raise OSError("synthetic process creation failure")
+        return FakeProcess()
+
+    monkeypatch.setattr(condor.shutil, "which", executable)
+    monkeypatch.setattr(runner.submission_transaction, "mark_submission_started", mark_started)
+    monkeypatch.setattr(condor.subprocess, "Popen", spawn)
+    monkeypatch.setattr(sys, "argv", ["make_cards.py", "--condor", "--matrix-manifest", str(path),
+                                  "--condor-output", str(destination), "--request-cpus", "1",
+                                  "--request-memory", "1GB", "--request-disk", "1GB",
+                                  "--max-retries", "2", "--max-starts", "3",
+                                  "--condor-schedd", "synthetic_schedd", "--condor-pool", "synthetic_pool"])
+    if outcome == "success":
+        make_cards.main()
+    else:
+        with pytest.raises(SystemExit) as error:
+            make_cards.main()
+        assert error.value.code == 1
+    result = json.loads(capsys.readouterr().out)
+    assert observed[:2] == ["marked", "spawned"]
+    assert result["argv"] == [str(fake_query[0]), str(destination / "datacards.sub")]
+    assert result["start_time"] and result["stdout"] == ("" if outcome == "spawn_error" else "1 job(s) submitted to cluster 123.\n")
+    assert result["exit_status"] == (None if outcome == "spawn_error" else FakeProcess.returncode)
+    if outcome == "spawn_error":
+        assert runner.read_reservation(row) is None
+    else:
+        assert runner.read_reservation(row)["owner_id"] == (destination / "items.txt").read_text().split()[2]
+    assert runner.probe_lock(runner.unit_lock_path(row))[0] is False
+    if outcome == "success":
+        assert result["submission_outcome"] == "SUBMIT_COMMAND_SUCCEEDED"
+        assert result["submitted"] is True
+        assert runner.read_reservation(row)["scheduler_id"] is None
+    elif outcome == "spawn_error":
+        assert result["submission_outcome"] == "DEFINITE_SPAWN_FAILURE"
+    else:
+        assert result["submission_outcome"] == "AMBIGUOUS_SUBMISSION_OUTCOME"
+        assert result["submitted"] is False
 
 
 def test_worker_rejects_descriptor_mutation(tmp_path, fake_script, fake_query):
@@ -158,7 +245,7 @@ def test_scheduler_overlay_has_no_completion_or_retry_authority(tmp_path, fake_s
 
 
 def test_frontend_requires_manifest_and_rejects_producer_options(monkeypatch):
-    for args in (["--condor"], ["--condor", "--matrix-manifest", "/manifest.json", "--condor-output", "/dispatch", "--year", "2022"], ["--condor", "--matrix-manifest", "/manifest.json", "--condor-output", "/dispatch", "--binning", "fitting"], ["--condor", "--matrix-manifest", "/manifest.json", "--condor-output", "/dispatch", "--year-coverage-policy", "warn"], ["--chunks", "2"], ["--request-cpus", "1"]):
+    for args in (["--condor"], ["--condor", "--matrix-manifest", "/manifest.json", "--condor-output", "/dispatch", "--year", "2022"], ["--condor", "--matrix-manifest", "/manifest.json", "--condor-output", "/dispatch", "--binning", "fitting"], ["--condor", "--matrix-manifest", "/manifest.json", "--condor-output", "/dispatch", "--year-coverage-policy", "warn"], ["--chunks", "2"], ["--request-cpus", "1"], ["--prepare-only"]):
         monkeypatch.setattr(sys, "argv", ["make_cards.py", *args])
         with pytest.raises(SystemExit) as error:
             make_cards.main()

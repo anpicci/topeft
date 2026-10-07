@@ -13,7 +13,7 @@ run and resume it.
 
 | Interface | Purpose | Inputs and defaults | Outputs and checks |
 | --- | --- | --- | --- |
-| `make_cards.py` | Merge histogram inputs and select WCs, channels, and variables | Fitting binning, year coverage `warn`, Asimov data, no nuisances or MC-stat opt-in | Direct mode writes TXT/ROOT and scaling records; `--condor` prepares matrix dispatch material without submission |
+| `make_cards.py` | Merge histogram inputs and select WCs, channels, and variables | Fitting binning, year coverage `warn`, Asimov data, no nuisances or MC-stat opt-in | Direct mode writes TXT/ROOT and scaling records; `--condor` submits matrix dispatch; `--condor --prepare-only` writes material without submission |
 | `make_datacard_matrix_manifest.py` | Prepare standard Run 2 or Run 3 execution units | Era, `--input-pkl ROLE=PATH` bindings, runtime paths, and fresh manifest path | Writes a `topeft_datacard_matrix_v3` manifest; does not produce cards |
 | `build_per_era_datacard_package.py build` | Build one Run 2 or Run 3 package | Era, one or more matrix manifests with completed rows, and a fresh absolute output | Requires exactly the targets declared by the manifest rows, checks recorded source files, and writes cards, WCs, scalings, and per-era `chN` |
 | `build_combined_datacard_package.py build` | Build a cards-only Run 2 + Run 3 package | Two per-era packages with the same physical target set, fresh absolute output, analysis, package date, and version | Writes the combined mapping, ordered card list, and scalings; checks the package against its inputs; does not run Combine |
@@ -86,10 +86,11 @@ exist as histogram families in the merged input.
   applicable, `DatacardMaker` construction, output/provenance behavior, and
   focused tests.
 
-`make_cards.py --condor` prepares execution units from an existing canonical
+`make_cards.py --condor` submits execution units from an existing canonical
 v3 manifest before any PKL loading or producer setup. Put producer options in
 that workload; the frontend accepts only manifest, dispatch destination and
-resource options. Local and worker execution pass the same recorded producer
+resource options. Add `--prepare-only` for material inspection without
+reservation or submission. Local and worker execution pass the same recorded producer
 arguments through the matrix runner. The former Condor option reconstruction
 and `--chunks` interface have been retired; execution partitioning remains
 owned by the profile and manifest generator.
@@ -283,7 +284,7 @@ analysis/topeft_run2/run_datacard_matrix_resumable.sh --row-id "$row_id" /path/t
 This scheduler contract covers TopEFT datacard production and H2 publication.
 EFTFit/Combine runtime and fit scheduling belong to the package consumer.
 
-Prepare a fresh dispatch directory after choosing resources, retry/start
+Submit from a fresh dispatch directory after choosing resources, retry/start
 budgets and the scheduler endpoint for your site and workload. Set the variables
 below explicitly; the software supplies no production resource or retry defaults:
 
@@ -301,29 +302,29 @@ python analysis/topeft_run2/make_cards.py --condor \
 ```
 
 This writes `units/*.json`, `items.txt`, `worker.sh`, `datacards.sub`, and an
-empty `logs/` directory. Each queue item identifies exactly one unit. The
+empty `logs/` directory, then invokes the installed `condor_submit` through
+the maintained reservation transaction. Each queue item identifies exactly one unit. The
 worker enters `datacard_matrix_runner.py --unit DESCRIPTOR`; its producer runs
-without `--condor`. Material generation is ownership-free: it creates no row
-reservation, queries no scheduler, and cannot block later local execution.
+without `--condor`. Add `--prepare-only` to the command above for a no-submit
+inspection run. Material generation is ownership-free: prepare-only creates no
+row reservation, queries no scheduler, and cannot block later local execution.
 Existing dispatch destinations are rejected. Items initially carry an
 `unreserved` placeholder, which cannot authorize a worker. Already complete
 rows retain their queue item and skip production by valid H2 receipt.
 
-Submission ownership belongs to the separate submission transaction, not
-material generation. The maintained `submission_transaction()` API reconciles
-target rows, creates fresh reservation tokens and binds itemdata while holding
-all row leases. It never invokes a submitter. A future authorized launch adapter
-must hold those leases through the submission boundary and pass their file
-descriptors into its subprocess; prepared material must not be submitted
-directly or replayed outside that transaction. There is no launch CLI here.
+Submission ownership belongs to `submission_transaction()`, called by the
+internal Condor adapter after preparation. It reconciles target rows, creates
+fresh reservation tokens and binds itemdata while holding all row leases. The
+adapter passes those lease descriptors into `condor_submit` and waits for its
+result. Operators use `make_cards.py --condor`; prepared material must not be
+submitted directly or replayed outside the transaction.
 
-A definite local failure before submission rolls back newly created
-reservations. Definite success retains them. A timeout, nonzero exit or
-interruption after possible scheduler side effects also retains them until a
-later authoritative token query and H2 reconciliation. A process-creation
-failure that proves the submit executable never started can be recorded
-explicitly for rollback; an error after launch is not such proof. No stored
-ClusterId.ProcId binding is required for reservation validity.
+A definite process-creation failure rolls back newly created reservations.
+Command exit zero retains them. A timeout, nonzero exit or interruption after
+possible scheduler side effects is `AMBIGUOUS_SUBMISSION_OUTCOME`: reservations
+remain until the next invocation automatically reconciles them by token and
+then applies H2 recovery as needed. The command's stdout and any reported
+ClusterId.ProcId are informational; they do not establish scheduler ownership.
 
 Normal ownership attempts reconcile automatically. The explicit maintenance
 command is optional and proactive; it is not required for backend switching:

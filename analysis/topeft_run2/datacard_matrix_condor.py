@@ -1,17 +1,19 @@
-"""Prepare shared-filesystem HTCondor dispatch material; never submit jobs.
+"""Prepare and submit shared-filesystem HTCondor datacard dispatch material.
 
 The matrix runner owns topology, leases, reconciliation and completion. This
-module only serializes an explicit common resource request and unit dispatch.
+module serializes resource requests and dispatch, then owns the submit process.
 """
 from __future__ import annotations
 
 from contextlib import contextmanager
+from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
 import re
 import shlex
 import shutil
+import subprocess
 
 try:
     from . import datacard_matrix_runner as runner
@@ -121,11 +123,11 @@ def prepare_material(manifest_path: Path, destination: Path, *, request_cpus: in
 
 @contextmanager
 def submission_transaction(manifest_path: Path, destination: Path, scheduler: dict):
-    """Bind prepared itemdata inside a reservation transaction; never submit.
+    """Bind prepared itemdata inside the maintained reservation transaction.
 
-    A future submit caller must mark_submission_started immediately before any
-    possible scheduler side effect, inherit transaction.lease_fds into the
-    submit subprocess, and wait for it to terminate before exiting. Exceptions,
+    The submit caller must mark_submission_started immediately before process
+    creation, inherit transaction.lease_fds into the submit subprocess, and
+    wait for it to terminate before exiting. Exceptions,
     timeout and nonzero exit after that marker preserve all reservations.
     """
     units = runner.derive_units(manifest_path)
@@ -141,3 +143,56 @@ def submission_transaction(manifest_path: Path, destination: Path, scheduler: di
         (destination / "items.txt").write_text("".join(
             f"{row_id} {integrity} {tokens[row_id]}\n" for row_id, integrity in items))
         yield transaction
+
+
+def submit_material(manifest_path: Path, destination: Path, scheduler: dict, *,
+                    submit_executable: str | None = None,
+                    timeout: float | None = None) -> dict:
+    """Submit prepared material while holding every row's reservation lease.
+
+    A zero exit reports only command success. Scheduler ownership is later
+    observed through each reservation token, never inferred from stdout.
+    """
+    submit_executable = submit_executable or shutil.which("condor_submit")
+    if (not submit_executable or not Path(submit_executable).is_absolute()
+            or not Path(submit_executable).is_file()
+            or not os.access(submit_executable, os.X_OK)):
+        raise runner.RunnerError("condor_configuration_error", "an absolute maintained condor_submit executable is required")
+    argv = [submit_path(Path(submit_executable)), submit_path(destination / "datacards.sub")]
+    with submission_transaction(manifest_path, destination, scheduler) as transaction:
+        result = {"argv": argv, "start_time": datetime.now(timezone.utc).isoformat(),
+                  "exit_status": None, "stdout": "", "stderr": ""}
+        transaction.mark_submission_started()
+        try:
+            process = subprocess.Popen(argv, stdout=subprocess.PIPE,
+                                       stderr=subprocess.PIPE, text=True,
+                                       pass_fds=transaction.lease_fds)
+        except OSError as exc:
+            # This exception came from process creation itself: no executable ran.
+            transaction.record_definite_spawn_failure(exc)
+            return {**result, "submitted": False,
+                    "submission_outcome": "DEFINITE_SPAWN_FAILURE", "error": str(exc)}
+        except KeyboardInterrupt as exc:
+            # Popen may have created a child before the interruption.
+            return {**result, "submitted": False,
+                    "submission_outcome": "AMBIGUOUS_SUBMISSION_OUTCOME",
+                    "error": type(exc).__name__ + " during process creation"}
+        try:
+            stdout, stderr = process.communicate(timeout=timeout)
+            result.update(exit_status=process.returncode, stdout=stdout, stderr=stderr)
+        except (subprocess.TimeoutExpired, KeyboardInterrupt, OSError) as exc:
+            result["error"] = type(exc).__name__ + ": " + str(exc)
+            # Reap a known child before releasing its inherited row leases.
+            try:
+                process.kill()
+                stdout, stderr = process.communicate()
+                result.update(exit_status=process.returncode, stdout=stdout, stderr=stderr)
+            except (OSError, KeyboardInterrupt) as cleanup_exc:
+                result["cleanup_error"] = type(cleanup_exc).__name__ + ": " + str(cleanup_exc)
+            return {**result, "submitted": False,
+                    "submission_outcome": "AMBIGUOUS_SUBMISSION_OUTCOME"}
+        if process.returncode == 0:
+            return {**result, "submitted": True,
+                    "submission_outcome": "SUBMIT_COMMAND_SUCCEEDED"}
+        return {**result, "submitted": False,
+                "submission_outcome": "AMBIGUOUS_SUBMISSION_OUTCOME"}
