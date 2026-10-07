@@ -85,6 +85,7 @@ contract rather than a procedure. The corpus is divided by authority:
 - [Processing and fitting binning](reference/flexible_binning.md)
 - [Plotting interfaces and configuration](reference/plotting.md)
 - [Datacard and scaling interfaces and artifacts](reference/datacards_and_scalings.md)
+- [Generated exhaustive nuisance-policy and standardization catalog](reference/systematics_nuisance_catalog.md)
 - [Specialist analysis interfaces](reference/specialist_interfaces.md)
 - [Run 2 b-tag scale-factor payloads](reference/btag_scale_factor_payloads.md)
 - [Missing-parton payload schema](reference/missing_parton_payloads.md)

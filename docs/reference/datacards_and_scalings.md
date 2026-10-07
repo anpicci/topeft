@@ -379,6 +379,10 @@ binning resolver owns the exact processing-to-fitting view.
 
 ### Final nuisance identities
 
+The [generated exhaustive nuisance-policy and standardization catalog](systematics_nuisance_catalog.md)
+lists the current static DatacardMaker policy and every standardizer mapping row.
+The explanation below gives the interpretation and ownership boundary.
+
 The source variation label is an input, not necessarily the final card nuisance
 identity. `DatacardMaker` applies `syst_year_corr` in `correlate_years(...)`
 while merging periods, then writes the final TXT nuisance rows and paired ROOT

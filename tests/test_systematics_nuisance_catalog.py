@@ -1,0 +1,108 @@
+"""Coverage and freshness for the generated nuisance reference."""
+
+import io
+import json
+
+from analysis.topeft_run2.standardize_systematics import SYST_NAMING_MAP
+from topeft.modules.datacard_tools import (
+    DatacardMaker, resolve_shape_nuisance_identity,
+    run2_luminosity_shape_factors, run3_luminosity_shape_factors,
+)
+from tools.generate_systematics_nuisance_catalog import (
+    OUTPUT, REPO_ROOT, build_catalog_model, check_catalog, render_catalog,
+)
+
+
+def test_render_is_deterministic_and_committed_page_is_fresh():
+    model = build_catalog_model()
+    first = render_catalog(model)
+    assert first == render_catalog(build_catalog_model())
+    assert first == OUTPUT.read_text(encoding="utf-8")
+    assert check_catalog(stream=io.StringIO())
+
+
+def test_standardizer_maps_are_complete():
+    model = build_catalog_model()
+    for run in ("run2", "run3"):
+        assert model["standardizer"][run] == tuple(sorted(
+            (source, target, "yes" if source != target else "no")
+            for source, target in SYST_NAMING_MAP[run].items()
+        ))
+
+
+def test_datacard_static_registries_are_complete():
+    maker = DatacardMaker(hists={}, do_nuisance=False, verbose=False)
+    model = build_catalog_model()
+    expected_groups = set()
+    for base, edges in maker.syst_year_corr.items():
+        for period, partners in edges.items():
+            expected_groups.add((base, ", ".join(sorted((period, *partners)))))
+    assert set(model["year"]) == expected_groups
+    assert model["run"] == tuple(sorted(
+        (base,
+         resolve_shape_nuisance_identity(base, "_run2", maker.run_decorrelate)[0],
+         resolve_shape_nuisance_identity(base, "_run3", maker.run_decorrelate)[0])
+        for base in maker.run_decorrelate
+    ))
+    assert model["shape"] == tuple(sorted(
+        (base, pattern, rule["group"])
+        for base, rules in maker.syst_shape_decorrelate.items()
+        for rule in rules for pattern in rule["matches"]
+    ))
+    for run, factors in (("run2", run2_luminosity_shape_factors),
+                         ("run3", run3_luminosity_shape_factors)):
+        assert model["luminosity"][run] == tuple(sorted(
+            (identity, period, str(factor))
+            for identity, periods in factors.items()
+            for period, factor in periods.items()
+        ))
+
+
+def test_rate_json_sections_are_complete():
+    model = build_catalog_model()
+    for run in ("run2", "run3"):
+        config = json.loads((REPO_ROOT / f"topeft/params/rate_systs_{run}.json").read_text())
+        assert model["rates"][run] == tuple(sorted(
+            (family, process, str(value), config["correlations"].get(process, {}).get(family, ""))
+            for family, processes in config["rate_uncertainties"].items()
+            for process, value in processes.items()
+        ))
+        assert model["correlations"][run] == tuple(sorted(
+            (process, family, tag)
+            for process, families in config["correlations"].items()
+            for family, tag in families.items()
+        ))
+        assert model["diboson"][run] == tuple(sorted(
+            (process, njets, str(value))
+            for process, bins in config["diboson_njets"].items()
+            for njets, value in bins.items()
+        ))
+    assert model["missing_parton"][0] == DatacardMaker.MISSING_PARTON_NUISANCE_NAME
+    assert dict(model["missing_parton"][1]) == DatacardMaker.MISSING_PARTON_DEFAULT_PAYLOADS
+
+
+def test_check_detects_stale_and_missing_without_mutation(tmp_path):
+    page = tmp_path / "catalog.md"
+    page.write_text("stale\n", encoding="utf-8")
+    before = page.read_bytes()
+    output = io.StringIO()
+    assert not check_catalog(page, stream=output)
+    assert "stale" in output.getvalue()
+    assert page.read_bytes() == before
+    page.write_bytes(render_catalog(build_catalog_model()).replace("\n", "\r\n").encode())
+    assert not check_catalog(page, stream=io.StringIO())
+    page.unlink()
+    assert not check_catalog(page, stream=io.StringIO())
+    assert not page.exists()
+
+
+def test_markdown_escaping_and_ordering():
+    from tools.generate_systematics_nuisance_catalog import _rows_unique, _table
+
+    rows = _rows_unique([("z.*", "", "0.9/1.1"), ("a|b", "x`y", "\\")], "synthetic")
+    assert rows[0][0] == "a|b"
+    rendered = _table(("Pattern", "Group", "Uncertainty"), rows)
+    assert "a\\|b" in rendered
+    assert "x\\`y" in rendered
+    assert "z.*" in rendered and "0.9/1.1" in rendered
+    assert "\\\\" in rendered
