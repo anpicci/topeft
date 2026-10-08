@@ -48,6 +48,13 @@ no nuisance insertion, and warning-only year coverage. `--unblind`,
 `--do-nuisance`, `--do-mc-stat`, and `--keep-negative-bins` are explicit
 choices. `--merge-only` stops after load/merge validation, and
 `--merge-report PATH` retains the diagnostic report.
+The optional `--lepton-mva-correlation {per-run,cross-run}` defaults to
+`per-run`. It changes only the final electron and muon MVA nuisance identities
+in the TXT card and ROOT keys; see the [nuisance reference](../reference/datacards_and_scalings.md).
+For matrix work, select the same option when generating each canonical manifest;
+its rows carry the choice in `producer_args`, including the explicit default.
+Older v3 rows without this option still mean `per-run` under their historical
+producer; replay also remains subject to the existing runtime fingerprint checks.
 
 Before card production, confirm that every input belongs to one compatible
 production family and has the nominal/sumw2 companions required by the selected
@@ -531,7 +538,8 @@ package is not modified. The mapping row's `run2` or `run3` era selects the
 naming map; card filenames and card count do not select it. This operates on
 final TXT/ROOT datacards, preserving their already-realized correlation
 topology, card order, EFT scalings, and logical mapping. The sibling is still
-a datacard package. See the [nuisance reference](../reference/datacards_and_scalings.md)
+a datacard package. The standardizer preserves an already shared MVA identity;
+it does not create one from per-run inputs. See the [nuisance reference](../reference/datacards_and_scalings.md)
 for exact identities and failure boundaries.
 
 `ordered_card_inputs.txt` lists cards in combination order. From the combined

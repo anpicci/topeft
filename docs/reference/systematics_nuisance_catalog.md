@@ -8,6 +8,7 @@
 | --- | --- | --- | --- | --- |
 | Year correlation | Run 2 / Run 3 | 37 | Groups source periods | DatacardMaker.syst_year_corr |
 | Run decorrelation | Run 2 / Run 3 | 16 | Resolves final base by run | DatacardMaker.run_decorrelate; resolve_shape_nuisance_identity |
+| Lepton MVA correlation | Run 2 / Run 3 | 4 | Selects per-run or shared MVA identity | resolve_shape_nuisance_identity |
 | Fully specified Tau precedence | Both runs | 4 | Preserves already specified nuisance bases | FULLY_SPECIFIED_TAU_NUISANCE_PREFIXES; resolve_shape_nuisance_identity |
 | Process shape decorrelation | Both runs | 11 | Matches processes and group tokens | DatacardMaker.syst_shape_decorrelate |
 | Luminosity process exclusions | Run 2 / Run 3 | 6 | Excludes logical processes from luminosity templates | run2_luminosity_excluded_processes |
@@ -86,6 +87,17 @@ Each row is one normalized group; no particular textual year label is guaranteed
 | lepSF_muon_non_mva | lepSF_muon_non_mva_13TeV | lepSF_muon_non_mva_13p6TeV |
 | lepSF_taus_fake | lepSF_taus_fake_run2 | lepSF_taus_fake_run3 |
 | lepSF_taus_real | lepSF_taus_real_run2 | lepSF_taus_real_run3 |
+
+## Selectable electron and muon MVA correlation
+
+`per-run` is the default. `cross-run` shares each flavor's nuisance across Run 2 and Run 3; electron and muon remain separate. DatacardMaker selects the identity before TXT and ROOT writing. The standardizer preserves an already shared final name and never combines independently produced per-run names.
+
+| Mode | Source base | Run 2 final base | Run 3 final base |
+| --- | --- | --- | --- |
+| cross-run | lepSF_elec_mva | lepSF_elec_mva_13TeV_13p6TeV | lepSF_elec_mva_13TeV_13p6TeV |
+| cross-run | lepSF_muon_mva | lepSF_muon_mva_13TeV_13p6TeV | lepSF_muon_mva_13TeV_13p6TeV |
+| per-run | lepSF_elec_mva | lepSF_elec_mva_13TeV | lepSF_elec_mva_13p6TeV |
+| per-run | lepSF_muon_mva | lepSF_muon_mva_13TeV | lepSF_muon_mva_13p6TeV |
 
 ## Fully specified Tau identity precedence
 

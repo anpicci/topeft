@@ -36,6 +36,7 @@ def build_catalog_model():
     """Read maintained runtime/config authorities and normalize all static rows."""
     from topeft.modules.datacard_tools import (
         DatacardMaker, FULLY_SPECIFIED_TAU_NUISANCE_PREFIXES,
+        cross_run_mva_identities, lepton_mva_correlation_modes,
         resolve_shape_nuisance_identity, run2_luminosity_excluded_processes,
         run2_luminosity_shape_factors, run3_luminosity_shape_factors,
     )
@@ -74,6 +75,13 @@ def build_catalog_model():
     ], "run decorrelation")
     if len(run_rows) != len(maker.run_decorrelate):
         raise ValueError("Duplicate run decorrelation base")
+    mva_rows = _rows_unique([
+        (mode, base,
+         resolve_shape_nuisance_identity(base, "_run2", maker.run_decorrelate, mode)[0],
+         resolve_shape_nuisance_identity(base, "_run3", maker.run_decorrelate, mode)[0])
+        for mode in lepton_mva_correlation_modes
+        for base in cross_run_mva_identities
+    ], "lepton MVA correlation")
 
     shape_rows = []
     for base, rules in _mapping(maker.syst_shape_decorrelate, "shape decorrelation").items():
@@ -162,7 +170,7 @@ def build_catalog_model():
     if set(payloads) != {"run2", "run3"}:
         raise ValueError("Unsupported missing parton run domains")
     return {
-        "year": year_rows, "run": run_rows, "shape": shape_rows,
+        "year": year_rows, "run": run_rows, "mva": mva_rows, "shape": shape_rows,
         "tau_precedence": tau_rows, "luminosity_exclusions": luminosity_exclusion_rows,
         "luminosity": luminosity_rows, "rates": rate_rows,
         "correlations": correlation_rows, "diboson": diboson_rows,
@@ -187,6 +195,7 @@ def render_catalog(model):
     index = [
         ("Year correlation", "Run 2 / Run 3", len(model["year"]), "Groups source periods", "DatacardMaker.syst_year_corr"),
         ("Run decorrelation", "Run 2 / Run 3", len(model["run"]), "Resolves final base by run", "DatacardMaker.run_decorrelate; resolve_shape_nuisance_identity"),
+        ("Lepton MVA correlation", "Run 2 / Run 3", len(model["mva"]), "Selects per-run or shared MVA identity", "resolve_shape_nuisance_identity"),
         ("Fully specified Tau precedence", "Both runs", len(model["tau_precedence"]), "Preserves already specified nuisance bases", "FULLY_SPECIFIED_TAU_NUISANCE_PREFIXES; resolve_shape_nuisance_identity"),
         ("Process shape decorrelation", "Both runs", len(model["shape"]), "Matches processes and group tokens", "DatacardMaker.syst_shape_decorrelate"),
         ("Luminosity process exclusions", "Run 2 / Run 3", len(model["luminosity_exclusions"]), "Excludes logical processes from luminosity templates", "run2_luminosity_excluded_processes"),
@@ -216,6 +225,11 @@ def render_catalog(model):
                ((base, group, "syst_year_corr") for base, group in model["year"])), "\n",
         "## DatacardMaker run-domain decorrelation\n\n",
         _table(("Source base", "Run 2 final base", "Run 3 final base"), model["run"]), "\n",
+        "## Selectable electron and muon MVA correlation\n\n",
+        "`per-run` is the default. `cross-run` shares each flavor's nuisance across Run 2 and Run 3; "
+        "electron and muon remain separate. DatacardMaker selects the identity before TXT and ROOT writing. "
+        "The standardizer preserves an already shared final name and never combines independently produced per-run names.\n\n",
+        _table(("Mode", "Source base", "Run 2 final base", "Run 3 final base"), model["mva"]), "\n",
         "## Fully specified Tau identity precedence\n\n",
         "A nuisance base beginning with a maintained prefix is already fully specified. "
         "`resolve_shape_nuisance_identity` preserves that base before the generic `run_decorrelate` suffix path.\n\n",

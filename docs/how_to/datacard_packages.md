@@ -203,6 +203,13 @@ and retry only with a clean absent destination.
 standardization.** This transformation changes final names consistently; it
 does not manufacture correlations or reconstruct them from PKLs. It creates
 neither a combined card nor a workspace or fit result.
+The optional producer `--lepton-mva-correlation cross-run` shares the electron
+and muon MVA nuisance identities across Run 2 and Run 3 at card writing;
+`per-run` remains the default. Original and standardized package formats stay
+the same. A full new campaign, package comparison, and fit qualification are
+separate from the focused software checks for this option. Package provenance
+does not retain the full receipt or mode-selection history; retain the source
+manifests and receipts for that audit.
 
 | Property | Original combined package | Standardized combined package |
 | --- | --- | --- |

@@ -8,9 +8,11 @@ import uproot
 from analysis.topeft_run2.standardize_systematics import (
     SYST_NAMING_MAP,
     _preflight_package,
+    remap_name,
     resolve_nuisance_name,
     standardize_package,
 )
+from topeft.modules.datacard_tools import cross_run_mva_identities
 
 
 @pytest.mark.parametrize(
@@ -25,6 +27,12 @@ def test_pu_met_and_accepted_aliases(run, domain):
     for source in ("lepSF_elec_mva", "lepSF_muon_mva",
                    "lepSF_elec_non_mva", "lepSF_muon_non_mva"):
         assert resolve_nuisance_name(source, run) == f"{source}_{domain}"
+    for shared in cross_run_mva_identities.values():
+        assert resolve_nuisance_name(shared, run) == shared
+        for direction in ("Up", "Down"):
+            assert remap_name(f"ttH_sm_{shared}{direction}", run) == f"ttH_sm_{shared}{direction}"
+    with pytest.raises(RuntimeError, match="not found"):
+        resolve_nuisance_name("lepSF_elec_mva_13TeV_13p6TeV_extra", run)
 
 
 @pytest.mark.parametrize("dm", (0, 1, 10, 11))
@@ -147,3 +155,50 @@ def test_root_key_collision_fails_before_output(tmp_path, monkeypatch):
     with pytest.raises(ValueError, match="Nuisance collision|ROOT key collision"):
         standardize_package(source, tmp_path / "derivative")
     assert not (tmp_path / "derivative").exists()
+
+
+def _add_mva_shape(source, card_name, identity):
+    card = source / "cards" / card_name
+    with card.open("a") as output:
+        output.write(f"{identity} shape 1\n")
+    root = source / "cards" / card_name.replace(".txt", "_shapes.root")
+    histogram = hist.Hist(hist.axis.Regular(1, 0, 1), storage=hist.storage.Weight())
+    histogram.fill(0.5, weight=2.0)
+    with uproot.update(root) as output:
+        for direction in ("Up", "Down"):
+            output[f"ttH_sm_{identity}{direction}"] = histogram
+
+
+def test_shared_mva_names_survive_paired_package_standardization(tmp_path):
+    source, _ = make_package(tmp_path)
+    for card_name in ("Run2_first.txt", "Run3_second.txt"):
+        for shared in cross_run_mva_identities.values():
+            _add_mva_shape(source, card_name, shared)
+    output = tmp_path / "derivative"
+    standardize_package(source, output)
+    for card_name in ("Run2_first.txt", "Run3_second.txt"):
+        card = output / "cards" / card_name
+        root = output / "cards" / card_name.replace(".txt", "_shapes.root")
+        for shared in cross_run_mva_identities.values():
+            assert f"{shared} shape 1" in card.read_text()
+            with uproot.open(root) as source_root, uproot.open(
+                source / "cards" / root.name
+            ) as original_root:
+                for direction in ("Up", "Down"):
+                    key = f"ttH_sm_{shared}{direction}"
+                    assert key in source_root
+                    assert source_root[key].values(flow=True).tolist() == original_root[key].values(flow=True).tolist()
+                    assert source_root[key].variances(flow=True).tolist() == original_root[key].variances(flow=True).tolist()
+
+
+def test_mixed_mva_topology_rejected_without_absence_false_positive(tmp_path):
+    source, _ = make_package(tmp_path)
+    shared = cross_run_mva_identities["lepSF_elec_mva"]
+    _add_mva_shape(source, "Run2_first.txt", shared)
+    _add_mva_shape(source, "Run3_second.txt", "lepSF_elec_mva_13p6TeV")
+    with pytest.raises(ValueError, match="Mixed lepton MVA correlation identities"):
+        standardize_package(source, tmp_path / "derivative")
+    assert not (tmp_path / "derivative").exists()
+    source_2, _ = make_package(tmp_path / "separate")
+    _add_mva_shape(source_2, "Run2_first.txt", shared)
+    standardize_package(source_2, tmp_path / "separate_derivative")

@@ -50,6 +50,12 @@ def build_arg_parser():
     parser.add_argument("--POI",default=[],help="List of WCs (comma separated)")
     parser.add_argument("--year","-y",default=[],action="extend",nargs="+",help="Run over a subset of years")
     parser.add_argument("--do-nuisance",action="store_true",help="Include nuisance parameters")
+    parser.add_argument(
+        "--lepton-mva-correlation",
+        choices=datacard_tools.lepton_mva_correlation_modes,
+        default=datacard_tools.default_lepton_mva_correlation,
+        help="Correlation identity for electron and muon MVA shapes (default: per-run)",
+    )
     parser.add_argument("--unblind",action="store_true",help="If set, use real data, otherwise use asimov data")
     parser.add_argument("--verbose","-v",action="store_true",help="Set to verbose output")
     parser.add_argument("--select-only",action="store_true",help="Only run the WC selection step")
@@ -295,6 +301,7 @@ def _run_producer(args, pkl_files):
         "do_mc_stat": do_mc_stat,
         "ignore": ignore,
         "do_nuisance": do_nuis,
+        "lepton_mva_correlation": args.lepton_mva_correlation,
         "drop_syst": drop_syst,
         "skip_missing_parton_rate_syst": skip_missing_parton_rate_syst,
         "enable_legacy_run3_vsmu_recovery": args.enable_legacy_run3_vsmu_recovery,

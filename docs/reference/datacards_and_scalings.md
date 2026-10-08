@@ -551,9 +551,14 @@ group 2016 with 2016APV; 2017 and 2018 retain separate year identities.
 Other tau families have their own final identities; inspect the focused test
 before inferring a shared year domain from a family name.
 
-The package naming map distinguishes `lepSF_elec_mva`, `lepSF_muon_mva`,
-`lepSF_elec_non_mva`, and `lepSF_muon_non_mva`: each has a `13TeV` Run 2
-identity and a `13p6TeV` Run 3 identity. `PU` becomes `CMS_pileup_13TeV` or
+The default `--lepton-mva-correlation per-run` gives `lepSF_elec_mva` and
+`lepSF_muon_mva` separate `13TeV` Run 2 and `13p6TeV` Run 3 identities.
+`--lepton-mva-correlation cross-run` instead gives them the shared final
+identities `lepSF_elec_mva_13TeV_13p6TeV` and
+`lepSF_muon_mva_13TeV_13p6TeV`, respectively. Electron and muon remain
+separate nuisances. `lepSF_elec_non_mva` and `lepSF_muon_non_mva` remain
+run-specific in either mode. The [generated nuisance catalog](systematics_nuisance_catalog.md)
+lists both modes from the card writer's naming resolver. `PU` becomes `CMS_pileup_13TeV` or
 `CMS_pileup_13p6TeV`; `MET_UnclusteredEnergy` becomes
 `CMS_scale_met_Unclustred_energy_13TeV` or
 `CMS_scale_met_Unclustred_energy_13p6TeV` (the spelling is maintained).
@@ -583,7 +588,10 @@ It copies card order and EFT scalings, preserves logical mapping rows, and
 writes a fresh package with updated provenance. It does not reconstruct
 correlations from PKLs, choose scientific year groups, or construct a workspace.
 The card maker has already realized the correlation topology before this
-rename. The [package procedure](../how_to/datacard_packages.md) and
+rename. The standardizer preserves already shared MVA names and rejects an
+observably mixed shared/per-run identity for the same MVA family in one input.
+The package schemas are unchanged; full package and fit comparison of the new
+mode requires a separate qualification. The [package procedure](../how_to/datacard_packages.md) and
 [artifact boundary](../explanation/datacards_and_eftfit.md) give the operating
 context.
 

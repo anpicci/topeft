@@ -6,6 +6,7 @@ import json
 from analysis.topeft_run2.standardize_systematics import SYST_NAMING_MAP
 from topeft.modules.datacard_tools import (
     DatacardMaker, FULLY_SPECIFIED_TAU_NUISANCE_PREFIXES,
+    cross_run_mva_identities, lepton_mva_correlation_modes,
     resolve_shape_nuisance_identity, run2_luminosity_excluded_processes,
     run2_luminosity_shape_factors, run3_luminosity_shape_factors,
 )
@@ -45,6 +46,16 @@ def test_datacard_static_registries_are_complete():
          resolve_shape_nuisance_identity(base, "_run3", maker.run_decorrelate)[0])
         for base in maker.run_decorrelate
     ))
+    assert model["mva"] == tuple(sorted(
+        (mode, base,
+         resolve_shape_nuisance_identity(base, "_run2", maker.run_decorrelate, mode)[0],
+         resolve_shape_nuisance_identity(base, "_run3", maker.run_decorrelate, mode)[0])
+        for mode in lepton_mva_correlation_modes
+        for base in cross_run_mva_identities
+    ))
+    page = OUTPUT.read_text(encoding="utf-8")
+    for mode, base, run2, run3 in model["mva"]:
+        assert f"| {mode} | {base} | {run2} | {run3} |" in page
     assert model["shape"] == tuple(sorted(
         (base, pattern, rule["group"],
          f"{base}_{rule['group']}" if rule["group"] else f"{base}_<matched process>")

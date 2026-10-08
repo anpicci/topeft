@@ -255,8 +255,29 @@ tau_run2_year_correlation_bases = (
 )
 
 
-def resolve_shape_nuisance_identity(systematic, run_suffix, run_decorrelate):
+lepton_mva_correlation_modes = ("per-run", "cross-run")
+default_lepton_mva_correlation = "per-run"
+cross_run_mva_identities = {
+    "lepSF_elec_mva": "lepSF_elec_mva_13TeV_13p6TeV",
+    "lepSF_muon_mva": "lepSF_muon_mva_13TeV_13p6TeV",
+}
+
+
+def validate_lepton_mva_correlation(mode):
+    if mode not in lepton_mva_correlation_modes:
+        raise ValueError(
+            f"Invalid lepton MVA correlation {mode!r}; expected one of "
+            f"{lepton_mva_correlation_modes}."
+        )
+    return mode
+
+
+def resolve_shape_nuisance_identity(
+    systematic, run_suffix, run_decorrelate,
+    lepton_mva_correlation=default_lepton_mva_correlation,
+):
     """Return one final nuisance base and paired template name for a variation."""
+    validate_lepton_mva_correlation(lepton_mva_correlation)
     direction = ""
     for candidate in ("Up", "Down"):
         if systematic.endswith(candidate):
@@ -266,6 +287,9 @@ def resolve_shape_nuisance_identity(systematic, run_suffix, run_decorrelate):
     if base.startswith(FULLY_SPECIFIED_TAU_NUISANCE_PREFIXES):
         return base, f"{base}{direction}"
     if base in run_decorrelate:
+        if lepton_mva_correlation == "cross-run" and base in cross_run_mva_identities:
+            base = cross_run_mva_identities[base]
+            return base, f"{base}{direction}"
         if base in (
             "lepSF_elec_mva", "lepSF_muon_mva",
             "lepSF_elec_non_mva", "lepSF_muon_non_mva",
@@ -1346,6 +1370,9 @@ class DatacardMaker():
 
     def __init__(self,pkl_path=None,hists=None,**kwargs):
         self.binning_mode    = kwargs.pop("binning_mode", "fitting")
+        self.lepton_mva_correlation = validate_lepton_mva_correlation(
+            kwargs.pop("lepton_mva_correlation", default_lepton_mva_correlation)
+        )
         enable_legacy_run3_vsmu_recovery = kwargs.pop(
             "enable_legacy_run3_vsmu_recovery", False,
         )
@@ -2279,7 +2306,8 @@ class DatacardMaker():
                         syst = sp_key.systematic
 
                         syst_base, syst = resolve_shape_nuisance_identity(
-                            syst, self.suffix, self.run_decorrelate
+                            syst, self.suffix, self.run_decorrelate,
+                            self.lepton_mva_correlation,
                         )
 
                         if syst_base == "JES_Total":

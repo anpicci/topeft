@@ -3,6 +3,7 @@
 import hashlib
 import json
 import sys
+from pathlib import Path
 
 import pytest
 import yaml
@@ -80,6 +81,7 @@ def test_standard_manifest_matches_accepted_input_matrix(tmp_path, era, years):
         assert runner.option_values(row["producer_args"], "--ch-lst") == row["physical_channels"]
         assert runner.option_values(row["producer_args"], "--year-coverage-policy") == ["error"]
         assert runner.option_values(row["producer_args"], "--binning") == ["fitting"]
+        assert runner.option_values(row["producer_args"], "--lepton-mva-correlation") == ["per-run"]
     crosswalk_lines = "".join(
         f"{era}|{row['row_id']}|{row['logical_row_id']}|"
         f"{_role_order[era][_row_role_positions[int(row['logical_row_id'][-2:]) - 1]]}|"
@@ -117,6 +119,39 @@ def test_invalid_execution_partition_rejected():
     row["execution_unit_sizes"]["run3"] = [1]
     with pytest.raises(ValueError, match="invalid execution unit sizes"):
         generator._execution_channels(row, "run3")
+
+
+@pytest.mark.parametrize("era", ("run2", "run3"))
+def test_cross_run_mode_is_only_a_producer_argument(tmp_path, era):
+    argv, _, _ = _args(tmp_path, era)
+    assert generator.main(argv + ["--lepton-mva-correlation", "cross-run"]) == 0
+    manifest, _ = runner.load_manifest(tmp_path / "matrix.json")
+    assert manifest["schema"] == runner.MANIFEST_SCHEMA
+    for row in manifest["rows"]:
+        assert runner.option_values(row["producer_args"], "--lepton-mva-correlation") == ["cross-run"]
+        assert "lepton_mva_correlation" not in row
+        assert "--lepton-mva-correlation" in runner.resolved_argv(manifest, row)
+
+
+def test_invalid_mva_mode_leaves_manifest_absent(tmp_path):
+    argv, _, _ = _args(tmp_path, "run3")
+    with pytest.raises(SystemExit) as error:
+        generator.main(argv + ["--lepton-mva-correlation", "shared"])
+    assert error.value.code == 2
+    assert not (tmp_path / "matrix.json").exists()
+
+
+def test_v3_row_without_new_option_retains_structural_and_argv_contract(tmp_path):
+    argv, _, _ = _args(tmp_path, "run2")
+    assert generator.main(argv) == 0
+    manifest, _ = runner.load_manifest(tmp_path / "matrix.json")
+    row = json.loads(json.dumps(manifest["rows"][0]))
+    index = row["producer_args"].index("--lepton-mva-correlation")
+    del row["producer_args"][index:index + 2]
+    assert runner.validate_row(row, 0, Path(manifest["control_root"])) == row
+    assert "--lepton-mva-correlation" not in runner.resolved_argv(manifest, row)
+    assert manifest["schema"] == runner.MANIFEST_SCHEMA
+    assert runner.RECEIPT_SCHEMA == "topeft_datacard_execution_receipt_v2"
 
 
 def test_advanced_subset_needs_only_its_input_role_and_does_not_overwrite(tmp_path):

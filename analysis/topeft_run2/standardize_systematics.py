@@ -10,6 +10,7 @@ import json
 import numpy as np
 import boost_histogram as bh
 import topcoffea.modules.utils as utils
+from topeft.modules.datacard_tools import cross_run_mva_identities
 from analysis.topeft_run2.build_fit_input_package import _source_contract, _validate_source_members
 
 accepted_mapping_commit = "013d9de2b53ad2f0eb5cfae5e47e5d796b07fe1f"
@@ -538,6 +539,8 @@ def resolve_nuisance_name(source_name, run):
     try:
         return SYST_NAMING_MAP[run][source_name]
     except KeyError as exc:
+        if run in SYST_NAMING_MAP and source_name in cross_run_mva_identities.values():
+            return source_name
         if run in SYST_NAMING_MAP and source_name in (
             SYST_NAMING_MAP[run][base]
             for base in (
@@ -847,6 +850,13 @@ def _preflight_package(pairs):
     source_to_target = {}
     target_to_source = {}
     output_names = set()
+    observed_mva_identities = {base: set() for base in cross_run_mva_identities}
+
+    def record_mva_identity(source_name):
+        for base, shared_name in cross_run_mva_identities.items():
+            if source_name in (shared_name, f"{base}_13TeV", f"{base}_13p6TeV"):
+                observed_mva_identities[base].add(source_name)
+
     for card_path, root_path, run in pairs:
         for path in (card_path, root_path):
             if path.name in output_names:
@@ -854,6 +864,7 @@ def _preflight_package(pairs):
             output_names.add(path.name)
         _, shapes, rates = parse_datacard(card_path)
         for _, source_name in shapes + rates:
+            record_mva_identity(source_name)
             _register_identity(source_name, run, source_to_target, target_to_source)
         key_targets = {}
         with uproot.open(root_path) as source_file:
@@ -862,6 +873,7 @@ def _preflight_package(pairs):
                 if identity is None:
                     continue
                 process, source_base, direction = identity
+                record_mva_identity(source_base)
                 target_base = _register_identity(
                     source_base, run, source_to_target, target_to_source
                 )
@@ -869,6 +881,9 @@ def _preflight_package(pairs):
                 previous = key_targets.setdefault(target_key, key)
                 if previous != key:
                     raise ValueError(f"ROOT key collision: {previous} and {key}")
+    for base, identities in observed_mva_identities.items():
+        if cross_run_mva_identities[base] in identities and len(identities) > 1:
+            raise ValueError(f"Mixed lepton MVA correlation identities for {base}: {sorted(identities)}")
     return source_to_target
 
 
