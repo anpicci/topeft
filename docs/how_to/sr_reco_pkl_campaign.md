@@ -14,6 +14,54 @@ This guide specifies launch and evidence requirements. It does not certify a
 particular campaign or replace the artifact schemas in
 [histogram artifacts](../reference/histogram_artifacts.md).
 
+## Opt-in 20-fragment guarded candidate
+
+`run2_sr_ext20` and `run3_sr_ext20` use the same five category groups and
+variables as the 15-fragment extension profiles, with four nonempty variable
+chunks per group. Their block identities end in `_a_1` through `_e_4` and
+belong to a new 20+20 membership contract. They do not reuse historical
+15+15 receipts. The four accepted **nominal** `--chunksize` choices are
+`100000`, `75000`, `50000`, and `25000`; this argument is required for these
+profiles. Coffea's `dynamic_chunksize` is disabled in this launch path, but
+`split_on_exhaustion` can reduce an effective task size after resource
+failure. The chosen number is therefore not a guaranteed size for every
+executed task.
+
+A real 20-fragment launch requires `--wq-staging-base` and all of
+`--wq-quota-root`, `--wq-warning-bytes`, `--wq-stop-bytes`,
+`--wq-reserve-bytes`, and `--wq-poll-seconds`. The base must be an existing,
+owned, writable directory on a non-root filesystem. The quota root must be
+the exact applicable `/groups/<owner>` or `/users/<owner>` root supported by
+the site's `quota` command. A unique campaign/block/attempt directory is
+created beneath the base, and that exact directory is passed to
+`WorkQueueExecutor.filepath`. The thresholds are operator-selected from the
+chosen mount's measured capacity, quota and observed output sizes; the
+workflow has no universal byte budget. `--wq-treereduction` may explicitly
+select `20`, `10` or `5`; omitting it retains Coffea's existing setting.
+Smaller fan-in can reduce a single reduction's input load while increasing
+tree depth and intermediate I/O. Worker resource co-location and safe peak
+memory remain unproven.
+
+The separate watchdog polls charged staging bytes, entry count, filesystem
+free blocks/inodes, quota headroom and the exact manager PID. It sends
+SIGTERM on a stop or measurement failure because installed Coffea handles
+SIGINT by attempting final accumulation. This is a polling heuristic: large
+in-flight transfers can overshoot a threshold. A guard trip returns nonzero,
+blocks later guarded fragments and leaves the owned directory marked
+`cleanup_needed`. After a normal manager exit, campaign state and native logs
+are recorded before the exact owned directory is removed. Any ambiguous
+intermediate, reader or ownership state leaves it for explicit review.
+
+The existing 15-fragment profiles remain selectable. They can use the same
+opt-in guard arguments, while their nominal chunk-size behavior remains
+unchanged. Their unguarded legacy path must not be used for the proposed
+resource-safe canary. The 20-fragment candidate is not released for execution
+by this documentation. A later operator review must establish the staging
+mount's writability and conservative headroom, the worker archive at
+`analysis/topeft_run2/topeft-envs/`, an isolated output namespace, scheduler
+state and a monitored single-fragment plan before Andrea authorizes a manual
+canary.
+
 ## Resolve source and worker authorities
 
 The manager and local postprocessing execute from the live checkout.

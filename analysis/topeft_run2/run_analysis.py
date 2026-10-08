@@ -7,9 +7,7 @@ import time
 import os
 import re
 import shlex
-import shutil
 import subprocess
-import tempfile
 import traceback
 import uuid
 import resource
@@ -66,6 +64,11 @@ from topeft.modules.ttgamma_photon_history import (
     get_ttgamma_sample_role_policy,
 )
 import analysis_processor
+from analysis.topeft_run2.wq_staging_guard import (
+    finish_guard,
+    staging_guard_error,
+    start_guard,
+)
 from analysis.topeft_run2.analysis_processor import (
     ANALYSIS_MODE_EXCLUSIVE_ERROR,
 )
@@ -509,37 +512,6 @@ def _resolve_environment_file(
             "Provide --env-file pointing to a known-good poncho tarball (e.g. generated from environment.yml) "
             "or rerun with --no-remote-env if workers already have the dependencies."
         ) from exc
-
-
-def _prepare_work_queue_staging_directory(filepath_override=None):
-    requested_path = filepath_override or f"/groups/klannon/{os.environ.get('USER', 'user')}/workers"
-    path_preexisted = os.path.exists(requested_path)
-
-    try:
-        os.makedirs(requested_path, exist_ok=True)
-        return requested_path, not path_preexisted
-    except OSError as exc:
-        print(
-            "Warning: Failed to create Work Queue staging directory {} ({}). Falling back to a "
-            "system temporary location.".format(requested_path, exc)
-        )
-
-    fallback_path = tempfile.gettempdir()
-    print(f"Using fallback Work Queue staging directory: {fallback_path}")
-    return fallback_path, False
-
-
-def _cleanup_work_queue_staging_directory(path, eligible_for_cleanup):
-    if not path or not eligible_for_cleanup:
-        return
-
-    try:
-        shutil.rmtree(path, ignore_errors=False)
-    except OSError as exc:
-        print(
-            "Warning: Failed to clean up Work Queue staging directory {} ({}). You may want to "
-            "remove it manually.".format(path, exc)
-        )
 
 
 def _prepare_work_queue_log_paths(outpath, outname, filepath_override=None):
@@ -1134,13 +1106,17 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--wq-filepath",
-        #default="/tmp/${USER}-workers",
         default=None,
-        help=(
-            "Override the Work Queue staging directory (default: /tmp/${USER}-workers). The path will be "
-            "created if missing; if creation fails a system temporary directory will be used instead."
-        ),
+        help="Explicit manager-side Work Queue staging base for guarded runs",
     )
+    parser.add_argument("--wq-guard", action="store_true", help="Enable owned staging and fail-closed disk watchdog")
+    parser.add_argument("--wq-invocation-id", help="Unique profile/block/attempt staging identity")
+    parser.add_argument("--wq-quota-root", help="Exact site quota root, e.g. /groups/klannon")
+    parser.add_argument("--wq-warning-bytes", type=int)
+    parser.add_argument("--wq-stop-bytes", type=int)
+    parser.add_argument("--wq-reserve-bytes", type=int)
+    parser.add_argument("--wq-poll-seconds", type=float)
+    parser.add_argument("--wq-treereduction", type=int, choices=(5, 10, 20))
     parser.add_argument(
         "--wq-log-dir",
         default=None,
@@ -1485,6 +1461,8 @@ if __name__ == "__main__":
     _log_category_group_selection(category_group_selection)
 
     if executor_name in ["work_queue", "taskvine"]:
+        if args.wq_guard and executor_name != "work_queue":
+            raise SystemExit("--wq-guard currently supports Work Queue only")
         # construct wq port range
         port = list(map(int, port.split("-")))
         if len(port) < 1:
@@ -2125,7 +2103,7 @@ if __name__ == "__main__":
         print("Variables to be histogrammed: {}".format(", ".join(hist_lst)))
 
     wq_staging_dir = None
-    wq_cleanup_after = False
+    wq_guard_state = None
     if executor_name in ["work_queue", "taskvine"]:
         wq_log_paths = _prepare_work_queue_log_paths(outpath, outname, wq_log_dir)
         environment_file = resolved_explicit_env_file or _resolve_environment_file(
@@ -2180,7 +2158,24 @@ if __name__ == "__main__":
     )
 
     if executor_name in ["work_queue", "taskvine"]:
-        wq_staging_dir, wq_cleanup_after = _prepare_work_queue_staging_directory(wq_filepath)
+        if args.wq_guard:
+            if executor_name != "work_queue" or not wq_filepath:
+                raise SystemExit("guarded Work Queue requires an explicit --wq-filepath")
+            guard_values = (args.wq_invocation_id, args.wq_quota_root,
+                            args.wq_warning_bytes, args.wq_stop_bytes,
+                            args.wq_reserve_bytes, args.wq_poll_seconds)
+            if any(value is None for value in guard_values):
+                raise SystemExit("guarded Work Queue requires invocation, quota and all budget/poll arguments")
+            try:
+                wq_staging_dir, owner_inode, stop_event, watchdog = start_guard(
+                    wq_filepath, *guard_values
+                )
+            except (OSError, staging_guard_error) as error:
+                raise SystemExit(f"Work Queue staging preflight failed: {error}") from error
+            wq_guard_state = (wq_staging_dir, owner_inode, stop_event, watchdog)
+            print(f"Guarded Work Queue staging: {wq_staging_dir}", flush=True)
+        elif wq_filepath:
+            raise SystemExit("--wq-filepath requires --wq-guard to prevent unmonitored staging")
         executor_args = {
             "manager_name": f"{os.environ['USER']}-workqueue-{outname}",
             # find a port to run work queue in this range:
@@ -2200,8 +2195,7 @@ if __name__ == "__main__":
             "resources_mode": "auto",
             "resource_monitor": "measure",
             "split_on_exhaustion": True,
-            #'filepath': wq_staging_dir,
-            "filepath": '/tmp',
+            "filepath": str(wq_staging_dir) if wq_guard_state else "/tmp",
             # this resource values may be omitted when using
             # resources_mode: 'auto', but they do make the initial portion
             # of a workflow run a little bit faster.
@@ -2240,6 +2234,10 @@ if __name__ == "__main__":
 
         if environment_file:
             executor_args["environment_file"] = environment_file
+        if args.wq_treereduction is not None:
+            if not args.wq_guard:
+                raise SystemExit("--wq-treereduction requires --wq-guard")
+            executor_args["treereduction"] = args.wq_treereduction
 
     # Run the processor and get the output
     tstart = time.time()
@@ -2268,16 +2266,23 @@ if __name__ == "__main__":
             exec_instance, schema=NanoAODSchema, chunksize=chunksize, maxchunks=nchunks
         )
     elif executor_name == "work_queue":
-        executor_instance = processor.WorkQueueExecutor(**executor_args)
-        _ensure_nonempty_chunks()
-        runner = processor.Runner(
-            executor_instance,
-            schema=NanoAODSchema,
-            chunksize=chunksize,
-            maxchunks=nchunks,
-            skipbadfiles=False,
-            xrootdtimeout=180,
-        )
+        try:
+            executor_instance = processor.WorkQueueExecutor(**executor_args)
+            _ensure_nonempty_chunks()
+            print(f"Nominal requested chunksize: {chunksize}; dynamic_chunksize: disabled; split_on_exhaustion: {executor_args['split_on_exhaustion']}")
+            runner = processor.Runner(
+                executor_instance,
+                schema=NanoAODSchema,
+                chunksize=chunksize,
+                maxchunks=nchunks,
+                skipbadfiles=False,
+                xrootdtimeout=180,
+            )
+        except BaseException:
+            if wq_guard_state:
+                finish_guard(*wq_guard_state, succeeded=False)
+                wq_guard_state = None
+            raise
     elif executor_name == "taskvine":
         try:
             executor_instance = processor.TaskVineExecutor(**executor_args)
@@ -2424,5 +2429,8 @@ if __name__ == "__main__":
                 print(f"Manager failure diagnostic written to {diagnostic_path}")
         raise
     finally:
-        if run_succeeded and wq_cleanup_after:
-            _cleanup_work_queue_staging_directory(wq_staging_dir, wq_cleanup_after)
+        if wq_guard_state:
+            try:
+                finish_guard(*wq_guard_state, succeeded=run_succeeded)
+            except staging_guard_error as error:
+                raise RuntimeError(f"Work Queue staging cleanup_needed: {error}") from error

@@ -8,11 +8,13 @@ import re
 import shlex
 import subprocess
 import sys
+import threading
 import tarfile
 from pathlib import Path
 
 import pytest
 from topcoffea.modules import remote_environment
+from analysis.topeft_run2 import wq_staging_guard as staging_guard
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
@@ -150,6 +152,7 @@ def _run(
     resume=False,
     environment=None,
     supply_env_file=True,
+    extra_args=(),
 ):
     env_file = _write_test_environment(Path(output_dir).parent)
     command = [
@@ -163,6 +166,7 @@ def _run(
         command.append("--dry-run")
     if resume:
         command.append("--resume")
+    command.extend(extra_args)
     return subprocess.run(
         command,
         cwd=RUN_DIRECTORY,
@@ -261,6 +265,9 @@ case "$action" in
     if [[ "$scenario" == block_failure_2 && ( "$block_id" == *_b || "$block_id" == *_block2 ) ]]; then
       exit 22
     fi
+    if [[ "$scenario" == guard_failure_second && "$block_id" == *_a_2 ]]; then
+      exit 143
+    fi
     if [[ "$scenario" == two_failures && ( "$block_id" == *_b || "$block_id" == *_d ) ]]; then
       exit 24
     fi
@@ -298,7 +305,8 @@ esac
     path.chmod(0o755)
 
 
-def _stubbed_run(tmp_path, profile, scenario, *, name=None, supply_env_file=True):
+def _stubbed_run(tmp_path, profile, scenario, *, name=None, supply_env_file=True,
+                 dry_run=False, extra_args=()):
     validation_root = tmp_path / (name or f"{profile}-{scenario}")
     validation_root.mkdir()
     backend = validation_root / "backend.sh"
@@ -316,9 +324,10 @@ def _stubbed_run(tmp_path, profile, scenario, *, name=None, supply_env_file=True
         profile,
         output_root,
         f"stub-{profile}",
-        dry_run=False,
+        dry_run=dry_run,
         environment=environment,
         supply_env_file=supply_env_file,
+        extra_args=extra_args,
     )
     return result, output_root, validation_root
 
@@ -1737,3 +1746,217 @@ def test_cr_resume_runs_only_a_planned_or_failed_block(tmp_path, status):
     calls_after_resume = (validation_root / "block_calls.tsv").read_text(encoding="utf-8")
     assert calls_after_resume.count("run2_full_CR_block1\t") == calls_before_resume.count("run2_full_CR_block1\t") + 1
     assert _campaign_state(output_root, "run2_full_CR")["blocks"][0]["status"] == "success"
+
+
+_sr_extension_expected_pairs = {
+    "2l 2lss_1tau 2los_1tau 4l": "fwd0pt fwd0eta j0pt j0eta nbtagsm met l0conept l0eta l1conept l1eta nbtagsl invmass ljptsum npvsGood tau0Tpt",
+    "3l_m_offZ": "j0pt j0eta nbtagsm met l0conept l0eta l1conept l1eta nbtagsl invmass ljptsum npvsGood",
+    "3l_p_offZ": "j0pt j0eta nbtagsm met l0conept l0eta l1conept l1eta nbtagsl invmass ljptsum npvsGood",
+    "3l_onZ_tau": "j0pt j0eta nbtagsm met l0conept l0eta l1conept l1eta nbtagsl invmass ljptsum npvsGood tau0Tpt",
+    "3l_fwd": "fwd0pt fwd0eta j0pt j0eta nbtagsm met l0conept l0eta l1conept l1eta nbtagsl invmass ljptsum npvsGood",
+}
+
+
+def _guard_options(tmp_path):
+    return (
+        "--wq-staging-base", str(tmp_path / "owned_staging"),
+        "--wq-quota-root", "/groups/klannon",
+        "--wq-warning-bytes", "100000000000",
+        "--wq-stop-bytes", "150000000000",
+        "--wq-reserve-bytes", "10000000000",
+        "--wq-poll-seconds", "5",
+        "--wq-treereduction", "10",
+    )
+
+
+@pytest.mark.parametrize("profile", ("run2_sr_ext20", "run3_sr_ext20"))
+def test_opt_in_20_fragment_plan_preserves_pairs_and_receipts(tmp_path, profile):
+    result, output_root, validation_root = _stubbed_run(
+        tmp_path, profile, "success", dry_run=True,
+        extra_args=("--chunksize", "50000"),
+    )
+    assert result.returncode == 0, result.stdout
+    block_ids = re.findall(r"^production_block_id: (\S+)$", result.stdout, re.MULTILINE)
+    assert block_ids == [
+        f"{profile}_{group}_{index}" for group in "abcde" for index in range(1, 5)
+    ]
+    resolved = re.findall(
+        r"Mode: SR\nproduction_block_id: \S+\nexpected_nominal_path: ([^\n]+)\nexpected_np_path: ([^\n]+)\nYears: ([^\n]+)\nCategories: ([^\n]+)\nVariables: ([^\n]+)",
+        result.stdout,
+    )
+    assert len(resolved) == 20
+    seen = set()
+    for nominal, nonprompt, years, group, variable_text in resolved:
+        variables = variable_text.split()
+        assert variables
+        assert "tau0Fpt" not in variables
+        assert years == ("run2" if profile.startswith("run2") else "2022 2022EE 2023 2023BPix")
+        assert nominal.endswith(".pkl.gz")
+        assert nonprompt == nominal.removesuffix(".pkl.gz") + "_np.pkl.gz"
+        seen.update((group, variable) for variable in variables)
+        assert len(variables) == len(set(variables))
+    expected = {
+        (group, variable)
+        for group, variables in _sr_extension_expected_pairs.items()
+        for variable in variables.split()
+    }
+    assert seen == expected
+    assert sum(len(variable_text.split()) for _, _, _, _, variable_text in resolved) == len(expected)
+    commands = _commands(result.stdout)
+    assert len(commands) == 20
+    assert all(command[command.index("-s") + 1] == "50000" for command in commands)
+    assert all(("--np-postprocess=inline" in command) == profile.startswith("run2") for command in commands)
+    assert all(("--np-postprocess=defer" in command) == profile.startswith("run3") for command in commands)
+
+
+@pytest.mark.parametrize("chunksize", (100000, 75000, 50000, 25000))
+def test_opt_in_nominal_chunksize_precedence_is_selectable(tmp_path, chunksize):
+    result, _, _ = _stubbed_run(
+        tmp_path, "run2_sr_ext20", "success", dry_run=True,
+        extra_args=("--chunksize", str(chunksize)),
+    )
+    assert result.returncode == 0, result.stdout
+    commands = _commands(result.stdout)
+    assert len(commands) == 20
+    assert all(command[command.index("-s") + 1] == str(chunksize) for command in commands)
+    assert all(command.count("-s") == 1 for command in commands)
+
+
+def test_guarded_source_failure_stops_before_next_fragment_and_nonprompt(tmp_path):
+    profile = "run2_sr_ext20"
+    result, output_root, validation_root = _stubbed_run(
+        tmp_path, profile, "guard_failure_second",
+        extra_args=("--chunksize", "50000", *_guard_options(tmp_path)),
+    )
+    assert result.returncode != 0
+    state = _campaign_state(output_root, profile)
+    assert state["blocks"][1]["status"] == "source_failed"
+    assert state["blocks"][1]["source_exit_code"] == 143
+    assert state["blocks"][1]["nonprompt_status"] == "blocked"
+    assert state["blocks"][2]["status"] == "planned"
+    assert not (validation_root / f"{profile}_a_3.started").exists()
+    assert not Path(state["blocks"][1]["expected_np_path"]).exists()
+    command = state["blocks"][0]["source_command_argv"]
+    assert command[command.index("--wq-filepath") + 1] == str(tmp_path / "owned_staging")
+    assert command[command.index("--wq-invocation-id") + 1].endswith(f"{profile}_a_1_source_attempt_1")
+
+
+def test_staging_guard_rejects_root_and_symlink_paths(tmp_path):
+    with pytest.raises(staging_guard.staging_guard_error, match="root temporary"):
+        staging_guard._validate_base(tmp_path)
+    link = tmp_path / "link"
+    link.symlink_to(tmp_path, target_is_directory=True)
+    with pytest.raises(staging_guard.staging_guard_error, match="symlink"):
+        staging_guard._validate_base(link)
+
+
+def test_staging_guard_stop_and_measurement_failure_target_owned_pid(tmp_path, monkeypatch):
+    path = tmp_path / "owned"
+    path.mkdir()
+    (path / "guard.json").write_text("{}")
+    pid = os.getpid()
+    start = staging_guard._process_start(pid)
+    signalled = []
+    monkeypatch.setattr(staging_guard.os, "kill", lambda target, sig: signalled.append((target, sig)))
+    monkeypatch.setattr(staging_guard, "_charged_tree", lambda *_: (90, 1))
+    monkeypatch.setattr(staging_guard, "_space", lambda *_: (1000, 1000))
+    class stop_event:
+        stopped = False
+        def is_set(self):
+            return self.stopped
+        def wait(self, _):
+            self.stopped = True
+            return True
+    staging_guard._watch(path, tmp_path, "/groups/klannon", pid, start, 80, 100, 15, 1, stop_event())
+    assert signalled == [(pid, staging_guard.signal.SIGTERM)]
+    assert json.loads((path / "guard.json").read_text())["reason"] == "staging_stop_threshold"
+    signalled.clear()
+    monkeypatch.setattr(staging_guard, "_space", lambda *_: (_ for _ in ()).throw(OSError("quota unavailable")))
+    staging_guard._watch(path, tmp_path, "/groups/klannon", pid, start, 80, 100, 15, 1, stop_event())
+    assert signalled == [(pid, staging_guard.signal.SIGTERM)]
+    assert json.loads((path / "guard.json").read_text())["reason"] == "measurement_failed"
+    signalled.clear()
+    monkeypatch.setattr(staging_guard, "_space", lambda *_: (1000, 1000))
+    monkeypatch.setattr(staging_guard, "_charged_tree", lambda *_: (70, 1))
+    staging_guard._watch(path, tmp_path, "/groups/klannon", pid, start, 80, 100, 15, 1, stop_event())
+    assert signalled == []
+    monkeypatch.setattr(staging_guard, "_charged_tree", lambda *_: (1, 1))
+    monkeypatch.setattr(staging_guard, "_space", lambda *_: (10, 1000))
+    staging_guard._watch(path, tmp_path, "/groups/klannon", pid, start, 80, 100, 15, 1, stop_event())
+    assert signalled == [(pid, staging_guard.signal.SIGTERM)]
+    assert json.loads((path / "guard.json").read_text())["reason"] == "free_space_inode_or_quota_reserve"
+
+
+def test_staging_cleanup_is_owned_and_preserves_ambiguous_files(tmp_path, monkeypatch):
+    class fake_event:
+        def set(self):
+            pass
+    class fake_watchdog:
+        exitcode = 0
+        def join(self, timeout):
+            pass
+        def is_alive(self):
+            return False
+    monkeypatch.setattr(staging_guard, "_local_readers", lambda _: False)
+    owned = tmp_path / "owned"
+    owned.mkdir()
+    metadata = {"status": "running", "path": str(owned), "owner_uid": os.getuid(),
+                "owner_pid": 99999999, "owner_start": "never",
+                "owner_inode": owned.stat().st_ino}
+    (owned / "guard.json").write_text(json.dumps(metadata))
+    (owned / "out_1.p").write_bytes(b"unfinished")
+    staging_guard.finish_guard(owned, owned.stat().st_ino, fake_event(), fake_watchdog(), True)
+    with pytest.raises(staging_guard.staging_guard_error, match="not empty"):
+        staging_guard.cleanup_owned_staging(owned)
+    assert (owned / "out_1.p").exists()
+    assert json.loads((owned / "guard.json").read_text())["status"] == "cleanup_needed"
+    clean = tmp_path / "clean"
+    clean.mkdir()
+    metadata.update(path=str(clean), owner_inode=clean.stat().st_ino)
+    (clean / "guard.json").write_text(json.dumps(metadata))
+    staging_guard.finish_guard(clean, clean.stat().st_ino, fake_event(), fake_watchdog(), True)
+    staging_guard.cleanup_owned_staging(clean)
+    assert not clean.exists()
+
+
+def test_staging_preflight_rejects_insufficient_budget_and_collision(tmp_path, monkeypatch):
+    monkeypatch.setattr(staging_guard, "_validate_base", lambda _: tmp_path)
+    monkeypatch.setattr(staging_guard.os.path, "commonpath", lambda _: "/groups/klannon")
+    monkeypatch.setattr(staging_guard.signal, "getsignal", lambda _: staging_guard.signal.SIG_DFL)
+    monkeypatch.setattr(staging_guard, "_space", lambda *_: (200, 2000))
+    with pytest.raises(staging_guard.staging_guard_error, match="budget"):
+        staging_guard.start_guard(tmp_path, "attempt", "/groups/klannon", 100, 200, 20, 1)
+    assert not (tmp_path / "attempt").exists()
+    monkeypatch.setattr(staging_guard, "_space", lambda *_: (1000, 2000))
+    (tmp_path / "attempt").mkdir()
+    with pytest.raises(FileExistsError):
+        staging_guard.start_guard(tmp_path, "attempt", "/groups/klannon", 100, 200, 20, 1)
+
+
+def test_lost_watchdog_requests_owned_manager_stop(tmp_path, monkeypatch):
+    monkeypatch.setattr(staging_guard, "_validate_base", lambda _: tmp_path)
+    monkeypatch.setattr(staging_guard.os.path, "commonpath", lambda _: "/groups/klannon")
+    monkeypatch.setattr(staging_guard.signal, "getsignal", lambda _: staging_guard.signal.SIG_DFL)
+    monkeypatch.setattr(staging_guard, "_space", lambda *_: (1000, 2000))
+    stopped = threading.Event()
+    monkeypatch.setattr(staging_guard.os, "kill", lambda pid, sig: stopped.set())
+    class fake_event:
+        def wait(self, timeout):
+            return False
+    class fake_process:
+        checks = 0
+        def __init__(self, **kwargs):
+            pass
+        def start(self):
+            pass
+        def is_alive(self):
+            self.checks += 1
+            return self.checks == 1
+    class fake_context:
+        def Event(self):
+            return fake_event()
+        def Process(self, **kwargs):
+            return fake_process(**kwargs)
+    monkeypatch.setattr(staging_guard.multiprocessing, "get_context", lambda _: fake_context())
+    staging_guard.start_guard(tmp_path, "attempt", "/groups/klannon", 100, 200, 20, 1)
+    assert stopped.wait(2)
