@@ -410,11 +410,11 @@ Usage: ./run_cr.sh [--dry-run]
        ./run_cr.sh --production-profile PROFILE [--dry-run] \
   [--output-dir PATH] [--campaign-tag TAG] [--env-file PATH] [--resume] \
   [--reviewed-topeft-manager-head SHA] \
-  [--reviewed-topcoffea-manager-head SHA]
+  [--reviewed-topcoffea-manager-head SHA] [--selected-fragment ID]
 
 Public PROFILE values:
   run2_full, run3_full, run2_run3_full
-  run2_sr_ext, run3_sr_ext, run2_sr_ext20, run3_sr_ext20
+  run2_sr_ext, run3_sr_ext, run2_sr_ext_clike, run3_sr_ext_clike
   run2_full_CR, run3_full_CR, run2_run3_full_CR
   t0_sr_statonly, t0_cr_statonly
 
@@ -436,9 +436,10 @@ nonprompt/charge-flip postprocessing.
 
 run3_full is the canonical complete Run-3 SR source-production profile.
 run2_sr_ext and run3_sr_ext produce 15 extension-only SR fragments per era.
-run2_sr_ext20 and run3_sr_ext20 produce opt-in 20-fragment SR plans. They
+run2_sr_ext_clike and run3_sr_ext_clike produce opt-in CR-like SR plans. They
 require --chunksize (100000, 75000, 50000 or 25000) and guarded staging
-for a real launch. The selected size is nominal; Work Queue may split tasks.
+for a real launch. --selected-fragment runs exactly one declared fragment.
+The selected size is nominal; Work Queue may split tasks.
 rebin_fine is the specialized six-block Run-2/Run-3 source-production profile
 for fitting families whose bins changed and remains available as a legacy
 profile. Resume remains available only where already maintained by the legacy
@@ -462,6 +463,7 @@ profile_wq_stop_bytes=""
 profile_wq_reserve_bytes=""
 profile_wq_poll_seconds=""
 profile_wq_treereduction=""
+profile_selected_fragment=""
 
 while (( $# > 0 )); do
   case "$1" in
@@ -538,6 +540,14 @@ while (( $# > 0 )); do
       profile_resume=true
       shift
       ;;
+    --selected-fragment)
+      if (( $# < 2 )) || [[ -z "$2" || "$2" == -* ]]; then
+        echo "ERROR: --selected-fragment requires an exact fragment ID." >&2
+        exit 1
+      fi
+      profile_selected_fragment="$2"
+      shift 2
+      ;;
     -h|--help)
       print_usage
       exit 0
@@ -557,7 +567,7 @@ if [[ -z "${production_profile}" ]]; then
 fi
 
 case "${production_profile}" in
-  run2_full|run3_full|run2_sr_ext|run3_sr_ext|run2_sr_ext20|run3_sr_ext20|run2_full_CR|run3_full_CR|rebin_fine|t0_sr_statonly|t0_cr_statonly) ;;
+  run2_full|run3_full|run2_sr_ext|run3_sr_ext|run2_sr_ext_clike|run3_sr_ext_clike|run2_full_CR|run3_full_CR|rebin_fine|t0_sr_statonly|t0_cr_statonly) ;;
   *)
     echo "ERROR: unsupported production profile '${production_profile}'." >&2
     exit 1
@@ -589,13 +599,13 @@ fi
 
 output_dir=""
 chunk_size="100000"
-if [[ "${production_profile}" == run?_sr_ext20 ]]; then
+if [[ "${production_profile}" == run?_sr_ext_clike ]]; then
   case "${profile_chunksize}" in
     100000|75000|50000|25000) chunk_size="${profile_chunksize}" ;;
-    *) echo "ERROR: 20-fragment profiles require --chunksize 100000, 75000, 50000 or 25000." >&2; exit 1 ;;
+    *) echo "ERROR: CR-like profiles require --chunksize 100000, 75000, 50000 or 25000." >&2; exit 1 ;;
   esac
 elif [[ -n "${profile_chunksize}" ]]; then
-  echo "ERROR: --chunksize is reserved for the opt-in 20-fragment profiles." >&2
+  echo "ERROR: --chunksize is reserved for the opt-in CR-like profiles." >&2
   exit 1
 fi
 if [[ -n "${profile_wq_staging_base}" ]]; then
@@ -607,9 +617,29 @@ elif [[ -n "${profile_wq_quota_root}${profile_wq_warning_bytes}${profile_wq_stop
   echo "ERROR: Work Queue guard options require --wq-staging-base." >&2
   exit 1
 fi
-if [[ "${production_profile}" == run?_sr_ext20 && "${profile_dry_run}" == false && -z "${profile_wq_staging_base}" ]]; then
-  echo "ERROR: 20-fragment launch requires guarded manager staging." >&2
+if [[ -n "${profile_selected_fragment}" && "${production_profile}" != run?_sr_ext_clike ]]; then
+  echo "ERROR: --selected-fragment is supported only for SR CR-like profiles." >&2
   exit 1
+fi
+if [[ "${profile_dry_run}" == false && -z "${SRPLOT009_VALIDATION_BACKEND:-}" \
+  && "${production_profile}" != "rebin_fine" && "${production_profile}" != *CR \
+  && -z "${profile_wq_staging_base}" ]]; then
+  echo "ERROR: SR Work Queue production requires guarded manager staging; implicit /tmp staging is forbidden." >&2
+  exit 1
+fi
+if [[ "${profile_dry_run}" == false && -z "${SRPLOT009_VALIDATION_BACKEND:-}" \
+  && -n "${profile_wq_staging_base}" ]]; then
+  if [[ ! -d "${profile_wq_staging_base}" || "${profile_wq_staging_base}" != /* ]]; then
+    echo "ERROR: staging base must be an existing absolute directory." >&2
+    exit 1
+  fi
+  staging_real_path=$(realpath -e -- "${profile_wq_staging_base}") || exit 1
+  if [[ "${staging_real_path}" == /tmp || "${staging_real_path}" == /tmp/* \
+    || "${staging_real_path}" == /var/tmp || "${staging_real_path}" == /var/tmp/* \
+    || "$(stat -c %d -- "${staging_real_path}")" == "$(stat -c %d -- /)" ]]; then
+    echo "ERROR: /tmp or root-backed manager staging is forbidden for SR production." >&2
+    exit 1
+  fi
 fi
 
 # Nominal TOP-23-002-like ttgamma sample-role strategy.
@@ -672,7 +702,7 @@ if [[ "${output_dir}" != /* ]]; then
   exit 1
 fi
 
-if [[ "${production_profile}" == "run3_full" || "${production_profile}" == "run3_sr_ext" || "${production_profile}" == "run3_sr_ext20" ]] \
+if [[ "${production_profile}" == "run3_full" || "${production_profile}" == "run3_sr_ext" || "${production_profile}" == "run3_sr_ext_clike" ]] \
   && { [[ "${output_dir}" == "/groups/klannon/apiccine/preappr_v9_260729" ]] \
     || [[ "${output_dir}" == "/groups/klannon/apiccine/rebin_fine_260818_v3" ]] \
     || [[ "${campaign_tag}" == "ANv9" ]] \
@@ -697,14 +727,14 @@ sr_pkl_base_tag="${campaign_tag}"
 # Select the one region owned by the public component profile. The legacy
 # rebin_fine profile retains its maintained two-stage SR behavior.
 case "${production_profile}" in
-  run2_full|run2_sr_ext|run2_sr_ext20)
+  run2_full|run2_sr_ext|run2_sr_ext_clike)
     run_cr=false
     run_sr=true
     production_region="SR"
     production_np_mode="inline"
     production_component="run2"
     ;;
-  run3_full|run3_sr_ext|run3_sr_ext20|rebin_fine)
+  run3_full|run3_sr_ext|run3_sr_ext_clike|rebin_fine)
     run_cr=false
     run_sr=true
     production_region="SR"
@@ -868,38 +898,31 @@ sr_ext_category_var_set_names=(
   "sr_ext_forward_var_sets"
 )
 
-# The opt-in profile splits the high-payload lepton/MET chunk in two.
-# Every original category/variable pair is retained exactly once.
-sr_ext20_common_var_sets=(
-  "j0pt j0eta nbtagsm"
-  "met l0conept l0eta"
-  "l1conept l1eta"
-  "nbtagsl invmass ljptsum npvsGood"
+# CR-like chunks balance actual output-channel and axis payload. The large
+# mixed 2l/tau/4l block uses three chunks; each lighter block uses two.
+sr_clike_mixed_var_sets=(
+  "invmass fwd0pt"
+  "l0conept j0pt"
+  "met l1conept tau0Tpt"
 )
-sr_ext20_forward_var_sets=(
-  "fwd0pt fwd0eta ${sr_ext20_common_var_sets[0]}"
-  "${sr_ext20_common_var_sets[1]}"
-  "${sr_ext20_common_var_sets[2]}"
-  "${sr_ext20_common_var_sets[3]}"
+sr_clike_common_var_sets=(
+  "invmass j0pt"
+  "met l0conept l1conept"
 )
-sr_ext20_tau_var_sets=(
-  "${sr_ext20_common_var_sets[0]}"
-  "${sr_ext20_common_var_sets[1]}"
-  "${sr_ext20_common_var_sets[2]}"
-  "${sr_ext20_common_var_sets[3]} tau0Tpt"
+sr_clike_tau_var_sets=(
+  "${sr_clike_common_var_sets[0]}"
+  "${sr_clike_common_var_sets[1]} tau0Tpt"
 )
-sr_ext20_forward_tau_var_sets=(
-  "${sr_ext20_forward_var_sets[0]}"
-  "${sr_ext20_common_var_sets[1]}"
-  "${sr_ext20_common_var_sets[2]}"
-  "${sr_ext20_tau_var_sets[3]}"
+sr_clike_forward_var_sets=(
+  "${sr_clike_common_var_sets[0]} fwd0pt"
+  "${sr_clike_common_var_sets[1]}"
 )
-sr_ext20_category_var_set_names=(
-  "sr_ext20_forward_tau_var_sets"
-  "sr_ext20_common_var_sets"
-  "sr_ext20_common_var_sets"
-  "sr_ext20_tau_var_sets"
-  "sr_ext20_forward_var_sets"
+sr_clike_category_var_set_names=(
+  "sr_clike_mixed_var_sets"
+  "sr_clike_common_var_sets"
+  "sr_clike_common_var_sets"
+  "sr_clike_tau_var_sets"
+  "sr_clike_forward_var_sets"
 )
 
 # Static memory-bounded source-production plan for the families whose fitting
@@ -945,28 +968,28 @@ if [[ "${production_profile}" == "rebin_fine" ]]; then
     "rebin_fine_category_var_set_names"
     "rebin_fine_category_var_set_names"
   )
-elif [[ "${production_profile}" == "run2_full" || "${production_profile}" == "run2_sr_ext" || "${production_profile}" == "run2_sr_ext20" ]]; then
+elif [[ "${production_profile}" == "run2_full" || "${production_profile}" == "run2_sr_ext" || "${production_profile}" == "run2_sr_ext_clike" ]]; then
   sr_year_sets=("run2")
   sr_year_category_set_names=("run3_full_category_sets")
-  if [[ "${production_profile}" == "run2_sr_ext" || "${production_profile}" == "run2_sr_ext20" ]]; then
+  if [[ "${production_profile}" == "run2_sr_ext" || "${production_profile}" == "run2_sr_ext_clike" ]]; then
     sr_year_category_var_set_names=("sr_ext_category_var_set_names")
-    if [[ "${production_profile}" == "run2_sr_ext20" ]]; then
-      sr_year_category_var_set_names=("sr_ext20_category_var_set_names")
+    if [[ "${production_profile}" == "run2_sr_ext_clike" ]]; then
+      sr_year_category_var_set_names=("sr_clike_category_var_set_names")
     fi
   else
     sr_year_category_var_set_names=("run3_full_category_var_set_names")
   fi
-elif [[ "${production_profile}" == "run3_full" || "${production_profile}" == "run3_sr_ext" || "${production_profile}" == "run3_sr_ext20" ]]; then
+elif [[ "${production_profile}" == "run3_full" || "${production_profile}" == "run3_sr_ext" || "${production_profile}" == "run3_sr_ext_clike" ]]; then
   sr_year_sets=(
     "2022 2022EE 2023 2023BPix"
   )
   sr_year_category_set_names=(
     "run3_full_category_sets"
   )
-  if [[ "${production_profile}" == "run3_sr_ext" || "${production_profile}" == "run3_sr_ext20" ]]; then
+  if [[ "${production_profile}" == "run3_sr_ext" || "${production_profile}" == "run3_sr_ext_clike" ]]; then
     sr_year_category_var_set_names=("sr_ext_category_var_set_names")
-    if [[ "${production_profile}" == "run3_sr_ext20" ]]; then
-      sr_year_category_var_set_names=("sr_ext20_category_var_set_names")
+    if [[ "${production_profile}" == "run3_sr_ext_clike" ]]; then
+      sr_year_category_var_set_names=("sr_clike_category_var_set_names")
     fi
   else
     sr_year_category_var_set_names=("run3_full_category_var_set_names")
@@ -999,17 +1022,17 @@ production_plan_category_sets=()
 production_plan_var_sets=()
 
 case "${production_profile}" in
-  run2_sr_ext|run3_sr_ext|run2_sr_ext20|run3_sr_ext20)
+  run2_sr_ext|run3_sr_ext|run2_sr_ext_clike|run3_sr_ext_clike)
     profile_block_suffixes=(a b c d e)
-    if [[ "${production_profile}" == "run2_sr_ext" || "${production_profile}" == "run2_sr_ext20" ]]; then
+    if [[ "${production_profile}" == "run2_sr_ext" || "${production_profile}" == "run2_sr_ext_clike" ]]; then
       profile_year_expr="run2"
     else
       profile_year_expr="2022 2022EE 2023 2023BPix"
     fi
     for profile_index in "${!run3_full_category_sets[@]}"; do
       profile_var_set_name="${sr_ext_category_var_set_names[profile_index]}"
-      if [[ "${production_profile}" == *ext20 ]]; then
-        profile_var_set_name="${sr_ext20_category_var_set_names[profile_index]}"
+      if [[ "${production_profile}" == *_ext_clike ]]; then
+        profile_var_set_name="${sr_clike_category_var_set_names[profile_index]}"
       fi
       declare -n profile_var_set_ref="${profile_var_set_name}"
       for profile_chunk_index in "${!profile_var_set_ref[@]}"; do
@@ -1105,6 +1128,24 @@ case "${production_profile}" in
     done
     ;;
 esac
+
+if [[ -n "${profile_selected_fragment}" ]]; then
+  selected_plan_index=""
+  for plan_index in "${!production_block_ids[@]}"; do
+    if [[ "${production_block_ids[plan_index]}" == "${profile_selected_fragment}" ]]; then
+      selected_plan_index="${plan_index}"
+      break
+    fi
+  done
+  if [[ -z "${selected_plan_index}" ]]; then
+    echo "ERROR: unknown fragment '${profile_selected_fragment}' for ${production_profile}." >&2
+    exit 1
+  fi
+  production_block_ids=("${production_block_ids[selected_plan_index]}")
+  production_plan_year_exprs=("${production_plan_year_exprs[selected_plan_index]}")
+  production_plan_category_sets=("${production_plan_category_sets[selected_plan_index]}")
+  production_plan_var_sets=("${production_plan_var_sets[selected_plan_index]}")
+fi
 
 ###############################################################################
 # Execution accounting
@@ -1988,13 +2029,16 @@ production_assert_live_plan() {
   case "${production_profile}" in
     run2_full|run3_full) expected_count=5 ;;
     run2_sr_ext|run3_sr_ext) expected_count=15 ;;
-    run2_sr_ext20|run3_sr_ext20) expected_count=20 ;;
+    run2_sr_ext_clike|run3_sr_ext_clike) expected_count=11 ;;
     t0_sr_statonly) expected_count=10 ;;
     t0_cr_statonly) expected_count=18 ;;
     run2_full_CR) expected_count=6 ;;
     run3_full_CR) expected_count=12 ;;
     rebin_fine) expected_count=6 ;;
   esac
+  if [[ -n "${profile_selected_fragment}" ]]; then
+    expected_count=1
+  fi
   if (( ${#production_block_ids[@]} != expected_count )) \
     || (( ${#production_plan_year_exprs[@]} != expected_count )) \
     || (( ${#production_plan_category_sets[@]} != expected_count )) \
@@ -3078,7 +3122,7 @@ run_sr_block() {
 
   echo "----------------------------------------"
   echo "Mode: SR"
-  if [[ "${production_profile}" == *ext20 ]]; then
+  if [[ "${production_profile}" == *_ext_clike ]]; then
     echo "production_block_id: ${production_block}"
     echo "expected_nominal_path: ${source_path}"
     echo "expected_np_path: ${nonprompt_path}"
@@ -3316,9 +3360,9 @@ assert_parallel_array_lengths \
   "${#sr_ext_category_var_set_names[@]}"
 
 assert_parallel_array_lengths \
-  "SR 20-fragment category-to-variable mapping" \
+  "SR CR-like category-to-variable mapping" \
   "${#run3_full_category_sets[@]}" \
-  "${#sr_ext20_category_var_set_names[@]}"
+  "${#sr_clike_category_var_set_names[@]}"
 
 assert_parallel_array_lengths \
   "rebin_fine SR category-to-variable mapping" \
@@ -3339,7 +3383,7 @@ for var_set_name in \
   "${cr_category_var_set_names[@]}" \
   "${run3_full_category_var_set_names[@]}" \
   "${sr_ext_category_var_set_names[@]}" \
-  "${sr_ext20_category_var_set_names[@]}" \
+  "${sr_clike_category_var_set_names[@]}" \
   "${rebin_fine_category_var_set_names[@]}"; do
   assert_array_defined "${var_set_name}"
 done
@@ -3467,7 +3511,13 @@ if [[ "${run_sr}" == "true" ]]; then
       declare -n category_var_sets="${category_var_set_name}"
       read -r -a cats <<< "${category_set}"
 
-      for var_set in "${category_var_sets[@]}"; do
+      for chunk_index in "${!category_var_sets[@]}"; do
+        var_set="${category_var_sets[chunk_index]}"
+        if [[ -n "${profile_selected_fragment}" ]]; then
+          profile_group_suffixes=(a b c d e)
+          current_fragment="${production_profile}_${profile_group_suffixes[category_index]}_$((chunk_index + 1))"
+          [[ "${current_fragment}" == "${profile_selected_fragment}" ]] || continue
+        fi
         run_sr_block "${year_expr}" "${var_set}" "${cats[@]}"
         if [[ -n "${profile_wq_staging_base}" ]] && (( run_failure_count > 0 )); then
           echo "Guarded campaign stopped after the first failed fragment; remaining fragments were not started." >&2

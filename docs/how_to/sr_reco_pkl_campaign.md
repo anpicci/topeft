@@ -1,11 +1,10 @@
 # Produce and qualify SR-reco extension PKLs
 
-Use `run2_sr_ext` and `run3_sr_ext` in `analysis/topeft_run2/run_cr.sh`
-for the maintained SR-reco extension source campaigns. The current
-`run2_sr_ext` and `run3_sr_ext` profiles each materialize 15 fragments from
-five SR category groups and three variable chunks per group. This is the
-current profile grouping, not a fixed fragment count for every future SR
-campaign. The exact block and artifact names come from the maintained profile
+Use `run2_sr_ext_clike` and `run3_sr_ext_clike` in
+`analysis/topeft_run2/run_cr.sh` for the opt-in SR CR-like distribution
+campaign. The historical `run2_sr_ext` and `run3_sr_ext` profiles each
+materialize 15 fragments from five SR category groups and retain their prior
+variable selection. The exact block and artifact names come from the profile
 configuration; see
 [production configuration](../reference/production_configuration.md) for the
 category/variable matrix.
@@ -14,20 +13,38 @@ This guide specifies launch and evidence requirements. It does not certify a
 particular campaign or replace the artifact schemas in
 [histogram artifacts](../reference/histogram_artifacts.md).
 
-## Opt-in 20-fragment guarded candidate
+## Opt-in CR-like distribution profile
 
-`run2_sr_ext20` and `run3_sr_ext20` use the same five category groups and
-variables as the 15-fragment extension profiles, with four nonempty variable
-chunks per group. Their block identities end in `_a_1` through `_e_4` and
-belong to a new 20+20 membership contract. They do not reuse historical
-15+15 receipts. The four accepted **nominal** `--chunksize` choices are
+`run2_sr_ext_clike` and `run3_sr_ext_clike` each select `fwd0pt`, `j0pt`,
+`met`, `l0conept`, `l1conept`, `invmass`, and `tau0Tpt` where applicable.
+`fwd0pt` is filled only in forward-labelled SR channels; `tau0Tpt` only in
+channels with a tight hadronic tau. `bjetpt0` is not a producer histogram key;
+the existing `b0pt` key is a different observable. Fit observables before and
+after b-jet classification are a separate future physics step.
+
+The five maintained category groups are retained. The mixed `2l 2lss_1tau
+2los_1tau 4l` group uses three variable chunks; each other group uses two.
+The resulting 11 fragment identities are `_a_1` through `_a_3`, and `_b_1`
+through `_e_2` under each profile name. The mixed group contains 44 output
+channels; the other groups contain 24, 24, 16, and 24 respectively. A
+category × dense-axis-bin proxy, including flow bins, keeps the largest
+fragment below the two-chunk mixed-group alternative while adding one event
+pass. The proxy is not a memory or output-size measurement. Exact current
+membership is defined in `run_cr.sh`; old 15- and 20-fragment artifacts and
+receipts have different variable payloads and cannot be reused here.
+
+The four accepted **nominal** `--chunksize` choices are
 `100000`, `75000`, `50000`, and `25000`; this argument is required for these
 profiles. Coffea's `dynamic_chunksize` is disabled in this launch path, but
 `split_on_exhaustion` can reduce an effective task size after resource
 failure. The chosen number is therefore not a guaranteed size for every
-executed task.
+executed task. `--selected-fragment <exact_fragment_id>` restricts a CR-like
+profile to one declared unit and rejects unknown IDs before creating a
+campaign output root. It still uses the regular source, nonprompt, receipt,
+state, sidecar and failure paths. `--dry-run` resolves the selected command
+without creating that root.
 
-A real 20-fragment launch requires `--wq-staging-base` and all of
+A real SR Work Queue launch requires `--wq-staging-base` and all of
 `--wq-quota-root`, `--wq-warning-bytes`, `--wq-stop-bytes`,
 `--wq-reserve-bytes`, and `--wq-poll-seconds`. The base must be an existing,
 owned, writable directory on a non-root filesystem. The quota root must be
@@ -51,12 +68,17 @@ blocks later guarded fragments and leaves the owned directory marked
 `cleanup_needed`. After a normal manager exit, campaign state and native logs
 are recorded before the exact owned directory is removed. Any ambiguous
 intermediate, reader or ownership state leaves it for explicit review.
+An intermediate result disappearing between directory enumeration and stat is
+reconciled by the next poll. Loss or replacement of the owned staging root or
+marker, a failed quota probe, or exhausted reserve still stops the manager.
 
 The existing 15-fragment profiles remain selectable. They can use the same
 opt-in guard arguments, while their nominal chunk-size behavior remains
-unchanged. Their unguarded legacy path must not be used for the proposed
-resource-safe canary. The 20-fragment candidate is not released for execution
-by this documentation. A later operator review must establish the staging
+unchanged. Real SR Work Queue launches require guarded staging, including
+these legacy profiles. A direct `run_analysis.py` Work Queue invocation is
+outside this launcher contract and must select guarded staging explicitly.
+The CR-like profile is not released for execution by this documentation. A
+later operator review must establish the staging
 mount's writability and conservative headroom, the worker archive at
 `analysis/topeft_run2/topeft-envs/`, an isolated output namespace, scheduler
 state and a monitored single-fragment plan before Andrea authorizes a manual
@@ -102,15 +124,15 @@ terminal transcript and exact process exit status for each profile. Workers
 are provisioned separately with the manager name printed for each Work Queue
 source invocation.
 
-1. Before `run2_sr_ext`, rerun the applicable launch-compatibility preflight;
+1. Before `run2_sr_ext_clike`, rerun the applicable launch-compatibility preflight;
    require the fresh output root to be absent; inspect the scheduler situation;
    then run the Run 2 command with the explicit `--env-file`, absolute
    `--output-dir`, and `--campaign-tag`.
-2. Start `run3_sr_ext` only after the Run 2 process returns zero. Rerun the
-   compatibility preflight and inspect the scheduler situation immediately
-   before Run 3. Use the same campaign namespace and archive. There is no
-   second fresh-root absence gate: Run 2 has already established the
-   shared output root.
+2. Consider `run3_sr_ext_clike` only after Run 2 source and nonprompt evidence
+   has been reviewed. Rerun the compatibility preflight and inspect the
+   scheduler situation immediately before Run 3. Use a separate fresh output
+   root for the Run 3 component and the same reviewed worker archive. The
+   launcher rejects an existing output root for a new component campaign.
 
 A zero process status is necessary, but campaign state, receipts, artifacts,
 sidecars, and logs still need post-run review. In Run 2, each fragment's source
@@ -156,16 +178,16 @@ do not reconstruct it from filenames alone.
 After successful Run 2 and Run 3 production, qualify the extension campaign
 with the checks below against the maintained profile configuration:
 
-- Match expected fragment membership for each current 15-fragment profile,
+- Match expected fragment membership for the selected profile,
   including source and `_np` realization. Confirm Run 2 inline and Run 3
   deferred local data-driven stage order from state, receipts, and sidecars.
 - Reconcile each PKL with its adjacent sidecar, source-to-`_np` lineage,
   campaign state, and receipt. Check path ownership, nonempty size, artifact
   digest, and the sidecar's recorded size and digest.
 - Compare the recorded family/category inventory and applicability with the
-  profile plan. `fwd0pt` and `fwd0eta` have support only in forward-labelled SR
-  categories; `tau0Tpt` has support only in categories with at least one tight
-  tau. `tau0Fpt` is absent from the SR-reco extension variable set. Distinguish
+  profile plan. `fwd0pt` has support only in forward-labelled SR categories;
+  `tau0Tpt` has support only in categories with at least one tight tau.
+  `tau0Fpt` is absent from the CR-like profile. Distinguish
   an intentionally inapplicable channel from a missing expected fill.
 - Check the applicable systematic variations, including expected Up/Down
   templates; the resolved production `sumw2` companions and data-driven

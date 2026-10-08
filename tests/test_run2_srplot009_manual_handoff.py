@@ -1769,8 +1769,8 @@ def _guard_options(tmp_path):
     )
 
 
-@pytest.mark.parametrize("profile", ("run2_sr_ext20", "run3_sr_ext20"))
-def test_opt_in_20_fragment_plan_preserves_pairs_and_receipts(tmp_path, profile):
+@pytest.mark.parametrize("profile", ("run2_sr_ext_clike", "run3_sr_ext_clike"))
+def test_opt_in_clike_plan_preserves_physical_pairs_and_receipts(tmp_path, profile):
     result, output_root, validation_root = _stubbed_run(
         tmp_path, profile, "success", dry_run=True,
         extra_args=("--chunksize", "50000"),
@@ -1778,32 +1778,73 @@ def test_opt_in_20_fragment_plan_preserves_pairs_and_receipts(tmp_path, profile)
     assert result.returncode == 0, result.stdout
     block_ids = re.findall(r"^production_block_id: (\S+)$", result.stdout, re.MULTILINE)
     assert block_ids == [
-        f"{profile}_{group}_{index}" for group in "abcde" for index in range(1, 5)
+        f"{profile}_{group}_{index}"
+        for group, count in zip("abcde", (3, 2, 2, 2, 2))
+        for index in range(1, count + 1)
     ]
     resolved = re.findall(
         r"Mode: SR\nproduction_block_id: \S+\nexpected_nominal_path: ([^\n]+)\nexpected_np_path: ([^\n]+)\nYears: ([^\n]+)\nCategories: ([^\n]+)\nVariables: ([^\n]+)",
         result.stdout,
     )
-    assert len(resolved) == 20
+    assert len(resolved) == 11
+    sr_groups = json.loads((REPOSITORY_ROOT / "topeft/channels/ch_lst.json").read_text())["ALL_CH_LST_SR"]
+    group_blocks = {
+        "2l 2lss_1tau 2los_1tau 4l": ("2l", "2lss_1tau", "2los_1tau", "4l"),
+        "3l_m_offZ": ("3l_m_offZ",),
+        "3l_p_offZ": ("3l_p_offZ",),
+        "3l_onZ_tau": ("3l_onZ_tau",),
+        "3l_fwd": ("3l_fwd",),
+    }
+    excluded = {"fwd0eta", "j0eta", "nbtagsm", "l0eta", "l1eta", "nbtagsl", "ljptsum", "npvsGood", "tau0Fpt", "bjetpt0"}
+    selected = {"fwd0pt", "j0pt", "met", "l0conept", "l1conept", "invmass", "tau0Tpt"}
+    expected = set()
+    group_cardinalities = {}
+    for block, groups in group_blocks.items():
+        physical = set()
+        for group in groups:
+            definition = sr_groups[group]
+            for channel in definition["lep_chan_lst"]:
+                for jet in definition["jet_lst"]:
+                    physical.add((group, channel[0], jet))
+        group_cardinalities[block] = len(physical)
+        for group, channel, jet in physical:
+            for variable in selected:
+                if variable == "fwd0pt" and not (channel.startswith("2lss_fwd_") or channel.endswith("_fwd")):
+                    continue
+                if variable == "tau0Tpt" and "_1tau" not in channel:
+                    continue
+                expected.add((group, channel, jet, variable))
+    assert list(group_cardinalities.values()) == [44, 24, 24, 16, 24]
     seen = set()
+    fragment_costs = []
+    axis_bins = {"fwd0pt": 12, "j0pt": 17, "met": 22, "l0conept": 27, "l1conept": 9, "invmass": 42, "tau0Tpt": 22}
     for nominal, nonprompt, years, group, variable_text in resolved:
         variables = variable_text.split()
         assert variables
-        assert "tau0Fpt" not in variables
+        assert not excluded.intersection(variables)
+        assert set(variables) <= selected
         assert years == ("run2" if profile.startswith("run2") else "2022 2022EE 2023 2023BPix")
         assert nominal.endswith(".pkl.gz")
         assert nonprompt == nominal.removesuffix(".pkl.gz") + "_np.pkl.gz"
-        seen.update((group, variable) for variable in variables)
+        fragment_pairs = {
+            (category_group, channel[0], jet, variable)
+            for category_group in group_blocks[group]
+            for channel in sr_groups[category_group]["lep_chan_lst"]
+            for jet in sr_groups[category_group]["jet_lst"]
+            for variable in variables
+            if (variable != "fwd0pt" or channel[0].startswith("2lss_fwd_") or channel[0].endswith("_fwd"))
+            and (variable != "tau0Tpt" or "_1tau" in channel[0])
+        }
+        assert fragment_pairs
+        assert not seen.intersection(fragment_pairs)
+        seen.update(fragment_pairs)
+        fragment_costs.append(sum(axis_bins[pair[3]] for pair in fragment_pairs))
         assert len(variables) == len(set(variables))
-    expected = {
-        (group, variable)
-        for group, variables in _sr_extension_expected_pairs.items()
-        for variable in variables.split()
-    }
     assert seen == expected
-    assert sum(len(variable_text.split()) for _, _, _, _, variable_text in resolved) == len(expected)
+    assert len(expected) == 717
+    assert max(fragment_costs) == 1944
     commands = _commands(result.stdout)
-    assert len(commands) == 20
+    assert len(commands) == 11
     assert all(command[command.index("-s") + 1] == "50000" for command in commands)
     assert all(("--np-postprocess=inline" in command) == profile.startswith("run2") for command in commands)
     assert all(("--np-postprocess=defer" in command) == profile.startswith("run3") for command in commands)
@@ -1812,18 +1853,78 @@ def test_opt_in_20_fragment_plan_preserves_pairs_and_receipts(tmp_path, profile)
 @pytest.mark.parametrize("chunksize", (100000, 75000, 50000, 25000))
 def test_opt_in_nominal_chunksize_precedence_is_selectable(tmp_path, chunksize):
     result, _, _ = _stubbed_run(
-        tmp_path, "run2_sr_ext20", "success", dry_run=True,
+        tmp_path, "run2_sr_ext_clike", "success", dry_run=True,
         extra_args=("--chunksize", str(chunksize)),
     )
     assert result.returncode == 0, result.stdout
     commands = _commands(result.stdout)
-    assert len(commands) == 20
+    assert len(commands) == 11
     assert all(command[command.index("-s") + 1] == str(chunksize) for command in commands)
     assert all(command.count("-s") == 1 for command in commands)
 
 
+def test_selected_clike_fragment_is_exact_and_dry_run_has_no_output_root(tmp_path):
+    profile = "run3_sr_ext_clike"
+    fragment = f"{profile}_a_3"
+    result, output_root, _ = _stubbed_run(
+        tmp_path, profile, "success", dry_run=True,
+        extra_args=("--chunksize", "50000", "--selected-fragment", fragment),
+    )
+    assert result.returncode == 0, result.stdout
+    assert re.findall(r"^production_block_id: (\S+)$", result.stdout, re.MULTILINE) == [fragment]
+    assert len(_commands(result.stdout)) == 1
+    assert "Variables: met l1conept tau0Tpt" in result.stdout
+    assert not output_root.exists()
+
+    invalid, invalid_root, _ = _stubbed_run(
+        tmp_path, profile, "success", name="invalid-fragment", dry_run=True,
+        extra_args=("--chunksize", "50000", "--selected-fragment", f"{profile}_e_3"),
+    )
+    assert invalid.returncode != 0
+    assert "unknown fragment" in invalid.stdout
+    assert not invalid_root.exists()
+
+
+def test_selected_clike_source_failure_blocks_nonprompt(tmp_path):
+    profile = "run2_sr_ext_clike"
+    fragment = f"{profile}_a_2"
+    result, output_root, validation_root = _stubbed_run(
+        tmp_path, profile, "guard_failure_second",
+        extra_args=("--chunksize", "50000", "--selected-fragment", fragment,
+                    *_guard_options(tmp_path)),
+    )
+    assert result.returncode != 0
+    state = _campaign_state(output_root, profile)
+    assert len(state["blocks"]) == 1
+    assert state["blocks"][0]["id"] == fragment
+    assert state["blocks"][0]["source_status"] == "failed"
+    assert state["blocks"][0]["nonprompt_status"] == "blocked"
+    assert not (validation_root / f"{profile}_a_3.started").exists()
+
+
+@pytest.mark.parametrize("profile", ("run2_sr_ext_clike", "run2_sr_ext"))
+def test_real_sr_launcher_rejects_implicit_tmp_before_output(tmp_path, profile):
+    output_root = tmp_path / "output"
+    options = ("--chunksize", "50000") if profile.endswith("clike") else ()
+    result = _run(profile, output_root, "fresh", dry_run=False, extra_args=options)
+    assert result.returncode != 0
+    assert "implicit /tmp staging is forbidden" in result.stdout
+    assert not output_root.exists()
+
+
+def test_real_sr_launcher_rejects_root_backed_staging_before_output(tmp_path):
+    output_root = tmp_path / "output"
+    (tmp_path / "owned_staging").mkdir()
+    options = ("--chunksize", "50000", *_guard_options(tmp_path))
+    result = _run("run2_sr_ext_clike", output_root, "fresh", dry_run=False,
+                  extra_args=options)
+    assert result.returncode != 0
+    assert "root-backed manager staging is forbidden" in result.stdout
+    assert not output_root.exists()
+
+
 def test_guarded_source_failure_stops_before_next_fragment_and_nonprompt(tmp_path):
-    profile = "run2_sr_ext20"
+    profile = "run2_sr_ext_clike"
     result, output_root, validation_root = _stubbed_run(
         tmp_path, profile, "guard_failure_second",
         extra_args=("--chunksize", "50000", *_guard_options(tmp_path)),
@@ -1853,9 +1954,13 @@ def test_staging_guard_rejects_root_and_symlink_paths(tmp_path):
 def test_staging_guard_stop_and_measurement_failure_target_owned_pid(tmp_path, monkeypatch):
     path = tmp_path / "owned"
     path.mkdir()
-    (path / "guard.json").write_text("{}")
     pid = os.getpid()
     start = staging_guard._process_start(pid)
+    marker = path / "guard.json"
+    marker.write_text(json.dumps({"status": "running", "path": str(path),
+                                  "owner_uid": os.getuid(), "owner_pid": pid,
+                                  "owner_start": start, "owner_inode": path.stat().st_ino}))
+    identity = (path.stat().st_ino, marker.stat().st_ino)
     signalled = []
     monkeypatch.setattr(staging_guard.os, "kill", lambda target, sig: signalled.append((target, sig)))
     monkeypatch.setattr(staging_guard, "_charged_tree", lambda *_: (90, 1))
@@ -1867,24 +1972,74 @@ def test_staging_guard_stop_and_measurement_failure_target_owned_pid(tmp_path, m
         def wait(self, _):
             self.stopped = True
             return True
-    staging_guard._watch(path, tmp_path, "/groups/klannon", pid, start, 80, 100, 15, 1, stop_event())
+    staging_guard._watch(path, tmp_path, "/groups/klannon", pid, start, 80, 100, 15, 1, stop_event(), *identity)
     assert signalled == [(pid, staging_guard.signal.SIGTERM)]
     assert json.loads((path / "guard.json").read_text())["reason"] == "staging_stop_threshold"
     signalled.clear()
+    marker.write_text(json.dumps({"status": "running", "path": str(path),
+                                  "owner_uid": os.getuid(), "owner_pid": pid,
+                                  "owner_start": start, "owner_inode": path.stat().st_ino}))
     monkeypatch.setattr(staging_guard, "_space", lambda *_: (_ for _ in ()).throw(OSError("quota unavailable")))
-    staging_guard._watch(path, tmp_path, "/groups/klannon", pid, start, 80, 100, 15, 1, stop_event())
+    staging_guard._watch(path, tmp_path, "/groups/klannon", pid, start, 80, 100, 15, 1, stop_event(), *identity)
     assert signalled == [(pid, staging_guard.signal.SIGTERM)]
     assert json.loads((path / "guard.json").read_text())["reason"] == "measurement_failed"
     signalled.clear()
+    marker.write_text(json.dumps({"status": "running", "path": str(path),
+                                  "owner_uid": os.getuid(), "owner_pid": pid,
+                                  "owner_start": start, "owner_inode": path.stat().st_ino}))
     monkeypatch.setattr(staging_guard, "_space", lambda *_: (1000, 1000))
     monkeypatch.setattr(staging_guard, "_charged_tree", lambda *_: (70, 1))
-    staging_guard._watch(path, tmp_path, "/groups/klannon", pid, start, 80, 100, 15, 1, stop_event())
+    staging_guard._watch(path, tmp_path, "/groups/klannon", pid, start, 80, 100, 15, 1, stop_event(), *identity)
     assert signalled == []
     monkeypatch.setattr(staging_guard, "_charged_tree", lambda *_: (1, 1))
     monkeypatch.setattr(staging_guard, "_space", lambda *_: (10, 1000))
-    staging_guard._watch(path, tmp_path, "/groups/klannon", pid, start, 80, 100, 15, 1, stop_event())
+    staging_guard._watch(path, tmp_path, "/groups/klannon", pid, start, 80, 100, 15, 1, stop_event(), *identity)
     assert signalled == [(pid, staging_guard.signal.SIGTERM)]
     assert json.loads((path / "guard.json").read_text())["reason"] == "free_space_inode_or_quota_reserve"
+
+
+def test_staging_guard_transient_child_disappearance_does_not_signal(tmp_path, monkeypatch):
+    path = tmp_path / "owned"
+    path.mkdir()
+    child = path / "accumulated.pkl"
+    child.write_bytes(b"partial")
+    pid = os.getpid()
+    start = staging_guard._process_start(pid)
+    marker = path / "guard.json"
+    marker.write_text(json.dumps({"status": "running", "path": str(path),
+                                  "owner_uid": os.getuid(), "owner_pid": pid,
+                                  "owner_start": start, "owner_inode": path.stat().st_ino}))
+    real_scandir = staging_guard.os.scandir
+
+    class disappearing_scan:
+        def __enter__(self):
+            self.entries = list(real_scandir(path))
+            child.unlink()
+            return iter(self.entries)
+
+        def __exit__(self, *_):
+            return False
+
+    monkeypatch.setattr(staging_guard.os, "scandir", lambda current: disappearing_scan() if os.fspath(current) == str(path) else real_scandir(current))
+    signalled = []
+    monkeypatch.setattr(staging_guard.os, "kill", lambda target, sig: signalled.append((target, sig)))
+    monkeypatch.setattr(staging_guard, "_space", lambda *_: (1000000, 1000))
+
+    class stop_event:
+        stopped = False
+
+        def is_set(self):
+            return self.stopped
+
+        def wait(self, _):
+            self.stopped = True
+            return True
+
+    staging_guard._watch(path, tmp_path, "/groups/klannon", pid, start,
+                         80000, 100000, 15, 1, stop_event(), path.stat().st_ino,
+                         marker.stat().st_ino)
+    assert signalled == []
+    assert json.loads(marker.read_text())["status"] == "running"
 
 
 def test_staging_cleanup_is_owned_and_preserves_ambiguous_files(tmp_path, monkeypatch):

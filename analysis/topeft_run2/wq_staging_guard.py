@@ -115,29 +115,64 @@ def _charged_tree(path, max_entries=100000):
     pending = [path]
     while pending:
         current = pending.pop()
-        with os.scandir(current) as children:
-            for child in children:
-                entries += 1
-                if entries > max_entries:
-                    raise staging_guard_error("staging entry scan limit exceeded")
-                info = child.stat(follow_symlinks=False)
-                if stat.S_ISLNK(info.st_mode):
-                    raise staging_guard_error("symlink in owned staging tree")
-                total_bytes += info.st_blocks * 512
-                if stat.S_ISDIR(info.st_mode):
-                    pending.append(child.path)
+        try:
+            with os.scandir(current) as children:
+                for child in children:
+                    entries += 1
+                    if entries > max_entries:
+                        raise staging_guard_error("staging entry scan limit exceeded")
+                    try:
+                        info = child.stat(follow_symlinks=False)
+                    except FileNotFoundError:
+                        # Coffea may remove an accumulated child after scandir
+                        # yielded it. The next bounded poll measures again.
+                        continue
+                    if stat.S_ISLNK(info.st_mode):
+                        raise staging_guard_error("symlink in owned staging tree")
+                    total_bytes += info.st_blocks * 512
+                    if stat.S_ISDIR(info.st_mode):
+                        pending.append(child.path)
+        except FileNotFoundError:
+            if os.fspath(current) == os.fspath(path):
+                raise
+            # A queued intermediate directory can disappear after its stat.
+            continue
     return total_bytes, entries
 
 
+def _verify_owned_tree(path, marker, owner_pid, owner_start, owner_inode, marker_inode):
+    root_info = os.lstat(path)
+    marker_info = os.lstat(marker)
+    if (not stat.S_ISDIR(root_info.st_mode)
+            or stat.S_ISLNK(root_info.st_mode)
+            or root_info.st_ino != owner_inode
+            or root_info.st_uid != os.getuid()
+            or not stat.S_ISREG(marker_info.st_mode)
+            or marker_info.st_ino != marker_inode
+            or marker_info.st_uid != os.getuid()):
+        raise staging_guard_error("staging root or marker identity changed")
+    metadata = json.loads(marker.read_text())
+    if (metadata.get("path") != os.fspath(path)
+            or metadata.get("owner_inode") != owner_inode
+            or metadata.get("owner_uid") != os.getuid()
+            or metadata.get("owner_pid") != owner_pid
+            or metadata.get("owner_start") != owner_start
+            or metadata.get("status") != "running"):
+        raise staging_guard_error("staging owner marker changed")
+
+
 def _watch(path, base, quota_root, owner_pid, owner_start, warning_bytes,
-           stop_bytes, reserve_bytes, poll_seconds, stop_event):
+           stop_bytes, reserve_bytes, poll_seconds, stop_event, owner_inode,
+           marker_inode):
     marker = Path(path) / "guard.json"
     while not stop_event.is_set():
         if _process_start(owner_pid) != owner_start:
             return
         try:
+            _verify_owned_tree(path, marker, owner_pid, owner_start, owner_inode, marker_inode)
             charged_bytes, entries = _charged_tree(path)
             available_bytes, free_inodes = _space(base, quota_root)
+            _verify_owned_tree(path, marker, owner_pid, owner_start, owner_inode, marker_inode)
             reason = None
             if charged_bytes + reserve_bytes >= stop_bytes:
                 reason = "staging_stop_threshold"
@@ -197,11 +232,12 @@ def start_guard(base, invocation, quota_root, warning_bytes, stop_bytes,
                                   "owner_uid": os.getuid(), "owner_pid": owner_pid,
                                   "owner_start": owner_start, "owner_inode": owner_inode,
                                   "invocation": invocation}) + "\n")
+    marker_inode = marker.stat().st_ino
     context = multiprocessing.get_context("spawn")
     stop_event = context.Event()
     watchdog = context.Process(target=_watch, args=(str(path), str(real_base), quota_root,
         owner_pid, owner_start, warning_bytes, stop_bytes, reserve_bytes,
-        poll_seconds, stop_event), daemon=False)
+        poll_seconds, stop_event, owner_inode, marker_inode), daemon=False)
     try:
         watchdog.start()
     except Exception as error:
