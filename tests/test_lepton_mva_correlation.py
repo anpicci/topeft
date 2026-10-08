@@ -19,7 +19,7 @@ from topeft.modules.datacard_tools import (
 @pytest.mark.parametrize("direction", ("Up", "Down"))
 def test_resolver_exact_mva_identities(base, run_suffix, domain, direction):
     for mode, expected in (("per-run", f"{base}_{domain}"),
-                           ("cross-run", cross_run_mva_identities[base])):
+                           ("cross-run", base)):
         assert resolve_shape_nuisance_identity(
             f"{base}{direction}", run_suffix, [base], mode,
         ) == (expected, f"{expected}{direction}")
@@ -131,15 +131,23 @@ def test_card_time_txt_root_and_numeric_ab_control(tmp_path, years, domain):
     cross_card, cross_root, cross_scalings = _make_card(tmp_path / "cross", "cross-run", years)
     per_names, per_rates, per_templates = _card_contents(per_card, per_root)
     cross_names, cross_rates, cross_templates = _card_contents(cross_card, cross_root)
-    for base, shared in cross_run_mva_identities.items():
+    mva_names = lambda names: {
+        name for name in names
+        if any(name == base or name.startswith(f"{base}_13")
+               for base in cross_run_mva_identities)
+    }
+    assert mva_names(per_names) == {f"{base}_{domain}" for base in cross_run_mva_identities}
+    assert mva_names(cross_names) == set(cross_run_mva_identities)
+    for base in cross_run_mva_identities:
+        shared = base
         assert f"{base}_{domain}" in per_names
         assert shared in cross_names
         for direction in ("Up", "Down"):
             assert f"ttH_sm_{base}_{domain}{direction}" in per_templates
             assert f"ttH_sm_{shared}{direction}" in cross_templates
     def normalize(name):
-        for base, shared in cross_run_mva_identities.items():
-            name = name.replace(shared, f"{base}_{domain}")
+        for base in cross_run_mva_identities:
+            name = name.replace(base, f"{base}_{domain}")
         return name
     assert {normalize(name) for name in cross_names} == per_names
     assert per_rates == cross_rates

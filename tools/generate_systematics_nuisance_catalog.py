@@ -228,7 +228,9 @@ def render_catalog(model):
         "## Selectable electron and muon MVA correlation\n\n",
         "`per-run` is the default. `cross-run` shares each flavor's nuisance across Run 2 and Run 3; "
         "electron and muon remain separate. DatacardMaker selects the identity before TXT and ROOT writing. "
-        "The standardizer preserves an already shared final name and never combines independently produced per-run names.\n\n",
+        "The original TXT/ROOT and standardized TXT/ROOT use the same MVA identities: unsuffixed "
+        "names are shared, while run-suffixed names are per-run. The standardizer infers this from "
+        "source identities and rejects mixed topology within either flavor.\n\n",
         _table(("Mode", "Source base", "Run 2 final base", "Run 3 final base"), model["mva"]), "\n",
         "## Fully specified Tau identity precedence\n\n",
         "A nuisance base beginning with a maintained prefix is already fully specified. "

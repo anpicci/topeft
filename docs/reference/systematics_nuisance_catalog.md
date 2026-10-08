@@ -90,12 +90,12 @@ Each row is one normalized group; no particular textual year label is guaranteed
 
 ## Selectable electron and muon MVA correlation
 
-`per-run` is the default. `cross-run` shares each flavor's nuisance across Run 2 and Run 3; electron and muon remain separate. DatacardMaker selects the identity before TXT and ROOT writing. The standardizer preserves an already shared final name and never combines independently produced per-run names.
+`per-run` is the default. `cross-run` shares each flavor's nuisance across Run 2 and Run 3; electron and muon remain separate. DatacardMaker selects the identity before TXT and ROOT writing. The original TXT/ROOT and standardized TXT/ROOT use the same MVA identities: unsuffixed names are shared, while run-suffixed names are per-run. The standardizer infers this from source identities and rejects mixed topology within either flavor.
 
 | Mode | Source base | Run 2 final base | Run 3 final base |
 | --- | --- | --- | --- |
-| cross-run | lepSF_elec_mva | lepSF_elec_mva_13TeV_13p6TeV | lepSF_elec_mva_13TeV_13p6TeV |
-| cross-run | lepSF_muon_mva | lepSF_muon_mva_13TeV_13p6TeV | lepSF_muon_mva_13TeV_13p6TeV |
+| cross-run | lepSF_elec_mva | lepSF_elec_mva | lepSF_elec_mva |
+| cross-run | lepSF_muon_mva | lepSF_muon_mva | lepSF_muon_mva |
 | per-run | lepSF_elec_mva | lepSF_elec_mva_13TeV | lepSF_elec_mva_13p6TeV |
 | per-run | lepSF_muon_mva | lepSF_muon_mva_13TeV | lepSF_muon_mva_13p6TeV |
 
@@ -433,9 +433,9 @@ Static nuisance identity: `missing_parton`. DatacardMaker selects the run-era pa
 | fact_ttll | QCDscale_fac_ttll_ACCEPT | yes |
 | fact_ttlnu | QCDscale_fac_ttlnu_ACCEPT | yes |
 | fact_tttt | QCDscale_fac_tttt_ACCEPT | yes |
-| lepSF_elec_mva | lepSF_elec_mva_13TeV | yes |
+| lepSF_elec_mva | lepSF_elec_mva | no |
 | lepSF_elec_non_mva | lepSF_elec_non_mva_13TeV | yes |
-| lepSF_muon_mva | lepSF_muon_mva_13TeV | yes |
+| lepSF_muon_mva | lepSF_muon_mva | no |
 | lepSF_muon_non_mva | lepSF_muon_non_mva_13TeV | yes |
 | lepSF_taus_fake_run2 | CMS_TOP26006_eff_fake_t_13TeV | yes |
 | lumi_13TeV_15161718_l | lumi_13TeV_15161718_l | no |
@@ -681,9 +681,9 @@ Static nuisance identity: `missing_parton`. DatacardMaker selects the run-era pa
 | fact_ttll | QCDscale_fac_ttll_ACCEPT | yes |
 | fact_ttlnu | QCDscale_fac_ttlnu_ACCEPT | yes |
 | fact_tttt | QCDscale_fac_tttt_ACCEPT | yes |
-| lepSF_elec_mva | lepSF_elec_mva_13p6TeV | yes |
+| lepSF_elec_mva | lepSF_elec_mva | no |
 | lepSF_elec_non_mva | lepSF_elec_non_mva_13p6TeV | yes |
-| lepSF_muon_mva | lepSF_muon_mva_13p6TeV | yes |
+| lepSF_muon_mva | lepSF_muon_mva | no |
 | lepSF_muon_non_mva | lepSF_muon_non_mva_13p6TeV | yes |
 | lepSF_taus_fake_run3 | CMS_TOP26006_eff_fake_t_13p6TeV | yes |
 | lumi_1 | lumi_1 | no |

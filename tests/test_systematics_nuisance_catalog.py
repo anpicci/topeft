@@ -56,6 +56,11 @@ def test_datacard_static_registries_are_complete():
     page = OUTPUT.read_text(encoding="utf-8")
     for mode, base, run2, run3 in model["mva"]:
         assert f"| {mode} | {base} | {run2} | {run3} |" in page
+        if mode == "cross-run":
+            assert run2 == run3 == base
+        else:
+            assert (run2, run3) == (f"{base}_13TeV", f"{base}_13p6TeV")
+    assert "_13TeV_13p6TeV" not in page
     assert model["shape"] == tuple(sorted(
         (base, pattern, rule["group"],
          f"{base}_{rule['group']}" if rule["group"] else f"{base}_<matched process>")

@@ -51,6 +51,8 @@ choices. `--merge-only` stops after load/merge validation, and
 The optional `--lepton-mva-correlation {per-run,cross-run}` defaults to
 `per-run`. It changes only the final electron and muon MVA nuisance identities
 in the TXT card and ROOT keys; see the [nuisance reference](../reference/datacards_and_scalings.md).
+`cross-run` writes unsuffixed `lepSF_elec_mva` and `lepSF_muon_mva` names in
+both runs; `per-run` writes the corresponding run-energy suffixes.
 For matrix work, select the same option when generating each canonical manifest;
 its rows carry the choice in `producer_args`, including the explicit default.
 Older v3 rows without this option still mean `per-run` under their historical

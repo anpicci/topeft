@@ -257,10 +257,7 @@ tau_run2_year_correlation_bases = (
 
 lepton_mva_correlation_modes = ("per-run", "cross-run")
 default_lepton_mva_correlation = "per-run"
-cross_run_mva_identities = {
-    "lepSF_elec_mva": "lepSF_elec_mva_13TeV_13p6TeV",
-    "lepSF_muon_mva": "lepSF_muon_mva_13TeV_13p6TeV",
-}
+cross_run_mva_identities = ("lepSF_elec_mva", "lepSF_muon_mva")
 
 
 def validate_lepton_mva_correlation(mode):
@@ -288,7 +285,6 @@ def resolve_shape_nuisance_identity(
         return base, f"{base}{direction}"
     if base in run_decorrelate:
         if lepton_mva_correlation == "cross-run" and base in cross_run_mva_identities:
-            base = cross_run_mva_identities[base]
             return base, f"{base}{direction}"
         if base in (
             "lepSF_elec_mva", "lepSF_muon_mva",

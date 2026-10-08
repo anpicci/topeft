@@ -24,15 +24,23 @@ def test_pu_met_and_accepted_aliases(run, domain):
         f"CMS_scale_met_Unclustred_energy_{domain}"
     )
     assert resolve_nuisance_name("PreFiring", run) == "CMS_l1_ecal_prefiring"
-    for source in ("lepSF_elec_mva", "lepSF_muon_mva",
-                   "lepSF_elec_non_mva", "lepSF_muon_non_mva"):
+    for source in ("lepSF_elec_non_mva", "lepSF_muon_non_mva"):
         assert resolve_nuisance_name(source, run) == f"{source}_{domain}"
-    for shared in cross_run_mva_identities.values():
+    for shared in cross_run_mva_identities:
         assert resolve_nuisance_name(shared, run) == shared
+        assert resolve_nuisance_name(f"{shared}_{domain}", run) == f"{shared}_{domain}"
         for direction in ("Up", "Down"):
             assert remap_name(f"ttH_sm_{shared}{direction}", run) == f"ttH_sm_{shared}{direction}"
-    with pytest.raises(RuntimeError, match="not found"):
-        resolve_nuisance_name("lepSF_elec_mva_13TeV_13p6TeV_extra", run)
+            assert remap_name(f"ttH_sm_{shared}_{domain}{direction}", run) == f"ttH_sm_{shared}_{domain}{direction}"
+    for invalid in (
+        "lepSF_elec_mva_13TeV_13p6TeV",
+        "lepSF_muon_mva_13TeV_13p6TeV",
+        "lepSF_elec_mva_13TeV_13p6TeV_extra",
+        f"lepSF_elec_mva_{'13p6TeV' if run == 'run2' else '13TeV'}",
+        "lepSF_muon_mva_unknown",
+    ):
+        with pytest.raises(RuntimeError, match="not found"):
+            resolve_nuisance_name(invalid, run)
 
 
 @pytest.mark.parametrize("dm", (0, 1, 10, 11))
@@ -172,14 +180,14 @@ def _add_mva_shape(source, card_name, identity):
 def test_shared_mva_names_survive_paired_package_standardization(tmp_path):
     source, _ = make_package(tmp_path)
     for card_name in ("Run2_first.txt", "Run3_second.txt"):
-        for shared in cross_run_mva_identities.values():
+        for shared in cross_run_mva_identities:
             _add_mva_shape(source, card_name, shared)
     output = tmp_path / "derivative"
     standardize_package(source, output)
     for card_name in ("Run2_first.txt", "Run3_second.txt"):
         card = output / "cards" / card_name
         root = output / "cards" / card_name.replace(".txt", "_shapes.root")
-        for shared in cross_run_mva_identities.values():
+        for shared in cross_run_mva_identities:
             assert f"{shared} shape 1" in card.read_text()
             with uproot.open(root) as source_root, uproot.open(
                 source / "cards" / root.name
@@ -191,14 +199,76 @@ def test_shared_mva_names_survive_paired_package_standardization(tmp_path):
                     assert source_root[key].variances(flow=True).tolist() == original_root[key].variances(flow=True).tolist()
 
 
-def test_mixed_mva_topology_rejected_without_absence_false_positive(tmp_path):
+@pytest.mark.parametrize("base", cross_run_mva_identities)
+@pytest.mark.parametrize("shared_card,per_card,domain", (
+    ("Run2_first.txt", "Run3_second.txt", "13p6TeV"),
+    ("Run3_second.txt", "Run2_first.txt", "13TeV"),
+))
+def test_mixed_mva_topology_rejected_without_absence_false_positive(
+    tmp_path, base, shared_card, per_card, domain,
+):
     source, _ = make_package(tmp_path)
-    shared = cross_run_mva_identities["lepSF_elec_mva"]
-    _add_mva_shape(source, "Run2_first.txt", shared)
-    _add_mva_shape(source, "Run3_second.txt", "lepSF_elec_mva_13p6TeV")
+    _add_mva_shape(source, shared_card, base)
+    _add_mva_shape(source, per_card, f"{base}_{domain}")
     with pytest.raises(ValueError, match="Mixed lepton MVA correlation identities"):
         standardize_package(source, tmp_path / "derivative")
     assert not (tmp_path / "derivative").exists()
     source_2, _ = make_package(tmp_path / "separate")
-    _add_mva_shape(source_2, "Run2_first.txt", shared)
+    _add_mva_shape(source_2, shared_card, base)
     standardize_package(source_2, tmp_path / "separate_derivative")
+
+
+def test_per_run_mva_names_survive_paired_package_standardization(tmp_path):
+    source, _ = make_package(tmp_path)
+    for card_name, domain in (("Run2_first.txt", "13TeV"),
+                              ("Run3_second.txt", "13p6TeV")):
+        for base in cross_run_mva_identities:
+            _add_mva_shape(source, card_name, f"{base}_{domain}")
+    output = tmp_path / "derivative"
+    standardize_package(source, output)
+    for card_name, domain in (("Run2_first.txt", "13TeV"),
+                              ("Run3_second.txt", "13p6TeV")):
+        card = output / "cards" / card_name
+        root = output / "cards" / card_name.replace(".txt", "_shapes.root")
+        with uproot.open(root) as output_root:
+            original_root = source / "cards" / root.name
+            for base in cross_run_mva_identities:
+                identity = f"{base}_{domain}"
+                assert f"{identity} shape 1" in card.read_text()
+                with uproot.open(original_root) as source_root:
+                    for direction in ("Up", "Down"):
+                        key = f"ttH_sm_{identity}{direction}"
+                        assert key in output_root
+                        assert output_root[key].values(flow=True).tolist() == source_root[key].values(flow=True).tolist()
+                        assert output_root[key].variances(flow=True).tolist() == source_root[key].variances(flow=True).tolist()
+
+
+@pytest.mark.parametrize("card_name,invalid", (
+    ("Run2_first.txt", "lepSF_elec_mva_13p6TeV"),
+    ("Run3_second.txt", "lepSF_muon_mva_13TeV"),
+    ("Run2_first.txt", "lepSF_elec_mva_13TeV_13p6TeV"),
+    ("Run3_second.txt", "lepSF_muon_mva_13TeV_13p6TeV"),
+    ("Run3_second.txt", "lepSF_elec_mva_unknown"),
+))
+def test_invalid_mva_package_identity_rejected_before_output(tmp_path, card_name, invalid):
+    source, _ = make_package(tmp_path)
+    _add_mva_shape(source, card_name, invalid)
+    output = tmp_path / "derivative"
+    with pytest.raises(RuntimeError, match="not found"):
+        standardize_package(source, output)
+    assert not output.exists()
+
+
+@pytest.mark.parametrize("base", cross_run_mva_identities)
+def test_root_only_mixed_mva_topology_rejected_before_output(tmp_path, base):
+    source, _ = make_package(tmp_path)
+    _add_mva_shape(source, "Run2_first.txt", base)
+    root = source / "cards" / "Run3_second_shapes.root"
+    histogram = hist.Hist(hist.axis.Regular(1, 0, 1), storage=hist.storage.Weight())
+    with uproot.update(root) as root_file:
+        for direction in ("Up", "Down"):
+            root_file[f"ttH_sm_{base}_13p6TeV{direction}"] = histogram
+    output = tmp_path / "derivative"
+    with pytest.raises(ValueError, match="Mixed lepton MVA correlation identities"):
+        standardize_package(source, output)
+    assert not output.exists()

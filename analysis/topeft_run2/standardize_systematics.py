@@ -218,8 +218,8 @@ SYST_NAMING_MAP = {
         'CMS_scale_t_DeepTau2017v2p1_DM1_genTau_2018': 'CMS_scale_t_DeepTau2017v2p1_DM1_genTau_2018',
         'lepSF_elec_non_mva': 'lepSF_elec_non_mva_13TeV',
         'lepSF_muon_non_mva': 'lepSF_muon_non_mva_13TeV',
-        'lepSF_elec_mva': 'lepSF_elec_mva_13TeV',
-        'lepSF_muon_mva': 'lepSF_muon_mva_13TeV',
+        'lepSF_elec_mva': 'lepSF_elec_mva',
+        'lepSF_muon_mva': 'lepSF_muon_mva',
         'lumi_13TeV_15161718_l': 'lumi_13TeV_15161718_l',
         'lumi_13TeV_151617_l': 'lumi_13TeV_151617_l',
         'lumi_13TeV_1516_l': 'lumi_13TeV_1516_l',
@@ -483,8 +483,8 @@ SYST_NAMING_MAP = {
         'CMS_scale_t_DeepTau2018v2p5_DM1_genTau_2023BPix': 'CMS_scale_t_DeepTau2018v2p5_DM1_genTau_2023BPix',
         'lepSF_elec_non_mva': 'lepSF_elec_non_mva_13p6TeV',
         'lepSF_muon_non_mva': 'lepSF_muon_non_mva_13p6TeV',
-        'lepSF_elec_mva': 'lepSF_elec_mva_13p6TeV',
-        'lepSF_muon_mva': 'lepSF_muon_mva_13p6TeV',
+        'lepSF_elec_mva': 'lepSF_elec_mva',
+        'lepSF_muon_mva': 'lepSF_muon_mva',
         'lumi_1': 'lumi_1',
         'lumi_2': 'lumi_2',
     },
@@ -539,7 +539,10 @@ def resolve_nuisance_name(source_name, run):
     try:
         return SYST_NAMING_MAP[run][source_name]
     except KeyError as exc:
-        if run in SYST_NAMING_MAP and source_name in cross_run_mva_identities.values():
+        if run in SYST_NAMING_MAP and source_name in (
+            f"{base}_{'13TeV' if run == 'run2' else '13p6TeV'}"
+            for base in cross_run_mva_identities
+        ):
             return source_name
         if run in SYST_NAMING_MAP and source_name in (
             SYST_NAMING_MAP[run][base]
@@ -850,12 +853,14 @@ def _preflight_package(pairs):
     source_to_target = {}
     target_to_source = {}
     output_names = set()
-    observed_mva_identities = {base: set() for base in cross_run_mva_identities}
+    observed_mva_topologies = {base: set() for base in cross_run_mva_identities}
 
-    def record_mva_identity(source_name):
-        for base, shared_name in cross_run_mva_identities.items():
-            if source_name in (shared_name, f"{base}_13TeV", f"{base}_13p6TeV"):
-                observed_mva_identities[base].add(source_name)
+    def record_mva_identity(target_name):
+        for base in cross_run_mva_identities:
+            if target_name == base:
+                observed_mva_topologies[base].add("cross-run")
+            elif target_name in (f"{base}_13TeV", f"{base}_13p6TeV"):
+                observed_mva_topologies[base].add("per-run")
 
     for card_path, root_path, run in pairs:
         for path in (card_path, root_path):
@@ -864,8 +869,8 @@ def _preflight_package(pairs):
             output_names.add(path.name)
         _, shapes, rates = parse_datacard(card_path)
         for _, source_name in shapes + rates:
-            record_mva_identity(source_name)
-            _register_identity(source_name, run, source_to_target, target_to_source)
+            target_name = _register_identity(source_name, run, source_to_target, target_to_source)
+            record_mva_identity(target_name)
         key_targets = {}
         with uproot.open(root_path) as source_file:
             for key in source_file.keys(cycle=False):
@@ -873,17 +878,17 @@ def _preflight_package(pairs):
                 if identity is None:
                     continue
                 process, source_base, direction = identity
-                record_mva_identity(source_base)
                 target_base = _register_identity(
                     source_base, run, source_to_target, target_to_source
                 )
+                record_mva_identity(target_base)
                 target_key = (process, target_base, direction)
                 previous = key_targets.setdefault(target_key, key)
                 if previous != key:
                     raise ValueError(f"ROOT key collision: {previous} and {key}")
-    for base, identities in observed_mva_identities.items():
-        if cross_run_mva_identities[base] in identities and len(identities) > 1:
-            raise ValueError(f"Mixed lepton MVA correlation identities for {base}: {sorted(identities)}")
+    for base, topologies in observed_mva_topologies.items():
+        if len(topologies) > 1:
+            raise ValueError(f"Mixed lepton MVA correlation identities for {base}: {sorted(topologies)}")
     return source_to_target
 
 
