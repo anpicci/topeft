@@ -253,8 +253,10 @@ def read_reservation(row: dict[str, Any]) -> dict[str, Any] | None:
         if path.is_symlink():
             raise ValueError("reservation is a symlink")
         value = json.loads(path.read_text())
+        required_fields = {"schema", "row_id", "output_root", "backend", "owner_id", "created_at", "scheduler", "scheduler_id"}
         if (not isinstance(value, dict)
-                or set(value) != {"schema", "row_id", "output_root", "backend", "owner_id", "created_at", "scheduler", "scheduler_id"}
+                or not required_fields <= set(value)
+                or set(value) - required_fields - {"scheduler_observation"}
                 or value.get("schema") != RESERVATION_SCHEMA
                 or value.get("row_id") != row["row_id"]
                 or value.get("output_root") != str(Path(row["output_root"]).resolve())
@@ -266,6 +268,16 @@ def read_reservation(row: dict[str, Any]) -> dict[str, Any] | None:
             validate_scheduler(value["scheduler"])
         elif value["scheduler"] is not None:
             raise ValueError("local reservation carries a scheduler endpoint")
+        observation = value.get("scheduler_observation")
+        if observation is not None:
+            keys = {"scheduler_id", "global_job_id", "schedd", "pool", "source", "observed_at"}
+            if (not isinstance(observation, dict) or set(observation) != keys
+                    or any(item is not None and (not isinstance(item, str) or not item or "\x00" in item)
+                           for item in observation.values())
+                    or observation["source"] not in {"hint", "default", "global"}
+                    or (observation["scheduler_id"] is not None
+                        and not re.fullmatch(r"[0-9]+\.[0-9]+", observation["scheduler_id"]))):
+                raise ValueError("scheduler observation is malformed")
         return value
     except FileNotFoundError:
         return None
@@ -279,11 +291,14 @@ def validate_reservation_token(token: str) -> None:
 
 
 def validate_scheduler(scheduler: dict) -> None:
-    if (not isinstance(scheduler, dict) or set(scheduler) != {"pool", "schedd", "query_executable"}
+    if (not isinstance(scheduler, dict)
+            or not {"query_executable"} <= set(scheduler)
+            or set(scheduler) - {"query_executable", "dispatch_directory", "pool", "schedd"}
             or any(not isinstance(value, str) or not value for value in scheduler.values())
-            or any(not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:@+-]*", scheduler[key]) for key in ("pool", "schedd"))
-            or not Path(scheduler["query_executable"]).is_absolute()):
-        raise RunnerError("condor_configuration_error", "invalid scheduler endpoint/query executable")
+            or not Path(scheduler["query_executable"]).is_absolute()
+            or ("dispatch_directory" in scheduler and not Path(scheduler["dispatch_directory"]).is_absolute())
+            or any(not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:@+-]*", scheduler[key]) for key in ("pool", "schedd") if key in scheduler)):
+        raise RunnerError("condor_configuration_error", "invalid scheduler observation/query configuration")
 
 
 def new_reservation(row: dict[str, Any], backend: str, scheduler: dict | None = None) -> dict:
@@ -294,16 +309,31 @@ def new_reservation(row: dict[str, Any], backend: str, scheduler: dict | None = 
             "scheduler": scheduler, "scheduler_id": None}
 
 
-def query_reservation(reservation: dict) -> dict:
-    """Submit-side only: discover current ownership by safe transaction token."""
-    validate_reservation_token(reservation["owner_id"])
-    scheduler = reservation["scheduler"]
-    constraint = f'DatacardReservation == "{reservation["owner_id"]}"'
-    argv = [scheduler["query_executable"], "-pool", scheduler["pool"], "-name", scheduler["schedd"],
-            "-allusers", "-constraint", constraint,
-            "-json", "-attributes", "ClusterId,ProcId,JobStatus,DatacardUnit,DatacardReservation,HoldReason,HoldReasonCode,HoldReasonSubCode"]
-    observed_at = now()
-    result = None
+def reported_cluster_id(stdout: str) -> int | None:
+    match = re.search(r"\bsubmitted to cluster ([0-9]+)\b", stdout, re.IGNORECASE)
+    return int(match.group(1)) if match else None
+
+
+def scheduler_snapshot(scheduler: dict) -> dict:
+    """Best-effort context immediately before submission; never a target selector."""
+    snapshot = {"observed_at": now()}
+    try:
+        snapshot["submit_host"] = socket.gethostname()
+    except OSError:
+        pass
+    for name, argv in (("collector", ["condor_config_val", "COLLECTOR_HOST"]),
+                       ("default_schedd", ["condor_config_val", "SCHEDD_HOST"]),
+                       ("htcondor_version", ["condor_version"])):
+        try:
+            result = subprocess.run(argv, capture_output=True, text=True, timeout=5, check=False)
+            if result.returncode == 0 and result.stdout.strip():
+                snapshot[name] = result.stdout.strip()
+        except (OSError, ValueError, subprocess.TimeoutExpired):
+            pass
+    return snapshot
+
+
+def _query_ads(argv: list[str]) -> tuple[list[dict] | None, str | None]:
     try:
         result = subprocess.run(argv, capture_output=True, text=True, timeout=30, check=False)
         if result.returncode:
@@ -311,29 +341,124 @@ def query_reservation(reservation: dict) -> dict:
         ads = json.loads(result.stdout)
         if not isinstance(ads, list):
             raise ValueError("scheduler reply is not a JSON list")
+        return ads, None
     except (OSError, ValueError, subprocess.TimeoutExpired) as exc:
-        raise RunnerError("SCHEDULER_OBSERVABILITY_UNAVAILABLE",
-                          f"query={argv!r}; observed_at={observed_at}; error={exc}; "
-                          f"stdout={getattr(result, 'stdout', getattr(exc, 'stdout', None))!r}; "
-                          f"stderr={getattr(result, 'stderr', getattr(exc, 'stderr', None))!r}",
-                          row_id=reservation["row_id"]) from exc
-    if len(ads) > 1:
-        locators = [f'{ad.get("ClusterId")}.{ad.get("ProcId")}' if isinstance(ad, dict) else repr(ad) for ad in ads]
-        raise RunnerError("DUPLICATE_SCHEDULER_OWNERSHIP",
-                          f"token={reservation['owner_id']}; jobs={locators}; observed_at={observed_at}",
-                          row_id=reservation["row_id"])
-    if not ads:
-        return {"state": "GONE", "scheduler_id": reservation["scheduler_id"],
-                "ownership": "GONE", "observed_at": observed_at}
-    ad = ads[0]
-    if (not isinstance(ad, dict) or ad.get("DatacardUnit") != reservation["row_id"]
-            or ad.get("DatacardReservation") != reservation["owner_id"]
-            or any(type(ad.get(k)) is not int or ad[k] < 0 for k in ("ClusterId", "ProcId"))
-            or type(ad.get("JobStatus")) is not int or ad["JobStatus"] not in SCHEDULER_STATES):
-        raise RunnerError("scheduler_observation_invalid", f"invalid token/row/state reply: {ad!r}; query={argv!r}; observed_at={observed_at}", row_id=reservation["row_id"])
-    return {"state": SCHEDULER_STATES[ad["JobStatus"]], "ownership": "ACTIVE",
-            "scheduler_id": f'{ad["ClusterId"]}.{ad["ProcId"]}', "observed_at": observed_at,
-            "hold_evidence": {key: ad[key] for key in ("HoldReason", "HoldReasonCode", "HoldReasonSubCode") if key in ad}}
+        return None, f"query={argv!r}; error={exc}"
+
+
+def _terminal_event_log(reservation: dict) -> str | None:
+    """A remove event is terminal; an exit event alone may precede a retry."""
+    observed = reservation.get("scheduler_observation") or {}
+    locator = observed.get("scheduler_id") or reservation.get("scheduler_id")
+    directory = reservation["scheduler"].get("dispatch_directory")
+    if not directory or not isinstance(locator, str) or not re.fullmatch(r"[0-9]+\.[0-9]+", locator):
+        return None
+    path = Path(directory) / "logs" / f'{reservation["row_id"]}__{locator}.events.log'
+    try:
+        if path.is_symlink() or not path.is_file():
+            return None
+        content = path.read_text()
+    except (OSError, UnicodeError):
+        return None
+    if re.search(rf"(?m)^009 \({re.escape(locator)}\.[0-9]+\)", content):
+        return str(path)
+    return None
+
+
+def query_reservation(reservation: dict) -> dict:
+    """Submit-side token discovery; a locator is a hint, never ownership authority."""
+    validate_reservation_token(reservation["owner_id"])
+    scheduler = reservation["scheduler"]
+    validate_scheduler(scheduler)
+    observed = reservation.get("scheduler_observation") or {}
+    constraint = f'DatacardReservation == "{reservation["owner_id"]}"'
+    attributes = "ClusterId,ProcId,JobStatus,DatacardUnit,DatacardReservation,GlobalJobId,ScheddName,HoldReason,HoldReasonCode,HoldReasonSubCode"
+    base = ["-allusers", "-constraint", constraint, "-json", "-attributes", attributes]
+    sources = []
+    hint_schedd = observed.get("schedd") or scheduler.get("schedd")
+    hint_pool = observed.get("pool") or scheduler.get("pool")
+    if hint_schedd and hint_pool:
+        sources.append(("hint", [scheduler["query_executable"], "-pool", hint_pool, "-name", hint_schedd, *base]))
+    sources.extend((("default", [scheduler["query_executable"], *base]),
+                    ("global", [scheduler["query_executable"], "-global", *base])))
+    observed_at = now()
+    current_snapshot = scheduler_snapshot(scheduler)
+    diagnostics = []
+    live = {}
+    covered_zero = []
+    for source, argv in sources:
+        ads, error = _query_ads(argv)
+        if error:
+            diagnostics.append({"source": source, "error": error})
+            continue
+        if len(ads) > 1:
+            job_ids = [f'{ad.get("ClusterId")}.{ad.get("ProcId")}' if isinstance(ad, dict) else repr(ad) for ad in ads]
+            raise RunnerError("DUPLICATE_SCHEDULER_OWNERSHIP", f"token={reservation['owner_id']}; jobs={job_ids}; source={source}; observed_at={observed_at}", row_id=reservation["row_id"])
+        same_pool = (observed.get("pool") and current_snapshot.get("collector")
+                     and observed["pool"] == current_snapshot["collector"])
+        same_default = (observed.get("schedd") and current_snapshot.get("default_schedd")
+                        and observed["schedd"] == current_snapshot["default_schedd"])
+        if not ads and ((source == "hint" and observed.get("schedd") == hint_schedd
+                         and observed.get("pool") == hint_pool)
+                        or (source == "global" and same_pool)
+                        or (source == "default" and same_pool and same_default)):
+            covered_zero.append(source)
+        for ad in ads:
+            if (not isinstance(ad, dict) or ad.get("DatacardUnit") != reservation["row_id"]
+                    or ad.get("DatacardReservation") != reservation["owner_id"]
+                    or any(type(ad.get(k)) is not int or ad[k] < 0 for k in ("ClusterId", "ProcId"))
+                    or type(ad.get("JobStatus")) is not int or ad["JobStatus"] not in SCHEDULER_STATES):
+                raise RunnerError("scheduler_observation_invalid", f"invalid token/row/state reply: {ad!r}; query={argv!r}; observed_at={observed_at}", row_id=reservation["row_id"])
+            locator = ad.get("GlobalJobId") or (ad.get("ScheddName"), ad["ClusterId"], ad["ProcId"])
+            if str(locator) in live and live[str(locator)][0] != ad:
+                raise RunnerError("SCHEDULER_EVIDENCE_CONTRADICTION", f"token={reservation['owner_id']}; inconsistent live ads for {locator}; observed_at={observed_at}", row_id=reservation["row_id"])
+            live[str(locator)] = (ad, source)
+    if len(live) > 1:
+        job_ids = [f'{ad["ClusterId"]}.{ad["ProcId"]}' for ad, _ in live.values()]
+        raise RunnerError("DUPLICATE_SCHEDULER_OWNERSHIP", f"token={reservation['owner_id']}; jobs={job_ids}; observed_at={observed_at}", row_id=reservation["row_id"])
+    terminal_proof = None
+    event_log = _terminal_event_log(reservation)
+    if event_log:
+        terminal_proof = {"source": "event_log_remove", "path": event_log}
+    history_executable = shutil.which("condor_history")
+    if history_executable:
+        history_argv = [history_executable, "-constraint", constraint, "-json", "-attributes", attributes]
+        history_ads, history_error = _query_ads(history_argv)
+        if history_error:
+            diagnostics.append({"source": "history", "error": history_error})
+        elif history_ads:
+            matches = [ad for ad in history_ads if isinstance(ad, dict)
+                       and ad.get("DatacardReservation") == reservation["owner_id"]
+                       and ad.get("DatacardUnit") == reservation["row_id"]
+                       and ad.get("JobStatus") in (3, 4)]
+            if matches:
+                terminal_proof = {"source": "history", "global_job_id": matches[0].get("GlobalJobId"),
+                                  "scheduler_id": f'{matches[0].get("ClusterId")}.{matches[0].get("ProcId")}' }
+    if live and terminal_proof:
+        raise RunnerError("SCHEDULER_EVIDENCE_CONTRADICTION", f"live={list(live)}; terminal={terminal_proof}; observed_at={observed_at}", row_id=reservation["row_id"])
+    if live:
+        ad, source = next(iter(live.values()))
+        return {"state": SCHEDULER_STATES[ad["JobStatus"]], "ownership": "ACTIVE",
+                "scheduler_id": f'{ad["ClusterId"]}.{ad["ProcId"]}', "observed_at": observed_at,
+                "source": source, "global_job_id": ad.get("GlobalJobId"),
+                "schedd": ad.get("ScheddName") or current_snapshot.get("default_schedd"),
+                "pool": hint_pool if source == "hint" else current_snapshot.get("collector"),
+                "hold_evidence": {key: ad[key] for key in ("HoldReason", "HoldReasonCode", "HoldReasonSubCode") if key in ad},
+                "diagnostics": diagnostics}
+    if terminal_proof or covered_zero:
+        return {"state": "GONE", "ownership": "GONE", "scheduler_id": reservation["scheduler_id"],
+                "observed_at": observed_at, "terminal_proof": terminal_proof or {"source": "covered_zero", "query_source": covered_zero[0]},
+                "diagnostics": diagnostics}
+    code = "SCHEDULER_OBSERVABILITY_INCOMPLETE" if any(item["source"] == "hint" for item in diagnostics) else "SCHEDULER_OBSERVABILITY_INSUFFICIENT"
+    raise RunnerError(code, f"token={reservation['owner_id']}; observed_at={observed_at}; diagnostics={diagnostics}; no terminal proof or covered zero-result query", row_id=reservation["row_id"])
+
+
+def record_scheduler_observation(reservation: dict, observation: dict) -> None:
+    reservation["scheduler_id"] = observation["scheduler_id"]
+    if observation.get("source") in {"hint", "default", "global"}:
+        reservation["scheduler_observation"] = {key: observation.get(key) for key in
+            ("scheduler_id", "global_job_id", "schedd", "pool", "source", "observed_at")}
+    atomic_json(reservation, reservation_path(reservation), True)
 
 
 def reconcile_h2(manifest: dict, manifest_hash: str, row: dict) -> dict:
@@ -347,7 +472,8 @@ def reconcile_h2(manifest: dict, manifest_hash: str, row: dict) -> dict:
     return state
 
 
-def reconcile_reservation(manifest: dict, manifest_hash: str, row: dict) -> dict | None:
+def reconcile_reservation(manifest: dict, manifest_hash: str, row: dict,
+                          evidence: dict | None = None) -> dict | None:
     """Under unit_lease, observe ownership or retire it only after safe H2."""
     reservation = read_reservation(row)
     if reservation is None:
@@ -355,9 +481,12 @@ def reconcile_reservation(manifest: dict, manifest_hash: str, row: dict) -> dict
     if reservation["backend"] == "condor":
         observation = query_reservation(reservation)
         if observation["state"] != "GONE":
-            reservation["scheduler_id"] = observation["scheduler_id"]
-            atomic_json(reservation, reservation_path(row), True)
+            record_scheduler_observation(reservation, observation)
             return {**reservation, **observation}
+        if evidence is not None:
+            evidence.update({"reservation_token": reservation["owner_id"],
+                             "terminal_proof": observation.get("terminal_proof"),
+                             "observed_at": observation.get("observed_at")})
     reconcile_h2(manifest, manifest_hash, row)
     reservation_path(row).unlink()
     return None
@@ -1125,8 +1254,10 @@ def main(argv: list[str] | None = None) -> int:
             states = []
             for selected in ([row] if row else manifest["rows"]):
                 with unit_lease(manifest, selected):
-                    reservation = reconcile_reservation(manifest, manifest_hash, selected)
+                    evidence = {}
+                    reservation = reconcile_reservation(manifest, manifest_hash, selected, evidence)
                     states.append({"row_id": selected["row_id"], "reservation": reservation,
+                                   "terminal_evidence": evidence or None,
                                    "h2": classify(manifest, manifest_hash, selected, False)})
             result = {"rows": states, "producer_executed": False}
         elif row:

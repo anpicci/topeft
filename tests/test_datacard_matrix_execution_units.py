@@ -315,13 +315,17 @@ def test_token_query_accepts_changed_locator_and_reports_failures(tmp_path, fake
     reservation["scheduler_id"] = "123.7"
     ad = {"ClusterId": 456, "ProcId": 2, "JobStatus": 1, "DatacardUnit": row["row_id"],
           "DatacardReservation": reservation["owner_id"]}
+    monkeypatch.setattr(runner, "scheduler_snapshot", lambda scheduler: {"observed_at": "synthetic"})
     def install(ads, returncode=0):
         def query(argv, **kwargs):
-            assert argv[:5] == ["/bin/false", "-pool", "synthetic.pool", "-name", "synthetic.schedd"]
-            assert "-allusers" in argv
             assert argv[argv.index("-constraint") + 1] == f'DatacardReservation == "{reservation["owner_id"]}"'
             assert kwargs["timeout"] == 30
-            return subprocess.CompletedProcess(argv, returncode, json.dumps(ads), "specific synthetic failure")
+            if argv[0] != "/bin/false":
+                return subprocess.CompletedProcess(argv, 0, "[]", "")
+            if "-name" in argv:
+                assert argv[:5] == ["/bin/false", "-pool", "synthetic.pool", "-name", "synthetic.schedd"]
+                return subprocess.CompletedProcess(argv, returncode, json.dumps(ads), "specific synthetic failure")
+            return subprocess.CompletedProcess(argv, 0, "[]", "")
         monkeypatch.setattr(runner.subprocess, "run", query)
     install([ad])
     observation = runner.query_reservation(reservation)
@@ -332,6 +336,10 @@ def test_token_query_accepts_changed_locator_and_reports_failures(tmp_path, fake
         runner.query_reservation(reservation)
     assert error.value.code == "DUPLICATE_SCHEDULER_OWNERSHIP"
     assert "456.2" in str(error.value) and "789.8" in str(error.value)
+    install([ad, ad])
+    with pytest.raises(runner.RunnerError) as error:
+        runner.query_reservation(reservation)
+    assert error.value.code == "DUPLICATE_SCHEDULER_OWNERSHIP"
     before = runner.reservation_path(row).read_bytes()
     with pytest.raises(runner.RunnerError) as error:
         runner.execute_unit(data, sha(path), row)
@@ -347,13 +355,14 @@ def test_token_query_accepts_changed_locator_and_reports_failures(tmp_path, fake
     before = runner.reservation_path(row).read_bytes()
     with pytest.raises(runner.RunnerError) as error:
         runner.execute_unit(data, sha(path), row)
-    assert error.value.code == "SCHEDULER_OBSERVABILITY_UNAVAILABLE"
+    assert error.value.code == "SCHEDULER_OBSERVABILITY_INCOMPLETE"
     assert all(text in str(error.value) for text in ("specific synthetic failure", "observed_at=", "-constraint", "exit=1"))
     assert runner.reservation_path(row).read_bytes() == before
     install([])
     for cached_locator in (None, "123.7", "obsolete locator"):
         reservation["scheduler_id"] = cached_locator
-        assert runner.query_reservation(reservation)["state"] == "GONE"
+        with pytest.raises(runner.RunnerError, match="no terminal proof"):
+            runner.query_reservation(reservation)
 
 
 @pytest.mark.parametrize("failure", [OSError("missing condor_q"), subprocess.TimeoutExpired(["condor_q"], 30), "{bad", "{}"])
@@ -369,9 +378,71 @@ def test_unobservable_scheduler_preserves_reservation(tmp_path, fake_script, mon
     monkeypatch.setattr(runner.subprocess, "run", query)
     with pytest.raises(runner.RunnerError) as error:
         runner.execute_unit(data, sha(path), row)
-    assert error.value.code == "SCHEDULER_OBSERVABILITY_UNAVAILABLE"
+    assert error.value.code == "SCHEDULER_OBSERVABILITY_INCOMPLETE"
     assert "query=" in str(error.value) and "observed_at=" in str(error.value)
     assert runner.reservation_path(row).read_bytes() == before
+
+
+@pytest.mark.parametrize("evidence", ["fallback_live", "no_proof", "history", "event_log", "covered_zero", "contradiction"])
+def test_scheduler_hint_failure_uses_independent_token_evidence(tmp_path, fake_script, monkeypatch, evidence):
+    row = make_row(tmp_path, fake_script)
+    path, data = manifest(tmp_path, fake_script, [row])
+    reservation = reserve(data, path, row)
+    reservation["scheduler_observation"] = {
+        "scheduler_id": "123.7", "schedd": "synthetic.schedd", "pool": "synthetic.pool",
+        "source": "hint", "observed_at": "synthetic", "global_job_id": None}
+    reservation["scheduler_id"] = "123.7"
+    reservation["scheduler"]["dispatch_directory"] = str(tmp_path / "dispatch")
+    runner.atomic_json(reservation, runner.reservation_path(row), True)
+    base_ad = {"DatacardUnit": row["row_id"], "DatacardReservation": reservation["owner_id"], "JobStatus": 2}
+    live_ad = {**base_ad, "ClusterId": 456, "ProcId": 2,
+               "ScheddName": "new.schedd", "GlobalJobId": "new.schedd#456.2#1"}
+    history_ad = {**base_ad, "ClusterId": 123, "ProcId": 7,
+                  "JobStatus": 4, "GlobalJobId": "synthetic.schedd#123.7#1"}
+    monkeypatch.setattr(runner, "scheduler_snapshot", lambda scheduler: {
+        "collector": "different.pool" if evidence == "no_proof" else "synthetic.pool",
+        "default_schedd": "synthetic.schedd"})
+    monkeypatch.setattr(runner.shutil, "which", lambda name: "/bin/condor_history")
+    if evidence == "event_log":
+        logs = tmp_path / "dispatch" / "logs"
+        logs.mkdir(parents=True)
+        (logs / f'{row["row_id"]}__123.7.events.log').write_text("009 (123.7.0) 10/08 00:00:00 Job was aborted.\n")
+
+    def query(argv):
+        if argv[0] == "/bin/condor_history":
+            return ([history_ad] if evidence in {"history", "contradiction"} else []), None
+        if "-name" in argv:
+            if evidence == "covered_zero":
+                return [], None
+            return None, "hinted endpoint unreachable"
+        if evidence in {"fallback_live", "contradiction"}:
+            return [live_ad], None
+        return [], None
+
+    monkeypatch.setattr(runner, "_query_ads", query)
+    before = runner.reservation_path(row).read_bytes()
+    if evidence == "no_proof":
+        with pytest.raises(runner.RunnerError) as error:
+            runner.reconcile_reservation(data, sha(path), row)
+        assert error.value.code == "SCHEDULER_OBSERVABILITY_INCOMPLETE"
+    elif evidence == "contradiction":
+        with pytest.raises(runner.RunnerError) as error:
+            runner.reconcile_reservation(data, sha(path), row)
+        assert error.value.code == "SCHEDULER_EVIDENCE_CONTRADICTION"
+    elif evidence == "fallback_live":
+        observation = runner.reconcile_reservation(data, sha(path), row)
+        assert observation["ownership"] == "ACTIVE"
+        assert observation["scheduler_id"] == "456.2"
+        assert runner.read_reservation(row)["scheduler_observation"]["schedd"] == "new.schedd"
+    else:
+        observation = runner.query_reservation(reservation)
+        assert observation["ownership"] == "GONE"
+        assert observation["terminal_proof"]["source"] == {
+            "history": "history", "event_log": "event_log_remove", "covered_zero": "covered_zero"}[evidence]
+        assert runner.reconcile_reservation(data, sha(path), row) is None
+        assert runner.read_reservation(row) is None
+    if evidence in {"no_proof", "contradiction"}:
+        assert runner.reservation_path(row).read_bytes() == before
 
 
 @pytest.mark.parametrize("token", [None, "", "abc", "A" * 32, '" || true || "', "0" * 33, "0" * 32 + "\n"])

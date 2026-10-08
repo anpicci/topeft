@@ -1,5 +1,6 @@
 """Condor frontend tests use synthetic producers and never submit real jobs."""
 import json
+import os
 from pathlib import Path
 import re
 import shutil
@@ -15,7 +16,7 @@ from test_datacard_matrix_resumable_runner import fake_script, make_row, manifes
 
 
 resources = dict(request_cpus=1, request_memory="1GB", request_disk="1GB",
-                 max_retries=2, max_starts=3, schedd="synthetic_schedd", pool="synthetic_pool")
+                 max_retries=2, max_starts=3)
 
 
 @pytest.fixture
@@ -88,7 +89,7 @@ def test_material_identity_worker_command_and_no_submit(tmp_path, fake_script, f
         condor.prepare_material(path, destination, **resources)
 
 
-@pytest.mark.parametrize("field,value", [("request_cpus", None), ("request_cpus", 0), ("request_memory", None), ("request_memory", "1GB\nqueue 9"), ("request_disk", ""), ("max_runtime", 0), ("max_runtime", True), ("max_retries", None), ("max_retries", -1), ("max_retries", True), ("max_starts", None), ("max_starts", 0), ("max_starts", True), ("schedd", ""), ("pool", None), ("pool", "-injected"), ("query_executable", "relative_condor_q")])
+@pytest.mark.parametrize("field,value", [("request_cpus", None), ("request_cpus", 0), ("request_memory", None), ("request_memory", "1GB\nqueue 9"), ("request_disk", ""), ("max_runtime", 0), ("max_runtime", True), ("max_retries", None), ("max_retries", -1), ("max_retries", True), ("max_starts", None), ("max_starts", 0), ("max_starts", True), ("query_executable", "relative_condor_q")])
 def test_resources_are_explicit_and_fail_before_output(tmp_path, fake_script, fake_query, field, value):
     path, _ = manifest(tmp_path, fake_script, [make_row(tmp_path, fake_script)])
     with pytest.raises(runner.RunnerError):
@@ -106,7 +107,7 @@ def test_frontend_bypasses_all_parent_producer_work(tmp_path, fake_script, fake_
     monkeypatch.setattr(subprocess, "run", forbidden)
     monkeypatch.setattr(subprocess, "Popen", forbidden)
     monkeypatch.setattr(condor.shutil, "which", lambda name: str(fake_query[0]))
-    monkeypatch.setattr(sys, "argv", ["make_cards.py", "--condor", "--prepare-only", "--matrix-manifest", str(path), "--condor-output", str(tmp_path / "dispatch"), "--request-cpus", "1", "--request-memory", "1GB", "--request-disk", "1GB", "--max-retries", "2", "--max-starts", "3", "--condor-schedd", "synthetic_schedd", "--condor-pool", "synthetic_pool"])
+    monkeypatch.setattr(sys, "argv", ["make_cards.py", "--condor", "--prepare-only", "--matrix-manifest", str(path), "--condor-output", str(tmp_path / "dispatch"), "--request-cpus", "1", "--request-memory", "1GB", "--request-disk", "1GB", "--max-retries", "2", "--max-starts", "3"])
     make_cards.main()
     assert json.loads(capsys.readouterr().out)["submitted"] is False
     assert (tmp_path / "dispatch" / "datacards.sub").is_file()
@@ -163,13 +164,16 @@ def test_canonical_frontend_classifies_submit_outcome(tmp_path, fake_script, fak
         return FakeProcess()
 
     monkeypatch.setattr(condor.shutil, "which", executable)
+    monkeypatch.setattr(runner, "scheduler_snapshot", lambda scheduler: {"observed_at": "synthetic"})
+    def unavailable(reservation):
+        raise runner.RunnerError("SCHEDULER_OBSERVABILITY_INSUFFICIENT", "synthetic immediate observation failure")
+    monkeypatch.setattr(runner, "query_reservation", unavailable)
     monkeypatch.setattr(runner.submission_transaction, "mark_submission_started", mark_started)
     monkeypatch.setattr(condor.subprocess, "Popen", spawn)
     monkeypatch.setattr(sys, "argv", ["make_cards.py", "--condor", "--matrix-manifest", str(path),
                                   "--condor-output", str(destination), "--request-cpus", "1",
                                   "--request-memory", "1GB", "--request-disk", "1GB",
-                                  "--max-retries", "2", "--max-starts", "3",
-                                  "--condor-schedd", "synthetic_schedd", "--condor-pool", "synthetic_pool"])
+                                  "--max-retries", "2", "--max-starts", "3"])
     if outcome == "success":
         make_cards.main()
     else:
@@ -195,6 +199,61 @@ def test_canonical_frontend_classifies_submit_outcome(tmp_path, fake_script, fak
     else:
         assert result["submission_outcome"] == "AMBIGUOUS_SUBMISSION_OUTCOME"
         assert result["submitted"] is False
+
+
+@pytest.mark.parametrize("batch_name", [None, "operator group"])
+@pytest.mark.parametrize("observation_outcome", ["active", "query_error", "record_error"])
+def test_submit_success_keeps_reservation_and_optional_batch_name(
+        tmp_path, fake_script, fake_query, monkeypatch, batch_name, observation_outcome):
+    row = make_row(tmp_path, fake_script)
+    path, _ = manifest(tmp_path, fake_script, [row])
+    destination = tmp_path / "dispatch"
+    material = condor.prepare_material(path, destination, **resources,
+                                       query_executable=str(fake_query[0]))
+    monkeypatch.setattr(condor.shutil, "which", lambda name: str(fake_query[0]))
+    monkeypatch.setattr(runner, "scheduler_snapshot", lambda scheduler: {
+        "observed_at": "synthetic", "collector": "synthetic.pool"})
+    expected_argv = [str(fake_query[0])]
+    if batch_name is not None:
+        expected_argv += ["-batch-name", batch_name]
+    expected_argv += [str(destination / "datacards.sub")]
+
+    class FakeProcess:
+        returncode = 0
+
+        def communicate(self, timeout=None):
+            return "1 job(s) submitted to cluster 123.\n", ""
+
+    def spawn(argv, **kwargs):
+        assert argv == expected_argv
+        assert kwargs["pass_fds"]
+        return FakeProcess()
+
+    monkeypatch.setattr(condor.subprocess, "Popen", spawn)
+
+    def observe(reservation):
+        if observation_outcome == "query_error":
+            raise runner.RunnerError("SCHEDULER_OBSERVABILITY_INSUFFICIENT", "synthetic query failure")
+        return {"state": "RUNNING", "ownership": "ACTIVE", "scheduler_id": "123.0",
+                "source": "default", "schedd": "synthetic.schedd", "pool": "synthetic.pool",
+                "global_job_id": "synthetic.schedd#123.0#1", "observed_at": "synthetic"}
+
+    monkeypatch.setattr(runner, "query_reservation", observe)
+    if observation_outcome == "record_error":
+        monkeypatch.setattr(runner, "record_scheduler_observation", lambda *args: (_ for _ in ()).throw(OSError("synthetic write failure")))
+    result = condor.submit_material(path, destination, material["scheduler"], batch_name=batch_name)
+    assert result["submitted"] is True
+    assert result["submission_outcome"] == "SUBMIT_COMMAND_SUCCEEDED"
+    assert result["argv"] == expected_argv
+    assert result["reported_cluster_id"] == 123
+    assert result["pre_submit_scheduler_snapshot"]["collector"] == "synthetic.pool"
+    assert runner.read_reservation(row)["owner_id"] == (destination / "items.txt").read_text().split()[2]
+    if observation_outcome == "active":
+        assert runner.read_reservation(row)["scheduler_observation"]["global_job_id"] == "synthetic.schedd#123.0#1"
+        assert result["post_submit_observations"][0]["ownership"] == "ACTIVE"
+    else:
+        assert runner.read_reservation(row)["scheduler_id"] is None
+        assert result["post_submit_observations"][0]["state"] == "UNKNOWN"
 
 
 def test_worker_rejects_descriptor_mutation(tmp_path, fake_script, fake_query):
@@ -245,6 +304,11 @@ def test_scheduler_overlay_has_no_completion_or_retry_authority(tmp_path, fake_s
 
 
 def test_frontend_requires_manifest_and_rejects_producer_options(monkeypatch):
+    parser_options = {option for action in make_cards.build_arg_parser()._actions
+                      for option in action.option_strings}
+    assert "--condor-schedd" not in parser_options
+    assert "--condor-pool" not in parser_options
+    assert {"--condor-batch-name", "--prepare-only"} <= parser_options
     for args in (["--condor"], ["--condor", "--matrix-manifest", "/manifest.json", "--condor-output", "/dispatch", "--year", "2022"], ["--condor", "--matrix-manifest", "/manifest.json", "--condor-output", "/dispatch", "--binning", "fitting"], ["--condor", "--matrix-manifest", "/manifest.json", "--condor-output", "/dispatch", "--year-coverage-policy", "warn"], ["--chunks", "2"], ["--request-cpus", "1"], ["--prepare-only"]):
         monkeypatch.setattr(sys, "argv", ["make_cards.py", *args])
         with pytest.raises(SystemExit) as error:
@@ -504,6 +568,8 @@ def test_installed_parser_and_native_policy_evaluation(tmp_path, fake_script, fa
     site_config = Path(submit_executable).resolve().parents[2] / "etc" / "condor_config"
     if site_config.is_file():
         parser_env["CONDOR_CONFIG"] = str(site_config)
+    elif os.environ.get("CONDOR_CONFIG"):
+        parser_env["CONDOR_CONFIG"] = os.environ["CONDOR_CONFIG"]
     ads_path = tmp_path / "parsed.ads"
     parsed = subprocess.run([submit_executable, "-dry-run", str(ads_path), str(destination / "datacards.sub")],
                             env=parser_env, text=True, capture_output=True, timeout=30)
@@ -512,6 +578,16 @@ def test_installed_parser_and_native_policy_evaluation(tmp_path, fake_script, fa
         "stdout": parsed.stdout, "stderr": parsed.stderr,
     }, sort_keys=True))
     assert parsed.returncode == 0, parsed.stderr
+    batch_ads = tmp_path / "batch_parsed.ads"
+    batch_parsed = subprocess.run([submit_executable, "-dry-run", str(batch_ads),
+                                   "-batch-name", "operator_group", str(destination / "datacards.sub")],
+                                  env=parser_env, text=True, capture_output=True, timeout=30)
+    record_property("native_batch_parser_probe", json.dumps({
+        "argv": batch_parsed.args, "returncode": batch_parsed.returncode,
+        "stdout": batch_parsed.stdout, "stderr": batch_parsed.stderr,
+    }, sort_keys=True))
+    assert batch_parsed.returncode == 0, batch_parsed.stderr
+    assert 'JobBatchName="operator_group"' in batch_ads.read_text()
     # The long format stores common fields in the first ad and subsequent proc
     # deltas. Reopen the emitted bytes and apply inheritance for each queued row.
     raw_ads = ads_path.read_text()
@@ -547,6 +623,13 @@ def test_installed_parser_and_native_policy_evaluation(tmp_path, fake_script, fa
     assert len({ad["UserLog"] for ad in ads}) == len(rows)
     assert "MY.NumJobStarts < 3" in ads[0]["Requirements"]
     assert "NumJobCompletions > JobMaxRetries" in ads[0]["OnExitRemove"]
+
+    evaluator_probe = subprocess.run([evaluator, "-quiet", "[X=1]", "X"], env=parser_env,
+                                     text=True, capture_output=True, timeout=10)
+    if evaluator_probe.returncode and "No module named 'classad'" in evaluator_probe.stderr:
+        record_property("native_policy_evaluator_unavailable", evaluator_probe.stderr)
+        return
+    assert evaluator_probe.returncode == 0, evaluator_probe.stderr
 
     policy_evaluations = []
 

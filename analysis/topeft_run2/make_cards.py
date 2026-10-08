@@ -65,8 +65,7 @@ def build_arg_parser():
     parser.add_argument("--max-runtime", type=int, help="Optional AllowedExecuteDuration seconds per activation, excluding transfer time; timeout holds the job")
     parser.add_argument("--max-retries", type=int, help="Explicit terminal executable retry budget (zero disables retries)")
     parser.add_argument("--max-starts", type=int, help="Explicit total physical start budget, including eviction restarts")
-    parser.add_argument("--condor-schedd", help="Explicit scheduler name for live reservation queries")
-    parser.add_argument("--condor-pool", help="Explicit collector endpoint for live reservation queries")
+    parser.add_argument("--condor-batch-name", help="Optional HTCondor batch label for operator visibility")
     parser.add_argument("--keep-negative-bins",action="store_true",help="Don't crop negative bins")
     parser.add_argument("--use-AAC","-A",action="store_true",help="Include all EFT templates in datacards for AAC model")
     parser.add_argument("--wc-vals", default="",action="store", nargs="+", help="Specify the corresponding wc values to set for the wc list")
@@ -224,7 +223,7 @@ def main():
             from datacard_matrix_condor import prepare_material, submit_material, runner
         if not args.matrix_manifest or not args.condor_output:
             parser.error("--condor requires --matrix-manifest and --condor-output; generate the workload with make_datacard_matrix_manifest.py")
-        allowed = {"condor", "prepare_only", "matrix_manifest", "condor_output", "request_cpus", "request_memory", "request_disk", "max_runtime", "max_retries", "max_starts", "condor_schedd", "condor_pool"}
+        allowed = {"condor", "prepare_only", "matrix_manifest", "condor_output", "request_cpus", "request_memory", "request_disk", "max_runtime", "max_retries", "max_starts", "condor_batch_name"}
         allowed_options = {option for action in parser._actions if action.dest in allowed for option in action.option_strings}
         for token in sys.argv[1:]:
             if token.startswith("-") and token.split("=", 1)[0] not in allowed_options:
@@ -235,18 +234,17 @@ def main():
             result = prepare_material(Path(args.matrix_manifest), Path(args.condor_output),
                                       request_cpus=args.request_cpus, request_memory=args.request_memory,
                                       request_disk=args.request_disk, max_runtime=args.max_runtime,
-                                      max_retries=args.max_retries, max_starts=args.max_starts,
-                                      schedd=args.condor_schedd, pool=args.condor_pool)
+                                      max_retries=args.max_retries, max_starts=args.max_starts)
             if not args.prepare_only:
                 result = {**result, **submit_material(Path(args.matrix_manifest),
-                            Path(args.condor_output), result["scheduler"])}
+                            Path(args.condor_output), result["scheduler"], batch_name=args.condor_batch_name)}
         except (runner.RunnerError, OSError) as exc:
             parser.error(str(exc))
         print(json.dumps(result, indent=2, sort_keys=True))
         if not args.prepare_only and not result["submitted"]:
             raise SystemExit(1)
         return
-    if args.prepare_only or any(value is not None for value in (args.matrix_manifest, args.condor_output, args.request_cpus, args.request_memory, args.request_disk, args.max_runtime, args.max_retries, args.max_starts, args.condor_schedd, args.condor_pool)):
+    if args.prepare_only or any(value is not None for value in (args.matrix_manifest, args.condor_output, args.request_cpus, args.request_memory, args.request_disk, args.max_runtime, args.max_retries, args.max_starts, args.condor_batch_name)):
         parser.error("dispatch and resource options require --condor")
     pkl_files  = _resolve_pkl_paths(args, parser)
     from pathlib import Path

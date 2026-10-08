@@ -34,7 +34,7 @@ def submit_path(path: Path) -> str:
 
 def prepare_material(manifest_path: Path, destination: Path, *, request_cpus: int,
                      request_memory: str, request_disk: str,
-                     max_retries: int, max_starts: int, schedd: str, pool: str,
+                     max_retries: int, max_starts: int,
                      query_executable: str | None = None,
                      max_runtime: int | None = None) -> dict:
     """Write fresh dispatch material with one item per canonical unit.
@@ -51,13 +51,12 @@ def prepare_material(manifest_path: Path, destination: Path, *, request_cpus: in
         raise runner.RunnerError("condor_configuration_error", "max_runtime must be positive seconds when supplied")
     if type(max_retries) is not int or max_retries < 0 or type(max_starts) is not int or max_starts <= 0:
         raise runner.RunnerError("condor_configuration_error", "explicit max_retries >= 0 and max_starts > 0 are required")
-    if any(not isinstance(value, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:@+-]*", value) for value in (schedd, pool)):
-        raise runner.RunnerError("condor_configuration_error", "explicit schedd and pool endpoints are required")
     query_executable = query_executable or shutil.which("condor_q")
     if (not query_executable or not Path(query_executable).is_absolute()
             or not Path(query_executable).is_file() or not os.access(query_executable, os.X_OK)):
         raise runner.RunnerError("condor_configuration_error", "an absolute maintained condor_q executable is required")
-    scheduler = {"schedd": schedd, "pool": pool, "query_executable": submit_path(Path(query_executable))}
+    scheduler = {"query_executable": submit_path(Path(query_executable)),
+                 "dispatch_directory": submit_path(destination)}
     units = runner.derive_units(manifest_path)
     manifest, _, _ = runner.resolve_unit(units[0])
     destination = Path(submit_path(destination))
@@ -147,6 +146,7 @@ def submission_transaction(manifest_path: Path, destination: Path, scheduler: di
 
 def submit_material(manifest_path: Path, destination: Path, scheduler: dict, *,
                     submit_executable: str | None = None,
+                    batch_name: str | None = None,
                     timeout: float | None = None) -> dict:
     """Submit prepared material while holding every row's reservation lease.
 
@@ -158,10 +158,17 @@ def submit_material(manifest_path: Path, destination: Path, scheduler: dict, *,
             or not Path(submit_executable).is_file()
             or not os.access(submit_executable, os.X_OK)):
         raise runner.RunnerError("condor_configuration_error", "an absolute maintained condor_submit executable is required")
-    argv = [submit_path(Path(submit_executable)), submit_path(destination / "datacards.sub")]
+    if batch_name is not None and (not isinstance(batch_name, str) or not batch_name or "\x00" in batch_name):
+        raise runner.RunnerError("condor_configuration_error", "batch_name must be nonempty and contain no NUL")
+    argv = [submit_path(Path(submit_executable))]
+    if batch_name is not None:
+        argv.extend(["-batch-name", batch_name])
+    argv.append(submit_path(destination / "datacards.sub"))
+    pre_submit_snapshot = runner.scheduler_snapshot(scheduler)
     with submission_transaction(manifest_path, destination, scheduler) as transaction:
         result = {"argv": argv, "start_time": datetime.now(timezone.utc).isoformat(),
-                  "exit_status": None, "stdout": "", "stderr": ""}
+                  "exit_status": None, "stdout": "", "stderr": "",
+                  "pre_submit_scheduler_snapshot": pre_submit_snapshot}
         transaction.mark_submission_started()
         try:
             process = subprocess.Popen(argv, stdout=subprocess.PIPE,
@@ -192,6 +199,19 @@ def submit_material(manifest_path: Path, destination: Path, scheduler: dict, *,
             return {**result, "submitted": False,
                     "submission_outcome": "AMBIGUOUS_SUBMISSION_OUTCOME"}
         if process.returncode == 0:
+            result["reported_cluster_id"] = runner.reported_cluster_id(result["stdout"])
+            observations = []
+            for reservation in transaction.reservations:
+                try:
+                    observation = runner.query_reservation(reservation)
+                    if observation["ownership"] == "ACTIVE":
+                        runner.record_scheduler_observation(reservation, observation)
+                    observations.append({"row_id": reservation["row_id"], **observation})
+                except Exception as exc:
+                    observations.append({"row_id": reservation["row_id"], "state": "UNKNOWN",
+                                         "error_code": getattr(exc, "code", type(exc).__name__),
+                                         "reason": str(exc)})
+            result["post_submit_observations"] = observations
             return {**result, "submitted": True,
                     "submission_outcome": "SUBMIT_COMMAND_SUCCEEDED"}
         return {**result, "submitted": False,
