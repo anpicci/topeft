@@ -193,6 +193,18 @@ def years_for(profile):
     return ["run2"] if profile == "run2_sr_ext" else ["2022", "2022EE", "2023", "2023BPix"]
 
 
+def validate_output_namespace(blocks):
+    owners = {}
+    for block in blocks:
+        outputs = block["expected_outputs"]
+        paths = [*outputs, *(f"{output}.metadata.json" for output in outputs)]
+        for path in paths:
+            previous = owners.get(path)
+            if previous is not None:
+                fail(f"campaign output path collision between {previous} and {block['id']}: {path}")
+            owners[path] = block["id"]
+
+
 def plan_blocks(units, profile, tag, root, revision):
     years = years_for(profile)
     year_label = "UL16-UL16APV-UL17-UL18" if profile == "run2_sr_ext" else "2022-2022EE-2023-2023BPix"
@@ -215,6 +227,7 @@ def plan_blocks(units, profile, tag, root, revision):
             "expected_np_path": nonprompt,
             "plan_revision": revision,
         })
+    validate_output_namespace(blocks)
     return blocks
 
 
@@ -297,7 +310,7 @@ def verify_receipt(state, block):
             fail(f"block {block['id']} nonprompt lineage does not bind source")
     elif state["nonprompt_mode"] != "separate" or block.get("nonprompt_status") != "planned":
         fail(f"block {block['id']} is an invalid deferred source")
-    elif Path(block["expected_np_path"]).exists() or Path(f"{block['expected_np_path']}.metadata.json").exists():
+    elif os.path.lexists(block["expected_np_path"]) or os.path.lexists(f"{block['expected_np_path']}.metadata.json"):
         fail(f"block {block['id']} has ambiguous deferred nonprompt output")
 
 
@@ -334,6 +347,7 @@ def check_state(state, *, require_contract=True):
         snapshot = revision.get("blocks")
         if not isinstance(snapshot, list) or not snapshot:
             fail("empty or invalid revision snapshot")
+        validate_output_namespace(snapshot)
         units = [{
             "id": block["id"].removeprefix(f"{state['production_profile']}_"),
             "category_groups": block["category_groups"],
@@ -341,6 +355,9 @@ def check_state(state, *, require_contract=True):
         } for block in snapshot]
         if revision["id"] != f"r{index}_{canonical_digest(units)[:12]}":
             fail("revision snapshot identity mismatch")
+    validate_output_namespace([
+        block for revision in revisions for block in revision["blocks"]
+    ])
     target = target_coverage()
     if set(state.get("sr_reco_target_coverage", [])) != {coverage_key(item) for item in target}:
         fail("desired physical coverage changed")
@@ -349,6 +366,7 @@ def check_state(state, *, require_contract=True):
         fail("duplicate campaign unit id")
     if len({block.get("expected_nominal_path") for block in blocks}) != len(blocks):
         fail("duplicate campaign output path")
+    validate_output_namespace(blocks)
     for block in blocks:
         if any(Path(output).parent != Path(state["output_dir"]) for output in block["expected_outputs"]):
             fail("campaign output escapes its root")
@@ -388,6 +406,7 @@ def decorate_initial_state(state, chunk_size):
         fail("SR state already has revisions or unsupported schema")
     target = target_coverage()
     verify_partition(state["blocks"], target)
+    validate_output_namespace(state["blocks"])
     revision = state["blocks"][0].get("plan_revision")
     if not revision or any(block.get("plan_revision") != revision for block in state["blocks"]):
         fail("initial plan lacks one revision identity")
@@ -451,7 +470,7 @@ def activate(state_path, plan_path, expected_revision):
             frozen.append(block)
         elif block["status"] == "planned" and block["source_status"] == "planned" and block["nonprompt_status"] == "blocked":
             for output in block["expected_outputs"]:
-                if Path(output).exists() or Path(f"{output}.metadata.json").exists():
+                if os.path.lexists(output) or os.path.lexists(f"{output}.metadata.json"):
                     fail(f"untouched pending unit has an output collision: {output}")
         else:
             fail(f"unit {block['id']} is in-flight, failed or ambiguous")
@@ -468,7 +487,7 @@ def activate(state_path, plan_path, expected_revision):
         fail("replacement unit id collides with historical unit")
     for block in specs:
         for output in block["expected_outputs"]:
-            if output in historical_paths or Path(output).exists() or Path(f"{output}.metadata.json").exists():
+            if output in historical_paths or os.path.lexists(output) or os.path.lexists(f"{output}.metadata.json"):
                 fail(f"replacement output collides: {output}")
     replacement = [new_pending_block(spec) for spec in specs]
     candidate = dict(state)

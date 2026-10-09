@@ -795,7 +795,12 @@ if [[ -n "${profile_activate_pending_plan}" ]]; then
     echo "ERROR: pending-plan activation requires existing campaign state." >&2
     exit 1
   fi
-  exec {campaign_lock_fd}> "${output_dir}/.${production_profile}_campaign.lock"
+  campaign_lock_path="${output_dir}/.${production_profile}_campaign.lock"
+  if [[ -L "${campaign_lock_path}" ]]; then
+    echo "ERROR: campaign writer lock path must not be a symbolic link: ${campaign_lock_path}" >&2
+    exit 1
+  fi
+  exec {campaign_lock_fd}>> "${campaign_lock_path}"
   flock -n "${campaign_lock_fd}" || { echo "ERROR: campaign writer lock is held." >&2; exit 1; }
   python "$(dirname -- "${BASH_SOURCE[0]}")/sr_reco_manifest.py" activate \
     "${output_dir}/.${production_profile}_campaign_state.json" \
@@ -2119,7 +2124,12 @@ prepare_production_campaign() {
     if [[ "${profile_resume}" == "false" ]]; then
       mkdir -- "${output_dir}"
     fi
-    exec {campaign_lock_fd}> "${output_dir}/.${production_profile}_campaign.lock"
+    campaign_lock_path="${output_dir}/.${production_profile}_campaign.lock"
+    if [[ -L "${campaign_lock_path}" ]]; then
+      echo "ERROR: campaign writer lock path must not be a symbolic link: ${campaign_lock_path}" >&2
+      exit 1
+    fi
+    exec {campaign_lock_fd}>> "${campaign_lock_path}"
     flock -n "${campaign_lock_fd}" || { echo "ERROR: campaign writer lock is held." >&2; exit 1; }
     plan_directory="${output_dir}"
     production_plan_file=$(mktemp "${plan_directory}/.${production_profile}_plan.XXXXXX")
@@ -3063,9 +3073,11 @@ run_sr_block() {
       source_reusable=true
       ;;
     planned|failed)
-      if [[ -e "${source_path}" || -e "${nonprompt_path}" ]] \
+      if [[ -e "${source_path}" || -L "${source_path}" \
+        || -e "${nonprompt_path}" || -L "${nonprompt_path}" ]] \
         || { [[ "${production_profile}" == "t0_sr_statonly" ]] \
-          && { [[ -e "${source_sidecar_path}" ]] || [[ -e "${nonprompt_sidecar_path}" ]]; }; }; then
+          && { [[ -e "${source_sidecar_path}" ]] || [[ -L "${source_sidecar_path}" ]] \
+            || [[ -e "${nonprompt_sidecar_path}" ]] || [[ -L "${nonprompt_sidecar_path}" ]]; }; }; then
         echo "ERROR: ${production_profile} block ${production_block} is ${production_status}, but an expected output path already exists. Refusing ambiguous overwrite." >&2
         exit 1
       fi
@@ -3080,8 +3092,9 @@ run_sr_block() {
       ;;
   esac
 
-  if [[ -e "${nonprompt_path}" ]] \
-    || { [[ "${production_profile}" == "t0_sr_statonly" ]] && [[ -e "${nonprompt_sidecar_path}" ]]; }; then
+  if [[ -e "${nonprompt_path}" || -L "${nonprompt_path}" ]] \
+    || { [[ "${production_profile}" == "t0_sr_statonly" ]] \
+      && { [[ -e "${nonprompt_sidecar_path}" ]] || [[ -L "${nonprompt_sidecar_path}" ]]; }; }; then
     echo "ERROR: ${production_block} is not successful, but its expected _np path already exists. Refusing ambiguous overwrite." >&2
     exit 1
   fi

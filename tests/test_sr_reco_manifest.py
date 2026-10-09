@@ -149,6 +149,10 @@ def test_rejected_replans_preserve_authoritative_state(tmp_path, monkeypatch):
     state_path = output_root / f".{profile}_campaign_state.json"
     original = state_path.read_bytes()
     state = json.loads(original)
+    overlapping_state = copy.deepcopy(state)
+    overlapping_state["blocks"][1]["expected_outputs"][0] = state["blocks"][0]["expected_np_path"]
+    with pytest.raises(ValueError, match="output path collision"):
+        manifest.check_state(overlapping_state, require_contract=False)
     valid = _replacement_units()
     # The second original unit is still pending here, so this candidate has a gap.
     with pytest.raises(ValueError, match="missing"):
@@ -181,7 +185,15 @@ def test_rejected_replans_preserve_authoritative_state(tmp_path, monkeypatch):
         manifest.activate(state_path, complete_plan, state["active_sr_reco_revision"])
     assert state_path.read_bytes() == original
     Path(collision).unlink()
+    for occupied_path in (collision, f"{collision}.metadata.json"):
+        Path(occupied_path).symlink_to(validation_root / "missing-target")
+        with pytest.raises(ValueError, match="replacement output collides"):
+            manifest.activate(state_path, complete_plan, state["active_sr_reco_revision"])
+        assert state_path.read_bytes() == original
+        Path(occupied_path).unlink()
     lock_path = output_root / f".{profile}_campaign.lock"
+    lock_bytes = b"existing lock contents must survive\n"
+    lock_path.write_bytes(lock_bytes)
     with lock_path.open("a+") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         blocked = _run(
@@ -194,6 +206,23 @@ def test_rejected_replans_preserve_authoritative_state(tmp_path, monkeypatch):
         )
         assert blocked.returncode != 0
         assert "writer lock is held" in blocked.stdout
+    assert lock_path.read_bytes() == lock_bytes
+    lock_path.unlink()
+    lock_target = validation_root / "lock-target"
+    lock_target.write_bytes(b"lock target remains unchanged\n")
+    lock_path.symlink_to(lock_target)
+    blocked_symlink = _run(
+        profile, output_root, tag, dry_run=False, resume=True,
+        environment=_backend_environment(validation_root), supply_env_file=False,
+        extra_args=(
+            "--activate-pending-plan", str(complete_plan),
+            "--expected-plan-revision", state["active_sr_reco_revision"],
+        ),
+    )
+    assert blocked_symlink.returncode != 0
+    assert "lock path must not be a symbolic link" in blocked_symlink.stdout
+    assert lock_path.is_symlink()
+    assert lock_target.read_bytes() == b"lock target remains unchanged\n"
     assert state_path.read_bytes() == original
     overlap = copy.deepcopy(manifest.load_plan(manifest.DEFAULT_PLAN_PATH))
     overlap[1]["histograms"].append("invmass")
@@ -327,6 +356,44 @@ def test_plan_rejects_invalid_units_and_pair_sets(tmp_path):
     overlapping.append({**copy.deepcopy(plan[0]), "id": "another_a_1"})
     with pytest.raises(ValueError, match="duplicate"):
         manifest.verify_partition(overlapping, manifest.target_coverage())
+
+
+def test_plan_blocks_rejects_overlapping_source_and_nonprompt_paths(tmp_path):
+    units = copy.deepcopy(manifest.load_plan(manifest.DEFAULT_PLAN_PATH)[:2])
+    units[0]["id"] = "x"
+    units[1]["id"] = "x_np"
+    with pytest.raises(ValueError, match="output path collision"):
+        manifest.plan_blocks(units, "run2_sr_ext", "collision", tmp_path, "r1_test")
+
+
+def test_run_cr_preoutput_rejects_dangling_output_symlink(tmp_path):
+    profile = "run2_sr_ext"
+    validation_root = tmp_path / "preoutput-symlink"
+    validation_root.mkdir()
+    _write_backend(validation_root / "backend.sh")
+    output_root = validation_root / "output"
+    tag = "synthetic-preoutput-symlink"
+    initial = _run(
+        profile, output_root, tag, dry_run=False,
+        environment=_backend_environment(validation_root),
+        extra_args=("--selected-fragment", f"{profile}_a_1"),
+    )
+    assert initial.returncode == 0, initial.stdout
+    state_path = output_root / f".{profile}_campaign_state.json"
+    state = manifest.load_state(state_path)
+    pending = next(block for block in state["blocks"] if block["status"] == "planned")
+    Path(pending["expected_nominal_path"]).symlink_to(validation_root / "missing-pkl")
+    lock_path = output_root / f".{profile}_campaign.lock"
+    lock_bytes = b"second lock acquisition must preserve bytes\n"
+    lock_path.write_bytes(lock_bytes)
+    result = _run(
+        profile, output_root, tag, dry_run=False, resume=True,
+        environment=_backend_environment(validation_root), supply_env_file=False,
+        extra_args=("--selected-fragment", pending["id"]),
+    )
+    assert result.returncode != 0
+    assert "expected output path already exists" in result.stdout
+    assert lock_path.read_bytes() == lock_bytes
 
 
 def _write_plan(directory, units):
