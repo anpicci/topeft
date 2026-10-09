@@ -65,6 +65,7 @@ from topeft.modules.ttgamma_photon_history import (
 )
 import analysis_processor
 from analysis.topeft_run2.wq_staging_guard import (
+    _validate_base,
     finish_guard,
     staging_guard_error,
     start_guard,
@@ -1461,6 +1462,13 @@ if __name__ == "__main__":
     _log_category_group_selection(category_group_selection)
 
     if executor_name in ["work_queue", "taskvine"]:
+        if executor_name == "work_queue":
+            if not args.wq_guard or not wq_filepath:
+                raise SystemExit("Work Queue requires explicit guarded --wq-filepath staging")
+            try:
+                _validate_base(wq_filepath)
+            except staging_guard_error as error:
+                raise SystemExit(f"Work Queue staging preflight failed: {error}") from error
         if args.wq_guard and executor_name != "work_queue":
             raise SystemExit("--wq-guard currently supports Work Queue only")
         # construct wq port range
@@ -2195,7 +2203,7 @@ if __name__ == "__main__":
             "resources_mode": "auto",
             "resource_monitor": "measure",
             "split_on_exhaustion": True,
-            "filepath": str(wq_staging_dir) if wq_guard_state else "/tmp",
+            "filepath": str(wq_staging_dir) if wq_guard_state else "/tmp",  # taskvine only
             # this resource values may be omitted when using
             # resources_mode: 'auto', but they do make the initial portion
             # of a workflow run a little bit faster.

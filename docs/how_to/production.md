@@ -18,7 +18,7 @@ processor behavior.
 
 | Concern | Owner | Derived or hard-coded behavior | Protected by |
 | --- | --- | --- | --- |
-| campaign block matrix, state, resume, and frozen environment | `run_cr.sh` production profile | `run3_full` has five fixed blocks; `rebin_fine` has six; output and campaign tag have no implicit production value | `test_run3_full_production_profile.py`, `test_rebin_fine_resume_and_environment.py` |
+| campaign block matrix, state, resume, and frozen environment | `run_cr.sh` production profile | `run3_full` has five fixed blocks; SR-reco uses a complete JSON plan with same-root pending revisions; output and campaign tag have no implicit production value | `test_run3_full_production_profile.py`, `test_sr_reco_manifest.py` |
 | cfg bundle, years, region, histogram list, tag-derived output name | `fullR3_run.sh` | year aliases and cfg paths are derived; absent year/tag still have script defaults, while its default output path is site-specific | `test_fullr3_run_wrapper.py`, profile tests |
 | sample loading, CLI/YAML resolution, executor, processor and artifacts | `run_analysis.py` | parser defaults are `work_queue`, 8 workers, chunksize 100000, `histos/plotsTopEFT`; active channels/histograms are derived from registries and options | CLI, preflight, producer, policy, and artifact tests |
 | event selection and histogram filling | `AnalysisProcessor` | constructed from the resolved run contract | processor/selection/nominal-schema tests |
@@ -77,8 +77,7 @@ worker environment for the checkout. Supply an absolute `--env-file` to use
 exactly that archive as an intentional frozen snapshot; snapshot integrity and
 provenance remain validated, but compatibility with the current checkout is not
 required. Combined profiles forward the same explicit snapshot to both child
-components. `rebin_fine` retains its specialist requirement for an explicit
-current-compatible archive. A resume uses the exact environment mode, path,
+components. A resume uses the exact environment mode, path,
 hash, fingerprint, repository commits, block plan, and output identities frozen
 in the existing state; a command-line environment that disagrees with state is
 rejected.
@@ -108,14 +107,13 @@ Keep a profile change inside the existing ownership model:
 5. Forward a lower-level option instead of reimplementing its semantics. The
    profile should construct `fullR3_run.sh` arguments, not select sample JSONs
    or interpret processor settings itself.
-6. Update `tests/test_run3_full_production_profile.py`; for `rebin_fine`, also
-   use `tests/test_rebin_fine_resume_and_environment.py`.
+6. Update the directly affected production-profile tests. For SR-reco plan
+   changes, use `tests/test_sr_reco_manifest.py`.
 7. Dry-run a fresh namespace and a matching resume fixture. Check block count,
    ordering, command construction, output uniqueness, environment identity,
    interruption handling, and refusal of stale/missing artifacts.
 
-`rebin_fine` is a specialist Run 2/Run 3 profile and requires an explicit
-current `--env-file`. A new campaign family that cannot fit the existing
+`rebin_fine` is retired from the current CLI. A new campaign family that cannot fit the existing
 profile/block/state invariants is a design decision, not a local documentation
 or shell edit.
 
@@ -279,9 +277,8 @@ creates the current worker environment. With `--env-file X`, it validates and
 uses exactly `X` as an intentional snapshot without requiring current-checkout
 compatibility, and both children of a combined profile receive that same
 archive. Capture the environment mode, resolved path, SHA-256, environment
-fingerprint, and source identity from campaign state. `rebin_fine` is a
-specialist legacy profile that retains its explicit current-compatible archive
-requirement.
+fingerprint, and source identity from campaign state. The SR-reco profiles
+require a separate archive qualification after their shared `b0pt` bin change.
 
 The wrapper validates explicit archive integrity and provenance and reuses the
 exact archive frozen in a valid resumable campaign state. When no archive is

@@ -16,8 +16,8 @@ matrix described below. Six profiles cover the ordinary full SR/CR production
 surface, two produce SR-reco extensions, and `t0_sr_statonly` and
 `t0_cr_statonly` are stat-only diagnostic profiles.
 `run3_full` is the complete maintained Run 3 SR production profile.
-`rebin_fine` is a specialized legacy profile for its declared changed-binning
-blocks; it is not a synonym for the public profile matrix.
+`rebin_fine` is retired from the current CLI; its historical artifacts remain
+separate from current SR-reco campaigns.
 
 ## Current NDSkim cfg reachability
 
@@ -187,27 +187,15 @@ namespaces.
 The first six profiles are the ordinary full-production profiles. They use the
 implicit `production` sumw2 policy and leave raw-count recording disabled.
 
-`run2_sr_ext` and `run3_sr_ext` produce extension-only SR source fragments.
-The current `run2_sr_ext` and `run3_sr_ext` profiles each reuse five category
-groups from the full SR profile and split each group's extension variables into
-three chunks, materializing 15 fragments per profile. This is the maintained
-grouping, not a general fixed-count SR campaign interface. Both profiles enable
-systematic variations, use implicit production `sumw2`, and leave raw event
-counts disabled. Run 2 uses inline local `DataDrivenProducer`; Run 3 runs local
-`run_data_driven.py` after successful source publication.
-
-| SR category group | Extension variable chunks |
-| --- | --- |
-| `2l 2lss_1tau 2los_1tau 4l` | `fwd0pt fwd0eta j0pt j0eta nbtagsm`; `met l0conept l0eta l1conept l1eta`; `nbtagsl invmass ljptsum npvsGood tau0Tpt` |
-| `3l_m_offZ`, `3l_p_offZ` | `j0pt j0eta nbtagsm`; `met l0conept l0eta l1conept l1eta`; `nbtagsl invmass ljptsum npvsGood` |
-| `3l_onZ_tau` | `j0pt j0eta nbtagsm`; `met l0conept l0eta l1conept l1eta`; `nbtagsl invmass ljptsum npvsGood tau0Tpt` |
-| `3l_fwd` | `fwd0pt fwd0eta j0pt j0eta nbtagsm`; `met l0conept l0eta l1conept l1eta`; `nbtagsl invmass ljptsum npvsGood` |
-
-Within those groups, `fwd0pt` and `fwd0eta` fill only forward-labelled SR
-categories, and `tau0Tpt` fills only categories with at least one tight tau.
-`tau0Fpt` is not part of the SR-reco extension variable set. The
-[SR-reco operator guide](../how_to/sr_reco_pkl_campaign.md) covers launch and
-post-run evidence without duplicating this matrix.
+`run2_sr_ext` and `run3_sr_ext` use the eight keys `fwd0pt`, `j0pt`,
+`b0pt`, `met`, `l0conept`, `l1conept`, `invmass`, and `tau0Tpt`.
+`fwd0pt` and `tau0Tpt` retain their forward and tight-tau locality. The
+default JSON plan has 12 units per era; a supplied full plan can choose
+another exact partition. Each profile stores its full initial plan and any
+pending-only revisions in one campaign state. Both enable systematics, use
+implicit production `sumw2`, and leave raw counts disabled. Run 2 produces
+inline nonprompt artifacts; Run 3 runs the separate local data-driven stage.
+See the [SR-reco operator guide](../how_to/sr_reco_pkl_campaign.md).
 
 The other two profiles, `t0_sr_statonly` and `t0_cr_statonly`, are stat-only
 diagnostic profiles. They use explicit `full_diagnostics` sumw2 storage and
@@ -218,9 +206,7 @@ charge-flip postprocessing steps separately. These two diagnostic profiles are
 separate from the six-profile full-production cfg mapping.
 
 The no-argument invocation remains a legacy alias for the fixed `run2_full`
-campaign. `rebin_fine` remains a specialist legacy profile for histograms used
-by the fitting configuration whose bins changed; it is not a replacement for
-the public profile matrix.
+campaign.
 
 New campaign roots require a fresh absolute output directory and campaign tag.
 The SR-reco Run 3 component uses the shared root already established by Run 2;

@@ -9,6 +9,9 @@ matrix_env_file=""
 matrix_resume=false
 matrix_reviewed_topeft_manager_head=""
 matrix_reviewed_topcoffea_manager_head=""
+matrix_wq_staging_base=""
+matrix_guard_args=()
+declare -A matrix_seen_guard=()
 matrix_parse_errors=()
 
 matrix_parse_args() {
@@ -72,6 +75,17 @@ matrix_parse_args() {
         fi
         ;;
       --resume) matrix_resume=true; index=$((index + 1)) ;;
+      --wq-staging-base|--wq-quota-root|--wq-warning-bytes|--wq-stop-bytes|--wq-reserve-bytes|--wq-poll-seconds|--wq-treereduction)
+        if (( index + 1 >= ${#args[@]} )) || [[ "${args[index + 1]}" == -* ]]; then
+          matrix_parse_errors+=("${args[index]} requires a value")
+          index=$((index + 1))
+        else
+          [[ "${args[index]}" != "--wq-staging-base" ]] || matrix_wq_staging_base="${args[index + 1]}"
+          matrix_seen_guard["${args[index]}"]=true
+          matrix_guard_args+=("${args[index]}" "${args[index + 1]}")
+          index=$((index + 2))
+        fi
+        ;;
       -h|--help) index=$((index + 1)) ;;
       *)
         matrix_parse_errors+=("unsupported run_cr.sh option '${args[index]}'")
@@ -322,6 +336,30 @@ esac
 
 case "${matrix_profile}" in
   run2_run3_full|run2_run3_full_CR)
+    if [[ "${matrix_dry_run}" == "false" ]]; then
+      for required_guard in --wq-staging-base --wq-quota-root --wq-warning-bytes \
+        --wq-stop-bytes --wq-reserve-bytes --wq-poll-seconds; do
+        if [[ -z "${matrix_seen_guard[${required_guard}]:-}" ]]; then
+          echo "ERROR: combined Work Queue production requires ${required_guard} before output creation." >&2
+          exit 1
+        fi
+      done
+      if [[ -z "${matrix_wq_staging_base}" ]]; then
+        echo "ERROR: Work Queue production requires guarded manager staging; implicit /tmp staging is forbidden." >&2
+        exit 1
+      fi
+      if [[ "${matrix_wq_staging_base}" != /* || ! -d "${matrix_wq_staging_base}" ]]; then
+        echo "ERROR: staging base must be an existing absolute directory." >&2
+        exit 1
+      fi
+      matrix_staging_real=$(realpath -e -- "${matrix_wq_staging_base}") || exit 1
+      if [[ "${matrix_staging_real}" == /tmp || "${matrix_staging_real}" == /tmp/* \
+        || "${matrix_staging_real}" == /var/tmp || "${matrix_staging_real}" == /var/tmp/* \
+        || "$(stat -c %d -- "${matrix_staging_real}")" == "$(stat -c %d -- /)" ]]; then
+        echo "ERROR: /tmp or root-backed manager staging is forbidden for Work Queue production." >&2
+        exit 1
+      fi
+    fi
     if [[ "${matrix_resume}" == "false" && -e "${matrix_output_dir}" ]]; then
       echo "ERROR: combined output namespace already exists: ${matrix_output_dir}" >&2
       exit 1
@@ -349,6 +387,7 @@ case "${matrix_profile}" in
       && component_common+=(--reviewed-topcoffea-manager-head "${matrix_reviewed_topcoffea_manager_head}")
     [[ "${matrix_dry_run}" == "true" ]] && component_common+=(--dry-run)
     [[ "${matrix_resume}" == "true" ]] && component_common+=(--resume)
+    component_common+=("${matrix_guard_args[@]}")
     if "$0" --production-profile "${first_profile}" \
       --output-dir "${matrix_output_dir}/run2${combined_suffix}" \
       --campaign-tag "${matrix_campaign_tag}_run2" "${component_common[@]}"; then
@@ -410,11 +449,12 @@ Usage: ./run_cr.sh [--dry-run]
        ./run_cr.sh --production-profile PROFILE [--dry-run] \
   [--output-dir PATH] [--campaign-tag TAG] [--env-file PATH] [--resume] \
   [--reviewed-topeft-manager-head SHA] \
-  [--reviewed-topcoffea-manager-head SHA] [--selected-fragment ID]
+  [--reviewed-topcoffea-manager-head SHA] [--selected-fragment ID] \
+  [--sr-plan JSON] [--activate-pending-plan JSON --expected-plan-revision ID]
 
 Public PROFILE values:
   run2_full, run3_full, run2_run3_full
-  run2_sr_ext, run3_sr_ext, run2_sr_ext_clike, run3_sr_ext_clike
+  run2_sr_ext, run3_sr_ext
   run2_full_CR, run3_full_CR, run2_run3_full_CR
   t0_sr_statonly, t0_cr_statonly
 
@@ -435,15 +475,11 @@ CR mapping with nominal weights, raw counts, and separate native
 nonprompt/charge-flip postprocessing.
 
 run3_full is the canonical complete Run-3 SR source-production profile.
-run2_sr_ext and run3_sr_ext produce 15 extension-only SR fragments per era.
-run2_sr_ext_clike and run3_sr_ext_clike produce opt-in CR-like SR plans. They
-require --chunksize (100000, 75000, 50000 or 25000) and guarded staging
-for a real launch. --selected-fragment runs exactly one declared fragment.
-The selected size is nominal; Work Queue may split tasks.
-rebin_fine is the specialized six-block Run-2/Run-3 source-production profile
-for fitting families whose bins changed and remains available as a legacy
-profile. Resume remains available only where already maintained by the legacy
-generic profile machinery.
+run2_sr_ext and run3_sr_ext use a complete eight-variable SR plan. --sr-plan
+supplies a JSON plan for a fresh campaign. --selected-fragment filters one
+ordinary unit without reducing the persisted plan. For a quiescent campaign,
+--resume --activate-pending-plan JSON --expected-plan-revision ID atomically
+repartitions only untouched pending coverage in the same output directory.
 EOF
 }
 
@@ -464,6 +500,9 @@ profile_wq_reserve_bytes=""
 profile_wq_poll_seconds=""
 profile_wq_treereduction=""
 profile_selected_fragment=""
+profile_sr_plan=""
+profile_activate_pending_plan=""
+profile_expected_plan_revision=""
 
 while (( $# > 0 )); do
   case "$1" in
@@ -548,6 +587,18 @@ while (( $# > 0 )); do
       profile_selected_fragment="$2"
       shift 2
       ;;
+    --sr-plan|--activate-pending-plan|--expected-plan-revision)
+      if (( $# < 2 )) || [[ -z "$2" || "$2" == -* ]]; then
+        echo "ERROR: $1 requires a value." >&2
+        exit 1
+      fi
+      case "$1" in
+        --sr-plan) profile_sr_plan="$2" ;;
+        --activate-pending-plan) profile_activate_pending_plan="$2" ;;
+        --expected-plan-revision) profile_expected_plan_revision="$2" ;;
+      esac
+      shift 2
+      ;;
     -h|--help)
       print_usage
       exit 0
@@ -567,7 +618,7 @@ if [[ -z "${production_profile}" ]]; then
 fi
 
 case "${production_profile}" in
-  run2_full|run3_full|run2_sr_ext|run3_sr_ext|run2_sr_ext_clike|run3_sr_ext_clike|run2_full_CR|run3_full_CR|rebin_fine|t0_sr_statonly|t0_cr_statonly) ;;
+  run2_full|run3_full|run2_sr_ext|run3_sr_ext|run2_full_CR|run3_full_CR|t0_sr_statonly|t0_cr_statonly) ;;
   *)
     echo "ERROR: unsupported production profile '${production_profile}'." >&2
     exit 1
@@ -599,13 +650,14 @@ fi
 
 output_dir=""
 chunk_size="100000"
-if [[ "${production_profile}" == run?_sr_ext_clike ]]; then
+if [[ "${production_profile}" == run?_sr_ext ]]; then
   case "${profile_chunksize}" in
+    "") ;;
     100000|75000|50000|25000) chunk_size="${profile_chunksize}" ;;
-    *) echo "ERROR: CR-like profiles require --chunksize 100000, 75000, 50000 or 25000." >&2; exit 1 ;;
+    *) echo "ERROR: SR extension --chunksize must be 100000, 75000, 50000 or 25000." >&2; exit 1 ;;
   esac
 elif [[ -n "${profile_chunksize}" ]]; then
-  echo "ERROR: --chunksize is reserved for the opt-in CR-like profiles." >&2
+  echo "ERROR: --chunksize is reserved for SR extension profiles." >&2
   exit 1
 fi
 if [[ -n "${profile_wq_staging_base}" ]]; then
@@ -617,14 +669,31 @@ elif [[ -n "${profile_wq_quota_root}${profile_wq_warning_bytes}${profile_wq_stop
   echo "ERROR: Work Queue guard options require --wq-staging-base." >&2
   exit 1
 fi
-if [[ -n "${profile_selected_fragment}" && "${production_profile}" != run?_sr_ext_clike ]]; then
-  echo "ERROR: --selected-fragment is supported only for SR CR-like profiles." >&2
+if [[ -n "${profile_selected_fragment}" && "${production_profile}" != run?_sr_ext ]]; then
+  echo "ERROR: --selected-fragment is supported only for SR extension profiles." >&2
   exit 1
 fi
-if [[ "${profile_dry_run}" == false && -z "${SRPLOT009_VALIDATION_BACKEND:-}" \
-  && "${production_profile}" != "rebin_fine" && "${production_profile}" != *CR \
+if [[ -n "${profile_sr_plan}${profile_activate_pending_plan}${profile_expected_plan_revision}" \
+  && "${production_profile}" != run?_sr_ext ]]; then
+  echo "ERROR: SR plan options require an SR extension profile." >&2
+  exit 1
+fi
+if [[ -n "${profile_sr_plan}" && "${profile_resume}" == "true" ]]; then
+  echo "ERROR: --sr-plan is for a fresh campaign; use explicit pending-plan activation." >&2
+  exit 1
+fi
+if [[ -n "${profile_activate_pending_plan}" || -n "${profile_expected_plan_revision}" ]]; then
+  if [[ -z "${profile_activate_pending_plan}" || -z "${profile_expected_plan_revision}" \
+    || "${profile_resume}" != "true" || "${profile_dry_run}" == "true" \
+    || -n "${profile_selected_fragment}" ]]; then
+    echo "ERROR: pending-plan activation requires --resume, plan and expected revision, with no dry-run or selection." >&2
+    exit 1
+  fi
+fi
+if [[ "${profile_dry_run}" == false && -z "${profile_activate_pending_plan}" \
+  && -z "${SRPLOT009_VALIDATION_BACKEND:-}" \
   && -z "${profile_wq_staging_base}" ]]; then
-  echo "ERROR: SR Work Queue production requires guarded manager staging; implicit /tmp staging is forbidden." >&2
+  echo "ERROR: Work Queue production requires guarded manager staging; implicit /tmp staging is forbidden." >&2
   exit 1
 fi
 if [[ "${profile_dry_run}" == false && -z "${SRPLOT009_VALIDATION_BACKEND:-}" \
@@ -637,7 +706,7 @@ if [[ "${profile_dry_run}" == false && -z "${SRPLOT009_VALIDATION_BACKEND:-}" \
   if [[ "${staging_real_path}" == /tmp || "${staging_real_path}" == /tmp/* \
     || "${staging_real_path}" == /var/tmp || "${staging_real_path}" == /var/tmp/* \
     || "$(stat -c %d -- "${staging_real_path}")" == "$(stat -c %d -- /)" ]]; then
-    echo "ERROR: /tmp or root-backed manager staging is forbidden for SR production." >&2
+    echo "ERROR: /tmp or root-backed manager staging is forbidden for Work Queue production." >&2
     exit 1
   fi
 fi
@@ -702,7 +771,7 @@ if [[ "${output_dir}" != /* ]]; then
   exit 1
 fi
 
-if [[ "${production_profile}" == "run3_full" || "${production_profile}" == "run3_sr_ext" || "${production_profile}" == "run3_sr_ext_clike" ]] \
+if [[ "${production_profile}" == "run3_full" || "${production_profile}" == "run3_sr_ext" ]] \
   && { [[ "${output_dir}" == "/groups/klannon/apiccine/preappr_v9_260729" ]] \
     || [[ "${output_dir}" == "/groups/klannon/apiccine/rebin_fine_260818_v3" ]] \
     || [[ "${campaign_tag}" == "ANv9" ]] \
@@ -721,20 +790,32 @@ if [[ "${profile_resume}" == "true" && ! -d "${output_dir}" ]]; then
   exit 1
 fi
 
+if [[ -n "${profile_activate_pending_plan}" ]]; then
+  if [[ ! -f "${output_dir}/.${production_profile}_campaign_state.json" ]]; then
+    echo "ERROR: pending-plan activation requires existing campaign state." >&2
+    exit 1
+  fi
+  exec {campaign_lock_fd}> "${output_dir}/.${production_profile}_campaign.lock"
+  flock -n "${campaign_lock_fd}" || { echo "ERROR: campaign writer lock is held." >&2; exit 1; }
+  python "$(dirname -- "${BASH_SOURCE[0]}")/sr_reco_manifest.py" activate \
+    "${output_dir}/.${production_profile}_campaign_state.json" \
+    "${profile_activate_pending_plan}" "${profile_expected_plan_revision}"
+  exit 0
+fi
+
 cr_pkl_base_tag="${campaign_tag}"
 sr_pkl_base_tag="${campaign_tag}"
 
-# Select the one region owned by the public component profile. The legacy
-# rebin_fine profile retains its maintained two-stage SR behavior.
+# Select the one region owned by the public component profile.
 case "${production_profile}" in
-  run2_full|run2_sr_ext|run2_sr_ext_clike)
+  run2_full|run2_sr_ext)
     run_cr=false
     run_sr=true
     production_region="SR"
     production_np_mode="inline"
     production_component="run2"
     ;;
-  run3_full|run3_sr_ext|run3_sr_ext_clike|rebin_fine)
+  run3_full|run3_sr_ext)
     run_cr=false
     run_sr=true
     production_region="SR"
@@ -868,132 +949,21 @@ run3_full_category_var_set_names=(
   "sr_fwd_var_sets"
 )
 
-# Three extension-only chunks per maintained SR category block. The forward
-# and tight-tau variants are confined to blocks that contain those channels.
-sr_ext_common_var_sets=(
-  "j0pt j0eta nbtagsm"
-  "met l0conept l0eta l1conept l1eta"
-  "nbtagsl invmass ljptsum npvsGood"
-)
-sr_ext_forward_var_sets=(
-  "fwd0pt fwd0eta ${sr_ext_common_var_sets[0]}"
-  "${sr_ext_common_var_sets[1]}"
-  "${sr_ext_common_var_sets[2]}"
-)
-sr_ext_tau_var_sets=(
-  "${sr_ext_common_var_sets[0]}"
-  "${sr_ext_common_var_sets[1]}"
-  "${sr_ext_common_var_sets[2]} tau0Tpt"
-)
-sr_ext_forward_tau_var_sets=(
-  "${sr_ext_forward_var_sets[0]}"
-  "${sr_ext_common_var_sets[1]}"
-  "${sr_ext_tau_var_sets[2]}"
-)
-sr_ext_category_var_set_names=(
-  "sr_ext_forward_tau_var_sets"
-  "sr_ext_common_var_sets"
-  "sr_ext_common_var_sets"
-  "sr_ext_tau_var_sets"
-  "sr_ext_forward_var_sets"
-)
-
-# CR-like chunks balance actual output-channel and axis payload. The large
-# mixed 2l/tau/4l block uses three chunks; each lighter block uses two.
-sr_clike_mixed_var_sets=(
-  "invmass fwd0pt"
-  "l0conept j0pt"
-  "met l1conept tau0Tpt"
-)
-sr_clike_common_var_sets=(
-  "invmass j0pt"
-  "met l0conept l1conept"
-)
-sr_clike_tau_var_sets=(
-  "${sr_clike_common_var_sets[0]}"
-  "${sr_clike_common_var_sets[1]} tau0Tpt"
-)
-sr_clike_forward_var_sets=(
-  "${sr_clike_common_var_sets[0]} fwd0pt"
-  "${sr_clike_common_var_sets[1]}"
-)
-sr_clike_category_var_set_names=(
-  "sr_clike_mixed_var_sets"
-  "sr_clike_common_var_sets"
-  "sr_clike_common_var_sets"
-  "sr_clike_tau_var_sets"
-  "sr_clike_forward_var_sets"
-)
-
-# Static memory-bounded source-production plan for the families whose fitting
-# bins changed. The plan is intentionally limited to canonical live keys and
-# excludes njets, whose missing-parton workflow is produced separately.
-rebin_fine_category_sets=(
-  "2lss_1tau 3l_m_offZ"
-  "3l_p_offZ 3l_onZ_tau"
-  "3l_fwd"
-)
-
-rebin_fine_2lss_1tau_3l_m_offz_var_sets=(
-  "lj0pt ptll ptz_wtau"
-)
-
-rebin_fine_3l_p_offz_3l_onZ_tau_var_sets=(
-  "lj0pt ptz ptll"
-)
-
-rebin_fine_3l_fwd_var_sets=(
-  "lt"
-)
-
-rebin_fine_category_var_set_names=(
-  "rebin_fine_2lss_1tau_3l_m_offz_var_sets"
-  "rebin_fine_3l_p_offz_3l_onZ_tau_var_sets"
-  "rebin_fine_3l_fwd_var_sets"
-)
-
 sr_year_sets=()
 sr_year_category_set_names=()
 sr_year_category_var_set_names=()
-if [[ "${production_profile}" == "rebin_fine" ]]; then
-  sr_year_sets=(
-    "2016APV 2016 2017 2018"
-    "2022 2022EE 2023 2023BPix"
-  )
-  sr_year_category_set_names=(
-    "rebin_fine_category_sets"
-    "rebin_fine_category_sets"
-  )
-  sr_year_category_var_set_names=(
-    "rebin_fine_category_var_set_names"
-    "rebin_fine_category_var_set_names"
-  )
-elif [[ "${production_profile}" == "run2_full" || "${production_profile}" == "run2_sr_ext" || "${production_profile}" == "run2_sr_ext_clike" ]]; then
+if [[ "${production_profile}" == "run2_full" ]]; then
   sr_year_sets=("run2")
   sr_year_category_set_names=("run3_full_category_sets")
-  if [[ "${production_profile}" == "run2_sr_ext" || "${production_profile}" == "run2_sr_ext_clike" ]]; then
-    sr_year_category_var_set_names=("sr_ext_category_var_set_names")
-    if [[ "${production_profile}" == "run2_sr_ext_clike" ]]; then
-      sr_year_category_var_set_names=("sr_clike_category_var_set_names")
-    fi
-  else
-    sr_year_category_var_set_names=("run3_full_category_var_set_names")
-  fi
-elif [[ "${production_profile}" == "run3_full" || "${production_profile}" == "run3_sr_ext" || "${production_profile}" == "run3_sr_ext_clike" ]]; then
+  sr_year_category_var_set_names=("run3_full_category_var_set_names")
+elif [[ "${production_profile}" == "run3_full" ]]; then
   sr_year_sets=(
     "2022 2022EE 2023 2023BPix"
   )
   sr_year_category_set_names=(
     "run3_full_category_sets"
   )
-  if [[ "${production_profile}" == "run3_sr_ext" || "${production_profile}" == "run3_sr_ext_clike" ]]; then
-    sr_year_category_var_set_names=("sr_ext_category_var_set_names")
-    if [[ "${production_profile}" == "run3_sr_ext_clike" ]]; then
-      sr_year_category_var_set_names=("sr_clike_category_var_set_names")
-    fi
-  else
-    sr_year_category_var_set_names=("run3_full_category_var_set_names")
-  fi
+  sr_year_category_var_set_names=("run3_full_category_var_set_names")
 elif [[ "${production_profile}" == "t0_sr_statonly" ]]; then
   sr_year_sets=(
     "2016APV 2016 2017 2018"
@@ -1022,43 +992,7 @@ production_plan_category_sets=()
 production_plan_var_sets=()
 
 case "${production_profile}" in
-  run2_sr_ext|run3_sr_ext|run2_sr_ext_clike|run3_sr_ext_clike)
-    profile_block_suffixes=(a b c d e)
-    if [[ "${production_profile}" == "run2_sr_ext" || "${production_profile}" == "run2_sr_ext_clike" ]]; then
-      profile_year_expr="run2"
-    else
-      profile_year_expr="2022 2022EE 2023 2023BPix"
-    fi
-    for profile_index in "${!run3_full_category_sets[@]}"; do
-      profile_var_set_name="${sr_ext_category_var_set_names[profile_index]}"
-      if [[ "${production_profile}" == *_ext_clike ]]; then
-        profile_var_set_name="${sr_clike_category_var_set_names[profile_index]}"
-      fi
-      declare -n profile_var_set_ref="${profile_var_set_name}"
-      for profile_chunk_index in "${!profile_var_set_ref[@]}"; do
-        production_block_ids+=("${production_profile}_${profile_block_suffixes[profile_index]}_$((profile_chunk_index + 1))")
-        production_plan_year_exprs+=("${profile_year_expr}")
-        production_plan_category_sets+=("${run3_full_category_sets[profile_index]}")
-        production_plan_var_sets+=("${profile_var_set_ref[profile_chunk_index]}")
-      done
-      unset -n profile_var_set_ref
-    done
-    ;;
-  rebin_fine)
-    production_block_ids=(run2_a run2_b run2_c run3_a run3_b run3_c)
-    production_plan_year_exprs=(
-      "2016APV 2016 2017 2018" "2016APV 2016 2017 2018" "2016APV 2016 2017 2018"
-      "2022 2022EE 2023 2023BPix" "2022 2022EE 2023 2023BPix" "2022 2022EE 2023 2023BPix"
-    )
-    production_plan_category_sets=(
-      "2lss_1tau 3l_m_offZ" "3l_p_offZ 3l_onZ_tau" "3l_fwd"
-      "2lss_1tau 3l_m_offZ" "3l_p_offZ 3l_onZ_tau" "3l_fwd"
-    )
-    production_plan_var_sets=(
-      "lj0pt ptll ptz_wtau" "lj0pt ptz ptll" "lt"
-      "lj0pt ptll ptz_wtau" "lj0pt ptz ptll" "lt"
-    )
-    ;;
+  run2_sr_ext|run3_sr_ext) ;; # Read the full JSON plan after state/environment preflight.
   run2_full|run3_full)
     profile_block_suffixes=(a b c d e)
     if [[ "${production_profile}" == "run2_full" ]]; then
@@ -1128,24 +1062,6 @@ case "${production_profile}" in
     done
     ;;
 esac
-
-if [[ -n "${profile_selected_fragment}" ]]; then
-  selected_plan_index=""
-  for plan_index in "${!production_block_ids[@]}"; do
-    if [[ "${production_block_ids[plan_index]}" == "${profile_selected_fragment}" ]]; then
-      selected_plan_index="${plan_index}"
-      break
-    fi
-  done
-  if [[ -z "${selected_plan_index}" ]]; then
-    echo "ERROR: unknown fragment '${profile_selected_fragment}' for ${production_profile}." >&2
-    exit 1
-  fi
-  production_block_ids=("${production_block_ids[selected_plan_index]}")
-  production_plan_year_exprs=("${production_plan_year_exprs[selected_plan_index]}")
-  production_plan_category_sets=("${production_plan_category_sets[selected_plan_index]}")
-  production_plan_var_sets=("${production_plan_var_sets[selected_plan_index]}")
-fi
 
 ###############################################################################
 # Execution accounting
@@ -1283,6 +1199,7 @@ import os
 import re
 import sys
 from pathlib import Path
+from sr_reco_manifest import capture_receipt, check_state, decorate_initial_state
 
 
 VALID_STATUSES = {
@@ -1353,6 +1270,11 @@ def read_plan(path, production_profile):
             "output_name": output_name,
             "expected_outputs": [nominal, nonprompt],
         }
+        if production_profile in {"run2_sr_ext", "run3_sr_ext"}:
+            revision_match = re.search(r"_(r[0-9]+_[0-9a-f]{12})_", output_tag)
+            if revision_match is None:
+                fail(f"SR plan row lacks a revision identity: {block_id}")
+            block["plan_revision"] = revision_match.group(1)
         block["expected_nominal_path"] = nominal
         block["expected_np_path"] = nonprompt
         blocks.append(block)
@@ -1489,6 +1411,8 @@ if mode in {"initialize", "validate"}:
                 ],
             }
             state["blocks"].append(initialized)
+        if desired["production_profile"] in {"run2_sr_ext", "run3_sr_ext"}:
+            state = decorate_initial_state(state, sys.argv[20])
         atomic_write(state_path, state)
     else:
         state = load(state_path)
@@ -1527,7 +1451,6 @@ if mode in {"env_file", "environment_mode"}:
         if environment_mode not in {
             "current_resolved",
             "explicit_snapshot",
-            "rebin_fine_current_compatible",
         }:
             fail("campaign state does not contain a valid frozen environment_mode")
         print(environment_mode)
@@ -1717,6 +1640,11 @@ if mode == "mark":
                     {"path": output, "exists": exists, "regular_file": regular, "size_bytes": size, "nonempty": bool(regular and size)}
                 )
             block["expected_output_readback"] = output_readback
+            if state.get("production_profile") in {"run2_sr_ext", "run3_sr_ext"}:
+                if stage == "source" and stage_status == "ready":
+                    capture_receipt(state, block, "source")
+                if stage == "nonprompt" and stage_status == "success":
+                    capture_receipt(state, block, "nonprompt")
             block["last_transition_utc"] = timestamp
             block["last_transition_detail"] = detail
             if postprocessor_provenance is not None:
@@ -1775,6 +1703,8 @@ if mode == "archive":
     fail(f"campaign state does not contain block {block_id}")
 
 def campaign_classification(payload):
+    if payload.get("production_profile") in {"run2_sr_ext", "run3_sr_ext"}:
+        check_state(payload)
     statuses = [block.get("status") for block in payload.get("blocks", [])]
     if any(status in {"source_running", "nonprompt_running"} for status in statuses):
         return "blocked_ambiguous"
@@ -1792,7 +1722,12 @@ if mode == "classification":
 
 if mode == "finalize":
     classification = campaign_classification(state)
-    final_exit_code = 0 if classification == "success" else 1
+    selected_fragment = sys.argv[3] if len(sys.argv) > 3 else ""
+    selected_complete = bool(selected_fragment) and any(
+        block.get("id") == selected_fragment and block.get("status") == "success"
+        for block in state.get("blocks", [])
+    )
+    final_exit_code = 0 if classification == "success" or selected_complete else 1
     statuses = [block.get("status") for block in state.get("blocks", [])]
     state["campaign_status"] = classification
     state["configured_block_count"] = len(statuses)
@@ -1813,7 +1748,7 @@ if mode == "report":
     if state.get("campaign_status") != classification:
         fail("campaign state must be finalized before deriving reports")
     headers = [
-        "profile", "campaign_tag", "era", "block_id", "categories", "variables",
+        "profile", "campaign_tag", "era", "block_id", "plan_revision", "categories", "variables",
         "source_status", "source_exit", "nonprompt_status", "nonprompt_exit",
         "final_block_status", "expected_nominal_path", "expected_np_path",
     ]
@@ -1821,6 +1756,7 @@ if mode == "report":
     for block in state["blocks"]:
         rows.append([
             state["production_profile"], state["campaign_tag"], " ".join(block["years"]), block["id"],
+            block.get("plan_revision", ""),
             " ".join(block["category_groups"]), " ".join(block["histograms"]),
             block["source_status"], block.get("source_exit_code"), block["nonprompt_status"],
             block.get("nonprompt_exit_code"), block["status"], block["expected_nominal_path"], block["expected_np_path"],
@@ -1848,6 +1784,7 @@ if mode == "report":
         f"- not_attempted: {state['not_attempted_block_count']}",
         f"- final_classification: `{classification}`",
         f"- final_process_exit_code: {state['final_process_exit_code']}", "",
+        f"- active_plan_revision: {state.get('active_sr_reco_revision', 'not_applicable')}",
         "Per-block details are serialized in `campaign_summary.tsv`.", "",
     ]
     atomic_text(markdown_path, "\n".join(summary))
@@ -1908,8 +1845,7 @@ resolve_production_environment() {
     if [[ "${production_environment_mode}" == "explicit_snapshot" ]]; then
       validation_args=(--validate-env-file --env-integrity-only --env-file "${requested_env_file}")
       production_environment_snapshot=true
-    elif [[ "${production_environment_mode}" == "current_resolved" \
-      || "${production_environment_mode}" == "rebin_fine_current_compatible" ]]; then
+    elif [[ "${production_environment_mode}" == "current_resolved" ]]; then
       validation_args=(--validate-env-file --env-file "${requested_env_file}")
     else
       echo "ERROR: ${production_profile} resume state has an unsupported environment mode." >&2
@@ -1921,20 +1857,12 @@ resolve_production_environment() {
       exit 1
     fi
     canonical_requested_env_file=$(readlink -f -- "${requested_env_file}" || true)
-    if [[ "${production_profile}" == "rebin_fine" ]]; then
-      production_environment_mode=rebin_fine_current_compatible
-      validation_args=(--validate-env-file --env-file "${requested_env_file}")
-    else
-      production_environment_mode=explicit_snapshot
-      production_environment_snapshot=true
-      validation_args=(--validate-env-file --env-integrity-only --env-file "${requested_env_file}")
-    fi
-  elif [[ "${production_profile}" != "rebin_fine" ]]; then
+    production_environment_mode=explicit_snapshot
+    production_environment_snapshot=true
+    validation_args=(--validate-env-file --env-integrity-only --env-file "${requested_env_file}")
+  else
     production_environment_mode=current_resolved
     validation_args=(--prepare-env-only)
-  else
-    echo "ERROR: rebin_fine requires an explicit --env-file; no environment was built." >&2
-    exit 1
   fi
 
   if [[ -n "${validation_backend}" ]]; then
@@ -2026,15 +1954,15 @@ production_any_output_exists() {
 
 production_assert_live_plan() {
   local expected_count
+  if [[ "${production_profile}" == run?_sr_ext ]]; then
+    return 0
+  fi
   case "${production_profile}" in
     run2_full|run3_full) expected_count=5 ;;
-    run2_sr_ext|run3_sr_ext) expected_count=15 ;;
-    run2_sr_ext_clike|run3_sr_ext_clike) expected_count=11 ;;
     t0_sr_statonly) expected_count=10 ;;
     t0_cr_statonly) expected_count=18 ;;
     run2_full_CR) expected_count=6 ;;
     run3_full_CR) expected_count=12 ;;
-    rebin_fine) expected_count=6 ;;
   esac
   if [[ -n "${profile_selected_fragment}" ]]; then
     expected_count=1
@@ -2137,6 +2065,11 @@ validate_resume_manager_compatibility() {
   local topcoffea_repository_root="${repository_root}/../topcoffea"
   local current_topcoffea_commit=""
 
+  if [[ -n "${validation_backend}" && "${production_profile}" == run?_sr_ext ]]; then
+    echo "Validation backend: synthetic manager provenance; live repository compatibility is not asserted."
+    return 0
+  fi
+
   validate_manager_repository_delta \
     TOPEFT "${repository_root}" "${recorded_topeft_commit}" "${production_git_commit}" \
     "${profile_reviewed_topeft_manager_head}" \
@@ -2174,6 +2107,9 @@ prepare_production_campaign() {
   local recorded_manager_commit=""
 
   production_assert_live_plan
+  if [[ "${production_profile}" == run?_sr_ext ]]; then
+    schema_version=6
+  fi
   production_git_commit=$(git -C "${repository_root}" rev-parse HEAD)
   resolve_t0_postprocessor_provenance
   production_state_path="${output_dir}/${production_state_filename}"
@@ -2183,10 +2119,42 @@ prepare_production_campaign() {
     if [[ "${profile_resume}" == "false" ]]; then
       mkdir -- "${output_dir}"
     fi
+    exec {campaign_lock_fd}> "${output_dir}/.${production_profile}_campaign.lock"
+    flock -n "${campaign_lock_fd}" || { echo "ERROR: campaign writer lock is held." >&2; exit 1; }
     plan_directory="${output_dir}"
     production_plan_file=$(mktemp "${plan_directory}/.${production_profile}_plan.XXXXXX")
   fi
-  write_production_plan "${production_plan_file}"
+  if [[ "${production_profile}" == run?_sr_ext ]]; then
+    if [[ "${profile_resume}" == "true" ]]; then
+      python ./sr_reco_manifest.py render-active "${production_state_path}" "${production_plan_file}" "${chunk_size}"
+    else
+      python ./sr_reco_manifest.py render-new \
+        "${profile_sr_plan:-./sr_reco_default_plan.json}" \
+        "${production_profile}" "${campaign_tag}" "${output_dir}" "${production_plan_file}"
+    fi
+    production_block_ids=()
+    production_plan_year_exprs=()
+    production_plan_category_sets=()
+    production_plan_var_sets=()
+    while IFS=$'\t' read -r plan_id plan_years plan_categories plan_vars _; do
+      production_block_ids+=("${plan_id}")
+      production_plan_year_exprs+=("${plan_years}")
+      production_plan_category_sets+=("${plan_categories}")
+      production_plan_var_sets+=("${plan_vars}")
+    done < "${production_plan_file}"
+    if [[ -n "${profile_selected_fragment}" ]]; then
+      selected_found=false
+      for plan_id in "${production_block_ids[@]}"; do
+        [[ "${plan_id}" != "${profile_selected_fragment}" ]] || selected_found=true
+      done
+      if [[ "${selected_found}" != "true" ]]; then
+        echo "ERROR: unknown fragment '${profile_selected_fragment}' for ${production_profile}." >&2
+        exit 1
+      fi
+    fi
+  else
+    write_production_plan "${production_plan_file}"
+  fi
 
   if [[ "${profile_resume}" == "true" ]]; then
     if [[ ! -f "${production_state_path}" ]]; then
@@ -2197,7 +2165,8 @@ prepare_production_campaign() {
     recorded_manager_commit=$(production_state_tool historical_source_commit \
       "${production_state_path}" "${production_profile}" "${campaign_tag}" "${output_dir}")
     validate_resume_manager_compatibility "${recorded_manager_commit}"
-    production_state_tool validate \
+    if [[ "${production_profile}" != run?_sr_ext ]]; then
+      production_state_tool validate \
       "${production_state_path}" \
       "${production_plan_file}" \
       "${production_profile}" \
@@ -2218,6 +2187,7 @@ prepare_production_campaign() {
       "${production_np_mode}" \
       "${dry_run}" \
       "${allow_manager_provenance_delta}"
+    fi
   elif [[ "${dry_run}" == "false" ]]; then
     production_state_tool initialize \
       "${production_state_path}" \
@@ -2237,14 +2207,12 @@ prepare_production_campaign() {
       "${do_systs}" \
       "${do_np}" \
       "${production_region}" \
-      "${production_np_mode}"
+      "${production_np_mode}" \
+      "${chunk_size}"
   fi
 }
 
 prepare_production_sumw2_options() {
-  if [[ "${production_profile}" == "rebin_fine" ]]; then
-    return
-  fi
   if ! is_t0_statonly_profile; then
     if [[ "${profile_resume}" == "true" \
       && -e "${output_dir}/sumw2_full_diagnostics.yml" ]]; then
@@ -2475,12 +2443,10 @@ build_common_command_options() {
       --snapshot
     )
   fi
-  if [[ "${production_profile}" != "rebin_fine" ]]; then
-    if [[ -n "${production_sumw2_options_path}" ]]; then
-      cmd_ref+=(--options "${production_sumw2_options_path}")
-    fi
-    cmd_ref+=(-x work_queue)
+  if [[ -n "${production_sumw2_options_path}" ]]; then
+    cmd_ref+=(--options "${production_sumw2_options_path}")
   fi
+  cmd_ref+=(-x work_queue)
 
   if [[ "${split_lep_flavor}" == "true" ]]; then
     cmd_ref+=(--split-lep-flavor)
@@ -3122,7 +3088,7 @@ run_sr_block() {
 
   echo "----------------------------------------"
   echo "Mode: SR"
-  if [[ "${production_profile}" == *_ext_clike ]]; then
+  if [[ "${production_profile}" == run?_sr_ext ]]; then
     echo "production_block_id: ${production_block}"
     echo "expected_nominal_path: ${source_path}"
     echo "expected_np_path: ${nonprompt_path}"
@@ -3355,21 +3321,6 @@ assert_parallel_array_lengths \
   "${#run3_full_category_var_set_names[@]}"
 
 assert_parallel_array_lengths \
-  "SR extension category-to-variable mapping" \
-  "${#run3_full_category_sets[@]}" \
-  "${#sr_ext_category_var_set_names[@]}"
-
-assert_parallel_array_lengths \
-  "SR CR-like category-to-variable mapping" \
-  "${#run3_full_category_sets[@]}" \
-  "${#sr_clike_category_var_set_names[@]}"
-
-assert_parallel_array_lengths \
-  "rebin_fine SR category-to-variable mapping" \
-  "${#rebin_fine_category_sets[@]}" \
-  "${#rebin_fine_category_var_set_names[@]}"
-
-assert_parallel_array_lengths \
   "SR year-to-category mapping" \
   "${#sr_year_sets[@]}" \
   "${#sr_year_category_set_names[@]}"
@@ -3381,10 +3332,7 @@ assert_parallel_array_lengths \
 
 for var_set_name in \
   "${cr_category_var_set_names[@]}" \
-  "${run3_full_category_var_set_names[@]}" \
-  "${sr_ext_category_var_set_names[@]}" \
-  "${sr_clike_category_var_set_names[@]}" \
-  "${rebin_fine_category_var_set_names[@]}"; do
+  "${run3_full_category_var_set_names[@]}"; do
   assert_array_defined "${var_set_name}"
 done
 
@@ -3418,7 +3366,7 @@ echo "environment_mode: ${production_environment_mode}"
 echo "environment_policy: ${production_environment_mode}"
 if is_t0_statonly_profile; then
   echo "sumw2_storage_mode: full_diagnostics"
-elif [[ "${production_profile}" != "rebin_fine" ]]; then
+else
   echo "sumw2_storage_mode: production (implicit)"
 fi
 echo "campaign_state: ${output_dir}/${production_state_filename}"
@@ -3429,13 +3377,8 @@ print_var_sets "SR off-Z" "${sr_offz_var_sets[@]}"
 print_var_sets "SR on-Z/tau" "${sr_onz_tau_var_sets[@]}"
 print_var_sets "SR forward" "${sr_fwd_var_sets[@]}"
 
-if [[ "${production_profile}" == "rebin_fine" ]]; then
-  echo "rebin_fine SR category blocks (used for both Run 2 and Run 3):"
-  printf '  %s\n' "${rebin_fine_category_sets[@]}"
-else
-  echo "run3_full Run-3 SR category blocks:"
-  printf '  %s\n' "${run3_full_category_sets[@]}"
-fi
+echo "run3_full Run-3 SR category blocks:"
+printf '  %s\n' "${run3_full_category_sets[@]}"
 
 echo "========================================"
 echo
@@ -3490,6 +3433,22 @@ fi
 ###############################################################################
 
 if [[ "${run_sr}" == "true" ]]; then
+  if [[ "${production_profile}" == run?_sr_ext ]]; then
+    for plan_index in "${!production_block_ids[@]}"; do
+      current_fragment="${production_block_ids[plan_index]}"
+      if [[ -n "${profile_selected_fragment}" \
+        && "${current_fragment}" != "${profile_selected_fragment}" ]]; then
+        continue
+      fi
+      read -r -a cats <<< "${production_plan_category_sets[plan_index]}"
+      run_sr_block "${production_plan_year_exprs[plan_index]}" \
+        "${production_plan_var_sets[plan_index]}" "${cats[@]}"
+      if [[ -n "${profile_wq_staging_base}" ]] && (( run_failure_count > 0 )); then
+        echo "Guarded campaign stopped after the first failed fragment; remaining fragments were not started." >&2
+        break
+      fi
+    done
+  else
   for year_index in "${!sr_year_sets[@]}"; do
     year_expr="${sr_year_sets[year_index]}"
     category_set_array_name="${sr_year_category_set_names[year_index]}"
@@ -3531,6 +3490,7 @@ if [[ "${run_sr}" == "true" ]]; then
     unset -n active_category_sets
     unset -n active_category_var_set_names
   done
+  fi
 else
   echo "Skipping SR production because run_sr=${run_sr}"
   echo
@@ -3557,7 +3517,7 @@ fi
 final_process_exit_code=0
 if [[ "${dry_run}" == "false" ]]; then
   IFS=$'\t' read -r final_campaign_classification final_process_exit_code < <(
-    production_state_tool finalize "${production_state_path}"
+    production_state_tool finalize "${production_state_path}" "${profile_selected_fragment}"
   )
   production_state_tool report \
     "${production_state_path}" \

@@ -35,12 +35,15 @@ state to resume without confusing partial, stale, or mismatched output.
 
 | Input | Type/requirement/default | Semantics |
 | --- | --- | --- |
-| `--production-profile` | Required public profile: `run2_full`, `run3_full`, `run2_full_CR`, `run3_full_CR`, `run2_run3_full`, `run2_run3_full_CR`, `run2_sr_ext`, `run3_sr_ext`, `t0_sr_statonly`, or `t0_cr_statonly` | Selects the maintained block plan. `run2_sr_ext` uses inline data-driven production; `run3_sr_ext` uses a deferred local stage. `rebin_fine` remains a specialist legacy profile with its own explicit environment requirement. |
+| `--production-profile` | Required public profile: `run2_full`, `run3_full`, `run2_full_CR`, `run3_full_CR`, `run2_run3_full`, `run2_run3_full_CR`, `run2_sr_ext`, `run3_sr_ext`, `t0_sr_statonly`, or `t0_cr_statonly` | Selects the maintained plan. `run2_sr_ext` uses inline data-driven production; `run3_sr_ext` uses a separate local stage. |
 | `--output-dir` | Required absolute path; fresh for a new campaign root | Owns state, logs, and produced artifacts. The SR-reco Run 3 component follows successful Run 2 in the shared root established by Run 2; it does not repeat the initial root-absence gate. Existing state otherwise follows profile-specific compatibility and resume behavior. |
 | `--campaign-tag` | Required non-empty string | Portable campaign identity recorded with state. |
 | `--env-file` | Optional absolute path | When omitted, resolves or creates the current worker environment. When supplied, selects exactly that archive as an intentional snapshot: integrity/provenance validation remains required, but current-checkout compatibility does not. The wrapper freezes the mode, resolved path, hash, fingerprint, and source identity; combined profiles forward the same explicit snapshot to both components. |
 | `--resume` | Boolean, default false | Reopens compatible campaign state and mechanically selects incomplete blocks/stages. |
 | `--dry-run` | Boolean, default false | Skips campaign-block execution, but first resolves or validates the selected current environment or explicit snapshot. It then prints the resolved plan without running campaign blocks or creating the campaign namespace. |
+| `--sr-plan` | JSON path for a fresh SR extension campaign | Supplies a complete category-group × histogram partition; omitted means the maintained 12-unit default. |
+| `--selected-fragment` | Exact SR extension unit ID | Executes one unit while persisting the full plan; later `--resume` retains verified completions. |
+| `--activate-pending-plan`, `--expected-plan-revision` | JSON path and exact observed active revision, with `--resume` | Atomically replaces only untouched pending SR extension coverage in the same campaign root; activation submits no work. |
 
 The wrapper derives full `fullR3_run.sh` invocations, records profile/block
 state, and, for the maintained deferred path, invokes `run_data_driven.py` only
@@ -257,8 +260,8 @@ The public production profiles are `run2_full`, `run3_full`, `run2_full_CR`,
 `run3_full_CR`, `run2_run3_full`, `run2_run3_full_CR`, `run2_sr_ext`,
 `run3_sr_ext`, `t0_sr_statonly`, and `t0_cr_statonly`; no arguments retain the
 legacy `run2_full` alias.
-`rebin_fine` is a specialist legacy profile and requires an explicit
-environment archive. New campaign roots require fresh output namespaces, an
+`rebin_fine` and the former `_clike` extension profiles are retired from the
+current CLI. New campaign roots require fresh output namespaces, an
 absolute output directory, and a campaign tag; the SR-reco Run 3 component
 uses the root already established by Run 2.
 
