@@ -2,13 +2,16 @@
 
 import json
 import argparse
+from datetime import datetime, timezone
 import math
 import multiprocessing
 import os
 from pathlib import Path
 import re
+import signal
 import stat
 import subprocess
+import time
 
 
 class staging_guard_error(RuntimeError):
@@ -124,10 +127,38 @@ def _verify_owned_tree(path, marker, owner_pid, owner_start, owner_inode, marker
         raise staging_guard_error("staging owner marker changed")
 
 
+def _critical_signal_identity(path, marker, owner_pid, owner_start,
+                              owner_inode, marker_inode, telemetry_degraded):
+    try:
+        _verify_owned_tree(path, marker, owner_pid, owner_start,
+                           owner_inode, marker_inode)
+    except OSError as error:
+        if telemetry_degraded is not None:
+            telemetry_degraded.set()
+        print(f"WARNING: Work Queue critical-space signal deferred because "
+              f"staging identity could not be read: {type(error).__name__}: "
+              f"{str(error)[:240]}", flush=True)
+        return False
+    try:
+        observed_start = _process_start(owner_pid)
+    except staging_guard_error as error:
+        if telemetry_degraded is not None:
+            telemetry_degraded.set()
+        print(f"WARNING: Work Queue critical-space signal deferred because "
+              f"manager identity could not be read: {str(error)[:240]}", flush=True)
+        return False
+    if observed_start != owner_start or os.getppid() != owner_pid:
+        raise staging_guard_error(
+            "manager process identity changed before critical-space signal")
+    return True
+
+
 def _watch(path, base, quota_root, owner_pid, owner_start, warning_bytes,
+           min_free_bytes,
            poll_seconds, stop_event, owner_inode,
            marker_inode, telemetry_degraded=None, shutdown_ack=None):
     marker = Path(path) / "guard.json"
+    critical_signal_sent = False
     while not stop_event.is_set():
         if os.getppid() != owner_pid:
             raise staging_guard_error("manager parent exited during monitoring")
@@ -139,6 +170,7 @@ def _watch(path, base, quota_root, owner_pid, owner_start, warning_bytes,
             identity_detail = str(error)
         if observed_start is not None and observed_start != owner_start:
             raise staging_guard_error("manager process identity changed during monitoring")
+        current_identity_verified = observed_start == owner_start
         if observed_start is None:
             if telemetry_degraded is not None:
                 telemetry_degraded.set()
@@ -154,19 +186,72 @@ def _watch(path, base, quota_root, owner_pid, owner_start, warning_bytes,
                   flush=True)
             stop_event.wait(poll_seconds)
             continue
+        measurement = None
         try:
-            available_bytes, free_inodes = _space(base, quota_root)
-            print(f"Work Queue staging health: available_bytes={available_bytes} "
-                  f"free_inodes={free_inodes}", flush=True)
-            if available_bytes < warning_bytes or free_inodes < 1000:
-                print("WARNING: Work Queue staging free space or inodes are low; "
-                      "manager remains running", flush=True)
+            measurement = _space(base, quota_root)
         except Exception as error:
             if telemetry_degraded is not None:
                 telemetry_degraded.set()
             print(f"WARNING: Work Queue staging telemetry unavailable: "
                   f"{type(error).__name__}: {str(error)[:240]}; manager remains running",
                   flush=True)
+        if measurement is not None:
+            available_bytes, free_inodes = measurement
+            print(f"Work Queue staging health: available_bytes={available_bytes} "
+                  f"free_inodes={free_inodes}", flush=True)
+            if available_bytes < warning_bytes or free_inodes < 1000:
+                print("WARNING: Work Queue staging free space or inodes are low; "
+                      "manager remains running", flush=True)
+            if available_bytes <= min_free_bytes and not critical_signal_sent:
+                try:
+                    safe_identity = current_identity_verified
+                    if safe_identity:
+                        safe_identity = _critical_signal_identity(
+                            path, marker, owner_pid, owner_start, owner_inode,
+                            marker_inode, telemetry_degraded)
+                    if safe_identity:
+                        try:
+                            metadata = json.loads(marker.read_text())
+                        except OSError as error:
+                            if telemetry_degraded is not None:
+                                telemetry_degraded.set()
+                            print(f"WARNING: Work Queue critical-space signal "
+                                  f"deferred because guard marker could not be "
+                                  f"read: {type(error).__name__}: "
+                                  f"{str(error)[:240]}", flush=True)
+                            safe_identity = False
+                    if safe_identity:
+                        observed_at = datetime.now(timezone.utc).isoformat()
+                        metadata.update(
+                            reason="critical_free_space",
+                            critical_free_space={
+                                "available_bytes": available_bytes,
+                                "min_free_bytes": min_free_bytes,
+                                "observed_at": observed_at,
+                                "observed_at_unix_ns": time.time_ns(),
+                            },
+                        )
+                        with marker.open("w") as marker_file:
+                            json.dump(metadata, marker_file, sort_keys=True)
+                            marker_file.write("\n")
+                            marker_file.flush()
+                            os.fsync(marker_file.fileno())
+                        print(
+                            "CRITICAL: Work Queue staging effective available space "
+                            f"{available_bytes} bytes is at or below {min_free_bytes}; "
+                            f"requesting SIGTERM for verified manager pid {owner_pid} "
+                            f"at {observed_at}",
+                            flush=True,
+                        )
+                        safe_identity = _critical_signal_identity(
+                            path, marker, owner_pid, owner_start, owner_inode,
+                            marker_inode, telemetry_degraded)
+                    if safe_identity:
+                        os.kill(owner_pid, signal.SIGTERM)
+                        critical_signal_sent = True
+                except (OSError, ValueError, staging_guard_error) as error:
+                    raise staging_guard_error(
+                        "critical free-space signal was not safely completed") from error
         try:
             _verify_owned_tree(path, marker, owner_pid, owner_start, owner_inode, marker_inode)
         except OSError as error:
@@ -193,7 +278,7 @@ def start_guard(base, invocation, quota_root, warning_bytes, min_free_bytes,
     if os.path.commonpath((str(real_base), quota_root)) != quota_root:
         raise staging_guard_error("quota root does not own the selected staging base")
     available, free_inodes = _space(real_base, quota_root)
-    if available < min_free_bytes or free_inodes < 1000:
+    if available <= min_free_bytes or free_inodes < 1000:
         raise staging_guard_error("minimum free space or protective inode reserve unavailable")
     path = real_base / invocation
     path.mkdir(mode=0o700)
@@ -216,7 +301,7 @@ def start_guard(base, invocation, quota_root, warning_bytes, min_free_bytes,
     telemetry_degraded = context.Event()
     shutdown_ack = context.Event()
     watchdog = context.Process(target=_watch, args=(str(path), str(real_base), quota_root,
-        owner_pid, owner_start, warning_bytes,
+        owner_pid, owner_start, warning_bytes, min_free_bytes,
         poll_seconds, stop_event, owner_inode, marker_inode, telemetry_degraded,
         shutdown_ack), daemon=False)
     watchdog.telemetry_degraded = telemetry_degraded
@@ -240,7 +325,7 @@ def start_guard(base, invocation, quota_root, warning_bytes, min_free_bytes,
 
 def finish_guard(path, owner_inode, stop_event, watchdog, succeeded):
     stop_event.set()
-    watchdog.join(timeout=10)
+    watchdog.join(timeout=30)
     marker = path / "guard.json"
     try:
         metadata = json.loads(marker.read_text())

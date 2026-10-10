@@ -1953,7 +1953,7 @@ def test_staging_guard_warns_and_keeps_running_after_telemetry_failures(
     real_scandir = staging_guard.os.scandir
     monkeypatch.setattr(staging_guard.os, "scandir", lambda current: no_tree_scan()
                         if os.fspath(current) == str(path) else real_scandir(current))
-    measurements = iter((measurement_error, (0, 0), (20000000000, 2000)))
+    measurements = iter((measurement_error, (20000000000, 0), (20000000000, 2000)))
     def measure(*_):
         value = next(measurements)
         if isinstance(value, Exception):
@@ -1969,16 +1969,96 @@ def test_staging_guard_warns_and_keeps_running_after_telemetry_failures(
             return self.is_set()
     degraded = SimpleNamespace(value=False)
     degraded.set = lambda: setattr(degraded, "value", True)
-    staging_guard._watch(path, tmp_path, "/groups/klannon", pid, start, 30000000000,
-                         1, stop_event(), *identity, degraded)
+    staging_guard._watch(path, tmp_path, "/groups/klannon", pid, start,
+                         30000000000, 10000000000, 1, stop_event(), *identity, degraded)
     assert signalled == []
     assert degraded.value
     output = capsys.readouterr().out
     assert error_text in output
-    assert "available_bytes=0 free_inodes=0" in output
+    assert "available_bytes=20000000000 free_inodes=0" in output
     assert "available_bytes=20000000000" in output
     assert "measurement_failed" not in output
     assert json.loads(marker.read_text())["status"] == "running"
+
+
+@pytest.mark.parametrize(("available_bytes", "should_signal"), (
+    (10000000000, True),
+    (0, True),
+    (10000000001, False),
+))
+def test_staging_guard_signals_only_at_or_below_critical_free_space(
+    tmp_path, monkeypatch, capsys, available_bytes, should_signal
+):
+    path = tmp_path / "owned"
+    path.mkdir()
+    pid = os.getpid()
+    monkeypatch.setattr(staging_guard.os, "getppid", lambda: pid)
+    start = staging_guard._process_start(pid)
+    marker = path / "guard.json"
+    marker.write_text(json.dumps({"status": "running", "path": str(path),
+                                  "owner_uid": os.getuid(), "owner_pid": pid,
+                                  "owner_start": start, "owner_inode": path.stat().st_ino}))
+    signals = []
+    monkeypatch.setattr(staging_guard.os, "kill",
+                        lambda target, sig: signals.append((target, sig)))
+    monkeypatch.setattr(staging_guard, "_space", lambda *_: (available_bytes, 2000))
+
+    class stop_event:
+        polls = 0
+        def is_set(self):
+            return self.polls >= 2
+        def wait(self, _):
+            self.polls += 1
+            return self.is_set()
+
+    staging_guard._watch(path, tmp_path, "/groups/klannon", pid, start,
+                         30000000000, 10000000000, 1, stop_event(),
+                         path.stat().st_ino, marker.stat().st_ino)
+    assert signals == ([(pid, staging_guard.signal.SIGTERM)] if should_signal else [])
+    metadata = json.loads(marker.read_text())
+    assert metadata["status"] == "running"
+    if should_signal:
+        assert metadata["reason"] == "critical_free_space"
+        assert metadata["critical_free_space"]["available_bytes"] == available_bytes
+        assert metadata["critical_free_space"]["min_free_bytes"] == 10000000000
+        assert metadata["critical_free_space"]["observed_at"]
+        assert metadata["critical_free_space"]["observed_at_unix_ns"] > 0
+        assert "requesting SIGTERM for verified manager pid" in capsys.readouterr().out
+    else:
+        assert "reason" not in metadata
+        capsys.readouterr()
+
+
+def test_staging_guard_does_not_signal_when_critical_marker_logging_fails(
+    tmp_path, monkeypatch
+):
+    path = tmp_path / "owned"
+    path.mkdir()
+    pid = os.getpid()
+    monkeypatch.setattr(staging_guard.os, "getppid", lambda: pid)
+    start = staging_guard._process_start(pid)
+    marker = path / "guard.json"
+    marker.write_text(json.dumps({"status": "running", "path": str(path),
+                                  "owner_uid": os.getuid(), "owner_pid": pid,
+                                  "owner_start": start, "owner_inode": path.stat().st_ino}))
+    signals = []
+    monkeypatch.setattr(staging_guard.os, "kill",
+                        lambda target, sig: signals.append((target, sig)))
+    monkeypatch.setattr(staging_guard, "_space", lambda *_: (0, 2000))
+    monkeypatch.setattr(staging_guard.os, "fsync",
+                        lambda _: (_ for _ in ()).throw(OSError("marker sync failed")))
+
+    class stop_event:
+        def is_set(self):
+            return False
+
+    with pytest.raises(staging_guard.staging_guard_error,
+                       match="critical free-space signal was not safely completed"):
+        staging_guard._watch(path, tmp_path, "/groups/klannon", pid, start,
+                             30000000000, 10000000000, 1, stop_event(),
+                             path.stat().st_ino, marker.stat().st_ino)
+    assert signals == []
+    assert json.loads(marker.read_text())["reason"] == "critical_free_space"
 
 
 def test_staging_guard_missing_telemetry_file_does_not_signal(tmp_path, monkeypatch, capsys):
@@ -2006,7 +2086,7 @@ def test_staging_guard_missing_telemetry_file_does_not_signal(tmp_path, monkeypa
             return True
 
     staging_guard._watch(path, tmp_path, "/groups/klannon", pid, start,
-                         20000000000, 1, stop_event(), path.stat().st_ino,
+                         20000000000, 10000000000, 1, stop_event(), path.stat().st_ino,
                          marker.stat().st_ino)
     assert signalled == []
     assert json.loads(marker.read_text())["status"] == "running"
@@ -2039,20 +2119,20 @@ def test_staging_guard_transient_identity_read_does_not_signal(
     monkeypatch.setattr(staging_guard,
                         "_verify_owned_tree" if failure_point == "marker_read" else "_process_start",
                         transient)
-    monkeypatch.setattr(staging_guard, "_space", lambda *_: (20000000000, 2000))
+    monkeypatch.setattr(staging_guard, "_space", lambda *_: (0, 2000))
     signalled = []
     monkeypatch.setattr(staging_guard.os, "kill", lambda pid, sig: signalled.append((pid, sig)))
     class stop_event:
         polls = 0
         def is_set(self):
-            return self.polls >= 2
+            return self.polls >= 1
         def wait(self, _):
             self.polls += 1
             return self.is_set()
     degraded = SimpleNamespace(value=False)
     degraded.set = lambda: setattr(degraded, "value", True)
     staging_guard._watch(path, tmp_path, "/groups/klannon", pid, start,
-                         30000000000, 1, stop_event(), path.stat().st_ino,
+                         30000000000, 10000000000, 1, stop_event(), path.stat().st_ino,
                          marker.stat().st_ino, degraded)
     assert degraded.value and signalled == []
     assert json.loads(marker.read_text())["status"] == "running"
@@ -2131,9 +2211,11 @@ def test_staging_cleanup_is_owned_and_preserves_ambiguous_files(tmp_path, monkey
 def test_staging_preflight_rejects_insufficient_free_space_and_collision(tmp_path, monkeypatch):
     monkeypatch.setattr(staging_guard, "_validate_base", lambda _: tmp_path)
     monkeypatch.setattr(staging_guard.os.path, "commonpath", lambda _: "/groups/klannon")
-    monkeypatch.setattr(staging_guard, "_space", lambda *_: (9999999999, 2000))
-    with pytest.raises(staging_guard.staging_guard_error, match="minimum free space"):
-        staging_guard.start_guard(tmp_path, "attempt", "/groups/klannon", 20000000000, 10000000000, 1)
+    for available_bytes in (9999999999, 10000000000):
+        monkeypatch.setattr(staging_guard, "_space", lambda *_, value=available_bytes: (value, 2000))
+        with pytest.raises(staging_guard.staging_guard_error, match="minimum free space"):
+            staging_guard.start_guard(tmp_path, "attempt", "/groups/klannon",
+                                      20000000000, 10000000000, 1)
     assert not (tmp_path / "attempt").exists()
     monkeypatch.setattr(staging_guard, "_space", lambda *_: (20000000000, 2000))
     (tmp_path / "attempt").mkdir()
@@ -2203,6 +2285,83 @@ def test_lost_watchdog_blocks_completion_without_signalling_manager(
     assert json.loads((tmp_path / "attempt" / "guard.json").read_text())["status"] == "running"
 
 
+def test_finish_guard_waits_for_slow_valid_quota_poll_and_acknowledges_shutdown(tmp_path):
+    owned = tmp_path / "owned"
+    owned.mkdir()
+    pid = os.getpid()
+    start = staging_guard._process_start(pid)
+    marker = owned / "guard.json"
+    marker.write_text(json.dumps({"status": "running", "path": str(owned),
+                                  "owner_uid": os.getuid(), "owner_pid": pid,
+                                  "owner_start": start, "owner_inode": owned.stat().st_ino}))
+
+    class event:
+        def __init__(self, value=False):
+            self.value = value
+        def set(self):
+            self.value = True
+        def is_set(self):
+            return self.value
+
+    class slow_watchdog:
+        exitcode = 0
+        owner_pid = pid
+        owner_start = start
+        marker_inode = marker.stat().st_ino
+        shutdown_ack = event()
+        telemetry_degraded = event()
+        def join(self, timeout):
+            self.join_timeout = timeout
+            # A bounded in-flight quota call may consume 15 seconds; model its
+            # successful completion without sleeping in the test.
+            assert timeout > 15
+            self.shutdown_ack.set()
+        def is_alive(self):
+            return False
+
+    watcher = slow_watchdog()
+    staging_guard.finish_guard(owned, owned.stat().st_ino, event(), watcher, True)
+    assert watcher.join_timeout == 30
+    completed = json.loads(marker.read_text())
+    assert completed["status"] == "completed_pending_receipt"
+    assert completed["telemetry_degraded"] is False
+
+
+@pytest.mark.parametrize("watcher_state", ("missing_ack", "still_alive"))
+def test_finish_guard_rejects_missing_ack_or_stuck_watchdog(tmp_path, watcher_state):
+    owned = tmp_path / "owned"
+    owned.mkdir()
+    pid = os.getpid()
+    start = staging_guard._process_start(pid)
+    marker = owned / "guard.json"
+    marker.write_text(json.dumps({"status": "running", "path": str(owned),
+                                  "owner_uid": os.getuid(), "owner_pid": pid,
+                                  "owner_start": start, "owner_inode": owned.stat().st_ino}))
+
+    class event:
+        def set(self):
+            pass
+        def is_set(self):
+            return watcher_state != "missing_ack"
+
+    class watcher:
+        exitcode = 0
+        owner_pid = pid
+        owner_start = start
+        marker_inode = marker.stat().st_ino
+        shutdown_ack = event()
+        telemetry_degraded = event()
+        def join(self, timeout):
+            assert timeout == 30
+        def is_alive(self):
+            return watcher_state == "still_alive"
+
+    reason = "did not stop cleanly" if watcher_state == "still_alive" else "shutdown"
+    with pytest.raises(staging_guard.staging_guard_error, match=reason):
+        staging_guard.finish_guard(owned, owned.stat().st_ino, event(), watcher(), True)
+    assert json.loads(marker.read_text())["status"] == "running"
+
+
 def test_guard_marker_mutation_blocks_completion_and_cleanup(tmp_path, monkeypatch):
     owned = tmp_path / "owned"
     owned.mkdir()
@@ -2223,7 +2382,7 @@ def test_guard_marker_mutation_blocks_completion_and_cleanup(tmp_path, monkeypat
             return False
     with pytest.raises(staging_guard.staging_guard_error, match="owner marker changed"):
         staging_guard._watch(owned, tmp_path, "/groups/klannon", pid, start,
-                             30000000000, 1, stop_event(), owned.stat().st_ino,
+                         30000000000, 10000000000, 1, stop_event(), owned.stat().st_ino,
                              marker.stat().st_ino)
     class fake_watchdog:
         exitcode = 1

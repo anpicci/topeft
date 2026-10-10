@@ -93,13 +93,18 @@ implicit `/tmp` and root-backed staging are rejected by mount identity.
 maximum. It does not change accumulation resources, set CPU affinity, or
 establish worker packing or throughput.
 
-Before launch, the guard requires at least the selected minimum usable bytes
-from both filesystem free space and group quota, plus 1,000 free inodes.
-The minimum is at least 10 GB (decimal). During execution it reports usable
-free bytes and inodes without scanning the staging tree. Low readings and
-temporary measurement failures produce warnings, never guard-generated signals.
-The final manager readback rejects a dead watcher or changed ownership marker
-before recording source success; ambiguous staging remains for inspection. The older
+Before launch, the guard requires effective available bytes strictly above the
+selected minimum, calculated as the smaller of filesystem free availability
+and group quota remaining, plus 1,000 free inodes. The minimum is at least 10
+GB (decimal). During execution it reports usable free bytes and inodes without
+scanning the staging tree. Only a valid current measurement at or below
+`--wq-min-free-bytes` requests one controlled `SIGTERM` to the manager after
+its PID/start identity and owned marker are verified and the critical-space
+reason, observed bytes, threshold and timestamp are written to the marker and
+log. No `SIGKILL` or `SIGINT` is sent. Low inode counts, staging growth,
+unavailable telemetry, watcher loss and other warnings do not signal the
+manager. The final manager readback rejects a dead watcher or changed ownership
+marker before recording source success; ambiguous staging remains for inspection. The older
 `--wq-warning-bytes`, `--wq-stop-bytes` and `--wq-reserve-bytes` options are
 retired. Native logs are copied and checked before only the completed owned
 staging is removed. Cleanup refusal retains staging and prints a warning; a
