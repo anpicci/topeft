@@ -14,9 +14,9 @@ layer retains. It is a lookup page, not a production recipe. See the
 | `analysis/topeft_run2/run_data_driven.py` | Direct transformed-artifact CLI | A validated source PKL/sidecar and requested data-driven product | Streaming input; output name derived from the input when omitted | Rejects missing/incompatible sidecars, uncertified input policy, invalid product requests, and incomplete transformed companions |
 | `analysis/topeft_run2/run_plotter.sh` | Maintained plotting wrapper | Readable PKL, output directory, and years | Forwards to the direct plotter; can infer CR/SR from the filename; dry-run prints the resolved command without creating the output directory | Rejects missing inputs/years; the direct plotter owns artifact and metadata validation |
 | `analysis/topeft_run2/make_cr_and_sr_plots.py` | Direct plotting CLI | Repeatable `-f` inputs or a list file, output, years, and plot controls | Processing binning; merged channels; one worker; year coverage `warn` | Rejects incoherent artifacts, ambiguous channel authority, invalid binning, and mixed Run 2/Run 3 inputs |
-| `analysis/topeft_run2/make_cards.py` | Direct card CLI; no manifest required | Positional PKLs or a list file, variables/channels, and card controls | Fitting binning; year coverage `warn`; Asimov data | Rejects incoherent artifacts, invalid exact aggregation, incomplete shape pairs, and selected-WC/coverage failures according to options |
+| `analysis/topeft_run2/make_cards.py` | Direct card CLI; no manifest required | Positional PKLs or a list file, variables/channels, card controls, optional `--lepton-mva-correlation {per-run,cross-run}`, and optional `--unblind` | Fitting binning; year coverage `warn`; per-run MVA identities; Asimov data. Unblind keeps real data for ROOT `data_obs` and TXT observation output. | Rejects incoherent artifacts, invalid exact aggregation, incomplete shape pairs, and selected-WC/coverage failures according to options |
 | `analysis/topeft_run2/validate_datacard_correlation.py` | Read-only card correlation validator | Source PKL, final TXT/ROOT pair, variable, channel, source periods, explicit groups, nuisance prefix, and exact card process | Writes one JSON report; returns nonzero on mismatch | Independently sums source-period nominal and directional arrays; rejects missing, extra, duplicate, or numerically mismatched final identities |
-| `analysis/topeft_run2/make_datacard_matrix_manifest.py` | Standard matrix manifest generator | Era, repeatable `--input-pkl ROLE=PATH`, Python and missing-parton paths, runtime ID, output/control roots, and fresh manifest path; optional `--channel-set-key` or advanced `--physical-target` subset | `topeft_datacard_matrix_v3`; 11 logical full-profile rows in each era become 11 Run 2 or 34 Run 3 execution units | Rejects missing runtime inputs, unknown targets, incomplete PKL roles, and manifest collisions |
+| `analysis/topeft_run2/make_datacard_matrix_manifest.py` | Standard matrix manifest generator | Era, repeatable `--input-pkl ROLE=PATH`, Python and missing-parton paths, runtime ID, output/control roots, and fresh manifest path; optional MVA correlation, `--channel-set-key`, or advanced `--physical-target` subset | `topeft_datacard_matrix_v3`; 11 logical full-profile rows in each era become 11 Run 2 or 34 Run 3 execution units. Rows carry the MVA choice; this interface has no unblind option. | Rejects missing runtime inputs, unknown targets, incomplete PKL roles, and manifest collisions |
 | `analysis/topeft_run2/run_datacard_matrix_resumable.sh` | Resumable matrix runner | Matrix manifest; optional `--plan-only` or `--status` | Runs eligible rows and writes receipts; status is read-only | Rejects invalid manifests, changed runtime files, failed rows, and invalid receipts |
 | `analysis/topeft_run2/build_per_era_datacard_package.py` | Per-era package builder | `build` with era, repeatable matrix manifests, fresh absolute output, and analysis; requested targets come from manifest rows | Cards, selected WCs, scalings, physical-to-`chN` mapping, and provenance | Reports missing/extra targets and relevant manifest rows plus runner commands; rejects invalid receipts, duplicate scalings, and output collisions |
 | `analysis/topeft_run2/build_combined_datacard_package.py` | Combined package builder and checker | `build` with Run 2/Run 3 package directories, fresh absolute output, analysis, date, and version; `certify` checks an existing package | Cards-only package with mapping, scalings, ordered card inputs, provenance, and README | Rejects unequal physical target sets with both directional differences before publication; also rejects invalid inputs and failed checks |
@@ -131,6 +131,12 @@ requested output directory; normal execution creates it immediately before
 launching the plotter.
 `make_cards.py` is the manifest-free direct card interface and delegates
 card/template construction to `topeft.modules.datacard_tools.DatacardMaker`.
+Its MVA selector defaults to run-specific `13TeV`/`13p6TeV` nuisance
+identities; `cross-run` writes shared unsuffixed electron and muon MVA names in
+TXT and ROOT output. Direct `--unblind` uses the real-data branch, while the
+canonical matrix generator propagates only the MVA selector at this version.
+These software paths do not by themselves establish a numerically validated
+observed-data card or a qualified package/fit campaign.
 For a focused correlation check, run
 `python analysis/topeft_run2/validate_datacard_correlation.py --source-pkl SOURCE.pkl.gz --card CARD.txt --root TEMPLATE.root --variable lj0pt --channel CHANNEL --period 2022 --period 2022EE --group 2022=2022,2022EE --prefix CMS_fake_t_DeepTau2018v2p5_VSmu_ --process Diboson --output validation.json`.
 The validator independently constructs final year-group sums. It reuses
@@ -156,7 +162,9 @@ option authority. Focused ownership tests include
 `tests/test_run3_full_production_profile.py`,
 `tests/test_run_analysis_preflight.py`, `tests/test_run_data_driven.py`,
 `tests/test_make_cr_and_sr_plots.py`, and
-`tests/test_make_cards_multi_pkl.py`.
+`tests/test_make_cards_multi_pkl.py`. Card-policy ownership checks also include
+`tests/test_lepton_mva_correlation.py` and
+`tests/test_make_datacard_matrix_manifest.py`.
 
 ## Physics-policy control map
 

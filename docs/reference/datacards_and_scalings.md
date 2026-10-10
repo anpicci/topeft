@@ -38,8 +38,8 @@ are:
 | Binning | `fitting` or `processing`, default `fitting` | Fitting performs exact late aggregation per selected physical channel. |
 | WCs | POI list, reference/selected-WC files, select-only/check controls, optional WC values/scaling order | WC selection uses the card-facing fitting view; selected files must match the producer's supported process/WC structure. `--use-selected` materializes canonical signal-only `selectedWCs.txt` in `--out-dir`. |
 | Nuisances | Nuisance and MC-stat switches, `--rate-syst-json`, `--miss-parton-file`, and `--skip-missing-parton-rate-syst` | Run era selects maintained defaults when the override is omitted. An explicit `--rate-syst-json` is forwarded as `rate_systs_path`; worker arguments come from the canonical manifest. The missing-parton consumer infers the maintained payload layout and has no `--sr-registry` option. |
-| Data/negative bins | Asimov by default; `--unblind` for observed data; crop negative bins by default | These choices affect card contents and must be recorded with production evidence. |
-| Execution | Direct local default; `--condor` requires `--matrix-manifest`, `--condor-output`, explicit CPU/memory/disk requests, `--max-retries`, `--max-starts`, `--condor-schedd`, `--condor-pool`; optional `--max-runtime` and `--prepare-only` | Submits one queue item per manifest row after token reservation. Prepare-only emits ownership-free material and invokes no scheduler. |
+| Data/negative bins | Asimov by default; direct `--unblind` for observed data; crop negative bins by default | Unblind keeps the real-data process for ROOT `data_obs` and TXT `observation`; the Asimov branch evaluates nominal processes at `--wc-vals`. The canonical matrix generator has no unblind option. These choices require distinct output/provenance records. |
+| Execution | Direct local default; `--condor` requires `--matrix-manifest`, `--condor-output`, explicit CPU/memory/disk requests, `--max-retries`, and `--max-starts`; optional `--max-runtime` and `--prepare-only` | Submits one queue item per manifest row after token reservation. Prepare-only emits ownership-free material and invokes no scheduler. |
 
 In direct mode, `make_cards.main()` resolves inputs, validates/merges them,
 constructs one `DatacardMaker`, selects or loads WCs, calls `run_local()`, and
@@ -72,13 +72,14 @@ raises `TypeError`.
 | `year_lst` | Sequence, default empty/all | Supported values are `UL16`, `UL16APV`, `UL17`, `UL18`, `2022`, `2022EE`, `2023`, `2023BPix`. Determines Run 2/3 rate-systematic defaults and missing-parton era. |
 | `do_sm` | Boolean, default false | Selects SM-only card behavior where consumed. |
 | `do_nuisance` | Boolean, default false | Loads/writes supported nuisance contracts. |
+| `lepton_mva_correlation` | `per-run` default; also `cross-run` | Chooses run-specific `13TeV`/`13p6TeV` electron and muon MVA nuisance identities or shared unsuffixed identities. |
 | `drop_syst` | Sequence, default empty | Removes named template systematics after supported loading/selection. |
 | `skip_missing_parton_rate_syst` | Boolean, default false | Disables only the missing-parton nuisance. |
 | `out_dir` | Path string, default `.` | Destination for text/ROOT card artifacts. |
 | `var_lst` | Sequence, default empty | Kinematic family selection. |
 | `do_mc_stat` | Boolean, default false | Enables card `autoMCStats` behavior; stored template variances still follow process policy. |
 | `wcs` | Sequence, default empty | Restricts WC consideration during selection/decomposition. |
-| `unblind` | Boolean, default false | Keeps real data; otherwise data processes are removed and Asimov output is used. |
+| `unblind` | Boolean, default false | Keeps real data and writes it through the shared `data_obs` array to ROOT and TXT observation output. Otherwise data processes are removed and Asimov output is built from nominal processes at the supplied WC truth point. |
 | `verbose` | Boolean, default true at class level | Controls progress diagnostics. The CLI resolves its own default. |
 | `use_AAC` | Boolean, default false | Enables the AAC template convention. |
 | `wc_scalings` | Sequence, default empty | Requested WC ordering/selection for scaling production. |
@@ -188,7 +189,7 @@ completion, physics, resources, or topology suitability.
 | `execute(manifest, manifest_hash, ...)` | Sequential orchestration over `execute_unit`; stops at a blocked/failed unit. No second completion state machine. |
 | Runner `--unit FILE` or `MANIFEST --row-id ID` | Selects one unit without rewriting its parent or public identity. `--plan-only` and `--status` remain read-only. `--derive-units MANIFEST` prints descriptors only. |
 | Runner `--reconcile-reservations MANIFEST [--row-id ID]` | Optional proactive reconciliation under each physical lease. Every new ownership attempt also reconciles automatically. Never runs a producer. |
-| `datacard_matrix_condor.prepare_material(manifest_path, destination, request_cpus=..., request_memory=..., request_disk=..., max_retries=..., max_starts=..., schedd=..., pool=..., query_executable=..., max_runtime=...)` | Fresh-only shared-filesystem material with no row reservations. Resources, budgets and endpoints required; runtime optional. Absolute query executable defaults to resolved `condor_q`. No producer, submission or package builder. |
+| `datacard_matrix_condor.prepare_material(manifest_path, destination, request_cpus=..., request_memory=..., request_disk=..., max_retries=..., max_starts=..., query_executable=..., max_runtime=...)` | Fresh-only shared-filesystem material with no row reservations. Resources and budgets are required; runtime is optional. Absolute query executable defaults to resolved `condor_q`; scheduler domains are discovered from current/observed context. No producer, submission or package builder. |
 | `datacard_matrix_condor.submission_transaction(manifest_path, destination, scheduler)` | Context manager: validate prepared descriptors, reconcile target rows, create reservations and bind itemdata under all row leases. Yields transaction state; never invokes a submitter. |
 | `datacard_matrix_condor.submit_material(manifest_path, destination, scheduler)` | Internal process adapter used by `make_cards.py --condor`; invokes installed `condor_submit` with argv and inherited row lease descriptors, and classifies command outcomes. Operators do not call it directly. |
 | `datacard_matrix_runner.reserve_condor(manifest, manifest_hash, rows, scheduler)` | Maintained reservation transaction context underlying dispatch. Reconciles stale ownership/H2 before claims; rolls back only definite no-start outcomes. |
@@ -220,8 +221,9 @@ reservation, not a global registry or completion record. Its existing schema
 remains `topeft_datacard_reservation_v1`; fields are `schema`, `row_id`,
 `output_root`, `backend`, `owner_id`, `created_at`, `scheduler`, and
 `scheduler_id`. The last two are null for local/manual ownership. Condor's
-scheduler object records explicit `pool`, `schedd` and absolute
-`query_executable`. `scheduler_id` caches only the last observed locator; it is
+initial scheduler object records the absolute `query_executable` and dispatch
+directory; later observations may add `pool` and `schedd` hints.
+`scheduler_id` caches only the last observed locator; it is
 never a query fallback or equality gate. `owner_id` is fresh UUID-style hex:
 exactly 32 lowercase hex digits, checked before constraint interpolation.
 It is current operational correlation, not historical workload authority.
@@ -261,15 +263,19 @@ reservation token, scheduler locator, physical lease, physical attempt and
 valid receipt remain distinct. Neither ProcId order nor a historical manifest
 hash defines the row; changed scheduler locators do not invalidate ownership.
 
-Submit-side queries use the explicit endpoint, `-allusers`, exact
+Submit-side queries use `-allusers`, an exact
 `DatacardReservation == "<safe token>"` constraint, JSON projection and a
-30-second timeout. One match with matching row/token has `ownership: ACTIVE`;
-zero successful matches means `GONE` without any prior locator binding.
-Multiple matches raise `DUPLICATE_SCHEDULER_OWNERSHIP` with all locators.
-Unavailable/failed/malformed query responses raise
-`SCHEDULER_OBSERVABILITY_UNAVAILABLE` with argv, error, timestamp and captured
-output, preserving ownership. Contradictory single-ad content also fails closed
-with a specific invalid-observation diagnostic. History is never live authority.
+30-second timeout. They try an observed endpoint hint when present, then the
+current default and global domains. One matching row/token has
+`ownership: ACTIVE`; multiple matches raise
+`DUPLICATE_SCHEDULER_OWNERSHIP` with all locators. A zero-result query yields
+`GONE` only when its domain covers the observed scheduler identity. Otherwise
+failed, malformed, or non-covering observations raise
+`SCHEDULER_OBSERVABILITY_INCOMPLETE` or
+`SCHEDULER_OBSERVABILITY_INSUFFICIENT` and preserve ownership. An exact remove
+event or matching terminal history record can supply terminal proof; history
+is not live authority. Live and terminal evidence together raise
+`SCHEDULER_EVIDENCE_CONTRADICTION`.
 
 Workers never invoke `condor_q` or contact a schedd for identity. They require
 `_CONDOR_JOB_AD` and parse only literal `DatacardUnit`, `DatacardReservation`,
@@ -282,8 +288,9 @@ are not blockers. The installed HTCondor distribution supports the local ad
 path; synthetic fixtures validate parsing, while execute-node availability
 remains a live qualification obligation.
 
-After a successful query proves disappearance, existing H2 classification and
-reconciliation run automatically under the lease before reservation retirement.
+After a coverage-qualified zero result or exact terminal proof establishes
+disappearance, existing H2 classification and reconciliation run automatically
+under the lease before reservation retirement.
 Local direct-unit execution, full orchestration, Condor reservation and explicit
 maintenance all use this gate; the manual reconciliation CLI is optional for
 backend switching. Valid receipts mean complete; partial staging can become
