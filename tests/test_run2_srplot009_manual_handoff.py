@@ -1793,9 +1793,8 @@ def test_real_work_queue_launcher_requires_guarded_staging(tmp_path, profile):
     options = (
         "--wq-staging-base", str(staging),
         "--wq-quota-root", "/groups/klannon",
-        "--wq-warning-bytes", "100000000000",
-        "--wq-stop-bytes", "150000000000",
-        "--wq-reserve-bytes", "10000000000",
+        "--wq-free-warning-bytes", "20000000000",
+        "--wq-min-free-bytes", "10000000000",
         "--wq-poll-seconds", "5",
     )
     root_backed = _run(
@@ -1820,6 +1819,16 @@ def test_direct_work_queue_selection_rejects_implicit_staging(tmp_path):
     assert not (tmp_path / "unused").exists()
 
 
+def test_retired_work_queue_budget_option_fails_clearly(tmp_path):
+    result = _run(
+        "run2_sr_ext", tmp_path / "unused", "fresh", dry_run=True,
+        extra_args=("--wq-stop-bytes", "250000000000"),
+    )
+    assert result.returncode != 0
+    assert "retired Work Queue staging-budget option" in result.stdout
+    assert not (tmp_path / "unused").exists()
+
+
 @pytest.mark.parametrize("profile", ("run2_run3_full", "run2_run3_full_CR"))
 def test_combined_work_queue_requires_staging_before_shared_root(tmp_path, profile):
     output_root = tmp_path / profile
@@ -1836,9 +1845,8 @@ def test_guarded_sr_failure_stops_before_next_fragment(tmp_path):
         extra_args=(
             "--wq-staging-base", str(tmp_path / "owned_staging"),
             "--wq-quota-root", "/groups/klannon",
-            "--wq-warning-bytes", "100000000000",
-            "--wq-stop-bytes", "150000000000",
-            "--wq-reserve-bytes", "10000000000",
+            "--wq-free-warning-bytes", "20000000000",
+            "--wq-min-free-bytes", "10000000000",
             "--wq-poll-seconds", "5",
         ),
     )
@@ -1858,7 +1866,7 @@ def test_staging_guard_rejects_root_and_symlink_paths(tmp_path):
         staging_guard._validate_base(link)
 
 
-def test_staging_guard_stop_and_measurement_failure_target_owned_pid(tmp_path, monkeypatch):
+def test_staging_guard_warns_without_stopping_and_measurement_failure_stops(tmp_path, monkeypatch, capsys):
     path = tmp_path / "owned"
     path.mkdir()
     pid = os.getpid()
@@ -1870,8 +1878,8 @@ def test_staging_guard_stop_and_measurement_failure_target_owned_pid(tmp_path, m
     identity = (path.stat().st_ino, marker.stat().st_ino)
     signalled = []
     monkeypatch.setattr(staging_guard.os, "kill", lambda target, sig: signalled.append((target, sig)))
-    monkeypatch.setattr(staging_guard, "_charged_tree", lambda *_: (90, 1))
-    monkeypatch.setattr(staging_guard, "_space", lambda *_: (1000, 1000))
+    monkeypatch.setattr(staging_guard, "_charged_tree", lambda *_: (200000000000, 1))
+    monkeypatch.setattr(staging_guard, "_space", lambda *_: (20000000000, 2000))
     class stop_event:
         stopped = False
         def is_set(self):
@@ -1879,30 +1887,30 @@ def test_staging_guard_stop_and_measurement_failure_target_owned_pid(tmp_path, m
         def wait(self, _):
             self.stopped = True
             return True
-    staging_guard._watch(path, tmp_path, "/groups/klannon", pid, start, 80, 100, 15, 1, stop_event(), *identity)
-    assert signalled == [(pid, staging_guard.signal.SIGTERM)]
-    assert json.loads((path / "guard.json").read_text())["reason"] == "staging_stop_threshold"
+    staging_guard._watch(path, tmp_path, "/groups/klannon", pid, start, 30000000000, 1, stop_event(), *identity)
+    assert signalled == []
+    assert "available_bytes=20000000000" in capsys.readouterr().out
     signalled.clear()
     marker.write_text(json.dumps({"status": "running", "path": str(path),
                                   "owner_uid": os.getuid(), "owner_pid": pid,
                                   "owner_start": start, "owner_inode": path.stat().st_ino}))
     monkeypatch.setattr(staging_guard, "_space", lambda *_: (_ for _ in ()).throw(OSError("quota unavailable")))
-    staging_guard._watch(path, tmp_path, "/groups/klannon", pid, start, 80, 100, 15, 1, stop_event(), *identity)
+    staging_guard._watch(path, tmp_path, "/groups/klannon", pid, start, 30000000000, 1, stop_event(), *identity)
     assert signalled == [(pid, staging_guard.signal.SIGTERM)]
     assert json.loads((path / "guard.json").read_text())["reason"] == "measurement_failed"
     signalled.clear()
     marker.write_text(json.dumps({"status": "running", "path": str(path),
                                   "owner_uid": os.getuid(), "owner_pid": pid,
                                   "owner_start": start, "owner_inode": path.stat().st_ino}))
-    monkeypatch.setattr(staging_guard, "_space", lambda *_: (1000, 1000))
+    monkeypatch.setattr(staging_guard, "_space", lambda *_: (20000000000, 2000))
     monkeypatch.setattr(staging_guard, "_charged_tree", lambda *_: (70, 1))
-    staging_guard._watch(path, tmp_path, "/groups/klannon", pid, start, 80, 100, 15, 1, stop_event(), *identity)
+    staging_guard._watch(path, tmp_path, "/groups/klannon", pid, start, 30000000000, 1, stop_event(), *identity)
     assert signalled == []
     monkeypatch.setattr(staging_guard, "_charged_tree", lambda *_: (1, 1))
     monkeypatch.setattr(staging_guard, "_space", lambda *_: (10, 1000))
-    staging_guard._watch(path, tmp_path, "/groups/klannon", pid, start, 80, 100, 15, 1, stop_event(), *identity)
-    assert signalled == [(pid, staging_guard.signal.SIGTERM)]
-    assert json.loads((path / "guard.json").read_text())["reason"] == "free_space_inode_or_quota_reserve"
+    staging_guard._watch(path, tmp_path, "/groups/klannon", pid, start, 30000000000, 1, stop_event(), *identity)
+    assert signalled == []
+    assert json.loads((path / "guard.json").read_text())["status"] == "running"
 
 
 def test_staging_guard_transient_child_disappearance_does_not_signal(tmp_path, monkeypatch):
@@ -1943,7 +1951,7 @@ def test_staging_guard_transient_child_disappearance_does_not_signal(tmp_path, m
             return True
 
     staging_guard._watch(path, tmp_path, "/groups/klannon", pid, start,
-                         80000, 100000, 15, 1, stop_event(), path.stat().st_ino,
+                         20000000000, 1, stop_event(), path.stat().st_ino,
                          marker.stat().st_ino)
     assert signalled == []
     assert json.loads(marker.read_text())["status"] == "running"
@@ -1968,7 +1976,7 @@ def test_staging_cleanup_is_owned_and_preserves_ambiguous_files(tmp_path, monkey
     (owned / "guard.json").write_text(json.dumps(metadata))
     (owned / "out_1.p").write_bytes(b"unfinished")
     staging_guard.finish_guard(owned, owned.stat().st_ino, fake_event(), fake_watchdog(), True)
-    with pytest.raises(staging_guard.staging_guard_error, match="not empty"):
+    with pytest.raises(staging_guard.staging_guard_error, match="unexpected"):
         staging_guard.cleanup_owned_staging(owned)
     assert (owned / "out_1.p").exists()
     assert json.loads((owned / "guard.json").read_text())["status"] == "cleanup_needed"
@@ -1980,26 +1988,62 @@ def test_staging_cleanup_is_owned_and_preserves_ambiguous_files(tmp_path, monkey
     staging_guard.cleanup_owned_staging(clean)
     assert not clean.exists()
 
+    completed = tmp_path / "completed"
+    completed.mkdir()
+    metadata.update(path=str(completed), owner_inode=completed.stat().st_ino)
+    (completed / "guard.json").write_text(json.dumps(metadata))
+    temporary = completed / "tmpabcwq-tmp-"
+    temporary.mkdir(mode=0o700)
+    (temporary / "out_p_1.p").write_bytes(b"intermediate")
+    staging_guard.finish_guard(completed, completed.stat().st_ino, fake_event(), fake_watchdog(), True)
+    staging_guard.cleanup_owned_staging(completed)
+    assert not completed.exists()
 
-def test_staging_preflight_rejects_insufficient_budget_and_collision(tmp_path, monkeypatch):
+    foreign = tmp_path / "foreign"
+    foreign.mkdir()
+    metadata.update(path=str(foreign), owner_inode=foreign.stat().st_ino)
+    (foreign / "guard.json").write_text(json.dumps(metadata))
+    temporary = foreign / "tmpabcwq-tmp-"
+    temporary.mkdir(mode=0o700)
+    (temporary / "out_p_1.p").write_bytes(b"owned")
+    (temporary / "unrecognized.txt").write_bytes(b"preserve")
+    staging_guard.finish_guard(foreign, foreign.stat().st_ino, fake_event(), fake_watchdog(), True)
+    with pytest.raises(staging_guard.staging_guard_error, match="unknown or foreign"):
+        staging_guard.cleanup_owned_staging(foreign)
+    assert (temporary / "out_p_1.p").exists()
+    assert (temporary / "unrecognized.txt").exists()
+    assert json.loads((foreign / "guard.json").read_text())["status"] == "cleanup_needed"
+
+    failed = tmp_path / "failed"
+    failed.mkdir()
+    metadata.update(path=str(failed), owner_inode=failed.stat().st_ino)
+    (failed / "guard.json").write_text(json.dumps(metadata))
+    (failed / "out_p_1.p").write_bytes(b"unfinished")
+    staging_guard.finish_guard(failed, failed.stat().st_ino, fake_event(), fake_watchdog(), False)
+    with pytest.raises(staging_guard.staging_guard_error, match="completed invocation"):
+        staging_guard.cleanup_owned_staging(failed)
+    assert (failed / "out_p_1.p").exists()
+
+
+def test_staging_preflight_rejects_insufficient_free_space_and_collision(tmp_path, monkeypatch):
     monkeypatch.setattr(staging_guard, "_validate_base", lambda _: tmp_path)
     monkeypatch.setattr(staging_guard.os.path, "commonpath", lambda _: "/groups/klannon")
     monkeypatch.setattr(staging_guard.signal, "getsignal", lambda _: staging_guard.signal.SIG_DFL)
-    monkeypatch.setattr(staging_guard, "_space", lambda *_: (200, 2000))
-    with pytest.raises(staging_guard.staging_guard_error, match="budget"):
-        staging_guard.start_guard(tmp_path, "attempt", "/groups/klannon", 100, 200, 20, 1)
+    monkeypatch.setattr(staging_guard, "_space", lambda *_: (9999999999, 2000))
+    with pytest.raises(staging_guard.staging_guard_error, match="minimum free space"):
+        staging_guard.start_guard(tmp_path, "attempt", "/groups/klannon", 20000000000, 10000000000, 1)
     assert not (tmp_path / "attempt").exists()
-    monkeypatch.setattr(staging_guard, "_space", lambda *_: (1000, 2000))
+    monkeypatch.setattr(staging_guard, "_space", lambda *_: (20000000000, 2000))
     (tmp_path / "attempt").mkdir()
     with pytest.raises(FileExistsError):
-        staging_guard.start_guard(tmp_path, "attempt", "/groups/klannon", 100, 200, 20, 1)
+        staging_guard.start_guard(tmp_path, "attempt", "/groups/klannon", 20000000000, 10000000000, 1)
 
 
 def test_lost_watchdog_requests_owned_manager_stop(tmp_path, monkeypatch):
     monkeypatch.setattr(staging_guard, "_validate_base", lambda _: tmp_path)
     monkeypatch.setattr(staging_guard.os.path, "commonpath", lambda _: "/groups/klannon")
     monkeypatch.setattr(staging_guard.signal, "getsignal", lambda _: staging_guard.signal.SIG_DFL)
-    monkeypatch.setattr(staging_guard, "_space", lambda *_: (1000, 2000))
+    monkeypatch.setattr(staging_guard, "_space", lambda *_: (20000000000, 2000))
     stopped = threading.Event()
     monkeypatch.setattr(staging_guard.os, "kill", lambda pid, sig: stopped.set())
     class fake_event:
@@ -2020,5 +2064,5 @@ def test_lost_watchdog_requests_owned_manager_stop(tmp_path, monkeypatch):
         def Process(self, **kwargs):
             return fake_process(**kwargs)
     monkeypatch.setattr(staging_guard.multiprocessing, "get_context", lambda _: fake_context())
-    staging_guard.start_guard(tmp_path, "attempt", "/groups/klannon", 100, 200, 20, 1)
+    staging_guard.start_guard(tmp_path, "attempt", "/groups/klannon", 20000000000, 10000000000, 1)
     assert stopped.wait(2)

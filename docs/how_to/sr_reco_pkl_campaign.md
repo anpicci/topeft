@@ -82,18 +82,23 @@ it does not decide completion from only the latest revision's rows.
 
 Every real Work Queue route, including CR and direct `run_analysis.py`, needs
 an explicit guarded staging base. Through `run_cr.sh`, provide
-`--wq-staging-base`, `--wq-quota-root`, `--wq-warning-bytes`,
-`--wq-stop-bytes`, `--wq-reserve-bytes`, and `--wq-poll-seconds`. A direct
+`--wq-staging-base`, `--wq-quota-root`, `--wq-free-warning-bytes`,
+`--wq-min-free-bytes 10000000000`, and `--wq-poll-seconds`. A direct
 `run_analysis.py -x work_queue` invocation requires `--wq-filepath`,
-`--wq-guard`, a unique invocation ID and the same quota/budget values. The
+`--wq-guard`, a unique invocation ID and the same free-space values. The
 base must be an existing owned writable directory on a non-root filesystem;
 implicit `/tmp` and root-backed staging are rejected by mount identity.
 `--wq-treereduction` is optional and requires separate resource review.
 
-The watchdog measures charged bytes, free space, inodes and quota headroom.
-It stops the owned manager on a limit or measurement failure and preserves
-ambiguous staging for inspection. Native logs are copied and checked before
-owned staging is removed. A failed source stops later guarded units. Preserve
+Before launch, the guard requires at least the selected minimum usable bytes
+from both filesystem free space and group quota, plus 1,000 free inodes.
+The minimum is at least 10 GB (decimal). During execution it reports charged
+staging bytes, usable free bytes and inodes; low free space is a warning, not a
+stop or a guarantee against exhaustion. Measurement or ownership failure still
+stops the manager and preserves ambiguous staging for inspection. The older
+`--wq-warning-bytes`, `--wq-stop-bytes` and `--wq-reserve-bytes` options are
+retired. Native logs are copied and checked before only the completed owned
+staging is removed. A failed source stops later guarded units. Preserve
 an ambiguous state and inspect the exact process, scheduler, artifact and log
 ownership before any separate recovery decision.
 

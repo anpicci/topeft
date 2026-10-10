@@ -1113,9 +1113,11 @@ if __name__ == "__main__":
     parser.add_argument("--wq-guard", action="store_true", help="Enable owned staging and fail-closed disk watchdog")
     parser.add_argument("--wq-invocation-id", help="Unique profile/block/attempt staging identity")
     parser.add_argument("--wq-quota-root", help="Exact site quota root, e.g. /groups/klannon")
-    parser.add_argument("--wq-warning-bytes", type=int)
-    parser.add_argument("--wq-stop-bytes", type=int)
-    parser.add_argument("--wq-reserve-bytes", type=int)
+    parser.add_argument("--wq-free-warning-bytes", type=int)
+    parser.add_argument("--wq-min-free-bytes", type=int)
+    parser.add_argument("--wq-warning-bytes", type=int, help=argparse.SUPPRESS)
+    parser.add_argument("--wq-stop-bytes", type=int, help=argparse.SUPPRESS)
+    parser.add_argument("--wq-reserve-bytes", type=int, help=argparse.SUPPRESS)
     parser.add_argument("--wq-poll-seconds", type=float)
     parser.add_argument("--wq-treereduction", type=int, choices=(5, 10, 20))
     parser.add_argument(
@@ -1213,6 +1215,9 @@ if __name__ == "__main__":
     parser.set_defaults(use_remote_env=True)
 
     args = parser.parse_args()
+    if any(value is not None for value in (args.wq_warning_bytes, args.wq_stop_bytes,
+                                           args.wq_reserve_bytes)):
+        parser.error("retired Work Queue staging-budget options; use --wq-free-warning-bytes and --wq-min-free-bytes")
     if args.rebuild_env and args.env_file:
         parser.error("--rebuild-env cannot be combined with --env-file")
     if args.snapshot and not args.env_file:
@@ -2170,10 +2175,10 @@ if __name__ == "__main__":
             if executor_name != "work_queue" or not wq_filepath:
                 raise SystemExit("guarded Work Queue requires an explicit --wq-filepath")
             guard_values = (args.wq_invocation_id, args.wq_quota_root,
-                            args.wq_warning_bytes, args.wq_stop_bytes,
-                            args.wq_reserve_bytes, args.wq_poll_seconds)
+                            args.wq_free_warning_bytes, args.wq_min_free_bytes,
+                            args.wq_poll_seconds)
             if any(value is None for value in guard_values):
-                raise SystemExit("guarded Work Queue requires invocation, quota and all budget/poll arguments")
+                raise SystemExit("guarded Work Queue requires invocation, quota, free-space warning/minimum and poll arguments")
             try:
                 wq_staging_dir, owner_inode, stop_event, watchdog = start_guard(
                     wq_filepath, *guard_values

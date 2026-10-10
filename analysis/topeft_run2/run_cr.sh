@@ -75,7 +75,7 @@ matrix_parse_args() {
         fi
         ;;
       --resume) matrix_resume=true; index=$((index + 1)) ;;
-      --wq-staging-base|--wq-quota-root|--wq-warning-bytes|--wq-stop-bytes|--wq-reserve-bytes|--wq-poll-seconds|--wq-treereduction)
+      --wq-staging-base|--wq-quota-root|--wq-free-warning-bytes|--wq-min-free-bytes|--wq-poll-seconds|--wq-treereduction)
         if (( index + 1 >= ${#args[@]} )) || [[ "${args[index + 1]}" == -* ]]; then
           matrix_parse_errors+=("${args[index]} requires a value")
           index=$((index + 1))
@@ -87,6 +87,10 @@ matrix_parse_args() {
         fi
         ;;
       -h|--help) index=$((index + 1)) ;;
+      --wq-warning-bytes|--wq-stop-bytes|--wq-reserve-bytes)
+        matrix_parse_errors+=("retired Work Queue staging-budget option '${args[index]}'; use --wq-free-warning-bytes and --wq-min-free-bytes")
+        index=$((index + 1))
+        ;;
       *)
         matrix_parse_errors+=("unsupported run_cr.sh option '${args[index]}'")
         index=$((index + 1))
@@ -337,8 +341,8 @@ esac
 case "${matrix_profile}" in
   run2_run3_full|run2_run3_full_CR)
     if [[ "${matrix_dry_run}" == "false" ]]; then
-      for required_guard in --wq-staging-base --wq-quota-root --wq-warning-bytes \
-        --wq-stop-bytes --wq-reserve-bytes --wq-poll-seconds; do
+      for required_guard in --wq-staging-base --wq-quota-root --wq-free-warning-bytes \
+        --wq-min-free-bytes --wq-poll-seconds; do
         if [[ -z "${matrix_seen_guard[${required_guard}]:-}" ]]; then
           echo "ERROR: combined Work Queue production requires ${required_guard} before output creation." >&2
           exit 1
@@ -495,8 +499,7 @@ profile_chunksize=""
 profile_wq_staging_base=""
 profile_wq_quota_root=""
 profile_wq_warning_bytes=""
-profile_wq_stop_bytes=""
-profile_wq_reserve_bytes=""
+profile_wq_min_free_bytes=""
 profile_wq_poll_seconds=""
 profile_wq_treereduction=""
 profile_selected_fragment=""
@@ -542,7 +545,7 @@ while (( $# > 0 )); do
       profile_env_file="$2"
       shift 2
       ;;
-    --chunksize|--wq-staging-base|--wq-quota-root|--wq-warning-bytes|--wq-stop-bytes|--wq-reserve-bytes|--wq-poll-seconds|--wq-treereduction)
+    --chunksize|--wq-staging-base|--wq-quota-root|--wq-free-warning-bytes|--wq-min-free-bytes|--wq-poll-seconds|--wq-treereduction)
       if (( $# < 2 )) || [[ -z "$2" || "$2" == -* ]]; then
         echo "ERROR: $1 requires a value." >&2
         exit 1
@@ -551,13 +554,16 @@ while (( $# > 0 )); do
         --chunksize) profile_chunksize="$2" ;;
         --wq-staging-base) profile_wq_staging_base="$2" ;;
         --wq-quota-root) profile_wq_quota_root="$2" ;;
-        --wq-warning-bytes) profile_wq_warning_bytes="$2" ;;
-        --wq-stop-bytes) profile_wq_stop_bytes="$2" ;;
-        --wq-reserve-bytes) profile_wq_reserve_bytes="$2" ;;
+        --wq-free-warning-bytes) profile_wq_warning_bytes="$2" ;;
+        --wq-min-free-bytes) profile_wq_min_free_bytes="$2" ;;
         --wq-poll-seconds) profile_wq_poll_seconds="$2" ;;
         --wq-treereduction) profile_wq_treereduction="$2" ;;
       esac
       shift 2
+      ;;
+    --wq-warning-bytes|--wq-stop-bytes|--wq-reserve-bytes)
+      echo "ERROR: retired Work Queue staging-budget option $1; use --wq-free-warning-bytes and --wq-min-free-bytes." >&2
+      exit 1
       ;;
     --reviewed-topeft-manager-head)
       if (( $# < 2 )) || [[ -z "$2" || "$2" == -* ]]; then
@@ -662,10 +668,10 @@ elif [[ -n "${profile_chunksize}" ]]; then
 fi
 if [[ -n "${profile_wq_staging_base}" ]]; then
   for guard_value in "${profile_wq_quota_root}" "${profile_wq_warning_bytes}" \
-    "${profile_wq_stop_bytes}" "${profile_wq_reserve_bytes}" "${profile_wq_poll_seconds}"; do
-    [[ -n "${guard_value}" ]] || { echo "ERROR: guarded staging requires quota, warning, stop, reserve and poll values." >&2; exit 1; }
+    "${profile_wq_min_free_bytes}" "${profile_wq_poll_seconds}"; do
+    [[ -n "${guard_value}" ]] || { echo "ERROR: guarded staging requires quota, free-space warning/minimum and poll values." >&2; exit 1; }
   done
-elif [[ -n "${profile_wq_quota_root}${profile_wq_warning_bytes}${profile_wq_stop_bytes}${profile_wq_reserve_bytes}${profile_wq_poll_seconds}${profile_wq_treereduction}" ]]; then
+elif [[ -n "${profile_wq_quota_root}${profile_wq_warning_bytes}${profile_wq_min_free_bytes}${profile_wq_poll_seconds}${profile_wq_treereduction}" ]]; then
   echo "ERROR: Work Queue guard options require --wq-staging-base." >&2
   exit 1
 fi
@@ -2476,9 +2482,8 @@ append_guard_options() {
     --wq-filepath "${profile_wq_staging_base}"
     --wq-invocation-id "${campaign_tag}_${block_id}_source_attempt_1"
     --wq-quota-root "${profile_wq_quota_root}"
-    --wq-warning-bytes "${profile_wq_warning_bytes}"
-    --wq-stop-bytes "${profile_wq_stop_bytes}"
-    --wq-reserve-bytes "${profile_wq_reserve_bytes}"
+    --wq-free-warning-bytes "${profile_wq_warning_bytes}"
+    --wq-min-free-bytes "${profile_wq_min_free_bytes}"
     --wq-poll-seconds "${profile_wq_poll_seconds}"
   )
   if [[ -n "${profile_wq_treereduction}" ]]; then

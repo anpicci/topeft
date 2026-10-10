@@ -1,4 +1,4 @@
-"""Owned manager staging and heuristic disk guard for opt-in Work Queue runs.
+"""Owned manager staging and free-space guard for opt-in Work Queue runs.
 
 The watchdog is a separate process so a blocked executor event loop cannot
 prevent polling. It deliberately uses SIGTERM: Coffea 0.7.22 reserves SIGINT
@@ -11,6 +11,7 @@ import math
 import multiprocessing
 import os
 from pathlib import Path
+import re
 import signal
 import stat
 import subprocess
@@ -59,8 +60,6 @@ def _space(base, quota_root):
     free_bytes = values.f_bavail * values.f_frsize
     free_inodes = values.f_favail
     quota_bytes = _quota_available(quota_root)
-    if free_bytes <= 0 or free_inodes <= 0 or quota_bytes <= 0:
-        raise staging_guard_error("staging free space, inodes or quota exhausted")
     return min(free_bytes, quota_bytes), free_inodes
 
 
@@ -162,7 +161,7 @@ def _verify_owned_tree(path, marker, owner_pid, owner_start, owner_inode, marker
 
 
 def _watch(path, base, quota_root, owner_pid, owner_start, warning_bytes,
-           stop_bytes, reserve_bytes, poll_seconds, stop_event, owner_inode,
+           poll_seconds, stop_event, owner_inode,
            marker_inode):
     marker = Path(path) / "guard.json"
     while not stop_event.is_set():
@@ -173,20 +172,12 @@ def _watch(path, base, quota_root, owner_pid, owner_start, warning_bytes,
             charged_bytes, entries = _charged_tree(path)
             available_bytes, free_inodes = _space(base, quota_root)
             _verify_owned_tree(path, marker, owner_pid, owner_start, owner_inode, marker_inode)
-            reason = None
-            if charged_bytes + reserve_bytes >= stop_bytes:
-                reason = "staging_stop_threshold"
-            elif available_bytes <= reserve_bytes or free_inodes <= entries + 1:
-                reason = "free_space_inode_or_quota_reserve"
-            elif charged_bytes + reserve_bytes >= warning_bytes:
-                print(f"WARNING: staging charged bytes {charged_bytes} near warning threshold", flush=True)
-            if reason:
-                metadata = json.loads(marker.read_text())
-                metadata.update(status="cleanup_needed", reason=reason,
-                                charged_bytes=charged_bytes, entries=entries)
-                marker.write_text(json.dumps(metadata) + "\n")
-                os.kill(owner_pid, signal.SIGTERM)
-                return
+            print(f"Work Queue staging health: available_bytes={available_bytes} "
+                  f"free_inodes={free_inodes} charged_bytes={charged_bytes} "
+                  f"entries={entries}", flush=True)
+            if available_bytes < warning_bytes or free_inodes < 1000:
+                print("WARNING: Work Queue staging free space or inodes are low; "
+                      "manager remains running", flush=True)
         except Exception as error:
             try:
                 metadata = json.loads(marker.read_text())
@@ -200,23 +191,23 @@ def _watch(path, base, quota_root, owner_pid, owner_start, warning_bytes,
         stop_event.wait(poll_seconds)
 
 
-def start_guard(base, invocation, quota_root, warning_bytes, stop_bytes,
-                reserve_bytes, poll_seconds):
+def start_guard(base, invocation, quota_root, warning_bytes, min_free_bytes,
+                poll_seconds):
     if signal.getsignal(signal.SIGTERM) != signal.SIG_DFL:
         raise staging_guard_error("SIGTERM has a custom handler; safe stop unproven")
     if not invocation or invocation in (".", "..") or Path(invocation).name != invocation:
         raise staging_guard_error("invocation must be one path component")
-    if not (0 < reserve_bytes < warning_bytes < stop_bytes
+    if not (10000000000 <= min_free_bytes <= warning_bytes
             and math.isfinite(poll_seconds) and poll_seconds > 0):
-        raise staging_guard_error("invalid warning/stop/reserve/poll configuration")
+        raise staging_guard_error("invalid free-space warning/minimum/poll configuration")
     real_base = _validate_base(base)
     if not quota_root or not quota_root.startswith(("/groups/", "/users/")):
         raise staging_guard_error("an exact site quota root is required")
     if os.path.commonpath((str(real_base), quota_root)) != quota_root:
         raise staging_guard_error("quota root does not own the selected staging base")
     available, free_inodes = _space(real_base, quota_root)
-    if available <= stop_bytes + reserve_bytes or free_inodes < 1000:
-        raise staging_guard_error("staging budget or protective free-space reserve unavailable")
+    if available < min_free_bytes or free_inodes < 1000:
+        raise staging_guard_error("minimum free space or protective inode reserve unavailable")
     path = real_base / invocation
     path.mkdir(mode=0o700)
     if stat.S_IMODE(path.stat().st_mode) != 0o700:
@@ -236,7 +227,7 @@ def start_guard(base, invocation, quota_root, warning_bytes, stop_bytes,
     context = multiprocessing.get_context("spawn")
     stop_event = context.Event()
     watchdog = context.Process(target=_watch, args=(str(path), str(real_base), quota_root,
-        owner_pid, owner_start, warning_bytes, stop_bytes, reserve_bytes,
+        owner_pid, owner_start, warning_bytes,
         poll_seconds, stop_event, owner_inode, marker_inode), daemon=False)
     try:
         watchdog.start()
@@ -314,16 +305,49 @@ def cleanup_owned_staging(path):
         metadata.update(status="cleanup_needed", reason="manager_still_live")
         marker.write_text(json.dumps(metadata) + "\n")
         raise staging_guard_error("manager process is still live")
-    # Coffea owns its inner TemporaryDirectory. Preserve any remaining
-    # intermediate, reader or unexpected entry for explicit operator review.
-    if sorted(child.name for child in path.iterdir()) != ["guard.json"]:
-        metadata.update(status="cleanup_needed", reason="staging_not_empty")
-        marker.write_text(json.dumps(metadata) + "\n")
-        raise staging_guard_error("owned staging is not empty after manager completion")
     if _local_readers(path):
         metadata.update(status="cleanup_needed", reason="local_reader_active")
         marker.write_text(json.dumps(metadata) + "\n")
         raise staging_guard_error("local staging reader remains active")
+    def reject_cleanup(reason):
+        metadata.update(status="cleanup_needed", reason=reason)
+        marker.write_text(json.dumps(metadata) + "\n")
+        raise staging_guard_error(f"{reason}; cleanup_needed")
+
+    # Coffea normally removes its TemporaryDirectory on exit. If it remains,
+    # remove only its recognized, owned regular files after checking the whole
+    # directory. Unknown entries keep the invocation available for review.
+    children = [child for child in path.iterdir() if child.name != "guard.json"]
+    files = []
+    if children:
+        if (len(children) != 1 or not re.fullmatch(r"tmp[a-z0-9_]+wq-tmp-", children[0].name)):
+            reject_cleanup("unexpected owned staging entry")
+        temporary = children[0]
+        temporary_info = temporary.lstat()
+        if (not stat.S_ISDIR(temporary_info.st_mode) or temporary_info.st_uid != os.getuid()
+                or stat.S_IMODE(temporary_info.st_mode) != 0o700):
+            reject_cleanup("Coffea temporary directory identity is uncertain")
+        with os.scandir(temporary) as entries:
+            for entry in entries:
+                if len(files) >= 100000:
+                    reject_cleanup("Coffea temporary directory scan limit exceeded")
+                info = entry.stat(follow_symlinks=False)
+                name = entry.name
+                recognized = (re.fullmatch(r"(?:args_|out_|stdout_)[A-Za-z0-9_]+\.p", name)
+                              or re.fullmatch(r"fn_wrapper[a-z0-9_]+", name)
+                              or re.fullmatch(r"(?:preproc|proc|accum)[a-z0-9_]+\.p", name))
+                if not recognized or not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_nlink != 1:
+                    reject_cleanup("unknown or foreign Coffea staging file")
+                files.append((Path(entry.path), info.st_ino))
+        if _local_readers(temporary):
+            reject_cleanup("local Coffea staging reader remains active")
+        for file_path, inode in files:
+            if file_path.lstat().st_ino != inode:
+                reject_cleanup("Coffea staging file identity changed")
+            file_path.unlink()
+        if temporary.lstat().st_ino != temporary_info.st_ino:
+            reject_cleanup("Coffea temporary directory identity changed")
+        temporary.rmdir()
     marker.unlink()
     path.rmdir()
 
