@@ -6,10 +6,11 @@ import json
 import os
 import re
 import shlex
+import stat
 import subprocess
 import sys
-import threading
 import tarfile
+from types import SimpleNamespace
 from pathlib import Path
 
 import pytest
@@ -1780,6 +1781,68 @@ def test_selected_canonical_fragment_dry_run_has_no_output_root(tmp_path, profil
     assert not output_root.exists()
 
 
+@pytest.mark.parametrize(("profile", "np_option"),
+                         (("run2_sr_ext", "--np-postprocess=inline"),
+                          ("run3_sr_ext", "--np-postprocess=defer")))
+def test_processing_core_option_is_opt_in_and_reaches_selected_source(tmp_path, profile, np_option):
+    base_options = ("--selected-fragment", f"{profile}_a_3",
+                    "--wq-staging-base", str(tmp_path / "unused_staging"),
+                    "--wq-quota-root", "/groups/klannon",
+                    "--wq-free-warning-bytes", "20000000000",
+                    "--wq-min-free-bytes", "10000000000",
+                    "--wq-poll-seconds", "5")
+    default_result, default_root, _ = _stubbed_run(
+        tmp_path, profile, "success", name="default", dry_run=True,
+        extra_args=base_options)
+    opted_result, opted_root, _ = _stubbed_run(
+        tmp_path, profile, "success", name="opted", dry_run=True,
+        extra_args=base_options + ("--wq-processing-cores", "1"))
+    assert default_result.returncode == opted_result.returncode == 0
+    default_source = _commands(default_result.stdout)[0]
+    opted_source = _commands(opted_result.stdout)[0]
+    assert "--wq-processing-cores" not in default_source
+    assert _option_values(opted_source, "--wq-processing-cores", 1) == ["1"]
+    for option in ("--wq-guard", "--wq-filepath", "--wq-min-free-bytes"):
+        assert option in default_source and option in opted_source
+    assert np_option in opted_source
+    assert len(_commands(opted_result.stdout)) == 1
+    if profile == "run3_sr_ext":
+        assert "Separate nonprompt command (not executed by dry-run):" in opted_result.stdout
+    assert not default_root.exists() and not opted_root.exists()
+
+
+def test_processing_core_callback_only_sets_processing_category(monkeypatch):
+    from coffea import processor
+    from coffea.processor import work_queue_tools
+
+    monkeypatch.syspath_prepend(str(RUN_DIRECTORY))
+    spec = importlib.util.spec_from_file_location("run_analysis_processing_core_test", RUN_ANALYSIS)
+    run_analysis = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(run_analysis)
+    calls = []
+    class fake_queue:
+        executor = SimpleNamespace(cores=None, memory=None, disk=None, gpus=None,
+                                   resource_monitor="measure", resources_mode="auto",
+                                   fast_terminate_workers=0)
+        def tune(self, *_):
+            pass
+        def enable_monitoring(self, *, watchdog):
+            assert watchdog is False
+        def specify_category_max_resources(self, category, resources):
+            calls.append((category, dict(resources)))
+        def specify_category_mode(self, *_):
+            pass
+    queue = fake_queue()
+    work_queue_tools.CoffeaWQ._declare_resources(queue)
+    assert calls == [(category, {}) for category in
+                     ("default", "preprocessing", "processing", "accumulating")]
+    assert processor.WorkQueueExecutor.__dataclass_fields__["custom_init"].default is None
+    run_analysis._request_one_processing_core(queue)
+    assert calls[-1] == ("processing", {"cores": 1})
+    assert calls[:4] == [(category, {}) for category in
+                         ("default", "preprocessing", "processing", "accumulating")]
+
+
 @pytest.mark.parametrize("profile", ("run2_sr_ext", "run2_full_CR"))
 def test_real_work_queue_launcher_requires_guarded_staging(tmp_path, profile):
     output_root = tmp_path / profile
@@ -1866,10 +1929,16 @@ def test_staging_guard_rejects_root_and_symlink_paths(tmp_path):
         staging_guard._validate_base(link)
 
 
-def test_staging_guard_warns_without_stopping_and_measurement_failure_stops(tmp_path, monkeypatch, capsys):
+@pytest.mark.parametrize(("measurement_error", "error_text"),
+                         ((OSError("quota unavailable"), "OSError: quota unavailable"),
+                          (subprocess.TimeoutExpired(["quota"], 15), "TimeoutExpired: Command")))
+def test_staging_guard_warns_and_keeps_running_after_telemetry_failures(
+    tmp_path, monkeypatch, capsys, measurement_error, error_text
+):
     path = tmp_path / "owned"
     path.mkdir()
     pid = os.getpid()
+    monkeypatch.setattr(staging_guard.os, "getppid", lambda: pid)
     start = staging_guard._process_start(pid)
     marker = path / "guard.json"
     marker.write_text(json.dumps({"status": "running", "path": str(path),
@@ -1878,67 +1947,53 @@ def test_staging_guard_warns_without_stopping_and_measurement_failure_stops(tmp_
     identity = (path.stat().st_ino, marker.stat().st_ino)
     signalled = []
     monkeypatch.setattr(staging_guard.os, "kill", lambda target, sig: signalled.append((target, sig)))
-    monkeypatch.setattr(staging_guard, "_charged_tree", lambda *_: (200000000000, 1))
-    monkeypatch.setattr(staging_guard, "_space", lambda *_: (20000000000, 2000))
+    def no_tree_scan(*_):
+        raise AssertionError("runtime monitoring must not enumerate staging")
+    monkeypatch.setattr(staging_guard, "_charged_tree", no_tree_scan, raising=False)
+    real_scandir = staging_guard.os.scandir
+    monkeypatch.setattr(staging_guard.os, "scandir", lambda current: no_tree_scan()
+                        if os.fspath(current) == str(path) else real_scandir(current))
+    measurements = iter((measurement_error, (0, 0), (20000000000, 2000)))
+    def measure(*_):
+        value = next(measurements)
+        if isinstance(value, Exception):
+            raise value
+        return value
+    monkeypatch.setattr(staging_guard, "_space", measure)
     class stop_event:
-        stopped = False
+        polls = 0
         def is_set(self):
-            return self.stopped
+            return self.polls >= 3
         def wait(self, _):
-            self.stopped = True
-            return True
-    staging_guard._watch(path, tmp_path, "/groups/klannon", pid, start, 30000000000, 1, stop_event(), *identity)
+            self.polls += 1
+            return self.is_set()
+    degraded = SimpleNamespace(value=False)
+    degraded.set = lambda: setattr(degraded, "value", True)
+    staging_guard._watch(path, tmp_path, "/groups/klannon", pid, start, 30000000000,
+                         1, stop_event(), *identity, degraded)
     assert signalled == []
-    assert "available_bytes=20000000000" in capsys.readouterr().out
-    signalled.clear()
-    marker.write_text(json.dumps({"status": "running", "path": str(path),
-                                  "owner_uid": os.getuid(), "owner_pid": pid,
-                                  "owner_start": start, "owner_inode": path.stat().st_ino}))
-    monkeypatch.setattr(staging_guard, "_space", lambda *_: (_ for _ in ()).throw(OSError("quota unavailable")))
-    staging_guard._watch(path, tmp_path, "/groups/klannon", pid, start, 30000000000, 1, stop_event(), *identity)
-    assert signalled == [(pid, staging_guard.signal.SIGTERM)]
-    assert json.loads((path / "guard.json").read_text())["reason"] == "measurement_failed"
-    signalled.clear()
-    marker.write_text(json.dumps({"status": "running", "path": str(path),
-                                  "owner_uid": os.getuid(), "owner_pid": pid,
-                                  "owner_start": start, "owner_inode": path.stat().st_ino}))
-    monkeypatch.setattr(staging_guard, "_space", lambda *_: (20000000000, 2000))
-    monkeypatch.setattr(staging_guard, "_charged_tree", lambda *_: (70, 1))
-    staging_guard._watch(path, tmp_path, "/groups/klannon", pid, start, 30000000000, 1, stop_event(), *identity)
-    assert signalled == []
-    monkeypatch.setattr(staging_guard, "_charged_tree", lambda *_: (1, 1))
-    monkeypatch.setattr(staging_guard, "_space", lambda *_: (10, 1000))
-    staging_guard._watch(path, tmp_path, "/groups/klannon", pid, start, 30000000000, 1, stop_event(), *identity)
-    assert signalled == []
-    assert json.loads((path / "guard.json").read_text())["status"] == "running"
+    assert degraded.value
+    output = capsys.readouterr().out
+    assert error_text in output
+    assert "available_bytes=0 free_inodes=0" in output
+    assert "available_bytes=20000000000" in output
+    assert "measurement_failed" not in output
+    assert json.loads(marker.read_text())["status"] == "running"
 
 
-def test_staging_guard_transient_child_disappearance_does_not_signal(tmp_path, monkeypatch):
+def test_staging_guard_missing_telemetry_file_does_not_signal(tmp_path, monkeypatch, capsys):
     path = tmp_path / "owned"
     path.mkdir()
-    child = path / "accumulated.pkl"
-    child.write_bytes(b"partial")
     pid = os.getpid()
+    monkeypatch.setattr(staging_guard.os, "getppid", lambda: pid)
     start = staging_guard._process_start(pid)
     marker = path / "guard.json"
     marker.write_text(json.dumps({"status": "running", "path": str(path),
                                   "owner_uid": os.getuid(), "owner_pid": pid,
                                   "owner_start": start, "owner_inode": path.stat().st_ino}))
-    real_scandir = staging_guard.os.scandir
-
-    class disappearing_scan:
-        def __enter__(self):
-            self.entries = list(real_scandir(path))
-            child.unlink()
-            return iter(self.entries)
-
-        def __exit__(self, *_):
-            return False
-
-    monkeypatch.setattr(staging_guard.os, "scandir", lambda current: disappearing_scan() if os.fspath(current) == str(path) else real_scandir(current))
     signalled = []
     monkeypatch.setattr(staging_guard.os, "kill", lambda target, sig: signalled.append((target, sig)))
-    monkeypatch.setattr(staging_guard, "_space", lambda *_: (1000000, 1000))
+    monkeypatch.setattr(staging_guard, "_space", lambda *_: (_ for _ in ()).throw(FileNotFoundError("quota output vanished")))
 
     class stop_event:
         stopped = False
@@ -1955,6 +2010,54 @@ def test_staging_guard_transient_child_disappearance_does_not_signal(tmp_path, m
                          marker.stat().st_ino)
     assert signalled == []
     assert json.loads(marker.read_text())["status"] == "running"
+    assert "quota output vanished" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("failure_point", ("marker_read", "proc_read"))
+def test_staging_guard_transient_identity_read_does_not_signal(
+    tmp_path, monkeypatch, capsys, failure_point
+):
+    path = tmp_path / "owned"
+    path.mkdir()
+    pid = os.getpid()
+    monkeypatch.setattr(staging_guard.os, "getppid", lambda: pid)
+    start = staging_guard._process_start(pid)
+    marker = path / "guard.json"
+    marker.write_text(json.dumps({"status": "running", "path": str(path),
+                                  "owner_uid": os.getuid(), "owner_pid": pid,
+                                  "owner_start": start, "owner_inode": path.stat().st_ino}))
+    original = (staging_guard._verify_owned_tree if failure_point == "marker_read"
+                else staging_guard._process_start)
+    calls = SimpleNamespace(count=0)
+    def transient(*args):
+        calls.count += 1
+        if calls.count == 1:
+            if failure_point == "marker_read":
+                raise PermissionError("marker read race")
+            raise staging_guard.staging_guard_error("manager process identity cannot be read")
+        return original(*args)
+    monkeypatch.setattr(staging_guard,
+                        "_verify_owned_tree" if failure_point == "marker_read" else "_process_start",
+                        transient)
+    monkeypatch.setattr(staging_guard, "_space", lambda *_: (20000000000, 2000))
+    signalled = []
+    monkeypatch.setattr(staging_guard.os, "kill", lambda pid, sig: signalled.append((pid, sig)))
+    class stop_event:
+        polls = 0
+        def is_set(self):
+            return self.polls >= 2
+        def wait(self, _):
+            self.polls += 1
+            return self.is_set()
+    degraded = SimpleNamespace(value=False)
+    degraded.set = lambda: setattr(degraded, "value", True)
+    staging_guard._watch(path, tmp_path, "/groups/klannon", pid, start,
+                         30000000000, 1, stop_event(), path.stat().st_ino,
+                         marker.stat().st_ino, degraded)
+    assert degraded.value and signalled == []
+    assert json.loads(marker.read_text())["status"] == "running"
+    assert ("marker read race" if failure_point == "marker_read" else
+            "manager process identity cannot be read") in capsys.readouterr().out
 
 
 def test_staging_cleanup_is_owned_and_preserves_ambiguous_files(tmp_path, monkeypatch):
@@ -2028,7 +2131,6 @@ def test_staging_cleanup_is_owned_and_preserves_ambiguous_files(tmp_path, monkey
 def test_staging_preflight_rejects_insufficient_free_space_and_collision(tmp_path, monkeypatch):
     monkeypatch.setattr(staging_guard, "_validate_base", lambda _: tmp_path)
     monkeypatch.setattr(staging_guard.os.path, "commonpath", lambda _: "/groups/klannon")
-    monkeypatch.setattr(staging_guard.signal, "getsignal", lambda _: staging_guard.signal.SIG_DFL)
     monkeypatch.setattr(staging_guard, "_space", lambda *_: (9999999999, 2000))
     with pytest.raises(staging_guard.staging_guard_error, match="minimum free space"):
         staging_guard.start_guard(tmp_path, "attempt", "/groups/klannon", 20000000000, 10000000000, 1)
@@ -2039,21 +2141,50 @@ def test_staging_preflight_rejects_insufficient_free_space_and_collision(tmp_pat
         staging_guard.start_guard(tmp_path, "attempt", "/groups/klannon", 20000000000, 10000000000, 1)
 
 
-def test_lost_watchdog_requests_owned_manager_stop(tmp_path, monkeypatch):
+def test_staging_preflight_rejects_unknown_space_and_invalid_ownership(tmp_path, monkeypatch):
     monkeypatch.setattr(staging_guard, "_validate_base", lambda _: tmp_path)
     monkeypatch.setattr(staging_guard.os.path, "commonpath", lambda _: "/groups/klannon")
-    monkeypatch.setattr(staging_guard.signal, "getsignal", lambda _: staging_guard.signal.SIG_DFL)
+    monkeypatch.setattr(staging_guard, "_space", lambda *_: (_ for _ in ()).throw(OSError("quota unavailable")))
+    with pytest.raises(OSError, match="quota unavailable"):
+        staging_guard.start_guard(tmp_path, "attempt", "/groups/klannon",
+                                  20000000000, 10000000000, 1)
+    assert not (tmp_path / "attempt").exists()
+    with pytest.raises(staging_guard.staging_guard_error, match="quota root"):
+        staging_guard.start_guard(tmp_path, "attempt", "/invalid",
+                                  20000000000, 10000000000, 1)
+    monkeypatch.setattr(staging_guard, "_validate_base", lambda _: (_ for _ in ()).throw(
+        staging_guard.staging_guard_error("staging base ownership or write access is invalid")))
+    with pytest.raises(staging_guard.staging_guard_error, match="ownership"):
+        staging_guard.start_guard(tmp_path, "attempt", "/groups/klannon",
+                                  20000000000, 10000000000, 1)
+    assert not (tmp_path / "attempt").exists()
+
+
+@pytest.mark.parametrize(("watchdog_exitcode", "reason"),
+                         ((0, "before requested shutdown"), (1, "watchdog exited")))
+def test_lost_watchdog_blocks_completion_without_signalling_manager(
+    tmp_path, monkeypatch, watchdog_exitcode, reason
+):
+    monkeypatch.setattr(staging_guard, "_validate_base", lambda _: tmp_path)
+    monkeypatch.setattr(staging_guard.os.path, "commonpath", lambda _: "/groups/klannon")
     monkeypatch.setattr(staging_guard, "_space", lambda *_: (20000000000, 2000))
-    stopped = threading.Event()
-    monkeypatch.setattr(staging_guard.os, "kill", lambda pid, sig: stopped.set())
+    signalled = []
+    monkeypatch.setattr(staging_guard.os, "kill", lambda pid, sig: signalled.append((pid, sig)))
     class fake_event:
+        def set(self):
+            pass
+        def is_set(self):
+            return False
         def wait(self, timeout):
             return False
     class fake_process:
         checks = 0
+        exitcode = watchdog_exitcode
         def __init__(self, **kwargs):
             pass
         def start(self):
+            pass
+        def join(self, timeout):
             pass
         def is_alive(self):
             self.checks += 1
@@ -2064,5 +2195,121 @@ def test_lost_watchdog_requests_owned_manager_stop(tmp_path, monkeypatch):
         def Process(self, **kwargs):
             return fake_process(**kwargs)
     monkeypatch.setattr(staging_guard.multiprocessing, "get_context", lambda _: fake_context())
-    staging_guard.start_guard(tmp_path, "attempt", "/groups/klannon", 20000000000, 10000000000, 1)
-    assert stopped.wait(2)
+    state = staging_guard.start_guard(tmp_path, "attempt", "/groups/klannon",
+                                      20000000000, 10000000000, 1)
+    with pytest.raises(staging_guard.staging_guard_error, match=reason):
+        staging_guard.finish_guard(*state, succeeded=True)
+    assert signalled == []
+    assert json.loads((tmp_path / "attempt" / "guard.json").read_text())["status"] == "running"
+
+
+def test_guard_marker_mutation_blocks_completion_and_cleanup(tmp_path, monkeypatch):
+    owned = tmp_path / "owned"
+    owned.mkdir()
+    marker = owned / "guard.json"
+    pid = os.getpid()
+    monkeypatch.setattr(staging_guard.os, "getppid", lambda: pid)
+    start = staging_guard._process_start(pid)
+    metadata = {"status": "running", "path": str(owned), "owner_uid": os.getuid(),
+                "owner_pid": pid, "owner_start": start, "owner_inode": owned.stat().st_ino}
+    marker.write_text(json.dumps(metadata))
+    metadata["owner_inode"] += 1
+    marker.write_text(json.dumps(metadata))
+    signalled = []
+    monkeypatch.setattr(staging_guard.os, "kill", lambda pid, sig: signalled.append((pid, sig)))
+    monkeypatch.setattr(staging_guard, "_space", lambda *_: (20000000000, 2000))
+    class stop_event:
+        def is_set(self):
+            return False
+    with pytest.raises(staging_guard.staging_guard_error, match="owner marker changed"):
+        staging_guard._watch(owned, tmp_path, "/groups/klannon", pid, start,
+                             30000000000, 1, stop_event(), owned.stat().st_ino,
+                             marker.stat().st_ino)
+    class fake_watchdog:
+        exitcode = 1
+        owner_pid = pid
+        owner_start = start
+        marker_inode = marker.stat().st_ino
+        def join(self, timeout):
+            pass
+        def is_alive(self):
+            return False
+    with pytest.raises(staging_guard.staging_guard_error, match="owner marker changed"):
+        staging_guard.finish_guard(owned, owned.stat().st_ino,
+                                   SimpleNamespace(set=lambda: None), fake_watchdog(), True)
+    with pytest.raises(staging_guard.staging_guard_error, match="completed invocation"):
+        staging_guard.cleanup_owned_staging(owned)
+    assert owned.exists() and signalled == []
+
+
+def test_transient_telemetry_degradation_keeps_completed_marker_distinct(tmp_path):
+    owned = tmp_path / "owned"
+    owned.mkdir()
+    marker = owned / "guard.json"
+    metadata = {"status": "running", "path": str(owned), "owner_uid": os.getuid(),
+                "owner_pid": os.getpid(),
+                "owner_start": staging_guard._process_start(os.getpid()),
+                "owner_inode": owned.stat().st_ino}
+    marker.write_text(json.dumps(metadata))
+    class fake_event:
+        def set(self):
+            pass
+        def is_set(self):
+            return True
+    class fake_watchdog:
+        exitcode = 0
+        telemetry_degraded = fake_event()
+        def join(self, timeout):
+            pass
+        def is_alive(self):
+            return False
+    staging_guard.finish_guard(owned, owned.stat().st_ino, fake_event(), fake_watchdog(), True)
+    completed = json.loads(marker.read_text())
+    assert completed["status"] == "completed_pending_receipt"
+    assert completed["telemetry_degraded"] is True
+    assert "reason" not in completed
+
+
+def test_cleanup_refusal_does_not_relabel_source_receipt_as_failed():
+    launcher = RUN_CR.read_text(encoding="utf-8")
+    assert "source failed none staging_cleanup_needed" not in launcher
+    assert '"source" "failed" "none" "staging_cleanup_needed"' not in launcher
+    assert launcher.count("source receipt remains valid and staging requires review") == 2
+
+
+def test_cleanup_accepts_more_than_100000_recognized_files_without_materializing_them(tmp_path, monkeypatch):
+    owned = tmp_path / "owned"
+    owned.mkdir()
+    temporary = owned / "tmpabcwq-tmp-"
+    temporary.mkdir(mode=0o700)
+    metadata = {"status": "completed_pending_receipt", "path": str(owned),
+                "owner_uid": os.getuid(), "owner_pid": 99999999,
+                "owner_start": "never", "owner_inode": owned.stat().st_ino}
+    (owned / "guard.json").write_text(json.dumps(metadata))
+    monkeypatch.setattr(staging_guard, "_local_readers", lambda _: False)
+    real_scandir = staging_guard.os.scandir
+    real_unlink = Path.unlink
+    removed = SimpleNamespace(count=0)
+    class fake_entry:
+        def __init__(self, index):
+            self.name = f"out_p_{index}.p"
+            self.path = str(temporary / self.name)
+        def stat(self, follow_symlinks=False):
+            return SimpleNamespace(st_mode=stat.S_IFREG | 0o600,
+                                   st_uid=os.getuid(), st_nlink=1)
+    class fake_scan:
+        def __enter__(self):
+            return (fake_entry(index) for index in range(100001))
+        def __exit__(self, *_):
+            return False
+    monkeypatch.setattr(staging_guard.os, "scandir", lambda path: fake_scan()
+                        if os.fspath(path) == str(temporary) else real_scandir(path))
+    def unlink(path, *args, **kwargs):
+        if path.parent == temporary:
+            removed.count += 1
+        else:
+            real_unlink(path, *args, **kwargs)
+    monkeypatch.setattr(Path, "unlink", unlink)
+    staging_guard.cleanup_owned_staging(owned)
+    assert removed.count == 100001
+    assert not owned.exists()

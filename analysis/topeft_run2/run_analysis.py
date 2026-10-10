@@ -76,6 +76,11 @@ from analysis.topeft_run2.analysis_processor import (
 
 LST_OF_KNOWN_EXECUTORS = ["futures", "work_queue", "taskvine"]
 
+
+def _request_one_processing_core(queue):
+    """Bound only Work Queue processing reservations after Coffea queue setup."""
+    queue.specify_category_max_resources("processing", {"cores": 1})
+
 WGT_VAR_LST = [
     "nSumOfWeights_ISRUp",
     "nSumOfWeights_ISRDown",
@@ -1110,7 +1115,7 @@ if __name__ == "__main__":
         default=None,
         help="Explicit manager-side Work Queue staging base for guarded runs",
     )
-    parser.add_argument("--wq-guard", action="store_true", help="Enable owned staging and fail-closed disk watchdog")
+    parser.add_argument("--wq-guard", action="store_true", help="Enable owned staging preflight and runtime warnings")
     parser.add_argument("--wq-invocation-id", help="Unique profile/block/attempt staging identity")
     parser.add_argument("--wq-quota-root", help="Exact site quota root, e.g. /groups/klannon")
     parser.add_argument("--wq-free-warning-bytes", type=int)
@@ -1120,6 +1125,8 @@ if __name__ == "__main__":
     parser.add_argument("--wq-reserve-bytes", type=int, help=argparse.SUPPRESS)
     parser.add_argument("--wq-poll-seconds", type=float)
     parser.add_argument("--wq-treereduction", type=int, choices=(5, 10, 20))
+    parser.add_argument("--wq-processing-cores", type=int, choices=(1,),
+                        help="Opt in to a one-core processing-category reservation maximum")
     parser.add_argument(
         "--wq-log-dir",
         default=None,
@@ -1486,6 +1493,8 @@ if __name__ == "__main__":
             # convert singale values into a range of one element
             port.append(port[0])
 
+    if args.wq_processing_cores is not None and executor_name != "work_queue":
+        raise SystemExit("--wq-processing-cores requires Work Queue")
     port = port[0]
     # Figure out which hists to include
     if hist_list == ["ana"]:
@@ -2251,6 +2260,8 @@ if __name__ == "__main__":
             if not args.wq_guard:
                 raise SystemExit("--wq-treereduction requires --wq-guard")
             executor_args["treereduction"] = args.wq_treereduction
+        if args.wq_processing_cores == 1:
+            executor_args["custom_init"] = _request_one_processing_core
 
     # Run the processor and get the output
     tstart = time.time()

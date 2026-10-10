@@ -75,11 +75,14 @@ matrix_parse_args() {
         fi
         ;;
       --resume) matrix_resume=true; index=$((index + 1)) ;;
-      --wq-staging-base|--wq-quota-root|--wq-free-warning-bytes|--wq-min-free-bytes|--wq-poll-seconds|--wq-treereduction)
+      --wq-staging-base|--wq-quota-root|--wq-free-warning-bytes|--wq-min-free-bytes|--wq-poll-seconds|--wq-treereduction|--wq-processing-cores)
         if (( index + 1 >= ${#args[@]} )) || [[ "${args[index + 1]}" == -* ]]; then
           matrix_parse_errors+=("${args[index]} requires a value")
           index=$((index + 1))
         else
+          if [[ "${args[index]}" == "--wq-processing-cores" && "${args[index + 1]}" != "1" ]]; then
+            matrix_parse_errors+=("--wq-processing-cores currently accepts only 1")
+          fi
           [[ "${args[index]}" != "--wq-staging-base" ]] || matrix_wq_staging_base="${args[index + 1]}"
           matrix_seen_guard["${args[index]}"]=true
           matrix_guard_args+=("${args[index]}" "${args[index + 1]}")
@@ -502,6 +505,7 @@ profile_wq_warning_bytes=""
 profile_wq_min_free_bytes=""
 profile_wq_poll_seconds=""
 profile_wq_treereduction=""
+profile_wq_processing_cores=""
 profile_selected_fragment=""
 profile_sr_plan=""
 profile_activate_pending_plan=""
@@ -545,7 +549,7 @@ while (( $# > 0 )); do
       profile_env_file="$2"
       shift 2
       ;;
-    --chunksize|--wq-staging-base|--wq-quota-root|--wq-free-warning-bytes|--wq-min-free-bytes|--wq-poll-seconds|--wq-treereduction)
+    --chunksize|--wq-staging-base|--wq-quota-root|--wq-free-warning-bytes|--wq-min-free-bytes|--wq-poll-seconds|--wq-treereduction|--wq-processing-cores)
       if (( $# < 2 )) || [[ -z "$2" || "$2" == -* ]]; then
         echo "ERROR: $1 requires a value." >&2
         exit 1
@@ -558,7 +562,12 @@ while (( $# > 0 )); do
         --wq-min-free-bytes) profile_wq_min_free_bytes="$2" ;;
         --wq-poll-seconds) profile_wq_poll_seconds="$2" ;;
         --wq-treereduction) profile_wq_treereduction="$2" ;;
+        --wq-processing-cores) profile_wq_processing_cores="$2" ;;
       esac
+      if [[ "$1" == "--wq-processing-cores" && "$2" != "1" ]]; then
+        echo "ERROR: --wq-processing-cores currently accepts only 1." >&2
+        exit 1
+      fi
       shift 2
       ;;
     --wq-warning-bytes|--wq-stop-bytes|--wq-reserve-bytes)
@@ -671,7 +680,7 @@ if [[ -n "${profile_wq_staging_base}" ]]; then
     "${profile_wq_min_free_bytes}" "${profile_wq_poll_seconds}"; do
     [[ -n "${guard_value}" ]] || { echo "ERROR: guarded staging requires quota, free-space warning/minimum and poll values." >&2; exit 1; }
   done
-elif [[ -n "${profile_wq_quota_root}${profile_wq_warning_bytes}${profile_wq_min_free_bytes}${profile_wq_poll_seconds}${profile_wq_treereduction}" ]]; then
+elif [[ -n "${profile_wq_quota_root}${profile_wq_warning_bytes}${profile_wq_min_free_bytes}${profile_wq_poll_seconds}${profile_wq_treereduction}${profile_wq_processing_cores}" ]]; then
   echo "ERROR: Work Queue guard options require --wq-staging-base." >&2
   exit 1
 fi
@@ -2489,6 +2498,9 @@ append_guard_options() {
   if [[ -n "${profile_wq_treereduction}" ]]; then
     guarded_cmd_ref+=(--wq-treereduction "${profile_wq_treereduction}")
   fi
+  if [[ -n "${profile_wq_processing_cores}" ]]; then
+    guarded_cmd_ref+=(--wq-processing-cores "${profile_wq_processing_cores}")
+  fi
 }
 
 complete_guarded_staging() {
@@ -2905,13 +2917,7 @@ run_cr_block() {
       source ready "${source_exit_code}" source_child_exit_zero_expected_source_present "${duration_seconds}"
     archive_native_wq_logs "${production_block}" source
     if ! complete_guarded_staging "${production_block}"; then
-      production_state_tool mark "${production_state_path}" "${production_block}" \
-        source failed none staging_cleanup_needed "${duration_seconds}"
-      write_failure_snapshot "${production_block}" source
-      record_block_result "FAILED" "CR" "${year_expr}" "${cats[*]}" "${vars[*]}" \
-        "${pkl_tag}" "1" "${duration_seconds}"
-      echo "ERROR: guarded staging cleanup_needed after native logs; stopping." >&2
-      return 0
+      echo "WARNING: guarded staging cleanup refused after native logs; source receipt remains valid and staging requires review." >&2
     fi
   fi
 
@@ -3244,13 +3250,7 @@ run_sr_block() {
       "source" "ready" "${source_exit_code}" "source_child_exit_zero_expected_source_present" "${duration_seconds}"
     archive_native_wq_logs "${production_block}" source
     if ! complete_guarded_staging "${production_block}"; then
-      production_state_tool mark "${production_state_path}" "${production_block}" \
-        source failed none staging_cleanup_needed "${duration_seconds}"
-      write_failure_snapshot "${production_block}" source
-      record_block_result "FAILED" "SR" "${year_expr}" "${cats[*]}" "${vars[*]}" \
-        "${pkl_tag}" "1" "${duration_seconds}"
-      echo "ERROR: guarded staging cleanup_needed after native logs; stopping." >&2
-      return 0
+      echo "WARNING: guarded staging cleanup refused after native logs; source receipt remains valid and staging requires review." >&2
     fi
   fi
 

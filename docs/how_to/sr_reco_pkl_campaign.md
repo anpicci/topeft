@@ -89,16 +89,21 @@ an explicit guarded staging base. Through `run_cr.sh`, provide
 base must be an existing owned writable directory on a non-root filesystem;
 implicit `/tmp` and root-backed staging are rejected by mount identity.
 `--wq-treereduction` is optional and requires separate resource review.
+`--wq-processing-cores 1` is a separate opt-in processing-category reservation
+maximum. It does not change accumulation resources, set CPU affinity, or
+establish worker packing or throughput.
 
 Before launch, the guard requires at least the selected minimum usable bytes
 from both filesystem free space and group quota, plus 1,000 free inodes.
-The minimum is at least 10 GB (decimal). During execution it reports charged
-staging bytes, usable free bytes and inodes; low free space is a warning, not a
-stop or a guarantee against exhaustion. Measurement or ownership failure still
-stops the manager and preserves ambiguous staging for inspection. The older
+The minimum is at least 10 GB (decimal). During execution it reports usable
+free bytes and inodes without scanning the staging tree. Low readings and
+temporary measurement failures produce warnings, never guard-generated signals.
+The final manager readback rejects a dead watcher or changed ownership marker
+before recording source success; ambiguous staging remains for inspection. The older
 `--wq-warning-bytes`, `--wq-stop-bytes` and `--wq-reserve-bytes` options are
 retired. Native logs are copied and checked before only the completed owned
-staging is removed. A failed source stops later guarded units. Preserve
+staging is removed. Cleanup refusal retains staging and prints a warning; a
+valid source receipt remains valid. A failed source stops later guarded units. Preserve
 an ambiguous state and inspect the exact process, scheduler, artifact and log
 ownership before any separate recovery decision.
 

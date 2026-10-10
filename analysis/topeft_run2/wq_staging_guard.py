@@ -1,9 +1,4 @@
-"""Owned manager staging and free-space guard for opt-in Work Queue runs.
-
-The watchdog is a separate process so a blocked executor event loop cannot
-prevent polling. It deliberately uses SIGTERM: Coffea 0.7.22 reserves SIGINT
-for a final accumulation. A stopped run retains staging for operator review.
-"""
+"""Owned manager staging, free-space warnings, and post-success cleanup."""
 
 import json
 import argparse
@@ -12,10 +7,8 @@ import multiprocessing
 import os
 from pathlib import Path
 import re
-import signal
 import stat
 import subprocess
-import threading
 
 
 class staging_guard_error(RuntimeError):
@@ -108,37 +101,6 @@ def _local_readers(path, max_processes=32768):
     return False
 
 
-def _charged_tree(path, max_entries=100000):
-    total_bytes = 0
-    entries = 0
-    pending = [path]
-    while pending:
-        current = pending.pop()
-        try:
-            with os.scandir(current) as children:
-                for child in children:
-                    entries += 1
-                    if entries > max_entries:
-                        raise staging_guard_error("staging entry scan limit exceeded")
-                    try:
-                        info = child.stat(follow_symlinks=False)
-                    except FileNotFoundError:
-                        # Coffea may remove an accumulated child after scandir
-                        # yielded it. The next bounded poll measures again.
-                        continue
-                    if stat.S_ISLNK(info.st_mode):
-                        raise staging_guard_error("symlink in owned staging tree")
-                    total_bytes += info.st_blocks * 512
-                    if stat.S_ISDIR(info.st_mode):
-                        pending.append(child.path)
-        except FileNotFoundError:
-            if os.fspath(current) == os.fspath(path):
-                raise
-            # A queued intermediate directory can disappear after its stat.
-            continue
-    return total_bytes, entries
-
-
 def _verify_owned_tree(path, marker, owner_pid, owner_start, owner_inode, marker_inode):
     root_info = os.lstat(path)
     marker_info = os.lstat(marker)
@@ -151,6 +113,8 @@ def _verify_owned_tree(path, marker, owner_pid, owner_start, owner_inode, marker
             or marker_info.st_uid != os.getuid()):
         raise staging_guard_error("staging root or marker identity changed")
     metadata = json.loads(marker.read_text())
+    if not isinstance(metadata, dict):
+        raise staging_guard_error("staging owner marker is not an object")
     if (metadata.get("path") != os.fspath(path)
             or metadata.get("owner_inode") != owner_inode
             or metadata.get("owner_uid") != os.getuid()
@@ -162,39 +126,62 @@ def _verify_owned_tree(path, marker, owner_pid, owner_start, owner_inode, marker
 
 def _watch(path, base, quota_root, owner_pid, owner_start, warning_bytes,
            poll_seconds, stop_event, owner_inode,
-           marker_inode):
+           marker_inode, telemetry_degraded=None, shutdown_ack=None):
     marker = Path(path) / "guard.json"
     while not stop_event.is_set():
-        if _process_start(owner_pid) != owner_start:
-            return
+        if os.getppid() != owner_pid:
+            raise staging_guard_error("manager parent exited during monitoring")
+        identity_detail = "process entry absent"
+        try:
+            observed_start = _process_start(owner_pid)
+        except staging_guard_error as error:
+            observed_start = None
+            identity_detail = str(error)
+        if observed_start is not None and observed_start != owner_start:
+            raise staging_guard_error("manager process identity changed during monitoring")
+        if observed_start is None:
+            if telemetry_degraded is not None:
+                telemetry_degraded.set()
+            print(f"WARNING: Work Queue manager identity telemetry unavailable: "
+                  f"{identity_detail}; monitoring continues", flush=True)
         try:
             _verify_owned_tree(path, marker, owner_pid, owner_start, owner_inode, marker_inode)
-            charged_bytes, entries = _charged_tree(path)
+        except OSError as error:
+            if telemetry_degraded is not None:
+                telemetry_degraded.set()
+            print(f"WARNING: Work Queue staging identity read unavailable: "
+                  f"{type(error).__name__}: {str(error)[:240]}; monitoring continues",
+                  flush=True)
+            stop_event.wait(poll_seconds)
+            continue
+        try:
             available_bytes, free_inodes = _space(base, quota_root)
-            _verify_owned_tree(path, marker, owner_pid, owner_start, owner_inode, marker_inode)
             print(f"Work Queue staging health: available_bytes={available_bytes} "
-                  f"free_inodes={free_inodes} charged_bytes={charged_bytes} "
-                  f"entries={entries}", flush=True)
+                  f"free_inodes={free_inodes}", flush=True)
             if available_bytes < warning_bytes or free_inodes < 1000:
                 print("WARNING: Work Queue staging free space or inodes are low; "
                       "manager remains running", flush=True)
         except Exception as error:
-            try:
-                metadata = json.loads(marker.read_text())
-                metadata.update(status="cleanup_needed", reason="measurement_failed",
-                                detail=str(error)[:240])
-                marker.write_text(json.dumps(metadata) + "\n")
-            finally:
-                if _process_start(owner_pid) == owner_start:
-                    os.kill(owner_pid, signal.SIGTERM)
-            return
+            if telemetry_degraded is not None:
+                telemetry_degraded.set()
+            print(f"WARNING: Work Queue staging telemetry unavailable: "
+                  f"{type(error).__name__}: {str(error)[:240]}; manager remains running",
+                  flush=True)
+        try:
+            _verify_owned_tree(path, marker, owner_pid, owner_start, owner_inode, marker_inode)
+        except OSError as error:
+            if telemetry_degraded is not None:
+                telemetry_degraded.set()
+            print(f"WARNING: Work Queue staging identity read unavailable: "
+                  f"{type(error).__name__}: {str(error)[:240]}; monitoring continues",
+                  flush=True)
         stop_event.wait(poll_seconds)
+    if shutdown_ack is not None:
+        shutdown_ack.set()
 
 
 def start_guard(base, invocation, quota_root, warning_bytes, min_free_bytes,
                 poll_seconds):
-    if signal.getsignal(signal.SIGTERM) != signal.SIG_DFL:
-        raise staging_guard_error("SIGTERM has a custom handler; safe stop unproven")
     if not invocation or invocation in (".", "..") or Path(invocation).name != invocation:
         raise staging_guard_error("invocation must be one path component")
     if not (10000000000 <= min_free_bytes <= warning_bytes
@@ -226,9 +213,17 @@ def start_guard(base, invocation, quota_root, warning_bytes, min_free_bytes,
     marker_inode = marker.stat().st_ino
     context = multiprocessing.get_context("spawn")
     stop_event = context.Event()
+    telemetry_degraded = context.Event()
+    shutdown_ack = context.Event()
     watchdog = context.Process(target=_watch, args=(str(path), str(real_base), quota_root,
         owner_pid, owner_start, warning_bytes,
-        poll_seconds, stop_event, owner_inode, marker_inode), daemon=False)
+        poll_seconds, stop_event, owner_inode, marker_inode, telemetry_degraded,
+        shutdown_ack), daemon=False)
+    watchdog.telemetry_degraded = telemetry_degraded
+    watchdog.shutdown_ack = shutdown_ack
+    watchdog.marker_inode = marker_inode
+    watchdog.owner_pid = owner_pid
+    watchdog.owner_start = owner_start
     try:
         watchdog.start()
     except Exception as error:
@@ -240,33 +235,31 @@ def start_guard(base, invocation, quota_root, warning_bytes, min_free_bytes,
     if not watchdog.is_alive():
         raise staging_guard_error("watchdog failed before Work Queue startup")
 
-    def check_watchdog():
-        while not stop_event.wait(min(poll_seconds, 1)):
-            if not watchdog.is_alive():
-                if os.getpid() == owner_pid:
-                    os.kill(os.getpid(), signal.SIGTERM)
-                return
-
-    thread = threading.Thread(target=check_watchdog, daemon=True)
-    thread.start()
     return path, owner_inode, stop_event, watchdog
 
 
 def finish_guard(path, owner_inode, stop_event, watchdog, succeeded):
     stop_event.set()
     watchdog.join(timeout=10)
-    if watchdog.is_alive() or watchdog.exitcode != 0:
-        raise staging_guard_error("watchdog did not stop cleanly; cleanup_needed")
     marker = path / "guard.json"
-    if path.is_symlink() or path.stat().st_ino != owner_inode or path.stat().st_uid != os.getuid():
-        raise staging_guard_error("staging owner/path changed; cleanup_needed")
     try:
         metadata = json.loads(marker.read_text())
-    except (OSError, ValueError) as error:
-        raise staging_guard_error("staging ownership marker unavailable; cleanup_needed") from error
-    if (metadata.get("status") != "running" or metadata.get("path") != str(path)
-            or metadata.get("owner_inode") != owner_inode):
-        raise staging_guard_error("staging marker changed during manager execution; cleanup_needed")
+        if not isinstance(metadata, dict):
+            raise staging_guard_error("staging owner marker is not an object")
+        _verify_owned_tree(path, marker,
+                           getattr(watchdog, "owner_pid", metadata["owner_pid"]),
+                           getattr(watchdog, "owner_start", metadata["owner_start"]),
+                           owner_inode, getattr(watchdog, "marker_inode", marker.stat().st_ino))
+    except (OSError, ValueError, KeyError, staging_guard_error) as error:
+        raise staging_guard_error(f"staging ownership marker invalid; cleanup_needed: {error}") from error
+    if watchdog.is_alive() or watchdog.exitcode != 0:
+        raise staging_guard_error("watchdog exited or did not stop cleanly; cleanup_needed")
+    if getattr(watchdog, "shutdown_ack", None) is not None and not watchdog.shutdown_ack.is_set():
+        raise staging_guard_error("watchdog exited before requested shutdown; cleanup_needed")
+    metadata["telemetry_degraded"] = (getattr(watchdog, "telemetry_degraded", None) is not None
+                                      and watchdog.telemetry_degraded.is_set())
+    if metadata["telemetry_degraded"]:
+        print("WARNING: Work Queue staging telemetry degraded during this invocation", flush=True)
     if not succeeded:
         metadata.update(status="cleanup_needed", reason="manager_failed")
         marker.write_text(json.dumps(metadata) + "\n")
@@ -281,10 +274,15 @@ def cleanup_owned_staging(path):
     marker = path / "guard.json"
     try:
         metadata = json.loads(marker.read_text())
+        if not isinstance(metadata, dict):
+            raise staging_guard_error("staging owner marker is not an object")
         info = path.lstat()
+        marker_info = marker.lstat()
     except (OSError, ValueError) as error:
         raise staging_guard_error("staging ownership evidence unavailable") from error
     if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid()
+            or not stat.S_ISREG(marker_info.st_mode) or marker_info.st_uid != os.getuid()
+            or marker_info.st_nlink != 1
             or info.st_ino != metadata.get("owner_inode")
             or metadata.get("owner_uid") != os.getuid()
             or metadata.get("path") != str(path)
@@ -305,7 +303,13 @@ def cleanup_owned_staging(path):
         metadata.update(status="cleanup_needed", reason="manager_still_live")
         marker.write_text(json.dumps(metadata) + "\n")
         raise staging_guard_error("manager process is still live")
-    if _local_readers(path):
+    try:
+        readers_active = _local_readers(path)
+    except staging_guard_error as error:
+        metadata.update(status="cleanup_needed", reason="local_reader_state_unknown")
+        marker.write_text(json.dumps(metadata) + "\n")
+        raise staging_guard_error("local staging reader state is unknown") from error
+    if readers_active:
         metadata.update(status="cleanup_needed", reason="local_reader_active")
         marker.write_text(json.dumps(metadata) + "\n")
         raise staging_guard_error("local staging reader remains active")
@@ -318,7 +322,6 @@ def cleanup_owned_staging(path):
     # remove only its recognized, owned regular files after checking the whole
     # directory. Unknown entries keep the invocation available for review.
     children = [child for child in path.iterdir() if child.name != "guard.json"]
-    files = []
     if children:
         if (len(children) != 1 or not re.fullmatch(r"tmp[a-z0-9_]+wq-tmp-", children[0].name)):
             reject_cleanup("unexpected owned staging entry")
@@ -327,24 +330,28 @@ def cleanup_owned_staging(path):
         if (not stat.S_ISDIR(temporary_info.st_mode) or temporary_info.st_uid != os.getuid()
                 or stat.S_IMODE(temporary_info.st_mode) != 0o700):
             reject_cleanup("Coffea temporary directory identity is uncertain")
+        def recognized_owned_file(entry):
+            info = entry.stat(follow_symlinks=False)
+            name = entry.name
+            recognized = (re.fullmatch(r"(?:args_|out_|stdout_)[A-Za-z0-9_]+\.p", name)
+                          or re.fullmatch(r"fn_wrapper[a-z0-9_]+", name)
+                          or re.fullmatch(r"(?:preproc|proc|accum)[a-z0-9_]+\.p", name))
+            return (recognized and stat.S_ISREG(info.st_mode)
+                    and info.st_uid == os.getuid() and info.st_nlink == 1)
+
+        # Validate the whole directory before removing anything. Repeat the
+        # recognition check during deletion without retaining a file list.
         with os.scandir(temporary) as entries:
             for entry in entries:
-                if len(files) >= 100000:
-                    reject_cleanup("Coffea temporary directory scan limit exceeded")
-                info = entry.stat(follow_symlinks=False)
-                name = entry.name
-                recognized = (re.fullmatch(r"(?:args_|out_|stdout_)[A-Za-z0-9_]+\.p", name)
-                              or re.fullmatch(r"fn_wrapper[a-z0-9_]+", name)
-                              or re.fullmatch(r"(?:preproc|proc|accum)[a-z0-9_]+\.p", name))
-                if not recognized or not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_nlink != 1:
+                if not recognized_owned_file(entry):
                     reject_cleanup("unknown or foreign Coffea staging file")
-                files.append((Path(entry.path), info.st_ino))
         if _local_readers(temporary):
             reject_cleanup("local Coffea staging reader remains active")
-        for file_path, inode in files:
-            if file_path.lstat().st_ino != inode:
-                reject_cleanup("Coffea staging file identity changed")
-            file_path.unlink()
+        with os.scandir(temporary) as entries:
+            for entry in entries:
+                if not recognized_owned_file(entry):
+                    reject_cleanup("Coffea staging file identity changed")
+                Path(entry.path).unlink()
         if temporary.lstat().st_ino != temporary_info.st_ino:
             reject_cleanup("Coffea temporary directory identity changed")
         temporary.rmdir()
