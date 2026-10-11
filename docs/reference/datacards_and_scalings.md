@@ -38,7 +38,7 @@ are:
 | Binning | `fitting` or `processing`, default `fitting` | Fitting performs exact late aggregation per selected physical channel. |
 | WCs | POI list, reference/selected-WC files, select-only/check controls, optional WC values/scaling order | WC selection uses the card-facing fitting view; selected files must match the producer's supported process/WC structure. `--use-selected` materializes canonical signal-only `selectedWCs.txt` in `--out-dir`. |
 | Nuisances | Nuisance and MC-stat switches, `--rate-syst-json`, `--miss-parton-file`, and `--skip-missing-parton-rate-syst` | Run era selects maintained defaults when the override is omitted. An explicit `--rate-syst-json` is forwarded as `rate_systs_path`; worker arguments come from the canonical manifest. The missing-parton consumer infers the maintained payload layout and has no `--sr-registry` option. |
-| Data/negative bins | Asimov by default; direct `--unblind` for observed data; crop negative bins by default | Unblind keeps the real-data process for ROOT `data_obs` and TXT `observation`; the Asimov branch evaluates nominal processes at `--wc-vals`. The canonical matrix generator has no unblind option. These choices require distinct output/provenance records. |
+| Data/negative bins | Asimov by default; direct `--unblind` for observed data; crop negative bins by default | With an actual selected `data` process, unblind writes its contents to ROOT `data_obs` and TXT `observation`. Without that process, the observation can remain zero. The Asimov branch evaluates nominal processes at `--wc-vals`. The canonical matrix generator has no unblind option; the reviewed supported observed-data route at this revision is the direct CLI. Keep distinct output/provenance records and control access to observed-data artifacts. Numerical real-data validation is unestablished. |
 | Execution | Direct local default; `--condor` requires `--matrix-manifest`, `--condor-output`, explicit CPU/memory/disk requests, `--max-retries`, and `--max-starts`; optional `--max-runtime` and `--prepare-only` | Submits one queue item per manifest row after token reservation. Prepare-only emits ownership-free material and invokes no scheduler. |
 
 In direct mode, `make_cards.main()` resolves inputs, validates/merges them,
@@ -79,7 +79,7 @@ raises `TypeError`.
 | `var_lst` | Sequence, default empty | Kinematic family selection. |
 | `do_mc_stat` | Boolean, default false | Enables card `autoMCStats` behavior; stored template variances still follow process policy. |
 | `wcs` | Sequence, default empty | Restricts WC consideration during selection/decomposition. |
-| `unblind` | Boolean, default false | Keeps real data and writes it through the shared `data_obs` array to ROOT and TXT observation output. Otherwise data processes are removed and Asimov output is built from nominal processes at the supplied WC truth point. |
+| `unblind` | Boolean, default false | Keeps a selected `data` process and writes it through the shared `data_obs` array to ROOT and TXT observation output. A real-data input is required for genuine observed counts; the flag alone can leave a zero observation. Otherwise data processes are removed and Asimov output is built from nominal processes at the supplied WC truth point. |
 | `verbose` | Boolean, default true at class level | Controls progress diagnostics. The CLI resolves its own default. |
 | `use_AAC` | Boolean, default false | Enables the AAC template convention. |
 | `wc_scalings` | Sequence, default empty | Requested WC ordering/selection for scaling production. |

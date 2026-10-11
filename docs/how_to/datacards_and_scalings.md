@@ -58,16 +58,20 @@ its rows carry the choice in `producer_args`, including the explicit default.
 Older v3 rows without this option still mean `per-run` under their historical
 producer; replay also remains subject to the existing runtime fingerprint checks.
 
-`--unblind` is a direct `make_cards.py` option. It keeps the real-data process
-and writes its selected contents to the ROOT `data_obs` object and the TXT
-`observation` value. Without it, `DatacardMaker` removes real data and builds
-Asimov `data_obs` from the nominal processes at the truth point supplied by
-`--wc-vals` (the empty/default value is the SM point). The canonical matrix
-manifest generator carries the MVA-correlation choice but has no unblind
-option, so observed-data cards require the direct local CLI at this version.
-Use a fresh, separately named output directory and retain the input, command,
-and data-access provenance. Source support for this path is not evidence that
-a real-data card has been produced or numerically validated.
+`--unblind` is a direct `make_cards.py` option. When the selected input contains
+an actual `data` process for the requested channel and variable, it keeps that
+process and writes its selected contents to the ROOT `data_obs` object and the
+TXT `observation` value. The flag does not supply data: without a selected
+`data` process, the observed-data array can remain zero. Without `--unblind`,
+`DatacardMaker` removes real data and builds Asimov `data_obs` from the nominal
+processes at the truth point supplied by `--wc-vals` (the empty/default value
+is the SM point). The canonical matrix manifest generator carries the
+MVA-correlation choice but has no unblind option. At this revision, the
+reviewed supported route for observed-data cards is the direct `make_cards.py`
+CLI. Use a fresh, separately named output directory and retain the input,
+command, and data-access provenance; restrict access to observed-data artifacts
+according to the applicable data policy. Source support for this route is not
+evidence that a real-data card has been produced or numerically validated.
 
 Before card production, confirm that every input belongs to one compatible
 production family and has the nominal/sumw2 companions required by the selected
