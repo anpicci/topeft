@@ -47,6 +47,10 @@ def build_arg_parser():
     parser.add_argument("--do-mc-stat",action="store_true",help="Add bin-by-bin statistical uncertainties with the autoMCstats option (for background)")
     parser.add_argument("--ignore","-i",default=[],action="extend",nargs="+",help="Specify a list of processes to exclude, must match name from 'sample' axis modulo UL year")
     parser.add_argument("--drop-syst",default=[],action="extend",nargs="+",help="Specify one or more template systematics to remove from the datacard")
+    parser.add_argument(
+        "--suppress-nominal-like-tau-shapes", action="store_true", default=False,
+        help="Omit complete local Tau shape pairs below the strict relative 1e-5 threshold (default: off; unsupported with --use-AAC)",
+    )
     parser.add_argument("--POI",default=[],help="List of WCs (comma separated)")
     parser.add_argument("--year","-y",default=[],action="extend",nargs="+",help="Run over a subset of years")
     parser.add_argument("--do-nuisance",action="store_true",help="Include nuisance parameters")
@@ -303,6 +307,7 @@ def _run_producer(args, pkl_files):
         "do_nuisance": do_nuis,
         "lepton_mva_correlation": args.lepton_mva_correlation,
         "drop_syst": drop_syst,
+        "suppress_nominal_like_tau_shapes": args.suppress_nominal_like_tau_shapes,
         "skip_missing_parton_rate_syst": skip_missing_parton_rate_syst,
         "enable_legacy_run3_vsmu_recovery": args.enable_legacy_run3_vsmu_recovery,
         "unblind": unblind,

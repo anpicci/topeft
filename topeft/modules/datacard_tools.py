@@ -294,6 +294,98 @@ def resolve_shape_nuisance_identity(
         base = f"{base}{run_suffix}"
     return base, f"{base}{direction}"
 
+
+def _nominal_like_tau_shape_bases(
+    templates, raw_templates, expected_extent, run_suffix, run_decorrelate,
+    lepton_mva_correlation,
+):
+    """Find complete local Tau pairs negligible in every serialized ROOT bin."""
+    by_name = {}
+    for sp_key, arr in templates.items():
+        base, name = resolve_shape_nuisance_identity(
+            sp_key.systematic, run_suffix, run_decorrelate,
+            lepton_mva_correlation,
+        )
+        by_name.setdefault(name, []).append((base, arr, raw_templates[sp_key]))
+
+    nominal_entries = by_name.get("nominal", ())
+    if len(nominal_entries) != 1:
+        return set()
+    nominal, raw_nominal = nominal_entries[0][1:]
+
+    def values_if_safe(arr, raw_arr):
+        try:
+            values = np.asarray(arr[0])
+            raw_values = np.asarray(raw_arr[0])
+            if (
+                values.ndim != 1 or values.shape != (expected_extent,)
+                or raw_values.shape != values.shape
+                or not np.all(np.isfinite(values))
+                or not np.all(np.isfinite(raw_values))
+                or np.any(raw_values < 0)
+            ):
+                return None
+            total = np.sum(values)
+            if not np.isfinite(total) or total <= 0:
+                return None
+            return values
+        except (TypeError, ValueError, IndexError):
+            return None
+
+    nominal_values = values_if_safe(nominal, raw_nominal)
+    if nominal_values is None:
+        return set()
+
+    suppressed = set()
+    for name, entries in by_name.items():
+        if not name.endswith("Up") or len(entries) != 1:
+            continue
+        base = name[:-2]
+        if not base.startswith(FULLY_SPECIFIED_TAU_NUISANCE_PREFIXES):
+            continue
+        if base.startswith("CMS_scale_t_DeepTau"):
+            era_pattern = (
+                r"CMS_scale_t_DeepTau2017v2p1_DM(?:0|1|10|11)_"
+                r"gen(?:Tau|Electron|Muon)_(?:2016APV|2016|2017|2018|Run2)"
+                if run_suffix == "_run2" else
+                r"CMS_scale_t_DeepTau2018v2p5_DM(?:0|1|10|11)_"
+                r"gen(?:Tau|Electron|Muon)_(?:2022EE|2022|2023BPix|2023|Run3)"
+            )
+            if re.fullmatch(era_pattern, base) is None:
+                continue
+        # The known Run-2 genuine-TES producer defect must never qualify.
+        if re.fullmatch(
+            r"CMS_scale_t_DeepTau2017v2p1_DM(?:0|1|10|11)_genTau_.*",
+            base,
+        ):
+            continue
+        down_entries = by_name.get(f"{base}Down", ())
+        if len(down_entries) != 1:
+            continue
+        up_values = values_if_safe(entries[0][1], entries[0][2])
+        down_values = values_if_safe(down_entries[0][1], down_entries[0][2])
+        if up_values is None or down_values is None:
+            continue
+        # Physical underflow is stripped by to_hist but contributes to the
+        # existing TXT rate. A changed underflow therefore keeps the pair.
+        if not (nominal_values[0] == up_values[0] == down_values[0]):
+            continue
+        regular = nominal_values[1:]
+        with np.errstate(over="ignore", divide="ignore", invalid="ignore"):
+            up_relative = np.abs((up_values[1:] - regular) / regular)
+            down_relative = np.abs((down_values[1:] - regular) / regular)
+        zero = regular == 0
+        if (
+            np.all(up_values[1:][zero] == 0)
+            and np.all(down_values[1:][zero] == 0)
+            and np.all(np.isfinite(up_relative[~zero]))
+            and np.all(np.isfinite(down_relative[~zero]))
+            and np.all(up_relative[~zero] < 1e-5)
+            and np.all(down_relative[~zero] < 1e-5)
+        ):
+            suppressed.add(base)
+    return suppressed
+
 # These process rules control which DatacardMaker templates retain stored bin
 # variances in the ROOT output. All other templates are written with zero stored
 # statistical variance.
@@ -1385,6 +1477,10 @@ class DatacardMaker():
         self.do_sm           = kwargs.pop("do_sm",False)
         self.do_nuisance     = kwargs.pop("do_nuisance",False)
         self.drop_syst       = kwargs.pop("drop_syst",[])
+        suppress_tau = kwargs.pop("suppress_nominal_like_tau_shapes", False)
+        if not isinstance(suppress_tau, bool):
+            raise TypeError("suppress_nominal_like_tau_shapes must be a bool")
+        self.suppress_nominal_like_tau_shapes = suppress_tau
         self.skip_missing_parton_rate_syst = bool(
             kwargs.pop("skip_missing_parton_rate_syst",False)
         )
@@ -1396,6 +1492,8 @@ class DatacardMaker():
         self.use_real_data   = kwargs.pop("unblind",False)
         self.verbose         = kwargs.pop("verbose",True)
         self.use_AAC          = kwargs.pop("use_AAC",False)
+        if self.suppress_nominal_like_tau_shapes and self.use_AAC:
+            raise ValueError("Tau shape suppression is unsupported with use_AAC")
         self.wc_scalings     = kwargs.pop("wc_scalings",[])
         self.scalings        = []
         self.use_run3_systs  =  True
@@ -2285,6 +2383,7 @@ class DatacardMaker():
                         "rate": -1
                     }
                     self.validate_sparse_axes_for_card(v, ch, proc_name)
+                    raw_templates = v
                     if crop_negative_bins:
                         v = _sanitize_negative_template_bins(v)
                     _validate_ff_template_support(
@@ -2294,6 +2393,21 @@ class DatacardMaker():
                         process=p,
                         decomposition=base,
                     )
+                    suppressed_tau = set()
+                    if (
+                        self.suppress_nominal_like_tau_shapes
+                        and base == "sm" and p != "data"
+                        and not process_retains_stat_uncertainty(p)
+                        and "flip" not in p
+                    ):
+                        suppressed_tau = _nominal_like_tau_shape_bases(
+                            v, raw_templates, ch_hist.dense_axis.extent,
+                            self.suffix, self.run_decorrelate,
+                            self.lepton_mva_correlation,
+                        )
+                        all_shapes.update(suppressed_tau)
+                        if suppressed_tau:
+                            syst_width = max(syst_width, *(len(name) + 2 for name in suppressed_tau))
                     # There should be only 1 sparse axis at this point, the systematics axis
                     seen = {}
                     written_hist_names = set()
@@ -2307,6 +2421,8 @@ class DatacardMaker():
                         )
 
                         if syst_base == "JES_Total":
+                            continue
+                        if syst_base in suppressed_tau:
                             continue
                         sum_arr = sum(arr[0])
                         if sum_arr == 0: continue #TODO find a more elegant solution
