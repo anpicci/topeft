@@ -40,6 +40,7 @@ are:
 | Nuisances | Nuisance and MC-stat switches, `--rate-syst-json`, `--miss-parton-file`, and `--skip-missing-parton-rate-syst` | Run era selects maintained defaults when the override is omitted. An explicit `--rate-syst-json` is forwarded as `rate_systs_path`; worker arguments come from the canonical manifest. The missing-parton consumer infers the maintained payload layout and has no `--sr-registry` option. |
 | Data/negative bins | Asimov by default; `--unblind` for observed data; crop negative bins by default | These choices affect card contents and must be recorded with production evidence. |
 | Execution | Direct local default; `--condor` requires `--matrix-manifest`, `--condor-output`, explicit CPU/memory/disk requests, `--max-retries`, `--max-starts`, `--condor-schedd`, `--condor-pool`; optional `--max-runtime` and `--prepare-only` | Submits one queue item per manifest row after token reservation. Prepare-only emits ownership-free material and invokes no scheduler. |
+| Existing-row dispatch | Repeat `--row-id ROW_ID` with `--condor`; `--rescue-ambiguous` requires exactly one selected row and excludes `--prepare-only` | Uses original v3 row descriptors and public manifest/attempt identity. Guarded rescue replaces an ambiguous reservation token under the row lease; known active jobs and held leases block it. |
 
 In direct mode, `make_cards.main()` resolves inputs, validates/merges them,
 constructs one `DatacardMaker`, selects or loads WCs, calls `run_local()`, and

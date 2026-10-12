@@ -67,6 +67,8 @@ def build_arg_parser():
     parser.add_argument("--use-selected",default="",help="Load selected process+WC combs from a file. Skips doing the normal selection step.")
     parser.add_argument("--condor", "-C", action="store_true", help="Submit canonical datacard units to HTCondor from --matrix-manifest")
     parser.add_argument("--prepare-only", action="store_true", help="With --condor, write and validate dispatch material without reserving or submitting")
+    parser.add_argument("--row-id", action="append", help="With --condor, dispatch an existing manifest row (repeatable)")
+    parser.add_argument("--rescue-ambiguous", action="store_true", help="With one --row-id, explicitly supersede an ambiguous row reservation")
     parser.add_argument("--matrix-manifest", help="Canonical v3 workload for Condor preparation")
     parser.add_argument("--condor-output", help="Fresh shared-filesystem directory for dispatch material")
     parser.add_argument("--request-cpus", type=int)
@@ -233,28 +235,32 @@ def main():
             from datacard_matrix_condor import prepare_material, submit_material, runner
         if not args.matrix_manifest or not args.condor_output:
             parser.error("--condor requires --matrix-manifest and --condor-output; generate the workload with make_datacard_matrix_manifest.py")
-        allowed = {"condor", "prepare_only", "matrix_manifest", "condor_output", "request_cpus", "request_memory", "request_disk", "max_runtime", "max_retries", "max_starts", "condor_batch_name"}
+        allowed = {"condor", "prepare_only", "row_id", "rescue_ambiguous", "matrix_manifest", "condor_output", "request_cpus", "request_memory", "request_disk", "max_runtime", "max_retries", "max_starts", "condor_batch_name"}
         allowed_options = {option for action in parser._actions if action.dest in allowed for option in action.option_strings}
         for token in sys.argv[1:]:
             if token.startswith("-") and token.split("=", 1)[0] not in allowed_options:
                 parser.error("producer options belong in the canonical manifest; --condor accepts only workload, dispatch and resource options")
         if args.pkl_file:
             parser.error("producer inputs belong in the canonical manifest")
+        if args.rescue_ambiguous and (args.prepare_only or not args.row_id or len(args.row_id) != 1):
+            parser.error("--rescue-ambiguous requires exactly one --row-id and cannot use --prepare-only")
         try:
             result = prepare_material(Path(args.matrix_manifest), Path(args.condor_output),
                                       request_cpus=args.request_cpus, request_memory=args.request_memory,
                                       request_disk=args.request_disk, max_runtime=args.max_runtime,
-                                      max_retries=args.max_retries, max_starts=args.max_starts)
+                                      max_retries=args.max_retries, max_starts=args.max_starts,
+                                      row_ids=args.row_id)
             if not args.prepare_only:
                 result = {**result, **submit_material(Path(args.matrix_manifest),
-                            Path(args.condor_output), result["scheduler"], batch_name=args.condor_batch_name)}
+                            Path(args.condor_output), result["scheduler"], batch_name=args.condor_batch_name,
+                            row_ids=args.row_id, rescue_ambiguous=args.rescue_ambiguous)}
         except (runner.RunnerError, OSError) as exc:
             parser.error(str(exc))
         print(json.dumps(result, indent=2, sort_keys=True))
         if not args.prepare_only and not result["submitted"]:
             raise SystemExit(1)
         return
-    if args.prepare_only or any(value is not None for value in (args.matrix_manifest, args.condor_output, args.request_cpus, args.request_memory, args.request_disk, args.max_runtime, args.max_retries, args.max_starts, args.condor_batch_name)):
+    if args.prepare_only or args.rescue_ambiguous or args.row_id or any(value is not None for value in (args.matrix_manifest, args.condor_output, args.request_cpus, args.request_memory, args.request_disk, args.max_runtime, args.max_retries, args.max_starts, args.condor_batch_name)):
         parser.error("dispatch and resource options require --condor")
     pkl_files  = _resolve_pkl_paths(args, parser)
     from pathlib import Path

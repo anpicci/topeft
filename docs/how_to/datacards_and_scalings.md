@@ -97,12 +97,26 @@ exist as histogram families in the merged input.
 
 `make_cards.py --condor` submits execution units from an existing canonical
 v3 manifest before any PKL loading or producer setup. Put producer options in
-that workload; the frontend accepts only manifest, dispatch destination and
-resource options. Add `--prepare-only` for material inspection without
-reservation or submission. Local and worker execution pass the same recorded producer
-arguments through the matrix runner. The former Condor option reconstruction
-and `--chunks` interface have been retired; execution partitioning remains
-owned by the profile and manifest generator.
+that workload; the frontend accepts only manifest, dispatch destination,
+resource, and row-selection options. Local and worker execution pass the same
+recorded producer arguments through the matrix runner. The former Condor option
+reconstruction and `--chunks` interface have been retired; execution
+partitioning remains owned by the profile and manifest generator.
+
+Add repeatable `--row-id ROW_ID` to dispatch only those original
+rows; omission retains whole-manifest dispatch. Duplicate or unknown IDs are
+rejected before dispatch output is created. `--prepare-only` remains an
+ownership-free no-submit inspection, including with row selection.
+
+For one selected row whose prior Condor submission has an ambiguous outcome,
+`--rescue-ambiguous --row-id ROW_ID` explicitly transfers its reservation to a
+fresh token under the row lease. An active scheduler job or held producer lease
+blocks rescue. An empty or unavailable scheduler query does not prove that the
+old job terminated; the old token is fenced before the new submission attempt.
+If the new submit outcome is uncertain, retain its reservation and inspect H2
+state before any further operator action. A valid H2 receipt is the only row
+completion authority. The manifest and its pinned producer fingerprints must
+remain unchanged for that campaign; a stale producer fails before reservation.
 
 To add a supported selection/configuration control:
 

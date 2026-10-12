@@ -503,6 +503,7 @@ class submission_transaction:
         self.reservations = []
         self.lease_fds = ()
         self.submission_started = False
+        self.superseded_tokens = set()
 
     def mark_submission_started(self):
         self.submission_started = True
@@ -520,26 +521,53 @@ class submission_transaction:
 
 
 @contextmanager
-def reserve_condor(manifest: dict, manifest_hash: str, rows: list[dict], scheduler: dict):
+def reserve_condor(manifest: dict, manifest_hash: str, rows: list[dict], scheduler: dict, *,
+                   rescue_ambiguous: bool = False):
     """Own all row reservations for one transaction; never invoke a submitter."""
     validate_scheduler(scheduler)
+    validate_runtime(manifest["runtime_contract"])
+    if rescue_ambiguous and len(rows) != 1:
+        raise RunnerError("row_selection_error", "ambiguous rescue requires exactly one row")
     transaction = submission_transaction()
     with ExitStack() as leases:
         try:
             for row in sorted(rows, key=lambda item: str(unit_lock_path(item))):
                 transaction.lease_fds += leases.enter_context(unit_lease(manifest, row))
-                if reconcile_reservation(manifest, manifest_hash, row) is not None:
-                    raise RunnerError("row_reserved", "row already has a logical owner", row_id=row["row_id"])
-                reconcile_h2(manifest, manifest_hash, row)
+                old = read_reservation(row) if rescue_ambiguous else None
+                if rescue_ambiguous:
+                    if old is None or old["backend"] != "condor":
+                        raise RunnerError("rescue_not_applicable", "rescue requires an existing Condor reservation", row_id=row["row_id"])
+                    try:
+                        observation = query_reservation(old)
+                    except RunnerError as exc:
+                        if exc.code not in {"SCHEDULER_OBSERVABILITY_INCOMPLETE", "SCHEDULER_OBSERVABILITY_INSUFFICIENT"}:
+                            raise
+                        observation = None
+                    if observation is not None and observation["ownership"] == "ACTIVE":
+                        raise RunnerError("row_reserved", "active Condor owner cannot be superseded", row_id=row["row_id"])
+                    state = reconcile_h2(manifest, manifest_hash, row)
+                    if state["status"] == "complete":
+                        raise RunnerError("row_complete", "valid H2 receipt already completes row", row_id=row["row_id"])
+                    if (observation is not None and observation.get("terminal_proof", {}).get("source")
+                            in {"history", "event_log_remove"}):
+                        reservation_path(row).unlink()
+                        old = None
+                else:
+                    if reconcile_reservation(manifest, manifest_hash, row) is not None:
+                        raise RunnerError("row_reserved", "row already has a logical owner", row_id=row["row_id"])
+                    reconcile_h2(manifest, manifest_hash, row)
                 reservation = new_reservation(row, "condor", scheduler)
                 transaction.reservations.append(reservation)
-                atomic_json(reservation, reservation_path(row), False)
+                atomic_json(reservation, reservation_path(row), old is not None)
+                if old is not None:
+                    transaction.superseded_tokens.add(reservation["owner_id"])
             yield transaction
         finally:
             if not transaction.submission_started:
                 for reservation in transaction.reservations:
                     current = read_reservation(reservation)
-                    if current and current["owner_id"] == reservation["owner_id"]:
+                    if (current and current["owner_id"] == reservation["owner_id"]
+                            and reservation["owner_id"] not in transaction.superseded_tokens):
                         reservation_path(reservation).unlink()
 
 
