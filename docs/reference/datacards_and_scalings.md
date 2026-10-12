@@ -39,7 +39,7 @@ are:
 | WCs | POI list, reference/selected-WC files, select-only/check controls, optional WC values/scaling order | WC selection uses the card-facing fitting view; selected files must match the producer's supported process/WC structure. `--use-selected` materializes canonical signal-only `selectedWCs.txt` in `--out-dir`. |
 | Nuisances | Nuisance and MC-stat switches, `--rate-syst-json`, `--miss-parton-file`, and `--skip-missing-parton-rate-syst` | Run era selects maintained defaults when the override is omitted. An explicit `--rate-syst-json` is forwarded as `rate_systs_path`; worker arguments come from the canonical manifest. The missing-parton consumer infers the maintained payload layout and has no `--sr-registry` option. |
 | Data/negative bins | Asimov by default; `--unblind` for observed data; crop negative bins by default | These choices affect card contents and must be recorded with production evidence. |
-| Execution | Direct local default; `--condor` requires `--matrix-manifest`, `--condor-output`, explicit CPU/memory/disk requests, `--max-retries`, `--max-starts`, `--condor-schedd`, `--condor-pool`; optional `--max-runtime` and `--prepare-only` | Submits one queue item per manifest row after token reservation. Prepare-only emits ownership-free material and invokes no scheduler. |
+| Execution | Direct local default; `--condor` requires `--matrix-manifest`, `--condor-output`, explicit CPU/memory/disk requests, `--max-retries`, `--max-starts`; optional `--max-runtime` and `--prepare-only`. Scheduler queries use installed default discovery. | Submits one queue item per manifest row after token reservation. Prepare-only emits ownership-free material and invokes no scheduler. |
 | Existing-row dispatch | Repeat `--row-id ROW_ID` with `--condor`; `--rescue-ambiguous` requires exactly one selected row and excludes `--prepare-only` | Uses original v3 row descriptors and public manifest/attempt identity. Guarded rescue replaces an ambiguous reservation token under the row lease; known active jobs and held leases block it. |
 
 In direct mode, `make_cards.main()` resolves inputs, validates/merges them,
@@ -189,7 +189,7 @@ completion, physics, resources, or topology suitability.
 | `execute(manifest, manifest_hash, ...)` | Sequential orchestration over `execute_unit`; stops at a blocked/failed unit. No second completion state machine. |
 | Runner `--unit FILE` or `MANIFEST --row-id ID` | Selects one unit without rewriting its parent or public identity. `--plan-only` and `--status` remain read-only. `--derive-units MANIFEST` prints descriptors only. |
 | Runner `--reconcile-reservations MANIFEST [--row-id ID]` | Optional proactive reconciliation under each physical lease. Every new ownership attempt also reconciles automatically. Never runs a producer. |
-| `datacard_matrix_condor.prepare_material(manifest_path, destination, request_cpus=..., request_memory=..., request_disk=..., max_retries=..., max_starts=..., schedd=..., pool=..., query_executable=..., max_runtime=...)` | Fresh-only shared-filesystem material with no row reservations. Resources, budgets and endpoints required; runtime optional. Absolute query executable defaults to resolved `condor_q`. No producer, submission or package builder. |
+| `datacard_matrix_condor.prepare_material(manifest_path, destination, request_cpus=..., request_memory=..., request_disk=..., max_retries=..., max_starts=..., query_executable=..., max_runtime=...)` | Fresh-only shared-filesystem material with no row reservations. Resources and budgets are required; runtime optional. The absolute query executable defaults to resolved `condor_q`, and scheduler endpoint discovery follows the installed configuration. No producer, submission or package builder. |
 | `datacard_matrix_condor.submission_transaction(manifest_path, destination, scheduler)` | Context manager: validate prepared descriptors, reconcile target rows, create reservations and bind itemdata under all row leases. Yields transaction state; never invokes a submitter. |
 | `datacard_matrix_condor.submit_material(manifest_path, destination, scheduler)` | Internal process adapter used by `make_cards.py --condor`; invokes installed `condor_submit` with argv and inherited row lease descriptors, and classifies command outcomes. Operators do not call it directly. |
 | `datacard_matrix_runner.reserve_condor(manifest, manifest_hash, rows, scheduler)` | Maintained reservation transaction context underlying dispatch. Reconciles stale ownership/H2 before claims; rolls back only definite no-start outcomes. |
@@ -262,15 +262,18 @@ reservation token, scheduler locator, physical lease, physical attempt and
 valid receipt remain distinct. Neither ProcId order nor a historical manifest
 hash defines the row; changed scheduler locators do not invalidate ownership.
 
-Submit-side queries use the explicit endpoint, `-allusers`, exact
+Submit-side queries use installed default discovery (or an observed endpoint
+hint for an existing reservation), `-allusers`, exact
 `DatacardReservation == "<safe token>"` constraint, JSON projection and a
 30-second timeout. One match with matching row/token has `ownership: ACTIVE`;
-zero successful matches means `GONE` without any prior locator binding.
-Multiple matches raise `DUPLICATE_SCHEDULER_OWNERSHIP` with all locators.
-Unavailable/failed/malformed query responses raise
-`SCHEDULER_OBSERVABILITY_UNAVAILABLE` with argv, error, timestamp and captured
-output, preserving ownership. Contradictory single-ad content also fails closed
-with a specific invalid-observation diagnostic. History is never live authority.
+multiple matches raise `DUPLICATE_SCHEDULER_OWNERSHIP` with all locators. An
+empty reply proves `GONE` only when the queried endpoint covers the previously
+observed owner; terminal history or a matching removal event log can also prove
+disappearance. Otherwise failed or insufficient queries raise
+`SCHEDULER_OBSERVABILITY_INCOMPLETE` or
+`SCHEDULER_OBSERVABILITY_INSUFFICIENT` with query diagnostics, preserving
+ownership. Contradictory or malformed ads fail closed with specific diagnostics.
+History is terminal evidence, never live ownership authority.
 
 Workers never invoke `condor_q` or contact a schedd for identity. They require
 `_CONDOR_JOB_AD` and parse only literal `DatacardUnit`, `DatacardReservation`,

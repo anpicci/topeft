@@ -307,9 +307,11 @@ analysis/topeft_run2/run_datacard_matrix_resumable.sh --row-id "$row_id" /path/t
 This scheduler contract covers TopEFT datacard production and H2 publication.
 EFTFit/Combine runtime and fit scheduling belong to the package consumer.
 
-Submit from a fresh dispatch directory after choosing resources, retry/start
-budgets and the scheduler endpoint for your site and workload. Set the variables
-below explicitly; the software supplies no production resource or retry defaults:
+Submit from a fresh dispatch directory after choosing resources and retry/start
+budgets for your site and workload. The frontend uses the installed HTCondor
+configuration for default scheduler discovery; it has no schedd/pool flags.
+Set the resource and budget variables below explicitly; the software supplies
+no production resource or retry defaults:
 
 ```bash
 python analysis/topeft_run2/make_cards.py --condor \
@@ -319,9 +321,7 @@ python analysis/topeft_run2/make_cards.py --condor \
   --request-memory "$request_memory" \
   --request-disk "$request_disk" \
   --max-retries "$max_retries" \
-  --max-starts "$max_starts" \
-  --condor-schedd "$schedd" \
-  --condor-pool "$pool"
+  --max-starts "$max_starts"
 ```
 
 This writes `units/*.json`, `items.txt`, `worker.sh`, `datacards.sub`, and an
@@ -423,10 +423,12 @@ does not invalidate a reservation. Local worker metadata uses its job-ad locator
 
 Submit-side ownership queries select `DatacardReservation == "<safe token>"`
 and cross-check `DatacardUnit`. One live match means active ownership; multiple
-matches fail closed with all locators. A failed/unavailable query reports
-`SCHEDULER_OBSERVABILITY_UNAVAILABLE` with its command, error and observation
-time and preserves the reservation. A successful empty query means the owner
-is gone, even if its locator was never previously observed.
+matches fail closed with all locators. A failed or insufficient query reports
+`SCHEDULER_OBSERVABILITY_INCOMPLETE` or
+`SCHEDULER_OBSERVABILITY_INSUFFICIENT` with query diagnostics and preserves the
+reservation unless another covered query or terminal proof establishes
+disappearance. An empty query without coverage of the previously observed
+owner is not disappearance proof.
 
 Logical reservations survive live Idle, Running, Held-pending-removal,
 Suspended, Transferring and post-eviction Idle states. Eviction, job removal and
@@ -455,8 +457,9 @@ is primary durable evidence of submission, executions/evictions, holds with
 reason information, removal and termination as applicable. The fault canary
 must prove useful hold reasons survive removal. Live status also exposes
 `HoldReason`, `HoldReasonCode` and `HoldReasonSubCode` when present. Optional
-post-mortem history may add removal/terminal details; unavailable history must
-never prevent safe H2 reconciliation.
+post-mortem history may add removal/terminal details; unavailable history does
+not prevent H2 reconciliation when another covered query or event-log removal
+proves disappearance.
 
 Runner `--status` and the dashboard expose live reservations and prominently
 show Held/unknown ownership, even when a valid H2 receipt already exists.
