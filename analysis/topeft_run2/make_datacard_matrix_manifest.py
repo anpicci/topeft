@@ -136,6 +136,8 @@ def make_manifest(args):
             ]
             if args.enable_legacy_run3_vsmu_recovery and args.era == "run3":
                 producer_args.append("--enable-legacy-run3-vsmu-recovery")
+            if args.suppress_nominal_like_tau_shapes:
+                producer_args.append("--suppress-nominal-like-tau-shapes")
             rows.append({
                 "row_id": row_id, "logical_row_id": logical_row_id,
                 "attempt_id": args.attempt_id, "era": args.era,
@@ -169,6 +171,9 @@ def main(argv=None):
     parser.add_argument("--enable-legacy-run3-vsmu-recovery", action="store_true",
                         default=False,
                         help="Enable accepted legacy Run 3 VSmu recovery for Run 3 rows")
+    parser.add_argument("--suppress-nominal-like-tau-shapes", action="store_true",
+                        default=False,
+                        help="Forward the native paired Tau shape suppression option to every producer row")
     parser.add_argument("--manifest-output", type=Path, required=True)
     parser.add_argument("--output-root", type=Path, required=True)
     parser.add_argument("--control-root", type=Path, required=True)
