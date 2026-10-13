@@ -1140,6 +1140,7 @@ def test_stat_and_total_modes_keep_mc_uncertainty_bands(monkeypatch, uncertainty
         group=group_map,
         unblind=True,
         uncertainty_mode=uncertainty_mode,
+        h_mc_sumw2=h_mc if uncertainty_mode == "total" else None,
         syst_err="total",
         err_p_syst=mc_totals + 1.0,
         err_m_syst=mc_totals - 1.0,
@@ -1199,8 +1200,8 @@ def test_uncertainty_band_shape_mismatch_fails_closed():
             rax=None,
             bins=np.array([0.0, 1.0, 2.0]),
             mc_totals=np.array([4.0, 5.0]),
-            mc_sumw2_vals={},
-            h_mc_sumw2=None,
+            mc_sumw2_vals={"synthetic": np.array([1.0, 1.0])},
+            h_mc_sumw2=object(),
             unit_norm_bool=False,
             mc_scaled=False,
             mc_norm_factor=1.0,
@@ -1217,6 +1218,46 @@ def test_uncertainty_band_shape_mismatch_fails_closed():
     assert "systematic_reference_total.shape=(4,)" in message
     assert "mc_totals.shape=(2,)" in message
     assert "Silent truncation/padding is forbidden" in message
+
+
+def test_total_band_requires_nominal_sumw2_moments():
+    with pytest.raises(ValueError, match="requires nominal MC sumw2 moments"):
+        make_cr_and_sr_plots._compute_uncertainty_bands(
+            ax=None,
+            rax=None,
+            bins=np.array([0.0, 1.0, 2.0]),
+            mc_totals=np.array([4.0, 5.0]),
+            mc_sumw2_vals={},
+            h_mc_sumw2=None,
+            unit_norm_bool=False,
+            mc_scaled=False,
+            mc_norm_factor=1.0,
+            err_p_syst=np.array([5.0, 6.0]),
+            err_m_syst=np.array([3.0, 4.0]),
+            err_ratio_p_syst=None,
+            err_ratio_m_syst=None,
+            syst_err="total",
+        )
+
+
+def test_total_band_rejects_missing_statistical_bins():
+    with pytest.raises(ValueError, match="MC sumw2 bin shapes differ"):
+        make_cr_and_sr_plots._compute_uncertainty_bands(
+            ax=None,
+            rax=None,
+            bins=np.array([0.0, 1.0, 2.0]),
+            mc_totals=np.array([4.0, 5.0]),
+            mc_sumw2_vals={"synthetic": np.array([1.0])},
+            h_mc_sumw2=object(),
+            unit_norm_bool=False,
+            mc_scaled=False,
+            mc_norm_factor=1.0,
+            err_p_syst=np.array([5.0, 6.0]),
+            err_m_syst=np.array([3.0, 4.0]),
+            err_ratio_p_syst=None,
+            err_ratio_m_syst=None,
+            syst_err="total",
+        )
 
 
 def _get_cms_text_union_bbox(fig, ax, renderer):

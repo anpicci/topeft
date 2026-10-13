@@ -925,8 +925,8 @@ def _cached_get_correlation_tag(syst_type, proc_name):
 
 
 @lru_cache(maxsize=None)
-def _cached_get_jet_dependent_syst_dict(process="Diboson"):
-    return te_get_jet_dependent_syst_dict(process=process)
+def _cached_get_jet_dependent_syst_dict(era, process="Diboson"):
+    return te_get_jet_dependent_syst_dict(process=process, era=era)
 
 
 YEAR_TOKEN_RULES = {
@@ -1634,6 +1634,47 @@ def _validate_supported_plot_years(year_tokens):
             "card/workspace/statistical-model level."
         )
     return tuple(year_tokens or ())
+
+
+def _resolve_diboson_njets_era(year_tokens):
+    """Resolve the maintained jet-factor era without an implicit default."""
+    aliases = {
+        alias.lower(): canonical
+        for canonical, rules in YEAR_TOKEN_RULES.items()
+        for key in ("mc_wl", "data_wl", "mc_bl", "data_bl")
+        for alias in rules.get(key, ())
+    }
+    resolved = []
+    unknown = []
+    for value in year_tokens or ():
+        for raw_token in str(value).split(","):
+            token = raw_token.strip().lower()
+            if not token:
+                continue
+            if token in YEAR_AGGREGATE_ALIASES:
+                resolved.extend(YEAR_AGGREGATE_ALIASES[token])
+            elif token in _YEAR_TOKEN_CANONICAL:
+                resolved.append(_YEAR_TOKEN_CANONICAL[token])
+            elif token in aliases:
+                resolved.append(aliases[token])
+            else:
+                unknown.append(raw_token.strip())
+    if unknown or not resolved:
+        raise ValueError(
+            "Diboson njets total uncertainty requires supported, nonempty years; "
+            f"years={year_tokens!r}, unsupported={unknown!r}"
+        )
+    eras = {
+        era
+        for era, canonical_years in YEAR_AGGREGATE_ALIASES.items()
+        if set(resolved) & set(canonical_years)
+    }
+    if len(eras) != 1:
+        raise ValueError(
+            "Diboson njets total uncertainty has mixed or ambiguous eras; "
+            f"years={year_tokens!r}, eras={sorted(eras)!r}"
+        )
+    return eras.pop()
 
 
 def _extract_dd_year_tokens_from_cli_years(year_tokens):
@@ -3544,6 +3585,8 @@ def _render_variable_category(
             shape_systs_summed_arr_p = 0.0
             rate_calc_ok = False
             shape_calc_ok = False
+            rate_error = None
+            shape_error = None
 
             try:
                 rate_systs_summed_arr_m, rate_systs_summed_arr_p = get_rate_syst_arrs(
@@ -3554,6 +3597,7 @@ def _render_variable_category(
                 )
                 rate_calc_ok = True
             except Exception as exc:
+                rate_error = str(exc)
                 print(
                     f"Warning: Failed to compute rate systematics for {region_ctx.name} {hist_cat} {var_name}: {exc}"
                 )
@@ -3570,6 +3614,7 @@ def _render_variable_category(
                 ) = shape_syst_output
                 shape_calc_ok = True
             except Exception as exc:
+                shape_error = str(exc)
                 shape_syst_details = {
                     "valid_bases": tuple(),
                     "skipped_orphans": tuple(),
@@ -3589,10 +3634,24 @@ def _render_variable_category(
                 rate_calc_ok=rate_calc_ok,
                 shape_calc_ok=shape_calc_ok,
             )
+            _require_complete_total_systematics(
+                region_ctx.name, hist_cat, var_name, region_ctx.years,
+                rate_calc_ok, shape_calc_ok, shape_syst_details,
+                rate_error=rate_error, shape_error=shape_error,
+            )
+            if hist_mc_sumw2_integrated is None:
+                raise ValueError(
+                    f"Incomplete total uncertainty for {region_ctx.name} "
+                    f"category={hist_cat} variable={var_name} years={region_ctx.years!r}: "
+                    "nominal MC sumw2 histogram is missing"
+                )
 
-            if rate_calc_ok or shape_calc_ok:
+            if rate_calc_ok and shape_calc_ok:
                 if var_name == "njets":
                     diboson_samples = region_ctx.group_map.get("Diboson", [])
+                    diboson_samples, _ = filter_existing_processes(
+                        diboson_samples, _process_axis_labels(hist_mc_integrated)
+                    )
                     if diboson_samples:
                         db_hist = _eval_without_underflow(
                             hist_mc_integrated.integrate("process", diboson_samples)[
@@ -3600,7 +3659,8 @@ def _render_variable_category(
                             ].integrate("systematic", "nominal")
                         )
                         diboson_njets_syst = get_diboson_njets_syst_arr(
-                            db_hist, bin0_njets=0
+                            db_hist, bin0_njets=0,
+                            era=_resolve_diboson_njets_era(region_ctx.years),
                         )
                         shape_systs_summed_arr_p = (
                             shape_systs_summed_arr_p + diboson_njets_syst
@@ -3895,6 +3955,8 @@ def _render_variable_category(
             shape_systs_summed_arr_p = 0.0
             rate_calc_ok = False
             shape_calc_ok = False
+            rate_error = None
+            shape_error = None
             try:
                 rate_systs_summed_arr_m, rate_systs_summed_arr_p = get_rate_syst_arrs(
                     hist_mc_channel,
@@ -3904,6 +3966,7 @@ def _render_variable_category(
                 )
                 rate_calc_ok = True
             except Exception as exc:
+                rate_error = str(exc)
                 print(
                     f"Warning: Failed to compute rate systematics for {region_ctx.name} {hist_cat} {var_name}: {exc}"
                 )
@@ -3920,6 +3983,7 @@ def _render_variable_category(
                 ) = shape_syst_output
                 shape_calc_ok = True
             except Exception as exc:
+                shape_error = str(exc)
                 shape_syst_details = {
                     "valid_bases": tuple(),
                     "skipped_orphans": tuple(),
@@ -3939,8 +4003,40 @@ def _render_variable_category(
                 rate_calc_ok=rate_calc_ok,
                 shape_calc_ok=shape_calc_ok,
             )
+            _require_complete_total_systematics(
+                region_ctx.name, hist_cat, var_name, region_ctx.years,
+                rate_calc_ok, shape_calc_ok, shape_syst_details,
+                rate_error=rate_error, shape_error=shape_error,
+            )
+            if hist_mc_sumw2 is None:
+                raise ValueError(
+                    f"Incomplete total uncertainty for {region_ctx.name} "
+                    f"category={hist_cat} variable={var_name} years={region_ctx.years!r}: "
+                    "nominal MC sumw2 histogram is missing"
+                )
 
-            if rate_calc_ok or shape_calc_ok:
+            if rate_calc_ok and shape_calc_ok:
+                if var_name == "njets":
+                    diboson_samples, _ = filter_existing_processes(
+                        region_ctx.group_map.get("Diboson", []),
+                        _process_axis_labels(hist_mc_channel),
+                    )
+                    if diboson_samples:
+                        db_hist = _eval_without_underflow(
+                            hist_mc_channel.integrate("process", diboson_samples)[
+                                {"process": sum}
+                            ].integrate("systematic", "nominal")
+                        )
+                        diboson_njets_syst = get_diboson_njets_syst_arr(
+                            db_hist, bin0_njets=0,
+                            era=_resolve_diboson_njets_era(region_ctx.years),
+                        )
+                        shape_systs_summed_arr_p = (
+                            shape_systs_summed_arr_p + diboson_njets_syst
+                        )
+                        shape_systs_summed_arr_m = (
+                            shape_systs_summed_arr_m + diboson_njets_syst
+                        )
                 nominal_projection = hist_mc_channel[{"process": sum}].integrate(
                     "systematic", "nominal"
                 )
@@ -5775,14 +5871,19 @@ def _compute_uncertainty_bands(
     if mc_totals.size == 0:
         return {"main_band_handles": []}
 
+    moment_shapes = ()
     if h_mc_sumw2 is not None:
         if mc_sumw2_vals:
+            moment_shapes = tuple(
+                np.asarray(values).shape for values in mc_sumw2_vals.values()
+            )
             summed_mc_sumw2 = np.sum(list(mc_sumw2_vals.values()), axis=0)
         else:
             summed_mc_sumw2_flow = (
                 h_mc_sumw2[{"process": sum}].as_hist({}).values(flow=True)
             )
             summed_mc_sumw2 = np.asarray(summed_mc_sumw2_flow, dtype=float)[1:]
+            moment_shapes = (summed_mc_sumw2.shape,)
             if summed_mc_sumw2.size > mc_totals.size:
                 summed_mc_sumw2 = summed_mc_sumw2[: mc_totals.size]
             elif summed_mc_sumw2.size < mc_totals.size:
@@ -5817,6 +5918,19 @@ def _compute_uncertainty_bands(
             band_mode = "stat"
     else:
         band_mode = "total" if has_syst_arrays else "stat"
+    if band_mode == "total" and h_mc_sumw2 is None:
+        raise ValueError(
+            "Total uncertainty requires nominal MC sumw2 moments; "
+            "sqrt(nominal) is not a valid statistical substitute"
+        )
+    if band_mode == "total" and any(
+        shape != mc_totals.shape for shape in moment_shapes
+    ):
+        raise ValueError(
+            "Total uncertainty MC sumw2 bin shapes differ from nominal: "
+            f"nominal.shape={mc_totals.shape}, moment_shapes={moment_shapes!r}; "
+            "silent truncation or zero padding is forbidden"
+        )
 
     def _append_last(arr):
         if arr is None or len(arr) == 0:
@@ -7879,28 +7993,18 @@ def get_rate_syst_arrs(
     return [summed_m, summed_p]
 
 def _match_variation_length(nominal, variation):
-    """Return *variation* resized to match the length of *nominal*.
-
-    Any overflow entries beyond the nominal length are trimmed. When the
-    variation is shorter, the remainder is zero-padded so downstream
-    operations can rely on consistent shapes.
-    """
+    """Require matching nominal and variation bins after flow selection."""
 
     nominal = np.asarray(nominal)
     variation = np.asarray(variation)
 
-    if variation.shape == nominal.shape:
-        return variation
-
-    target_len = nominal.shape[0]
-    trimmed = variation[:target_len]
-
-    if trimmed.shape[0] == target_len:
-        return trimmed
-
-    result = np.zeros(target_len, dtype=np.result_type(nominal, variation))
-    result[: trimmed.shape[0]] = trimmed
-    return result
+    if variation.shape != nominal.shape:
+        raise ValueError(
+            "Shape variation and nominal bin lengths differ after flow selection: "
+            f"nominal.shape={nominal.shape}, variation.shape={variation.shape}; "
+            "silent truncation or zero padding is forbidden"
+        )
+    return variation
 
 
 def _format_syst_preview(values, max_items=20):
@@ -8061,6 +8165,25 @@ def _emit_systematics_summary_once(
         )
 
 
+def _require_complete_total_systematics(
+    region_name, category, variable, years, rate_calc_ok, shape_calc_ok,
+    shape_details, *, rate_error=None, shape_error=None,
+):
+    """Reject partial total bands and silently lost shape nuisances."""
+    details = shape_details or {}
+    orphans = details.get("skipped_orphans", ())
+    failed = details.get("skipped_failed", ())
+    if rate_calc_ok and shape_calc_ok and not orphans and not failed:
+        return
+    raise ValueError(
+        f"Incomplete total uncertainty for {region_name} category={category} "
+        f"variable={variable} years={years!r}: "
+        f"rate={'ok' if rate_calc_ok else rate_error or 'failed'}; "
+        f"shape={'ok' if shape_calc_ok else shape_error or 'failed'}; "
+        f"orphan_nuisances={orphans!r}; failed_nuisances={failed!r}"
+    )
+
+
 # Wrapper for getting plus and minus shape arrs
 def get_shape_syst_arrs(base_histo,group_type="CR",return_details=False):
     """Compute aggregate shape arrays while tolerating absent process labels.
@@ -8079,6 +8202,8 @@ def get_shape_syst_arrs(base_histo,group_type="CR",return_details=False):
     # Sum each systematic's contributions for all samples together (e.g. the ISR for all samples is summed linearly)
     p_arr_rel_lst = []
     m_arr_rel_lst = []
+    evaluated_bases = []
+    nonapplicable_bases = []
     for syst_name in syst_var_lst:
         try:
             relevant_samples_lst = yt.get_cat_lables(base_histo.integrate("systematic",syst_name+"Up"), "process") # The samples relevant to this syst
@@ -8093,6 +8218,7 @@ def get_shape_syst_arrs(base_histo,group_type="CR",return_details=False):
                     ", ".join(missing_relevant_samples),
                 )
             if not relevant_samples_lst:
+                nonapplicable_bases.append(syst_name)
                 continue
             proc_projection = base_histo.integrate("process", relevant_samples_lst)[{"process": sum}]
             n_arr = _eval_without_underflow(
@@ -8135,6 +8261,7 @@ def get_shape_syst_arrs(base_histo,group_type="CR",return_details=False):
             # Square and append this syst to the return lists
             p_arr_rel_lst.append(p_arr_rel*p_arr_rel) # Square each element in the arr and append the arr to the out list
             m_arr_rel_lst.append(m_arr_rel*m_arr_rel) # Square each element in the arr and append the arr to the out list
+            evaluated_bases.append(syst_name)
         except Exception as exc:
             skipped_failed.append({"base": syst_name, "error": str(exc)})
             continue
@@ -8142,8 +8269,10 @@ def get_shape_syst_arrs(base_histo,group_type="CR",return_details=False):
     summed_m = sum(m_arr_rel_lst) if m_arr_rel_lst else 0.0
     summed_p = sum(p_arr_rel_lst) if p_arr_rel_lst else 0.0
 
+    shape_details = dict(shape_details)
+    shape_details["evaluated_bases"] = tuple(evaluated_bases)
+    shape_details["nonapplicable_bases"] = tuple(nonapplicable_bases)
     if skipped_failed:
-        shape_details = dict(shape_details)
         shape_details["skipped_failed"] = tuple(skipped_failed)
         failed_bases = {entry["base"] for entry in skipped_failed}
         shape_details["valid_bases"] = tuple(
@@ -8387,11 +8516,11 @@ def get_decorrelated_uncty(
 
 
 # Get the squared arr for the jet dependent syst (e.g. for diboson jet dependent syst)
-def get_diboson_njets_syst_arr(njets_histo_vals_arr,bin0_njets):
+def get_diboson_njets_syst_arr(njets_histo_vals_arr,bin0_njets,era):
 
     # Get the list of njets vals for which we have SFs
     sf_int_lst = []
-    diboson_njets_dict = _cached_get_jet_dependent_syst_dict()
+    diboson_njets_dict = _cached_get_jet_dependent_syst_dict(era)
     sf_str_lst = list(diboson_njets_dict.keys())
     for s in sf_str_lst: sf_int_lst.append(int(s))
     min_njets = min(sf_int_lst) # The lowest njets bin we have a SF for
