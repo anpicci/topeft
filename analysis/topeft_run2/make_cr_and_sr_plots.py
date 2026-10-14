@@ -3789,8 +3789,8 @@ def _render_variable_category(
                 "uncertainty_mode": uncertainty_mode,
                 "diagnostic_context": plot_diagnostic_context,
             }
-            if getattr(region_ctx, "sr_ttbar_display_split", False):
-                stacked_kwargs["sr_ttbar_display_years"] = region_ctx.years
+            if region_ctx.name.upper() == "SR" and "display_split" in SR_GROUP_INFO.get("ttll", {}):
+                stacked_kwargs["sr_ttbar_display_years"] = region_ctx.years or ()
             rebin_report = _prepare_plot_rebin_and_negative_rows(
                 variable=var_name,
                 hist_mc=hist_mc_integrated,
@@ -4118,6 +4118,8 @@ def _render_variable_category(
             "uncertainty_mode": uncertainty_mode,
             "diagnostic_context": plot_diagnostic_context,
         }
+        if region_ctx.name.upper() == "SR" and "display_split" in SR_GROUP_INFO.get("ttll", {}):
+            stacked_kwargs["sr_ttbar_display_years"] = region_ctx.years or ()
         rebin_report = _prepare_plot_rebin_and_negative_rows(
             variable=var_name,
             hist_mc=hist_mc_integrated,
@@ -4504,17 +4506,45 @@ def populate_group_map(samples, pattern_map):
 def _resolve_sr_ttbar_display_view(hist_mc, group_map, year_tokens):
     """Partition only original ttll members for drawing, retaining science groups."""
 
-    members = tuple(group_map.get("ttll", ()))
-    selected_eras = tuple(_extract_dd_year_tokens_from_cli_years(year_tokens))
-    if not members or len(members) != len(set(members)) or not selected_eras:
-        raise ValueError("SR ttbar display requires unique ttll members and selected eras")
-    if any(not any(member.endswith(era) for era in selected_eras) for member in members):
-        raise ValueError("Original ttll member has no selected-era identity")
-
-    split_config = SR_GROUP_INFO["ttll"]["display_split"]
+    split_config = SR_GROUP_INFO.get("ttll", {}).get("display_split")
+    if not isinstance(split_config, dict) or any(
+        not isinstance(split_config.get(key), str) or not split_config[key].strip()
+        for key in ("ttbar_group", "ttbar_label", "remainder_label")
+    ):
+        raise ValueError("SR ttll display_split requires ttbar_group and two nonempty labels")
+    ttbar_group = split_config["ttbar_group"]
     ttbar_label = split_config["ttbar_label"]
     remainder_label = split_config["remainder_label"]
-    ttbar_patterns = CR_GRP_PATTERNS[split_config["ttbar_group"]]
+    if (
+        ttbar_label == remainder_label
+        or ttbar_label in group_map or remainder_label in group_map
+        or ttbar_group not in CR_GRP_PATTERNS
+        or not CR_GRP_PATTERNS[ttbar_group]
+        or not CR_GROUP_INFO[ttbar_group].get("color")
+        or not SR_GROUP_INFO["ttll"].get("color")
+    ):
+        raise ValueError("SR ttll display_split has conflicting labels or invalid ttbar group/colors")
+
+    members = tuple(group_map.get("ttll", ()))
+    if not members:
+        return None
+    selected_eras = tuple(_extract_dd_year_tokens_from_cli_years(year_tokens) or ())
+    if len(members) != len(set(members)) or (year_tokens and not selected_eras):
+        raise ValueError("SR ttbar display requires unique ttll members and valid selected eras")
+    if selected_eras and any(not any(member.endswith(era) for era in selected_eras) for member in members):
+        raise ValueError("Original ttll member has no selected-era identity")
+    if any(set(members).intersection(other_members) for name, other_members in group_map.items() if name != "ttll"):
+        raise ValueError("SR ttll display_split overlaps another original group")
+    available_members = set(hist_mc.axes["process"])
+    present_members = tuple(member for member in members if member in available_members)
+    if not present_members:
+        return None
+    if len(present_members) != len(members):
+        raise ValueError("SR ttll display_split is missing original members in the plotted process axis")
+    if not np.any(np.asarray(hist_mc[{"process": list(present_members)}].values(flow=True))):
+        return None
+
+    ttbar_patterns = CR_GRP_PATTERNS[ttbar_group]
     # populate_group_map uses first match; the catchall applies only inside ttll.
     partition = populate_group_map(
         members, OrderedDict(((ttbar_label, ttbar_patterns),
@@ -4522,9 +4552,8 @@ def _resolve_sr_ttbar_display_view(hist_mc, group_map, year_tokens):
     )
     ttbar = tuple(partition[ttbar_label])
     remainder = tuple(partition[remainder_label])
-    if not ttbar or not remainder or set(ttbar) | set(remainder) != set(members):
+    if not ttbar or not remainder or set(ttbar) & set(remainder) or set(ttbar) | set(remainder) != set(members):
         raise ValueError("SR ttbar display needs a complete nonempty ttll partition")
-
     def values(names):
         return np.asarray(
             _values_without_flow(
@@ -7587,15 +7616,6 @@ def produce_region_plots(
                 )
             )
         ]
-        if getattr(region_ctx, "sr_ttbar_display_split", False):
-            categories = [
-                category for category in categories
-                if category == "2los_onZ_1tau"
-            ]
-            if len(categories) != 1:
-                raise ValueError(
-                    "SR ttbar display target 2los_onZ_1tau is unavailable"
-                )
         variable_categories[var_name] = categories
         if save_dir_path:
             category_dirs.update(
@@ -7617,10 +7637,6 @@ def produce_region_plots(
 
     worker_count = max(int(workers or 1), 1)
     tasks = list(eligible_variables)
-    if getattr(region_ctx, "sr_ttbar_display_split", False):
-        tasks = [
-            (var_name, "2los_onZ_1tau") for var_name in eligible_variables
-        ]
     base_task_count = len(tasks)
     if not verbose:
         if tasks:
@@ -9134,7 +9150,8 @@ def make_region_stacked_ratio_fig(
         sr_ttbar_display_view = _resolve_sr_ttbar_display_view(
             h_mc, group, sr_ttbar_display_years
         )
-        group = sr_ttbar_display_view["draw_group"]
+        if sr_ttbar_display_view is not None:
+            group = sr_ttbar_display_view["draw_group"]
 
     grouping = OrderedDict()
     axis_collection = getattr(h_mc, "axes", None)
@@ -9163,11 +9180,13 @@ def make_region_stacked_ratio_fig(
     colors = []
     default_color_index = 0
     for proc in grouping:
-        split_config = SR_GROUP_INFO["ttll"]["display_split"]
-        c = {
-            split_config["ttbar_label"]: CR_GROUP_INFO[split_config["ttbar_group"]]["color"],
-            split_config["remainder_label"]: SR_GROUP_INFO["ttll"]["color"],
-        }.get(proc, FILL_COLORS.get(proc))
+        c = FILL_COLORS.get(proc)
+        if sr_ttbar_display_view is not None:
+            split_config = SR_GROUP_INFO["ttll"]["display_split"]
+            if proc == split_config["ttbar_label"]:
+                c = CR_GROUP_INFO[split_config["ttbar_group"]]["color"]
+            elif proc == split_config["remainder_label"]:
+                c = SR_GROUP_INFO["ttll"]["color"]
         if c is None:
             c = default_colors[default_color_index % len(default_colors)]
             default_color_index += 1
@@ -9732,7 +9751,6 @@ def run_plots_for_region(
     show_ratio_legend=False,
     binning_mode="processing",
     output_formats=("png",),
-    sr_ttbar_display_split=False,
 ):
     """Run one CR/SR plotting pass and write optional zero/negative reports."""
 
@@ -9755,21 +9773,6 @@ def run_plots_for_region(
         )
 
     requested_channel_modes = channel_output_cfg["modes"]
-    if sr_ttbar_display_split and (
-        region_name.upper() != "SR"
-        or channel_output != "merged"
-        or list(variables or ()) != ["njets"]
-        or not unblind
-        or unit_norm_bool
-        or stacked_log_y
-        or binning_mode != "processing"
-        or rebin_plot_vars
-        or int(workers) != 1
-    ):
-        raise ValueError(
-            "SR ttbar display split requires unblinded SR, only njets, "
-            "merged processing view, one worker and unchanged linear bins"
-        )
     preserve_njets_bins = channel_output_cfg.get("preserve_njets", False)
     warning_reference_channel_map = _resolve_split_warning_reference_map(region_name)
     region_channel_cfg = _resolve_region_channel_config(region_name)
@@ -9820,7 +9823,6 @@ def run_plots_for_region(
             enable_category_skips=enable_category_skips,
             binning_mode=binning_mode,
         )
-        region_ctx.sr_ttbar_display_split = bool(sr_ttbar_display_split)
         if summary_region_ctx is None:
             summary_region_ctx = region_ctx
 
@@ -9984,14 +9986,6 @@ def build_arg_parser():
             "'split' keeps the individual channels when flavour-split inputs are available, and 'both' renders "
             "the two sets back-to-back. The '-njets' variants preserve the per-njet bins defined in cr_sr_plots_metadata.yml "
             "instead of collapsing them into the combined templates (default: merged)."
-        ),
-    )
-    parser.add_argument(
-        "--sr-ttbar-display-split",
-        action="store_true",
-        help=(
-            "Opt in to the two-target SR njets diagnostic for 2los_onZ_1tau; "
-            "retain the original science grouping and prefit uncertainties."
         ),
     )
     parser.add_argument(
@@ -10300,30 +10294,6 @@ def run_with_args(args, parser):
             normalized_variables.append(cleaned)
     selected_variables = normalized_variables if normalized_variables else None
 
-    if args.sr_ttbar_display_split and (
-        resolved_region != "SR"
-        or selected_variables != ["njets"]
-        or args.channel_output != "merged"
-        or not resolved_unblind
-        or args.unit_norm
-        or args.log_y
-        or args.binning != "processing"
-        or rebin_plot_vars
-        or args.workers != 1
-        or args.output_formats != ["png"]
-        or args.no_uncertainties
-        or args.skip_syst
-        or len(pkl_paths) != 1
-        or set(selected_years) not in (
-            set(YEAR_AGGREGATE_ALIASES["run2"]),
-            set(YEAR_AGGREGATE_ALIASES["run3"]),
-        )
-    ):
-        parser.error(
-            "--sr-ttbar-display-split requires one Run2 or Run3 PKL, "
-            "--sr --unblind --variables njets --channel-output merged, "
-            "processing bins, PNG, full uncertainties and one worker"
-        )
 
     # Whether or not to unit norm the plots
     unit_norm_bool = args.unit_norm
@@ -10418,7 +10388,6 @@ def run_with_args(args, parser):
         show_ratio_legend=args.show_ratio_legend,
         binning_mode=args.binning,
         output_formats=args.output_formats,
-        sr_ttbar_display_split=args.sr_ttbar_display_split,
     )
     return 0
 

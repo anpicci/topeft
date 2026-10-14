@@ -3411,6 +3411,8 @@ def test_sr_ttbar_metadata_partition_covers_census_identities():
         process_axis = hist.axis.StrCategory(members, name="process")
         jet_axis = hist.axis.Regular(1, 3, 4, name="njets")
         source = hist.Hist(process_axis, jet_axis)
+        for member in members:
+            source.fill(process=member, njets=3.5)
         view = make_cr_and_sr_plots._resolve_sr_ttbar_display_view(
             source, {"ttll": members}, years,
         )
@@ -3432,6 +3434,8 @@ def test_sr_ttbar_metadata_partition_is_exact_and_fail_closed():
         hist.axis.StrCategory(group_map["ttll"], name="process"),
         hist.axis.Regular(1, 3, 4, name="njets"),
     )
+    for member in group_map["ttll"]:
+        source.fill(process=member, njets=3.5)
     view = make_cr_and_sr_plots._resolve_sr_ttbar_display_view(
         source, group_map, ["2016", "2016APV", "2017", "2018"]
     )
@@ -3451,6 +3455,8 @@ def test_sr_ttbar_metadata_partition_is_exact_and_fail_closed():
         hist.axis.StrCategory(run3_map["ttll"], name="process"),
         hist.axis.Regular(1, 3, 4, name="njets"),
     )
+    for member in run3_map["ttll"]:
+        run3_source.fill(process=member, njets=3.5)
     run3_view = make_cr_and_sr_plots._resolve_sr_ttbar_display_view(
         run3_source, run3_map, ["2022", "2022EE", "2023", "2023BPix"]
     )
@@ -3470,6 +3476,74 @@ def test_sr_ttbar_metadata_partition_is_exact_and_fail_closed():
     with pytest.raises(ValueError, match="selected-era"):
         make_cr_and_sr_plots._resolve_sr_ttbar_display_view(
             run3_source, run3_map, ["2016"]
+        )
+
+
+def test_sr_ttbar_yaml_absence_and_empty_category_leave_legacy_draw(monkeypatch):
+    h_mc, h_sumw2, h_data, group_map = _make_sr_ttbar_display_inputs()
+    original_info = make_cr_and_sr_plots.SR_GROUP_INFO
+    without_split = dict(original_info)
+    without_split["ttll"] = {
+        key: value for key, value in original_info["ttll"].items()
+        if key != "display_split"
+    }
+    monkeypatch.setattr(make_cr_and_sr_plots, "SR_GROUP_INFO", without_split)
+    fig = make_cr_and_sr_plots.make_region_stacked_ratio_fig(
+        h_mc, h_data, False, var="njets", group=group_map,
+        h_mc_sumw2=h_sumw2, unblind=True, uncertainty_mode="stat",
+    )
+    try:
+        assert not hasattr(fig, "_topeft_sr_ttbar_display_view")
+        assert "ttll" in fig._topeft_plot_view["raw_grouped_centrals"]
+    finally:
+        make_cr_and_sr_plots.plt.close(fig)
+
+    monkeypatch.setattr(make_cr_and_sr_plots, "SR_GROUP_INFO", original_info)
+    assert make_cr_and_sr_plots._resolve_sr_ttbar_display_view(
+        h_mc, {"Other": ["other"]}, ["2016", "2016APV", "2017", "2018"]
+    ) is None
+    empty = hist.Hist(
+        hist.axis.StrCategory(group_map["ttll"], name="process"),
+        hist.axis.Regular(2, 3, 5, name="njets"),
+    )
+    assert make_cr_and_sr_plots._resolve_sr_ttbar_display_view(
+        empty, {"ttll": group_map["ttll"]},
+        ["2016", "2016APV", "2017", "2018"],
+    ) is None
+    absent = hist.Hist(
+        hist.axis.StrCategory(["other"], name="process"),
+        hist.axis.Regular(2, 3, 5, name="njets"),
+    )
+    absent.fill(process="other", njets=3.5)
+    assert make_cr_and_sr_plots._resolve_sr_ttbar_display_view(
+        absent, group_map, ["2016", "2016APV", "2017", "2018"]
+    ) is None
+    partial = hist.Hist(
+        hist.axis.StrCategory([group_map["ttll"][0]], name="process"),
+        hist.axis.Regular(2, 3, 5, name="njets"),
+    )
+    partial.fill(process=group_map["ttll"][0], njets=3.5)
+    with pytest.raises(ValueError, match="missing original members"):
+        make_cr_and_sr_plots._resolve_sr_ttbar_display_view(
+            partial, group_map, ["2016", "2016APV", "2017", "2018"]
+        )
+    with pytest.raises(ValueError, match="overlaps"):
+        make_cr_and_sr_plots._resolve_sr_ttbar_display_view(
+            h_mc, {**group_map, "Other": ["other", group_map["ttll"][0]]},
+            ["2016", "2016APV", "2017", "2018"],
+        )
+
+
+@pytest.mark.parametrize("invalid", [None, {}, {"ttbar_group": "Unknown", "ttbar_label": "t", "remainder_label": "r"},
+                                    {"ttbar_group": "Ttbar", "ttbar_label": "same", "remainder_label": "same"}])
+def test_sr_ttbar_malformed_present_yaml_fails_explicitly(monkeypatch, invalid):
+    h_mc, _, _, group_map = _make_sr_ttbar_display_inputs()
+    info = dict(make_cr_and_sr_plots.SR_GROUP_INFO)
+    info["ttll"] = dict(info["ttll"], display_split=invalid)
+    monkeypatch.setattr(make_cr_and_sr_plots, "SR_GROUP_INFO", info)
+    with pytest.raises(ValueError, match="display_split"):
+        make_cr_and_sr_plots._resolve_sr_ttbar_display_view(
+            h_mc, group_map, ["2016", "2016APV", "2017", "2018"]
         )
 
 
@@ -3547,27 +3621,18 @@ def test_sr_ttbar_draw_view_preserves_signed_total_variance_and_full_band(negati
         make_cr_and_sr_plots.plt.close(split)
 
 
-@pytest.mark.parametrize("unsupported", ["--cr", "--skip-syst", "--log-y"])
-def test_sr_ttbar_cli_rejects_unsupported_context_before_loading(unsupported):
+def test_sr_ttbar_retired_cli_option_is_not_recognized():
     parser = make_cr_and_sr_plots.build_arg_parser()
-    argv = [
-        "-f", "missing.pkl.gz", "--sr", "--unblind", "--year", "run2",
-        "--variables", "njets", "--channel-output", "merged",
-        "--sr-ttbar-display-split",
-    ]
-    if unsupported == "--cr":
-        argv.remove("--sr")
-    argv.append(unsupported)
     with pytest.raises(SystemExit):
-        make_cr_and_sr_plots.run_with_args(parser.parse_args(argv), parser)
+        parser.parse_args(["--sr-ttbar-display-split"])
 
 
-def test_sr_ttbar_plot_task_selection_is_single_target(monkeypatch):
+def test_sr_ttbar_yaml_does_not_limit_sr_plot_categories(monkeypatch):
     category_calls = []
     region_ctx = SimpleNamespace(
         name="SR", dict_of_hists={"njets": object()},
         apply_category_skips=False, unblind_default=True,
-        sr_ttbar_display_split=True,
+        variable_label="Variable",
     )
     payload = {
         "channel_dict": {
@@ -3596,4 +3661,49 @@ def test_sr_ttbar_plot_task_selection_is_single_target(monkeypatch):
         region_ctx, None, ["njets"], "total", False, False,
         unblind=True, workers=1,
     )
-    assert category_calls == [("njets", "2los_onZ_1tau")]
+    assert category_calls == [
+        ("njets", "2los_onZ_1tau"),
+        ("njets", "unrelated_sr_category"),
+    ]
+
+
+def test_sr_ttbar_yaml_activates_merged_and_per_channel_1d(tmp_path, monkeypatch):
+    source = make_cr_and_sr_plots.SparseHist(
+        hist.axis.StrCategory([], name="process", growth=True),
+        hist.axis.StrCategory([], name="channel", growth=True),
+        hist.axis.StrCategory([], name="systematic", growth=True),
+        hist.axis.Regular(1, 0.0, 1.0, name="njets"),
+    )
+    for process, weight in (
+        ("TTto2L2Nu_central2022", 3.0),
+        ("ttll_private2022", 2.0),
+        ("data2022", 4.0),
+    ):
+        source.fill(
+            process=process, channel="2lss_p", systematic="nominal",
+            njets=0.5, weight=weight,
+        )
+    captured = []
+    original_render = make_cr_and_sr_plots.make_region_stacked_ratio_fig
+
+    def capture_render(*args, **kwargs):
+        fig = original_render(*args, **kwargs)
+        if fig is not None:
+            captured.append((
+                kwargs.get("sr_ttbar_display_years"),
+                getattr(fig, "_topeft_sr_ttbar_display_view", None),
+            ))
+        return fig
+
+    monkeypatch.setattr(
+        make_cr_and_sr_plots, "make_region_stacked_ratio_fig", capture_render
+    )
+    make_cr_and_sr_plots.run_plots_for_region(
+        "SR", {"njets": source}, years=["2022"],
+        save_dir_path=str(tmp_path), channel_output="both",
+        skip_syst_errs=True, workers=1, unblind=True,
+        variables=["njets"],
+    )
+    assert len(captured) >= 2
+    assert all(years == ("2022",) and view is not None for years, view in captured)
+    assert all(view["ttbar_members"] == ("TTto2L2Nu_central2022",) for _, view in captured)
