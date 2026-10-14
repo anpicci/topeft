@@ -3789,6 +3789,8 @@ def _render_variable_category(
                 "uncertainty_mode": uncertainty_mode,
                 "diagnostic_context": plot_diagnostic_context,
             }
+            if getattr(region_ctx, "sr_ttbar_display_split", False):
+                stacked_kwargs["sr_ttbar_display_years"] = region_ctx.years
             rebin_report = _prepare_plot_rebin_and_negative_rows(
                 variable=var_name,
                 hist_mc=hist_mc_integrated,
@@ -4497,6 +4499,86 @@ def populate_group_map(samples, pattern_map):
         )
 
     return out
+
+
+_SR_TTBAR_LABEL = "ttbar (existing ttll)"
+_SR_TTLL_REST_LABEL = "other former-ttll members"
+_SR_TTBAR_IDENTITY = {
+    "run2": re.compile(r"(?:TTTo2L2Nu|TTToSemiLeptonic)_central(?:UL16APV|UL16|UL17|UL18)$"),
+    "run3": re.compile(r"(?:TTto2L2Nu|TTtoLNu2Q)_central(?:2022EE|2022|2023BPix|2023)$"),
+}
+_SR_TTLL_REST_IDENTITY = {
+    "run2": re.compile(r"(?:ttll(?:Jet)?_private|TTZToLL_M1to10_central)(?:UL16APV|UL16|UL17|UL18)$"),
+    "run3": re.compile(r"(?:ttll(?:Jet)?_private|TTZToLL_M1to10_central)(?:2022EE|2022|2023BPix|2023)$"),
+}
+
+
+def _partition_sr_ttll_display_members(group_map, year_tokens):
+    """Partition resolved ttll members for drawing, without changing science groups."""
+
+    run = _resolve_diboson_njets_era(year_tokens)
+    selected_eras = _extract_dd_year_tokens_from_cli_years(year_tokens)
+    if not selected_eras:
+        raise ValueError("SR ttbar display requires explicit selected eras")
+    members = tuple(group_map.get("ttll", ()))
+    if not members or len(members) != len(set(members)):
+        raise ValueError("SR ttbar display requires nonempty, unique original ttll members")
+    ttbar = []
+    remainder = []
+    for member in members:
+        if not any(member.endswith(era) for era in selected_eras):
+            raise ValueError(f"Original ttll member has no selected-era identity: {member}")
+        if _SR_TTBAR_IDENTITY[run].fullmatch(member):
+            ttbar.append(member)
+        elif _SR_TTLL_REST_IDENTITY[run].fullmatch(member):
+            remainder.append(member)
+        else:
+            raise ValueError(f"Ambiguous original ttll member for {run}: {member}")
+    if not ttbar or not remainder:
+        raise ValueError(
+            f"SR ttbar display requires both ttbar and other former-ttll members for {run}"
+        )
+    return tuple(ttbar), tuple(remainder)
+
+
+def _resolve_sr_ttbar_display_view(hist_mc, group_map, year_tokens):
+    """Choose a draw-only grouping; retain the old stack if clipping differs."""
+
+    ttbar, remainder = _partition_sr_ttll_display_members(group_map, year_tokens)
+    ttbar_values = np.asarray(
+        _values_without_flow(
+            hist_mc[{"process": list(ttbar)}][{"process": sum}],
+            include_overflow=True,
+        ),
+        dtype=float,
+    )
+    remainder_values = np.asarray(
+        _values_without_flow(
+            hist_mc[{"process": list(remainder)}][{"process": sum}],
+            include_overflow=True,
+        ),
+        dtype=float,
+    )
+    original_visible = np.maximum(ttbar_values + remainder_values, 0.0)
+    split_visible = np.maximum(ttbar_values, 0.0) + np.maximum(remainder_values, 0.0)
+    fallback = not np.allclose(original_visible, split_visible, rtol=1e-12, atol=1e-12)
+    draw_group = OrderedDict()
+    for name, members in group_map.items():
+        if name == "ttll" and not fallback:
+            draw_group[_SR_TTBAR_LABEL] = list(ttbar)
+            draw_group[_SR_TTLL_REST_LABEL] = list(remainder)
+        else:
+            draw_group[name] = list(members)
+    return {
+        "draw_group": draw_group,
+        "fallback": fallback,
+        "ttbar_members": ttbar,
+        "remainder_members": remainder,
+        "ttbar_values": ttbar_values,
+        "remainder_values": remainder_values,
+        "original_visible_ttll": original_visible,
+        "split_visible_ttll": split_visible,
+    }
 
 
 def _safe_divide(num, denom, default, zero_over_zero=None):
@@ -7529,6 +7611,15 @@ def produce_region_plots(
                 )
             )
         ]
+        if getattr(region_ctx, "sr_ttbar_display_split", False):
+            categories = [
+                category for category in categories
+                if category == "2los_onZ_1tau"
+            ]
+            if len(categories) != 1:
+                raise ValueError(
+                    "SR ttbar display target 2los_onZ_1tau is unavailable"
+                )
         variable_categories[var_name] = categories
         if save_dir_path:
             category_dirs.update(
@@ -7550,6 +7641,10 @@ def produce_region_plots(
 
     worker_count = max(int(workers or 1), 1)
     tasks = list(eligible_variables)
+    if getattr(region_ctx, "sr_ttbar_display_split", False):
+        tasks = [
+            (var_name, "2los_onZ_1tau") for var_name in eligible_variables
+        ]
     base_task_count = len(tasks)
     if not verbose:
         if tasks:
@@ -8876,6 +8971,7 @@ def make_region_stacked_ratio_fig(
     lumi_components=None,
     scope_label=None,
     diagnostic_context=None,
+    sr_ttbar_display_years=None,
 ):
     if uncertainty_mode not in {"total", "stat", "none"}:
         raise ValueError(
@@ -8894,6 +8990,8 @@ def make_region_stacked_ratio_fig(
         bins = list(bins)
     if group is None:
         group = {}
+
+    sr_ttbar_display_view = None
 
     recompute_syst_ratio_arrays = False
 
@@ -9056,6 +9154,12 @@ def make_region_stacked_ratio_fig(
 
     default_colors = DEFAULT_STACK_COLORS
 
+    if sr_ttbar_display_years is not None:
+        sr_ttbar_display_view = _resolve_sr_ttbar_display_view(
+            h_mc, group, sr_ttbar_display_years
+        )
+        group = sr_ttbar_display_view["draw_group"]
+
     grouping = OrderedDict()
     axis_collection = getattr(h_mc, "axes", None)
     axis_entries = None
@@ -9083,7 +9187,10 @@ def make_region_stacked_ratio_fig(
     colors = []
     default_color_index = 0
     for proc in grouping:
-        c = FILL_COLORS.get(proc)
+        c = {
+            _SR_TTBAR_LABEL: "#4c78a8",
+            _SR_TTLL_REST_LABEL: "#9ecae9",
+        }.get(proc, FILL_COLORS.get(proc))
         if c is None:
             c = default_colors[default_color_index % len(default_colors)]
             default_color_index += 1
@@ -9592,6 +9699,33 @@ def make_region_stacked_ratio_fig(
         "ratio_denominator": np.asarray(mc_totals, dtype=float).copy(),
     }
 
+    if sr_ttbar_display_view is not None:
+        fig._topeft_sr_ttbar_display_view = sr_ttbar_display_view
+        if sr_ttbar_display_view["fallback"]:
+            for panel_axis in tuple(fig.axes):
+                position = panel_axis.get_position()
+                panel_axis.set_position(
+                    [position.x0, 0.27 + 0.70 * position.y0,
+                     position.width, 0.70 * position.height]
+                )
+            component_axis = fig.add_axes([0.14, 0.07, 0.82, 0.16])
+            component_axis.stairs(
+                sr_ttbar_display_view["ttbar_values"], plot_bins,
+                label=_SR_TTBAR_LABEL, color="#4c78a8",
+            )
+            component_axis.stairs(
+                sr_ttbar_display_view["remainder_values"], plot_bins,
+                label=_SR_TTLL_REST_LABEL, color="#9ecae9",
+            )
+            component_axis.axhline(0.0, color="black", linewidth=0.8)
+            component_axis.set_ylabel("Signed events")
+            component_axis.set_xlabel(display_label)
+            component_axis.set_title("Original stack retained; signed former-ttll components")
+            component_axis.legend(fontsize=8)
+            fig._topeft_plot_summary["sr_ttbar_companion_panel"] = True
+        else:
+            fig._topeft_plot_summary["sr_ttbar_companion_panel"] = False
+
     return fig
 
 ###################### Region plotting entry point ######################
@@ -9619,6 +9753,7 @@ def run_plots_for_region(
     show_ratio_legend=False,
     binning_mode="processing",
     output_formats=("png",),
+    sr_ttbar_display_split=False,
 ):
     """Run one CR/SR plotting pass and write optional zero/negative reports."""
 
@@ -9641,6 +9776,21 @@ def run_plots_for_region(
         )
 
     requested_channel_modes = channel_output_cfg["modes"]
+    if sr_ttbar_display_split and (
+        region_name.upper() != "SR"
+        or channel_output != "merged"
+        or list(variables or ()) != ["njets"]
+        or not unblind
+        or unit_norm_bool
+        or stacked_log_y
+        or binning_mode != "processing"
+        or rebin_plot_vars
+        or int(workers) != 1
+    ):
+        raise ValueError(
+            "SR ttbar display split requires unblinded SR, only njets, "
+            "merged processing view, one worker and unchanged linear bins"
+        )
     preserve_njets_bins = channel_output_cfg.get("preserve_njets", False)
     warning_reference_channel_map = _resolve_split_warning_reference_map(region_name)
     region_channel_cfg = _resolve_region_channel_config(region_name)
@@ -9691,6 +9841,7 @@ def run_plots_for_region(
             enable_category_skips=enable_category_skips,
             binning_mode=binning_mode,
         )
+        region_ctx.sr_ttbar_display_split = bool(sr_ttbar_display_split)
         if summary_region_ctx is None:
             summary_region_ctx = region_ctx
 
@@ -9854,6 +10005,14 @@ def build_arg_parser():
             "'split' keeps the individual channels when flavour-split inputs are available, and 'both' renders "
             "the two sets back-to-back. The '-njets' variants preserve the per-njet bins defined in cr_sr_plots_metadata.yml "
             "instead of collapsing them into the combined templates (default: merged)."
+        ),
+    )
+    parser.add_argument(
+        "--sr-ttbar-display-split",
+        action="store_true",
+        help=(
+            "Opt in to the two-target SR njets diagnostic for 2los_onZ_1tau; "
+            "retain the original science grouping and prefit uncertainties."
         ),
     )
     parser.add_argument(
@@ -10162,6 +10321,31 @@ def run_with_args(args, parser):
             normalized_variables.append(cleaned)
     selected_variables = normalized_variables if normalized_variables else None
 
+    if args.sr_ttbar_display_split and (
+        resolved_region != "SR"
+        or selected_variables != ["njets"]
+        or args.channel_output != "merged"
+        or not resolved_unblind
+        or args.unit_norm
+        or args.log_y
+        or args.binning != "processing"
+        or rebin_plot_vars
+        or args.workers != 1
+        or args.output_formats != ["png"]
+        or args.no_uncertainties
+        or args.skip_syst
+        or len(pkl_paths) != 1
+        or set(selected_years) not in (
+            set(YEAR_AGGREGATE_ALIASES["run2"]),
+            set(YEAR_AGGREGATE_ALIASES["run3"]),
+        )
+    ):
+        parser.error(
+            "--sr-ttbar-display-split requires one Run2 or Run3 PKL, "
+            "--sr --unblind --variables njets --channel-output merged, "
+            "processing bins, PNG, full uncertainties and one worker"
+        )
+
     # Whether or not to unit norm the plots
     unit_norm_bool = args.unit_norm
 
@@ -10255,6 +10439,7 @@ def run_with_args(args, parser):
         show_ratio_legend=args.show_ratio_legend,
         binning_mode=args.binning,
         output_formats=args.output_formats,
+        sr_ttbar_display_split=args.sr_ttbar_display_split,
     )
     return 0
 
