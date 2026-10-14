@@ -494,6 +494,10 @@ SR_GRP_MAP:
     - ttlnu
   ttll:
     color: tab:blue
+    display_split:
+      ttbar_group: Ttbar
+      ttbar_label: ttbar (existing ttll)
+      remainder_label: other former-ttll members
     patterns:
     - ttll
     - TTZToLL_M1to10

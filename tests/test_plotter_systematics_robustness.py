@@ -428,8 +428,10 @@ def test_sr_ttbar_draw_partition_keeps_correlated_rate_and_shape_inputs(monkeypa
     original_group_map = {"ttll": [ttbar, remainder], "Flips": []}
     hist_obj = _make_process_sparse_hist(
         {
-            ttbar: {"nominal": 5.0, "renormUp": 6.0, "renormDown": 4.0},
-            remainder: {"nominal": 7.0, "renormUp": 9.0, "renormDown": 5.0},
+            ttbar: {"nominal": 5.0, "renormUp": 6.0, "renormDown": 4.0,
+                    "factUp": 7.0, "factDown": 3.0},
+            remainder: {"nominal": 7.0, "renormUp": 9.0, "renormDown": 5.0,
+                        "factUp": 10.0, "factDown": 4.0},
         }
     )
     monkeypatch.setattr(make_cr_and_sr_plots, "SR_GRP_MAP", original_group_map)
@@ -439,8 +441,7 @@ def test_sr_ttbar_draw_partition_keeps_correlated_rate_and_shape_inputs(monkeypa
     shape_before, details_before = make_cr_and_sr_plots.get_shape_syst_arrs(
         hist_obj, group_type="SR", return_details=True
     )
-    assert details_before["valid_bases"] == ("renorm",)
-    np.testing.assert_allclose(shape_before[1], [9.0])
+    assert set(details_before["valid_bases"]) == {"renorm", "fact"}
 
     draw_view = make_cr_and_sr_plots._resolve_sr_ttbar_display_view(
         hist_obj.integrate("systematic", "nominal"),

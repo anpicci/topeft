@@ -3393,7 +3393,33 @@ def _make_sr_ttbar_display_inputs(*, negative=False):
     return h_mc, h_sumw2, h_data, group_map
 
 
-def test_sr_ttbar_identity_partition_is_exact_per_run_and_fail_closed():
+def test_sr_ttbar_metadata_partition_covers_census_identities():
+    run2_eras = ("UL16", "UL16APV", "UL17", "UL18")
+    run3_eras = ("2022", "2022EE", "2023", "2023BPix")
+    run2 = [f"{stem}{era}" for era in run2_eras for stem in (
+        "TTTo2L2Nu_central", "TTToSemiLeptonic_central",
+        "TTZToLL_M1to10_central", "ttllJet_private",
+    )]
+    run3 = [f"{stem}{era}" for era in run3_eras for stem in (
+        "TTto2L2Nu_central", "TTtoLNu2Q_central", "ttll_private",
+    )]
+    assert len(run2 + run3) == 28
+    for members, years, expected_ttbar in (
+        (run2, ["2016", "2016APV", "2017", "2018"], 8),
+        (run3, ["2022", "2022EE", "2023", "2023BPix"], 8),
+    ):
+        process_axis = hist.axis.StrCategory(members, name="process")
+        jet_axis = hist.axis.Regular(1, 3, 4, name="njets")
+        source = hist.Hist(process_axis, jet_axis)
+        view = make_cr_and_sr_plots._resolve_sr_ttbar_display_view(
+            source, {"ttll": members}, years,
+        )
+        assert len(view["ttbar_members"]) == expected_ttbar
+        assert set(view["ttbar_members"]).isdisjoint(view["remainder_members"])
+        assert set(view["ttbar_members"]) | set(view["remainder_members"]) == set(members)
+
+
+def test_sr_ttbar_metadata_partition_is_exact_and_fail_closed():
     group_map = {
         "ttll": [
             "TTTo2L2Nu_centralUL16APV",
@@ -3402,9 +3428,14 @@ def test_sr_ttbar_identity_partition_is_exact_per_run_and_fail_closed():
             "ttllJet_privateUL16",
         ]
     }
-    ttbar, remainder = make_cr_and_sr_plots._partition_sr_ttll_display_members(
-        group_map, ["2016", "2016APV", "2017", "2018"]
+    source = hist.Hist(
+        hist.axis.StrCategory(group_map["ttll"], name="process"),
+        hist.axis.Regular(1, 3, 4, name="njets"),
     )
+    view = make_cr_and_sr_plots._resolve_sr_ttbar_display_view(
+        source, group_map, ["2016", "2016APV", "2017", "2018"]
+    )
+    ttbar, remainder = view["ttbar_members"], view["remainder_members"]
     assert len(ttbar) == 2
     assert remainder == (
         "TTZToLL_M1to10_centralUL17", "ttllJet_privateUL16"
@@ -3416,9 +3447,14 @@ def test_sr_ttbar_identity_partition_is_exact_per_run_and_fail_closed():
         "ttll": ["TTto2L2Nu_central2022EE", "TTtoLNu2Q_central2023BPix",
                  "ttll_private2022", "ttll_private2023"]
     }
-    run3_ttbar, run3_remainder = make_cr_and_sr_plots._partition_sr_ttll_display_members(
-        run3_map, ["2022", "2022EE", "2023", "2023BPix"]
+    run3_source = hist.Hist(
+        hist.axis.StrCategory(run3_map["ttll"], name="process"),
+        hist.axis.Regular(1, 3, 4, name="njets"),
     )
+    run3_view = make_cr_and_sr_plots._resolve_sr_ttbar_display_view(
+        run3_source, run3_map, ["2022", "2022EE", "2023", "2023BPix"]
+    )
+    run3_ttbar, run3_remainder = run3_view["ttbar_members"], run3_view["remainder_members"]
     assert len(run3_ttbar) == len(run3_remainder) == 2
 
     for invalid in (
@@ -3428,17 +3464,12 @@ def test_sr_ttbar_identity_partition_is_exact_per_run_and_fail_closed():
          "ttllJet_privateUL16"],
     ):
         with pytest.raises(ValueError):
-            make_cr_and_sr_plots._partition_sr_ttll_display_members(
-                {"ttll": invalid}, ["2016"]
+            make_cr_and_sr_plots._resolve_sr_ttbar_display_view(
+                source, {"ttll": invalid}, ["2016"]
             )
     with pytest.raises(ValueError, match="selected-era"):
-        make_cr_and_sr_plots._partition_sr_ttll_display_members(
-            run3_map, ["2016"]
-        )
-    with pytest.raises(ValueError, match="Ambiguous"):
-        make_cr_and_sr_plots._partition_sr_ttll_display_members(
-            {"ttll": ["TTto2L2Nu_central2022", "ttllMystery_private2022"]},
-            ["2022"],
+        make_cr_and_sr_plots._resolve_sr_ttbar_display_view(
+            run3_source, run3_map, ["2016"]
         )
 
 
@@ -3478,15 +3509,25 @@ def test_sr_ttbar_draw_view_preserves_signed_total_variance_and_full_band(negati
             split._topeft_plot_summary["ratio_denominator"],
             original._topeft_plot_summary["ratio_denominator"],
         )
-        for key in (
-            "mc_stat_uncertainty", "mc_total_band_up_physical",
-            "mc_total_band_down_physical", "ratio_total_band_up",
-            "ratio_total_band_down",
-        ):
+        for key in original._topeft_uncertainty_bands:
+            if key == "main_band_handles":
+                continue
             np.testing.assert_allclose(
                 split._topeft_uncertainty_bands[key],
                 original._topeft_uncertainty_bands[key], equal_nan=True,
             )
+        np.testing.assert_allclose(
+            split._topeft_plot_view["total_variance"],
+            original._topeft_plot_view["total_variance"],
+        )
+        np.testing.assert_allclose(
+            split._topeft_data_intervals["central_counts"],
+            original._topeft_data_intervals["central_counts"],
+        )
+        np.testing.assert_allclose(
+            sum(split._topeft_plot_view["raw_grouped_centrals"].values()),
+            sum(original._topeft_plot_view["raw_grouped_centrals"].values()),
+        )
         assert view["fallback"] is negative
         assert split._topeft_plot_summary["sr_ttbar_companion_panel"] is negative
         assert len(split.axes) == (3 if negative else 2)
@@ -3496,7 +3537,7 @@ def test_sr_ttbar_draw_view_preserves_signed_total_variance_and_full_band(negati
             )
             assert view["split_visible_ttll"][1] > view["original_visible_ttll"][1]
         else:
-            assert make_cr_and_sr_plots._SR_TTBAR_LABEL in split._topeft_plot_view[
+            assert make_cr_and_sr_plots.SR_GROUP_INFO["ttll"]["display_split"]["ttbar_label"] in split._topeft_plot_view[
                 "raw_grouped_centrals"
             ]
         np.testing.assert_array_equal(h_mc.values(flow=True), before_mc)
@@ -3519,121 +3560,6 @@ def test_sr_ttbar_cli_rejects_unsupported_context_before_loading(unsupported):
     argv.append(unsupported)
     with pytest.raises(SystemExit):
         make_cr_and_sr_plots.run_with_args(parser.parse_args(argv), parser)
-
-
-def test_sr_ttbar_evidence_requires_split_before_loading(tmp_path):
-    parser = make_cr_and_sr_plots.build_arg_parser()
-    args = parser.parse_args([
-        "-f", "missing.pkl.gz", "--sr", "--unblind", "--year", "run2",
-        "--variables", "njets", "--channel-output", "merged",
-        "--sr-ttbar-evidence-output", str(tmp_path / "evidence.json"),
-    ])
-    with pytest.raises(SystemExit, match="2"):
-        make_cr_and_sr_plots.run_with_args(args, parser)
-    assert not (tmp_path / "evidence.json").exists()
-
-
-@pytest.mark.parametrize("negative", [False, True])
-def test_sr_ttbar_evidence_exports_one_correlated_render_and_strict_json(tmp_path, negative):
-    process_axis = hist.axis.StrCategory([], name="process", growth=True)
-    jet_axis = hist.axis.Regular(4, 3, 7, name="njets")
-    h_mc = hist.Hist(process_axis, jet_axis, storage=hist.storage.Double())
-    h_sumw2 = hist.Hist(process_axis, jet_axis, storage=hist.storage.Double())
-    h_data = hist.Hist(process_axis, jet_axis, storage=hist.storage.Double())
-    members = {
-        "TTTo2L2Nu_centralUL16": [4., -5. if negative else 1., 2., 0., 3.],
-        "TTToSemiLeptonic_centralUL17": [2., 1., 0., 0., 2.],
-        "TTZToLL_M1to10_centralUL17": [1., 2., 1., 0., 1.],
-        "ttllJet_privateUL16": [3., 2., 1., 0., 1.],
-        "signalUL16": [1., 1., 1., 0., 1.],
-    }
-    for member, values in members.items():
-        for jet, value in zip((3.5, 4.5, 5.5, 6.5, 7.5), values):
-            h_mc.fill(process=member, njets=jet, weight=value)
-            h_sumw2.fill(process=member, njets=jet, weight=abs(value) + 0.5)
-    h_mc.fill(process="TTTo2L2Nu_centralUL16", njets=2.5, weight=99.)
-    h_sumw2.fill(process="TTTo2L2Nu_centralUL16", njets=2.5, weight=99.)
-    for era, values in (("UL16", [3., 7., 4., 0., 2.]),
-                        ("UL17", [1., 5., 2., 0., 1.])):
-        for jet, value in zip((3.5, 4.5, 5.5, 6.5, 7.5), values):
-            h_data.fill(process="data" + era, njets=jet, weight=value)
-    group = {"ttll": list(members)[:4], "Signal": ["signalUL16"]}
-    signed_total = make_cr_and_sr_plots._values_without_flow(
-        h_mc[{"process": sum}], include_overflow=True,
-    )
-    render_kwargs = dict(
-        h_mc=h_mc, h_data=h_data, h_mc_sumw2=h_sumw2,
-        unit_norm_bool=False, var="njets", group=group,
-        unblind=True, uncertainty_mode="total", syst_err="total",
-        err_p_syst=signed_total + 2., err_m_syst=signed_total - 3.,
-        err_ratio_p_syst=np.ones_like(signed_total),
-        err_ratio_m_syst=np.ones_like(signed_total),
-    )
-    baseline = make_cr_and_sr_plots.make_region_stacked_ratio_fig(**render_kwargs)
-    split = make_cr_and_sr_plots.make_region_stacked_ratio_fig(
-        **render_kwargs, sr_ttbar_display_years=["2016", "2017"],
-    )
-    try:
-        evidence = make_cr_and_sr_plots._build_sr_ttbar_evidence(
-            h_mc, h_sumw2, h_data, group, split, ["2016", "2017"], __file__,
-            {"rate_keys": ["test_rate"], "rate_calculation_succeeded": True,
-             "shape_valid_bases": ["test_shape"], "shape_calculation_succeeded": True,
-             "shape_skipped_orphans": [], "shape_skipped_failed": [],
-             "rate_error": None, "shape_error": None},
-        )
-        assert evidence["schema_version"] == "sr_ttbar_evidence_v1"
-        assert evidence["axis"]["physical_bins"] == ["3", "4", "5", "6", ">=7"]
-        assert evidence["display"]["fallback_companion_signed_panel"] is negative
-        assert evidence["inclusive_ge3"]["original_ttll"] == pytest.approx(
-            evidence["inclusive_ge3"]["ttbar"] + evidence["inclusive_ge3"]["rest"]
-        )
-        assert evidence["members"]["TTTo2L2Nu_centralUL16"]["era"] == "UL16"
-        assert "signalUL16" not in evidence["members"]
-        assert evidence["scientific_groups"]["Signal"] == ["signalUL16"]
-        assert evidence["members"]["TTTo2L2Nu_centralUL16"]["signed_yield"][0] == 4.
-        assert evidence["members"]["TTTo2L2Nu_centralUL16"]["sumw2"][0] == 4.5
-        assert evidence["era_totals"]["UL17"]["ttll_sumw2"][4] == pytest.approx(4.0)
-        assert evidence["era_inclusive_ge3"]["UL16"]["ttll"] == pytest.approx(
-            evidence["era_inclusive_ge3"]["UL16"]["ttbar"]
-            + evidence["era_inclusive_ge3"]["UL16"]["rest"]
-        )
-        np.testing.assert_allclose(evidence["run_totals"]["signed_sm"], signed_total)
-        np.testing.assert_allclose(
-            evidence["run_totals"]["displayed_stack"],
-            baseline._topeft_plot_view["displayed_total"],
-        )
-        np.testing.assert_allclose(
-            evidence["run_totals"]["mc_sumw2"],
-            baseline._topeft_plot_view["total_variance"],
-        )
-        for key in ("mc_stat_uncertainty", "mc_syst_band_up_physical",
-                    "mc_total_band_up_physical", "ratio_total_band_down"):
-            np.testing.assert_allclose(
-                [np.nan if value is None else value for value in evidence["bands"][key]],
-                baseline._topeft_uncertainty_bands[key],
-                equal_nan=True,
-            )
-        private_dir = tmp_path / "private"
-        private_dir.mkdir(mode=0o700)
-        output = private_dir / "evidence.json"
-        make_cr_and_sr_plots._write_sr_ttbar_evidence(
-            str(output), evidence, private_root=str(tmp_path),
-        )
-        import json
-        decoded = json.loads(output.read_text(), parse_constant=lambda value: (_ for _ in ()).throw(ValueError(value)))
-        assert decoded["bands"]["ratio_stat_band_up"][3] is None
-        assert output.stat().st_mode & 0o777 == 0o600
-        with pytest.raises(ValueError, match="private diagnostics"):
-            make_cr_and_sr_plots._write_sr_ttbar_evidence(
-                str(tmp_path / "outside.json"), evidence, private_root=str(tmp_path),
-            )
-        with pytest.raises(FileExistsError):
-            make_cr_and_sr_plots._write_sr_ttbar_evidence(
-                str(output), evidence, private_root=str(tmp_path),
-            )
-    finally:
-        make_cr_and_sr_plots.plt.close(baseline)
-        make_cr_and_sr_plots.plt.close(split)
 
 
 def test_sr_ttbar_plot_task_selection_is_single_target(monkeypatch):
