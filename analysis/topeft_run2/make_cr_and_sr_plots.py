@@ -5,6 +5,8 @@ import csv
 import datetime
 import argparse
 import json
+import hashlib
+import stat
 import gzip
 import pickle
 import re
@@ -3865,6 +3867,23 @@ def _render_variable_category(
                     pad_inches=0.05,
                 )
         else:
+            if getattr(region_ctx, "sr_ttbar_evidence_output", None):
+                evidence = _build_sr_ttbar_evidence(
+                    hist_mc_integrated, hist_mc_sumw2_integrated,
+                    hist_data_integrated, group, fig, region_ctx.years,
+                    region_ctx.sr_ttbar_evidence_input,
+                    {
+                        "rate_keys": list(rate_syst_keys),
+                        "rate_calculation_succeeded": bool(rate_calc_ok),
+                        "shape_calculation_succeeded": bool(shape_calc_ok),
+                        "shape_valid_bases": list(shape_syst_details["valid_bases"]),
+                        "shape_skipped_orphans": list(shape_syst_details["skipped_orphans"]),
+                        "shape_skipped_failed": list(shape_syst_details["skipped_failed"]),
+                        "rate_error": rate_error,
+                        "shape_error": shape_error,
+                    },
+                )
+                _write_sr_ttbar_evidence(region_ctx.sr_ttbar_evidence_output, evidence)
             _save_figure_formats(
                 fig,
                 os.path.join(save_dir_path_tmp, title),
@@ -4579,6 +4598,295 @@ def _resolve_sr_ttbar_display_view(hist_mc, group_map, year_tokens):
         "original_visible_ttll": original_visible,
         "split_visible_ttll": split_visible,
     }
+
+
+def _sr_ttbar_evidence_array(values, *, required=True):
+    """Serialize a numeric renderer array without JSON NaN extensions."""
+
+    if values is None:
+        if required:
+            raise ValueError("SR ttbar evidence is missing a required renderer array")
+        return None
+    array = np.asarray(values, dtype=float)
+    if array.ndim != 1:
+        raise ValueError("SR ttbar evidence requires one-dimensional arrays")
+    return [float(value) if np.isfinite(value) else None for value in array]
+
+
+def _require_sr_ttbar_evidence_identity(actual, expected, label):
+    actual = np.asarray(actual, dtype=float)
+    expected = np.asarray(expected, dtype=float)
+    if actual.shape != expected.shape or not np.allclose(
+        actual, expected, rtol=1e-12, atol=1e-10, equal_nan=True
+    ):
+        raise ValueError(f"SR ttbar evidence identity failed: {label}")
+
+
+def _build_sr_ttbar_evidence(
+    hist_mc, hist_sumw2, hist_data, group_map, figure, year_tokens, input_path,
+    systematic_provenance,
+):
+    """Capture the resolved nominal view and already computed correlated bands."""
+
+    display = figure._topeft_sr_ttbar_display_view
+    plot_view = figure._topeft_plot_view
+    bands = figure._topeft_uncertainty_bands
+    eras = tuple(_extract_dd_year_tokens_from_cli_years(year_tokens))
+    ttbar, remainder = _partition_sr_ttll_display_members(group_map, year_tokens)
+    members = ttbar + remainder
+    if len(members) != len(set(members)) or set(members) != set(group_map["ttll"]):
+        raise ValueError("SR ttbar evidence has duplicate or missing ttll members")
+    if hist_sumw2 is None:
+        raise ValueError("SR ttbar evidence requires nominal MC sumw2")
+    axis = hist_mc.axes["njets"]
+    edges = np.asarray(axis.edges, dtype=float)
+    if not np.all(np.isfinite(edges)) or not np.all(np.diff(edges) > 0):
+        raise ValueError("SR ttbar evidence has invalid njets edges")
+    has_overflow = bool(axis.traits.overflow)
+    if not has_overflow or not np.all(np.isin([3, 4, 5, 6, 7], edges)):
+        raise ValueError("SR ttbar evidence needs exact 3..7 jet edges and overflow")
+    if edges[-1] != 7 or not np.array_equal(edges[-5:], [3, 4, 5, 6, 7]):
+        raise ValueError("SR ttbar evidence cannot label the >=7 overflow exactly")
+    labels = [f"{int(low)}" for low in edges[:-1]] + [">=7"]
+    selected = [labels.index(str(jet)) for jet in (3, 4, 5, 6)] + [len(labels) - 1]
+    n_bins = len(labels)
+    available_mc = set(hist_mc.axes["process"])
+    available_sumw2 = set(hist_sumw2.axes["process"])
+    grouped_mc = [member for names in group_map.values() for member in names
+                  if member in available_mc]
+    if len(grouped_mc) != len(set(grouped_mc)) or set(grouped_mc) != available_mc:
+        raise ValueError("SR ttbar evidence science groups duplicate or omit a process")
+    if not set(members) <= available_mc or not set(members) <= available_sumw2:
+        raise ValueError(
+            "SR ttbar evidence missing members for input "
+            f"{os.path.realpath(input_path)}: nominal={sorted(set(members) - available_mc)}, "
+            f"sumw2={sorted(set(members) - available_sumw2)}"
+        )
+
+    def member_values(source, member):
+        values = np.asarray(
+            _values_without_flow(source[{"process": member}], include_overflow=True),
+            dtype=float,
+        )
+        if values.shape != (n_bins,) or not np.all(np.isfinite(values)):
+            raise ValueError(f"SR ttbar evidence has incomplete bins for {member}")
+        return values
+
+    nominal = {member: member_values(hist_mc, member) for member in members}
+    moment = {member: member_values(hist_sumw2, member) for member in members}
+    if any(np.any(values < 0) for values in moment.values()):
+        raise ValueError("SR ttbar evidence has negative sumw2")
+
+    def summed(source, names):
+        return np.sum([source[name] for name in names], axis=0)
+
+    ttbar_values = summed(nominal, ttbar)
+    rest_values = summed(nominal, remainder)
+    ttll_values = np.asarray(
+        _values_without_flow(
+            hist_mc[{"process": list(members)}][{"process": sum}],
+            include_overflow=True,
+        ), dtype=float,
+    )
+    _require_sr_ttbar_evidence_identity(ttbar_values + rest_values, ttll_values, "ttll partition")
+    _require_sr_ttbar_evidence_identity(ttbar_values, display["ttbar_values"], "ttbar draw")
+    _require_sr_ttbar_evidence_identity(rest_values, display["remainder_values"], "rest draw")
+    full_mc = np.asarray(_values_without_flow(
+        hist_mc[{"process": sum}], include_overflow=True,
+    ), dtype=float)
+    signed_view = np.sum(list(plot_view["raw_grouped_centrals"].values()), axis=0)
+    _require_sr_ttbar_evidence_identity(full_mc, signed_view, "signed SM total")
+    full_sumw2 = np.asarray(_values_without_flow(
+        hist_sumw2[{"process": sum}], include_overflow=True,
+    ), dtype=float)
+    _require_sr_ttbar_evidence_identity(full_sumw2, plot_view["total_variance"], "MC sumw2")
+    displayed = np.asarray(plot_view["displayed_total"], dtype=float)
+    _require_sr_ttbar_evidence_identity(displayed, figure._topeft_plot_summary["ratio_denominator"], "ratio denominator")
+    _require_sr_ttbar_evidence_identity(
+        displayed,
+        np.sum(list(plot_view["plot_grouped_centrals"].values()), axis=0),
+        "displayed stack",
+    )
+    if bool(display["fallback"]) != bool(figure._topeft_plot_summary["sr_ttbar_companion_panel"]):
+        raise ValueError("SR ttbar evidence display fallback mismatch")
+    data_total = np.asarray(_values_without_flow(
+        hist_data[{"process": sum}], include_overflow=True,
+    ), dtype=float)
+    _require_sr_ttbar_evidence_identity(data_total, figure._topeft_data_intervals["central_counts"], "Data")
+
+    band_keys = (
+        "mc_stat_uncertainty", "mc_stat_band_up_physical",
+        "mc_stat_band_down_physical", "mc_syst_band_up_physical",
+        "mc_syst_band_down_physical", "raw_syst_band_up_physical",
+        "raw_syst_band_down_physical", "mc_total_band_up_physical",
+        "mc_total_band_down_physical", "systematic_reference_total",
+        "ratio_stat_band_up", "ratio_stat_band_down",
+        "ratio_syst_band_up", "ratio_syst_band_down",
+        "ratio_total_band_up", "ratio_total_band_down",
+    )
+    missing = [key for key in band_keys if key not in bands or bands[key] is None]
+    if missing:
+        raise ValueError(f"SR ttbar evidence missing computed bands: {missing}")
+    band_arrays = {}
+    for key in band_keys:
+        values = np.asarray(bands[key], dtype=float)
+        if values.size not in (n_bins, n_bins + 1):
+            raise ValueError(f"SR ttbar evidence band {key} has wrong length")
+        band_arrays[key] = _sr_ttbar_evidence_array(values)
+    _require_sr_ttbar_evidence_identity(bands["systematic_reference_total"], full_mc, "systematic reference")
+    _require_sr_ttbar_evidence_identity(np.square(bands["mc_stat_uncertainty"]), full_sumw2, "stat band sumw2")
+
+    data_members = {}
+    unresolved_data = []
+    for member in hist_data.axes["process"]:
+        matching = [era for era in eras if str(member).endswith(era)]
+        if len(matching) == 1:
+            data_members[str(member)] = {"era": matching[0], "signed_yield":
+                _sr_ttbar_evidence_array(member_values(hist_data, member))}
+        else:
+            unresolved_data.append(str(member))
+    if not unresolved_data:
+        _require_sr_ttbar_evidence_identity(
+            np.sum([np.asarray(item["signed_yield"]) for item in data_members.values()], axis=0),
+            data_total, "era Data sum",
+        )
+    member_records = {}
+    for member in members:
+        matching = [era for era in eras if member.endswith(era)]
+        if len(matching) != 1:
+            raise ValueError(f"SR ttbar evidence cannot assign era to {member}")
+        member_records[member] = {
+            "era": matching[0], "component": "ttbar" if member in ttbar else "rest",
+            "signed_yield": _sr_ttbar_evidence_array(nominal[member]),
+            "sumw2": _sr_ttbar_evidence_array(moment[member]),
+        }
+    limitations = []
+    if unresolved_data:
+        limitations.append({"unattributed_data_members": unresolved_data})
+    era_totals = {}
+    for era in eras:
+        era_ttbar = [name for name in ttbar if member_records[name]["era"] == era]
+        era_rest = [name for name in remainder if member_records[name]["era"] == era]
+        if not era_ttbar or not era_rest:
+            limitations.append({"era": era, "missing_component": [
+                name for name, names in (("ttbar", era_ttbar), ("rest", era_rest))
+                if not names
+            ]})
+        era_totals[era] = {
+            "ttbar": _sr_ttbar_evidence_array(summed(nominal, era_ttbar)) if era_ttbar else None,
+            "rest": _sr_ttbar_evidence_array(summed(nominal, era_rest)) if era_rest else None,
+            "ttll": _sr_ttbar_evidence_array(summed(nominal, era_ttbar + era_rest))
+            if era_ttbar and era_rest else None,
+            "ttbar_sumw2": _sr_ttbar_evidence_array(summed(moment, era_ttbar))
+            if era_ttbar else None,
+            "rest_sumw2": _sr_ttbar_evidence_array(summed(moment, era_rest))
+            if era_rest else None,
+            "ttll_sumw2": _sr_ttbar_evidence_array(summed(moment, era_ttbar + era_rest))
+            if era_ttbar and era_rest else None,
+            "data": _sr_ttbar_evidence_array(np.sum([
+                member_values(hist_data, name) for name, item in data_members.items()
+                if item["era"] == era
+            ], axis=0)) if any(item["era"] == era for item in data_members.values()) else None,
+        }
+    def inclusive(values):
+        return float(np.sum(np.asarray(values, dtype=float)[selected]))
+    input_stat = os.stat(input_path)
+    return {
+        "schema_version": "sr_ttbar_evidence_v1",
+        "configuration": {"region": "SR", "category": "2los_onZ_1tau",
+                          "variable": "njets", "binning": "processing",
+                          "wc_values": {}, "uncertainty_mode": "total",
+                          "calculation_stage": "post_nominal_sm_and_correlated_prefit_render"},
+        "input": {"resolved_path": os.path.realpath(input_path),
+                  "path_sha256": hashlib.sha256(os.path.realpath(input_path).encode()).hexdigest(),
+                  "size_bytes": input_stat.st_size, "mtime_ns": input_stat.st_mtime_ns,
+                  "identity_kind": "resolved_path_and_stat_no_content_hash"},
+        "selected_eras": list(eras),
+        "axis": {"edges": edges.tolist(), "underflow_excluded": True,
+                 "overflow_included": True, "physical_bins": [labels[i] for i in selected],
+                 "physical_indices": selected},
+        "members": member_records,
+        "scientific_groups": {name: list(names) for name, names in group_map.items()},
+        "data_members": data_members,
+        "limitations": limitations,
+        "era_totals": era_totals,
+        "era_inclusive_ge3": {era: {
+            name: None if values is None else inclusive(values)
+            for name, values in totals.items()
+        } for era, totals in era_totals.items()},
+        "run_totals": {"ttbar": _sr_ttbar_evidence_array(ttbar_values),
+                       "rest": _sr_ttbar_evidence_array(rest_values),
+                       "original_ttll": _sr_ttbar_evidence_array(ttll_values),
+                       "ttbar_sumw2": _sr_ttbar_evidence_array(summed(moment, ttbar)),
+                       "rest_sumw2": _sr_ttbar_evidence_array(summed(moment, remainder)),
+                       "original_ttll_sumw2": _sr_ttbar_evidence_array(summed(moment, members)),
+                       "data": _sr_ttbar_evidence_array(data_total),
+                       "signed_sm": _sr_ttbar_evidence_array(full_mc),
+                       "mc_sumw2": _sr_ttbar_evidence_array(full_sumw2),
+                       "displayed_stack": _sr_ttbar_evidence_array(displayed),
+                       "ratio_denominator": _sr_ttbar_evidence_array(
+                           figure._topeft_plot_summary["ratio_denominator"])},
+        "inclusive_ge3": {"ttbar": inclusive(ttbar_values),
+                          "rest": inclusive(rest_values),
+                          "original_ttll": inclusive(ttll_values),
+                          "ttbar_sumw2": inclusive(summed(moment, ttbar)),
+                          "rest_sumw2": inclusive(summed(moment, remainder)),
+                          "original_ttll_sumw2": inclusive(summed(moment, members)),
+                          "data": inclusive(data_total),
+                          "signed_sm": inclusive(full_mc),
+                          "mc_sumw2": inclusive(full_sumw2)},
+        "bands": band_arrays,
+        "systematic_provenance": systematic_provenance,
+        "display": {"fallback_companion_signed_panel": bool(display["fallback"]),
+                    "original_ttll_visible": _sr_ttbar_evidence_array(
+                        display["original_visible_ttll"]),
+                    "split_ttll_visible": _sr_ttbar_evidence_array(
+                        display["split_visible_ttll"])},
+        "completeness": {"run_level_correlated_prefit_bands": True,
+                         "per_era_nuisance_bands": False,
+                         "per_era_data": not bool(unresolved_data),
+                         "nominal_and_sumw2": True,
+                         "all_selected_eras_have_both_ttll_components": all(
+                             totals["ttll"] is not None for totals in era_totals.values()
+                         )},
+    }
+
+
+def _validate_sr_ttbar_evidence_path(
+    path, *, private_root="/users/apiccine/work/correction-lib/reports/diagnostics"
+):
+    directory = os.path.realpath(os.path.dirname(path))
+    authorized_root = os.path.realpath(private_root)
+    if (not os.path.isabs(path) or not path.endswith(".json")
+            or os.path.dirname(path) != directory
+            or not os.path.commonpath((directory, authorized_root)) == authorized_root
+            or directory == authorized_root or not os.path.isdir(directory)
+            or os.stat(directory).st_uid != os.getuid()
+            or stat.S_IMODE(os.stat(directory).st_mode) != 0o700
+            or os.path.islink(path)):
+        raise ValueError("SR ttbar evidence output must be a private diagnostics JSON path")
+
+
+def _write_sr_ttbar_evidence(
+    path, evidence, *, private_root="/users/apiccine/work/correction-lib/reports/diagnostics"
+):
+    """Publish one strict private JSON without replacing a prior result."""
+
+    _validate_sr_ttbar_evidence_path(path, private_root=private_root)
+    payload = (json.dumps(evidence, allow_nan=False, separators=(",", ":")) + "\n").encode()
+    old_umask = os.umask(0o077)
+    try:
+        descriptor = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        try:
+            with os.fdopen(descriptor, "wb") as output:
+                output.write(payload)
+                output.flush()
+                os.fsync(output.fileno())
+        except BaseException:
+            os.unlink(path)
+            raise
+    finally:
+        os.umask(old_umask)
 
 
 def _safe_divide(num, denom, default, zero_over_zero=None):
@@ -6273,6 +6581,10 @@ def _compute_uncertainty_bands(
         "mc_stat_uncertainty": mc_stat_unc,
         "mc_stat_band_up_physical": mc_stat_up,
         "mc_stat_band_down_physical": mc_stat_down,
+        "mc_syst_band_up_physical": None if mc_syst_band_up is None else mc_syst_band_up[:-1],
+        "mc_syst_band_down_physical": None if mc_syst_band_down is None else mc_syst_band_down[:-1],
+        "raw_syst_band_up_physical": syst_up,
+        "raw_syst_band_down_physical": syst_down,
         "mc_total_band_up_physical": None
         if mc_total_band_up is None
         else mc_total_band_up[:-1],
@@ -9754,6 +10066,8 @@ def run_plots_for_region(
     binning_mode="processing",
     output_formats=("png",),
     sr_ttbar_display_split=False,
+    sr_ttbar_evidence_output=None,
+    sr_ttbar_evidence_input=None,
 ):
     """Run one CR/SR plotting pass and write optional zero/negative reports."""
 
@@ -9776,6 +10090,8 @@ def run_plots_for_region(
         )
 
     requested_channel_modes = channel_output_cfg["modes"]
+    if sr_ttbar_evidence_output and not sr_ttbar_display_split:
+        raise ValueError("SR ttbar evidence requires the display split")
     if sr_ttbar_display_split and (
         region_name.upper() != "SR"
         or channel_output != "merged"
@@ -9842,6 +10158,8 @@ def run_plots_for_region(
             binning_mode=binning_mode,
         )
         region_ctx.sr_ttbar_display_split = bool(sr_ttbar_display_split)
+        region_ctx.sr_ttbar_evidence_output = sr_ttbar_evidence_output
+        region_ctx.sr_ttbar_evidence_input = sr_ttbar_evidence_input
         if summary_region_ctx is None:
             summary_region_ctx = region_ctx
 
@@ -10014,6 +10332,11 @@ def build_arg_parser():
             "Opt in to the two-target SR njets diagnostic for 2los_onZ_1tau; "
             "retain the original science grouping and prefit uncertainties."
         ),
+    )
+    parser.add_argument(
+        "--sr-ttbar-evidence-output",
+        default=None,
+        help="Private absolute JSON path for one in-render SR ttbar evidence export.",
     )
     parser.add_argument(
         "--enable-category-skips",
@@ -10321,6 +10644,17 @@ def run_with_args(args, parser):
             normalized_variables.append(cleaned)
     selected_variables = normalized_variables if normalized_variables else None
 
+    if args.sr_ttbar_evidence_output and not args.sr_ttbar_display_split:
+        parser.error("--sr-ttbar-evidence-output requires --sr-ttbar-display-split")
+    if args.sr_ttbar_evidence_output:
+        evidence_path = args.sr_ttbar_evidence_output
+        try:
+            _validate_sr_ttbar_evidence_path(evidence_path)
+        except ValueError as exc:
+            parser.error(str(exc))
+        if os.path.lexists(evidence_path):
+            parser.error("SR ttbar evidence output already exists")
+
     if args.sr_ttbar_display_split and (
         resolved_region != "SR"
         or selected_variables != ["njets"]
@@ -10440,6 +10774,8 @@ def run_with_args(args, parser):
         binning_mode=args.binning,
         output_formats=args.output_formats,
         sr_ttbar_display_split=args.sr_ttbar_display_split,
+        sr_ttbar_evidence_output=args.sr_ttbar_evidence_output,
+        sr_ttbar_evidence_input=pkl_paths[0] if args.sr_ttbar_evidence_output else None,
     )
     return 0
 
