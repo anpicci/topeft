@@ -330,10 +330,15 @@ def _run_producer(args, pkl_files):
     if out_dir != "." and not os.path.exists(out_dir):
         os.makedirs(out_dir)
 
+    if var_lst and args.cache_merged_pkl:
+        raise ValueError(
+            "A selected histogram closure cannot be cached as a complete artifact."
+        )
     merged_hists, merge_report = datacard_tools.load_and_merge_histogram_pkls(
         pkl_files,
         require_sumw2=True,
         year_coverage_policy=args.year_coverage_policy,
+        **({"selected_families": var_lst, "channel_patterns": ch_lst} if var_lst else {}),
     )
     _emit_merge_report(merge_report, args.merge_report, out_dir)
     if args.cache_merged_pkl:

@@ -10,10 +10,12 @@ import json
 import time
 import copy
 import warnings
+from pathlib import Path
 
 from collections import defaultdict
 
 from topcoffea.modules.utils import regex_match, get_hist_from_pkl
+from topcoffea.modules.hist_utils import HAS_STREAMING_SUPPORT, iterate_hist_from_pkl
 from topcoffea.modules.sparseHist import SparseHist
 from topeft.modules.paths import topeft_path
 from topeft.modules.axes import info as axes_info
@@ -27,7 +29,11 @@ from topeft.modules.compatibility import add_sumw2_stub
 from topeft.modules.data_driven_products import CANONICAL_DATA_DRIVEN_YEARS
 from topeft.modules.histogram_artifact import (
     merge_histogram_sidecars,
+    read_histogram_sidecar,
     validate_histogram_artifact,
+    _validate_artifact_identity,
+    _expected_nominal_processes_from_transformation_contract,
+    histogram_content_error,
 )
 from topeft.modules.nominal_schema import (
     NOMINAL_CONTAINER_SCHEMA_VERSION,
@@ -36,6 +42,11 @@ from topeft.modules.nominal_schema import (
     is_split_nominal_mapping,
     materialize_legacy_histogram_dict,
     merge_nominal_mappings,
+    scalar_nominal_key,
+    eft_nominal_key,
+    sumw2_key,
+    validate_nominal_family,
+    validate_histogram_compatibility,
     validate_year_coverage,
     validate_nominal_mapping,
     year_independent_process,
@@ -636,12 +647,255 @@ def _validate_disjoint_histogram_contributions(pkl_paths, loaded_inputs):
         )
 
 
+def _selected_family_keys(family, family_manifest):
+    """Resolve serialized component roles from the validated sidecar manifest."""
+    if family_manifest["dimensionality"] == 2:
+        nominal_roles = ((family, "scalar_nominal_processes"),)
+    else:
+        nominal_roles = (
+            (scalar_nominal_key(family), "scalar_nominal_processes"),
+            (eft_nominal_key(family), "eft_nominal_processes"),
+        )
+    roles = (*nominal_roles, (sumw2_key(family), "sumw2_processes"))
+    return {key: role for key, role in roles if family_manifest[role]}
+
+
+def _load_and_merge_selected_histogram_pkls(
+    pkl_paths, *, selected_families, channel_patterns, require_sumw2,
+    consumer_required_families, year_coverage_policy,
+):
+    """Stream and retain only validated sidecar families and physical channels."""
+    merged_hists = {}
+    input_metadata = []
+    files = []
+    owner_by_contribution = {}
+    resolved_all_channels = set()
+    selected_families = tuple(dict.fromkeys(selected_families))
+    if not selected_families or any(not isinstance(family, str) or not family for family in selected_families):
+        raise ValueError("Selective loading requires explicit nonempty family names.")
+    if not HAS_STREAMING_SUPPORT:
+        raise RuntimeError("Selective loading requires topcoffea streaming support.")
+
+    for path in pkl_paths:
+        sidecar = read_histogram_sidecar(path)
+        _validate_artifact_identity(Path(path), sidecar)
+        policy = resolved_policy_from_provenance(sidecar["sumw2_storage_provenance"])
+        manifests = sidecar["sumw2_content_manifest"]["families"]
+        selected_keys = {}
+        possible_selected_keys = set()
+        for family in selected_families:
+            possible_selected_keys.update(
+                (family, scalar_nominal_key(family), eft_nominal_key(family), sumw2_key(family))
+            )
+            if family not in manifests:
+                continue
+            roles = _selected_family_keys(family, manifests[family])
+            if not any(role.endswith("nominal_processes") for role in roles.values()):
+                applicability = sidecar.get("histogram_applicability")
+                states = (
+                    applicability["families"][family]["channels"]
+                    if applicability is not None else None
+                )
+                if states is None or any(
+                    states[channel] == "applicable"
+                    for channel in regex_match(list(states), channel_patterns)
+                ):
+                    raise histogram_content_error(
+                        f"Selected family {family!r} has no declared nominal content in {path!r}."
+                    )
+            selected_keys.update(
+                {key: (family, role) for key, role in roles.items()}
+            )
+
+        selected = {}
+        observed_processes = {}
+        discarded_keys = []
+        resolved_channels = set()
+        for key, histogram in iterate_hist_from_pkl(
+            path, allow_empty=False, materialize=False
+        ):
+            if not isinstance(key, str):
+                raise TypeError(f"Histogram input {path!r} contains a non-string key: {key!r}.")
+            if key in possible_selected_keys and key not in selected_keys:
+                raise histogram_content_error(
+                    f"Undeclared selected-family component {key!r} in {path!r}."
+                )
+            if key not in selected_keys:
+                discarded_keys.append(key)
+                continue
+            if key in selected:
+                raise histogram_content_error(f"Duplicate selected histogram key {key!r} in {path!r}.")
+            observed_processes[key] = sorted(str(process) for process in histogram.axes["process"])
+            if channel_patterns:
+                if "channel" not in histogram.categorical_axes.name:
+                    raise histogram_content_error(f"Selected histogram {key!r} has no channel axis.")
+                available_channels = list(histogram.axes["channel"])
+                channels = regex_match(available_channels, channel_patterns)
+                resolved_channels.update(channels)
+                resolved_all_channels.update(channels)
+                if len(channels) != len(available_channels):
+                    histogram = histogram.prune("channel", channels)
+            selected[key] = histogram
+
+        missing = sorted(set(selected_keys) - set(selected))
+        if missing:
+            raise histogram_content_error(
+                f"Selected-content closure incomplete in {path!r}; missing keys: {missing!r}."
+            )
+        for key, (family, role) in selected_keys.items():
+            expected = manifests[family][role]
+            if observed_processes[key] != expected:
+                raise histogram_content_error(
+                    f"Selected-content process mismatch in {path!r}, key {key!r}: "
+                    f"expected={expected!r}, observed={observed_processes[key]!r}."
+                )
+        for family in selected_families:
+            if family not in manifests:
+                continue
+            manifest = manifests[family]
+            if sidecar["artifact"]["artifact_kind"] == "processor_output":
+                expected_required = sorted(
+                    (
+                        set(manifest["scalar_nominal_processes"])
+                        | set(manifest["eft_nominal_processes"])
+                    ) & set(policy.selected_processes(family))
+                )
+                if manifest["required_sumw2_processes"] != expected_required:
+                    raise histogram_content_error(
+                        f"Selected family {family!r} has required_sumw2_processes "
+                        f"{manifest['required_sumw2_processes']!r}, expected {expected_required!r} "
+                        "from source allocation."
+                    )
+            else:
+                expected_scalar, expected_eft = (
+                    _expected_nominal_processes_from_transformation_contract(
+                        sidecar["transformation_contract"], family,
+                        resolved_data_driven_contract=sidecar.get("resolved_data_driven_contract"),
+                    )
+                )
+                if (
+                    manifest["scalar_nominal_processes"] != expected_scalar
+                    or manifest["eft_nominal_processes"] != expected_eft
+                    or manifest["sumw2_processes"] != manifest["required_sumw2_processes"]
+                ):
+                    raise histogram_content_error(
+                        f"Selected family {family!r} has nominal or sumw2 roles "
+                        "inconsistent with the maintained transformation contract."
+                    )
+            if not _selected_family_keys(family, manifest):
+                continue
+            required = set(manifest["required_sumw2_processes"])
+            companion = set(manifest["sumw2_processes"])
+            if required - companion:
+                raise histogram_content_error(
+                    f"Selected family {family!r} lacks required sumw2 processes: "
+                    f"{sorted(required - companion)!r}."
+                )
+            validate_nominal_family(
+                selected, family,
+                companion_selected=(policy.selects_family(family) if sidecar["artifact"]["artifact_kind"] == "processor_output" else None),
+                selected_processes=(policy.selected_processes(family) if sidecar["artifact"]["artifact_kind"] == "processor_output" else ()),
+            )
+            applicability = sidecar.get("histogram_applicability")
+            if applicability is not None and channel_patterns:
+                declared = applicability["families"][family]["channels"]
+                for channel in regex_match(list(declared), channel_patterns):
+                    observed = any(
+                        channel in histogram.axes["channel"]
+                        for key, histogram in selected.items()
+                        if key in _selected_family_keys(family, manifest)
+                    )
+                    if observed != (declared[channel] == "applicable"):
+                        raise histogram_content_error(
+                            f"Selected family {family!r} channel {channel!r} disagrees with applicability."
+                        )
+
+        input_metadata.append(sidecar)
+        files.append({
+            "path": path,
+            "num_keys": len(selected),
+            "retained_keys": list(selected),
+            "discarded_keys": discarded_keys,
+            "resolved_channels": sorted(resolved_channels),
+            "validation_scope": "artifact_identity_and_selected_content_closure",
+        })
+        if len(pkl_paths) > 1:
+            for contribution in histogram_contribution_support(selected):
+                if contribution in owner_by_contribution:
+                    raise RuntimeError(
+                        "Duplicate histogram contribution support detected before histogram addition: "
+                        f"incoming_path={path!r}, existing_path={owner_by_contribution[contribution]!r}, "
+                        f"contribution={contribution!r}."
+                    )
+                owner_by_contribution[contribution] = path
+        for key, incoming in selected.items():
+            if key not in merged_hists:
+                merged_hists[key] = incoming
+            else:
+                validate_histogram_compatibility(merged_hists[key], incoming, key=key)
+                merged_hists[key] += incoming
+        del selected
+
+    if channel_patterns and not resolved_all_channels:
+        raise histogram_content_error(
+            f"No selected family has a channel matching {list(channel_patterns)!r}."
+        )
+    _reject_cross_run_histogram_composition(pkl_paths, [None] * len(pkl_paths), input_metadata)
+    merged_sidecar = merge_histogram_sidecars(input_metadata)
+    artifact_kind = merged_sidecar["artifact_kind"]
+    required_families = frozenset(consumer_required_families)
+    merged_policy = resolved_policy_from_provenance(merged_sidecar["sumw2_storage_provenance"])
+    missing_policy_requirements = sorted(
+        family for family in required_families
+        if not (merged_policy.selects_family(family) if artifact_kind == "processor_output"
+                else merged_sidecar["required_sumw2_processes"].get(family))
+    )
+    if missing_policy_requirements:
+        raise RuntimeError(
+            "Active consumer requirements are absent from the artifact contract: "
+            + ", ".join(missing_policy_requirements)
+        )
+    for family in selected_families:
+        validate_nominal_family(
+            merged_hists, family,
+            companion_selected=(merged_policy.selects_family(family) if artifact_kind == "processor_output" else None),
+            selected_processes=(merged_policy.selected_processes(family) if artifact_kind == "processor_output" else ()),
+        )
+    report = {
+        "num_inputs": len(pkl_paths), "inputs": list(pkl_paths),
+        "require_sumw2": bool(require_sumw2),
+        "year_coverage_policy": year_coverage_policy,
+        "files": files,
+        "contribution_identity": "payload_component_key + complete_categorical_coordinate",
+        "schema": "split_sibling_v1", "validation_scope": "artifact_identity_and_selected_content_closure",
+        "selected_families": list(selected_families),
+        "num_merged_keys": len(merged_hists),
+        "sumw2_storage_provenance": merged_policy.to_provenance(),
+        "production_sample_contract": merged_sidecar["production_sample_contract"],
+        "runtime_histogram_families": list(selected_families),
+        "artifact_kind": artifact_kind, "artifact_merged": True,
+        "required_sumw2_processes": merged_sidecar["required_sumw2_processes"],
+        "transformation_contract": merged_sidecar["transformation_contract"],
+        "requested_data_driven_products": merged_sidecar["requested_data_driven_products"],
+        "resolved_data_driven_contract": merged_sidecar["resolved_data_driven_contract"],
+        "lineage_inputs": merged_sidecar["lineage_inputs"],
+        "histogram_applicability": merged_sidecar.get("histogram_applicability"),
+    }
+    report["year_coverage_mismatches"] = validate_year_coverage(
+        merged_hists, policy=year_coverage_policy
+    )
+    report["num_year_coverage_mismatches"] = len(report["year_coverage_mismatches"])
+    return merged_hists, report
+
+
 def load_and_merge_histogram_pkls(
     pkl_paths,
     *,
     require_sumw2=True,
     consumer_required_families=(),
     year_coverage_policy="off",
+    selected_families=(),
+    channel_patterns=(),
 ):
     """
     Load and validate one or more histogram PKLs before merging them in memory.
@@ -655,6 +909,13 @@ def load_and_merge_histogram_pkls(
     if not pkl_paths:
         raise ValueError("No input pickle files were provided for merging.")
     validate_year_coverage({}, policy=year_coverage_policy)
+    if selected_families:
+        return _load_and_merge_selected_histogram_pkls(
+            pkl_paths, selected_families=selected_families,
+            channel_patterns=channel_patterns, require_sumw2=require_sumw2,
+            consumer_required_families=consumer_required_families,
+            year_coverage_policy=year_coverage_policy,
+        )
 
     report = {
         "num_inputs": len(pkl_paths),
@@ -867,7 +1128,8 @@ def _card_numerical_split_view(histograms, channel_patterns=()):
         if channel_patterns and "channel" in _categorical_axis_names(histogram):
             available_channels = list(histogram.axes["channel"])
             selected_channels = regex_match(available_channels, channel_patterns)
-            numerical_histogram = histogram.prune("channel", selected_channels)
+            if len(selected_channels) != len(available_channels):
+                numerical_histogram = histogram.prune("channel", selected_channels)
 
         if (
             not isinstance(numerical_histogram, SparseHist)
