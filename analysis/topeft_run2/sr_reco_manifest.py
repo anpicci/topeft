@@ -5,6 +5,7 @@ the original and replacement snapshots are retained in that one state file.
 """
 
 import argparse
+import fcntl
 import hashlib
 import json
 import os
@@ -30,6 +31,15 @@ CONTRACT_PATHS = (
     "analysis/topeft_run2/analysis_processor.py",
     "analysis/topeft_run2/fullR3_run.sh",
 )
+RUNTIME_PATHS = frozenset({
+    "analysis/topeft_run2/run_cr.sh",
+    "analysis/topeft_run2/sr_reco_manifest.py",
+    "analysis/topeft_run2/run_analysis.py",
+    "analysis/topeft_run2/fullR3_run.sh",
+})
+SCIENTIFIC_INPUT_PATHS = frozenset({
+    "topeft/modules/axes.py", "topeft/channels/ch_lst.json",
+})
 UNIT_ID_PATTERN = re.compile(r"[a-z][a-z0-9_]*\Z")
 
 
@@ -98,6 +108,156 @@ def contract_files(profile):
                     fail(f"sample JSON escapes repository: {entry}")
                 names.add(str(sample_path.relative_to(REPOSITORY_ROOT)))
     return {name: digest_file(REPOSITORY_ROOT / name) for name in sorted(names)}
+
+
+def legacy_contract(state):
+    contract = {key: state[key] for key in (
+        "production_profile", "campaign_tag", "output_dir", "topeft_git_commit", "env_file_sha256",
+        "environment_fingerprint", "topcoffea_git_commit", "topcoffea_relevant_source_fingerprint",
+        "ttgamma_sample_role_policy", "do_systs", "do_np", "region", "nonprompt_mode",
+    )}
+    contract["files"] = state["sr_reco_contract_files"]
+    contract["chunk_size"] = state.get("sr_reco_chunk_size")
+    if canonical_digest(contract) != state.get("sr_reco_contract_sha256"):
+        fail("historical campaign contract identity mismatch")
+
+
+def scientific_files(state):
+    names = {
+        name for name in state["sr_reco_contract_files"]
+        if name.startswith("input_samples/") or name in SCIENTIFIC_INPUT_PATHS
+    }
+    return {name: digest_file(REPOSITORY_ROOT / name) for name in sorted(names)}
+
+
+def scientific_contract(state, files):
+    contract = {key: state[key] for key in (
+        "production_profile", "campaign_tag", "output_dir", "env_file_sha256",
+        "environment_fingerprint", "topcoffea_git_commit", "topcoffea_relevant_source_fingerprint",
+        "ttgamma_sample_role_policy", "do_systs", "do_np", "region", "nonprompt_mode",
+    )}
+    contract["files"] = files
+    contract["coverage"] = state["sr_reco_target_coverage"]
+    return canonical_digest(contract)
+
+
+def validate_source_command_contract(state, command_argv):
+    """Bind a new SR source command's execution switches to its campaign."""
+    if not isinstance(command_argv, list) or any(not isinstance(item, str) for item in command_argv):
+        fail("source command is not a string argument vector")
+
+    def flag_count(name):
+        if any(item.startswith(f"{name}=") for item in command_argv):
+            fail(f"malformed source command option: {name}")
+        return command_argv.count(name)
+
+    def require_flag(name, expected):
+        count = flag_count(name)
+        if count > 1 or (count == 1) != expected:
+            fail(f"source command switch contradicts campaign contract: {name}")
+
+    def require_value(name, expected):
+        positions = [index for index, item in enumerate(command_argv) if item == name]
+        if len(positions) != 1 or positions[0] + 1 >= len(command_argv):
+            fail(f"missing or ambiguous source command option: {name}")
+        value = command_argv[positions[0] + 1]
+        if value.startswith("-") or value != expected:
+            fail(f"source command option contradicts campaign contract: {name}")
+
+    if state.get("region") != "SR":
+        fail("source command contract applies only to SR campaigns")
+    require_flag("--do-systs", state.get("do_systs") is True)
+    do_np = state.get("do_np")
+    if not isinstance(do_np, bool):
+        fail("campaign nonprompt switch is not boolean")
+    require_flag("--do-np", do_np)
+
+    np_modes = [item for item in command_argv if item.startswith("--np-postprocess")]
+    defer_count = flag_count("--defer-np")
+    if state.get("nonprompt_mode") == "inline" and do_np:
+        if np_modes != ["--np-postprocess=inline"] or defer_count:
+            fail("source command nonprompt realization contradicts campaign contract")
+    elif state.get("nonprompt_mode") == "separate" and do_np:
+        if np_modes or defer_count != 1:
+            fail("source command nonprompt realization contradicts campaign contract")
+    elif not do_np:
+        if np_modes or defer_count:
+            fail("source command nonprompt realization contradicts campaign contract")
+    else:
+        fail("campaign nonprompt realization is invalid")
+
+    require_flag("--sr", True)
+    require_flag("--cr", False)
+    require_flag("--all-analysis", True)
+    if any(flag_count(name) for name in (
+        "--offZ-3l-split", "--tau-h-analysis", "--fwd-analysis", "--skip-sr",
+    )):
+        fail("source command contains a conflicting SR analysis selector")
+    require_value("-x", "work_queue")
+
+    environment_mode = state.get("environment_mode")
+    if environment_mode not in {"explicit_snapshot", "current_resolved"}:
+        fail("campaign environment mode is invalid")
+    require_flag("--snapshot", environment_mode == "explicit_snapshot")
+
+
+def source_runtime(state, block, command_argv):
+    if block.get("status") not in {"planned", "source_failed"} or block.get("plan_revision") != state["active_sr_reco_revision"]:
+        fail("runtime selection requires an active uncompleted unit")
+    validate_source_command_contract(state, command_argv)
+    def option_value(name, default=None):
+        positions = [index for index, item in enumerate(command_argv) if item == name]
+        if len(positions) > 1 or (positions and positions[0] + 1 >= len(command_argv)):
+            fail(f"ambiguous source runtime option: {name}")
+        return command_argv[positions[0] + 1] if positions else default
+    def option_values(name):
+        positions = [index for index, item in enumerate(command_argv) if item == name]
+        if len(positions) != 1:
+            fail(f"missing or ambiguous source selection: {name}")
+        values = []
+        for item in command_argv[positions[0] + 1:]:
+            if item.startswith("-"):
+                break
+            values.append(item)
+        return values
+    if (
+        option_values("-y") != block["years"]
+        or option_values("--category-groups") != block["category_groups"]
+        or option_values("--hist-vars") != block["histograms"]
+        or option_value("-t") != block["output_tag"]
+        or option_value("-p") != state["output_dir"]
+        or option_value("--env-file") != state["env_file"]
+        or option_value("--ttgamma-sample-role-policy") != state["ttgamma_sample_role_policy"]
+    ):
+        fail("source selection differs from the bound unit or campaign inputs")
+    chunksize = int(option_value("-s"))
+    treereduction = int(option_value("--wq-treereduction", "10"))
+    processing_cores = option_value("--wq-processing-cores")
+    accumulation_memory = option_value("--wq-accumulating-memory-mb")
+    accumulation_cores = option_value("--wq-accumulating-cores")
+    if chunksize not in (25000, 50000, 75000, 100000) or treereduction not in (5, 10, 20):
+        fail("invalid resolved source runtime")
+    if processing_cores not in (None, "1") or (accumulation_memory is None) != (accumulation_cores is None):
+        fail("invalid Work Queue category runtime")
+    if accumulation_memory is not None and (int(accumulation_memory) <= 0 or int(accumulation_cores) <= 0):
+        fail("invalid accumulating category minimum")
+    return {
+        "attempt": len(block.get("source_runtime_attempts", [])) + 1,
+        "source_command_sha256": canonical_digest(command_argv),
+        "chunksize": chunksize,
+        "treereduction": treereduction,
+        "processing_cores_max": int(processing_cores) if processing_cores else None,
+        "accumulating_memory_min_mb": int(accumulation_memory) if accumulation_memory else None,
+        "accumulating_cores_min": int(accumulation_cores) if accumulation_cores else None,
+        "manager_source_files": {name: digest_file(REPOSITORY_ROOT / name) for name in sorted(RUNTIME_PATHS)},
+        "environment_file": state["env_file"],
+        "environment_file_sha256": state["env_file_sha256"],
+        "environment_fingerprint": state["environment_fingerprint"],
+        "topcoffea_git_commit": state["topcoffea_git_commit"],
+        "topcoffea_relevant_source_fingerprint": state["topcoffea_relevant_source_fingerprint"],
+        "scientific_contract_sha256": state["sr_reco_scientific_contract_sha256"],
+        "plan_revision": block["plan_revision"],
+    }
 
 
 def physical_pairs():
@@ -242,23 +402,39 @@ def plan_tsv(blocks):
     return "\n".join(rows) + "\n"
 
 
-def artifact_receipt(path):
+def artifact_receipt(path, *, stored_receipt=None, verify_payload_sha256=True):
     path = Path(path)
     sidecar_path = Path(f"{path}.metadata.json")
     if path.is_symlink() or sidecar_path.is_symlink() or not path.is_file() or not sidecar_path.is_file() or path.stat().st_size == 0:
         fail(f"required artifact or sidecar missing: {path}")
     sidecar = json.loads(sidecar_path.read_text(encoding="utf-8"))
+    if not isinstance(sidecar, dict):
+        fail(f"invalid artifact sidecar: {path}")
     artifact = sidecar.get("artifact", {})
+    if not isinstance(artifact, dict):
+        fail(f"invalid artifact sidecar: {path}")
+    if not verify_payload_sha256 and not isinstance(stored_receipt, dict):
+        fail(f"stored receipt required for fast artifact readback: {path}")
+    recorded_sha256 = stored_receipt.get("sha256") if stored_receipt is not None else None
+    if stored_receipt is not None and (
+        not isinstance(recorded_sha256, str) or re.fullmatch(r"[0-9a-f]{64}", recorded_sha256) is None
+    ):
+        fail(f"invalid stored artifact SHA-256: {path}")
     observed = {
         "path": str(path),
-        "sha256": digest_file(path),
+        "sha256": digest_file(path) if verify_payload_sha256 else recorded_sha256,
         "size_bytes": path.stat().st_size,
         "sidecar_sha256": digest_file(sidecar_path),
     }
     if artifact.get("pkl_basename") != path.name or artifact.get("pkl_sha256") != observed["sha256"] or artifact.get("pkl_size_bytes") != observed["size_bytes"]:
         fail(f"artifact sidecar identity mismatch: {path}")
-    if not sidecar.get("synthetic") and not isinstance(sidecar.get("lineage", {}).get("inputs"), list):
+    lineage = sidecar.get("lineage", {})
+    if not sidecar.get("synthetic") and not (
+        isinstance(lineage, dict) and isinstance(lineage.get("inputs"), list)
+    ):
         fail(f"artifact sidecar lacks lineage: {path}")
+    if stored_receipt is not None and stored_receipt != observed:
+        fail(f"stored artifact receipt changed: {path}")
     return observed
 
 
@@ -273,11 +449,17 @@ def capture_receipt(state, block, stage):
         block["nonprompt_receipt"] = artifact_receipt(block["expected_np_path"])
     else:
         fail("unknown receipt stage")
-    block["receipt_contract_sha256"] = state["sr_reco_contract_sha256"]
-    block["receipt_plan_revision"] = block["plan_revision"]
+    if stage == "source" or "source_runtime" in block:
+        block["receipt_contract_sha256"] = (
+            state["sr_reco_scientific_contract_sha256"]
+            if state["schema_version"] == 7 else state["sr_reco_contract_sha256"]
+        )
+        block["receipt_plan_revision"] = block["plan_revision"]
+    if state["schema_version"] == 7 and "source_runtime" in block:
+        block["receipt_runtime_sha256"] = canonical_digest(block["source_runtime"])
 
 
-def verify_receipt(state, block):
+def verify_receipt(state, block, *, verify_payload_sha256=False):
     revision = block.get("plan_revision")
     snapshots = [item for item in state.get("sr_reco_plan_revisions", []) if item.get("id") == revision]
     if len(snapshots) != 1 or not any(
@@ -287,24 +469,46 @@ def verify_receipt(state, block):
         )) for historical in snapshots[0]["blocks"]
     ):
         fail(f"block {block.get('id')} does not match its immutable revision")
-    if block.get("receipt_contract_sha256") != state.get("sr_reco_contract_sha256") or block.get("receipt_plan_revision") != revision:
+    expected_contract = (
+        state.get("sr_reco_scientific_contract_sha256")
+        if "source_runtime" in block else state.get("sr_reco_contract_sha256")
+    )
+    if block.get("receipt_contract_sha256") != expected_contract or block.get("receipt_plan_revision") != revision:
         fail(f"block {block['id']} lacks bound contract/revision receipt")
+    if "source_runtime" in block:
+        runtime = block["source_runtime"]
+        validate_source_command_contract(state, block.get("source_command_argv"))
+        if (
+            block.get("receipt_runtime_sha256") != canonical_digest(runtime)
+            or block.get("source_runtime_attempts", [])[-1:] != [runtime]
+            or runtime.get("plan_revision") != revision
+            or runtime.get("source_command_sha256") != canonical_digest(block.get("source_command_argv"))
+            or runtime.get("scientific_contract_sha256") != expected_contract
+            or runtime.get("environment_file_sha256") != state["env_file_sha256"]
+            or runtime.get("topcoffea_git_commit") != state["topcoffea_git_commit"]
+            or runtime.get("chunksize") not in (25000, 50000, 75000, 100000)
+        ):
+            fail(f"block {block['id']} runtime receipt changed")
     if block.get("source_status") != "ready" or block.get("status") not in {"source_ready", "success"}:
         fail(f"block {block['id']} has no completed source")
     if block.get("source_exit_code") != 0:
         fail(f"block {block['id']} source did not exit successfully")
-    if block.get("source_receipt") != artifact_receipt(block["expected_nominal_path"]):
-        fail(f"block {block['id']} source receipt changed")
+    artifact_receipt(
+        block["expected_nominal_path"], stored_receipt=block.get("source_receipt"),
+        verify_payload_sha256=verify_payload_sha256,
+    )
     if block["status"] == "success":
         if block.get("nonprompt_status") != "success" or block.get("nonprompt_exit_code") != 0:
             fail(f"block {block['id']} nonprompt did not exit successfully")
-        if block.get("nonprompt_receipt") != artifact_receipt(block["expected_np_path"]):
-            fail(f"block {block['id']} nonprompt receipt changed")
+        artifact_receipt(
+            block["expected_np_path"], stored_receipt=block.get("nonprompt_receipt"),
+            verify_payload_sha256=verify_payload_sha256,
+        )
         nonprompt_sidecar = json.loads(
             Path(f"{block['expected_np_path']}.metadata.json").read_text(encoding="utf-8")
         )
         if not nonprompt_sidecar.get("synthetic") and not any(
-            item.get("pkl_sha256") == block["source_receipt"]["sha256"]
+            isinstance(item, dict) and item.get("pkl_sha256") == block["source_receipt"]["sha256"]
             for item in nonprompt_sidecar["lineage"]["inputs"]
         ):
             fail(f"block {block['id']} nonprompt lineage does not bind source")
@@ -319,22 +523,20 @@ def load_state(path):
 
 
 def current_contract(state):
-    files = contract_files(state["production_profile"])
-    if state.get("sr_reco_contract_files") != files:
-        fail("frozen scientific/software source contract changed")
-    contract = {key: state[key] for key in (
-        "production_profile", "campaign_tag", "output_dir", "topeft_git_commit", "env_file_sha256",
-        "environment_fingerprint", "topcoffea_git_commit", "topcoffea_relevant_source_fingerprint",
-        "ttgamma_sample_role_policy", "do_systs", "do_np", "region", "nonprompt_mode",
-    )}
-    contract["files"] = files
-    contract["chunk_size"] = state.get("sr_reco_chunk_size")
-    if canonical_digest(contract) != state.get("sr_reco_contract_sha256"):
-        fail("campaign contract identity mismatch")
+    legacy_contract(state)
+    if state["schema_version"] == 6:
+        if state["sr_reco_contract_files"] != contract_files(state["production_profile"]):
+            fail("frozen scientific/software source contract changed")
+    else:
+        files = scientific_files(state)
+        if state.get("sr_reco_scientific_files") != files:
+            fail("frozen scientific/input source contract changed")
+        if state.get("sr_reco_scientific_contract_sha256") != scientific_contract(state, files):
+            fail("scientific campaign contract identity mismatch")
 
 
-def check_state(state, *, require_contract=True):
-    if state.get("schema_version") != 6 or state.get("production_profile") not in {"run2_sr_ext", "run3_sr_ext"}:
+def check_state(state, *, require_contract=True, verify_payload_sha256=False):
+    if state.get("schema_version") not in {6, 7} or state.get("production_profile") not in {"run2_sr_ext", "run3_sr_ext"}:
         fail("legacy or non-SR campaign cannot be adopted into revision state")
     if require_contract:
         current_contract(state)
@@ -392,13 +594,62 @@ def check_state(state, *, require_contract=True):
         }.get(block.get("status"))
         if expected_stages is None or (block.get("source_status"), block.get("nonprompt_status")) != expected_stages:
             fail(f"block {block['id']} has contradictory stage state")
+        if state["schema_version"] == 7 and block.get("status") != "planned" and "source_runtime" not in block and block.get("receipt_contract_sha256") != state["sr_reco_contract_sha256"]:
+            fail(f"block {block['id']} lacks execution runtime identity")
+        if "source_runtime" in block and block.get("source_runtime_attempts", [])[-1:] != [block["source_runtime"]]:
+            fail(f"block {block['id']} runtime attempt history changed")
         if block.get("expected_outputs") != [block.get("expected_nominal_path"), block.get("expected_np_path")]:
             fail(f"block {block['id']} has contradictory output paths")
     verify_partition(blocks, target)
     for block in blocks:
         if block.get("status") in {"success", "source_ready"}:
-            verify_receipt(state, block)
+            verify_receipt(state, block, verify_payload_sha256=verify_payload_sha256)
     return blocks
+
+
+def upgrade_runtime_policy(state_path, expected_old_commit):
+    state_path = Path(state_path)
+    profile = state_path.name.removeprefix(".").removesuffix("_campaign_state.json")
+    lock_path = state_path.parent / f".{profile}_campaign.lock"
+    if lock_path.is_symlink() or not lock_path.is_file():
+        fail("existing campaign writer lock is unavailable")
+    with lock_path.open("a+") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            fail("campaign writer lock is held")
+        state = load_state(state_path)
+        if state.get("schema_version") != 6 or state.get("topeft_git_commit") != expected_old_commit:
+            fail("runtime transition requires exact historical schema and source commit")
+        legacy_contract(state)
+        check_state(state, require_contract=False)
+        for block in state["blocks"]:
+            if block["status"] == "planned":
+                for output in block["expected_outputs"]:
+                    if os.path.lexists(output) or os.path.lexists(f"{output}.metadata.json"):
+                        fail(f"pending unit has an output collision: {output}")
+            elif block["status"] != "success" and not (
+                block["status"] == "source_ready" and state["nonprompt_mode"] == "separate"
+            ):
+                fail(f"unit {block['id']} is in-flight, failed or ambiguous")
+        recorded_files = state["sr_reco_contract_files"]
+        files = scientific_files(state)
+        if set(files) != {name for name in recorded_files if name.startswith("input_samples/") or name in SCIENTIFIC_INPUT_PATHS}:
+            fail("scientific input file set changed")
+        for name, observed_digest in files.items():
+            if observed_digest != recorded_files[name]:
+                fail(f"historical scientific/input file changed: {name}")
+        candidate = dict(state)
+        candidate["schema_version"] = 7
+        candidate["sr_reco_scientific_files"] = files
+        candidate["sr_reco_scientific_contract_sha256"] = scientific_contract(candidate, files)
+        candidate["runtime_policy_transition"] = {
+            "historical_commit": expected_old_commit,
+            "transition_utc": datetime.now(timezone.utc).isoformat(),
+        }
+        check_state(candidate)
+        atomic_json(state_path, candidate)
+        return candidate["sr_reco_scientific_contract_sha256"]
 
 
 def decorate_initial_state(state, chunk_size):
@@ -522,8 +773,13 @@ def main():
     activate_parser = subparsers.add_parser("activate")
     for field in ("state", "plan", "expected_revision"):
         activate_parser.add_argument(field)
+    upgrade = subparsers.add_parser("upgrade-runtime-policy")
+    for field in ("state", "expected_old_commit"):
+        upgrade.add_argument(field)
     summary = subparsers.add_parser("consumer-summary")
     summary.add_argument("state")
+    audit = subparsers.add_parser("audit-integrity", help="rehash all accepted SR PKL payloads")
+    audit.add_argument("state")
     args = parser.parse_args()
     try:
         if args.action == "render-new":
@@ -535,14 +791,18 @@ def main():
         elif args.action == "render-active":
             state = load_state(args.state)
             check_state(state)
-            if state.get("sr_reco_chunk_size") != args.chunk_size:
+            if state["schema_version"] == 6 and state.get("sr_reco_chunk_size") != args.chunk_size:
                 fail("resume chunk size differs from frozen campaign contract")
+            if args.chunk_size not in {"25000", "50000", "75000", "100000"}:
+                fail("unsupported SR runtime chunk size")
             Path(args.output).write_text(plan_tsv(state["blocks"]), encoding="utf-8")
             print(state["active_sr_reco_revision"])
         elif args.action == "initialize":
             initialize_state(args.state, args.chunk_size)
         elif args.action == "activate":
             print(activate(args.state, args.plan, args.expected_revision))
+        elif args.action == "upgrade-runtime-policy":
+            print(upgrade_runtime_policy(args.state, args.expected_old_commit))
         elif args.action == "consumer-summary":
             state = load_state(args.state)
             check_state(state)
@@ -553,6 +813,10 @@ def main():
                 "units": [{"id": block["id"], "revision": block["plan_revision"], "status": block["status"]} for block in state["blocks"]],
                 "complete": complete,
             }, sort_keys=True))
+        elif args.action == "audit-integrity":
+            state = load_state(args.state)
+            check_state(state, verify_payload_sha256=True)
+            print("Full SR payload integrity audit passed")
         else:
             fail("unknown operation")
     except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError) as error:

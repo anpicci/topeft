@@ -77,9 +77,18 @@ from analysis.topeft_run2.analysis_processor import (
 LST_OF_KNOWN_EXECUTORS = ["futures", "work_queue", "taskvine"]
 
 
+def _configure_wq_categories(queue, processing_cores=None, accumulating_memory_mb=None, accumulating_cores=None):
+    """Apply selected category reservations after Coffea declares categories."""
+    if processing_cores == 1:
+        queue.specify_category_max_resources("processing", {"cores": 1})
+    if accumulating_memory_mb is not None:
+        queue.specify_category_min_resources(
+            "accumulating", {"memory": accumulating_memory_mb, "cores": accumulating_cores}
+        )
+
+
 def _request_one_processing_core(queue):
-    """Bound only Work Queue processing reservations after Coffea queue setup."""
-    queue.specify_category_max_resources("processing", {"cores": 1})
+    _configure_wq_categories(queue, processing_cores=1)
 
 WGT_VAR_LST = [
     "nSumOfWeights_ISRUp",
@@ -1127,6 +1136,10 @@ if __name__ == "__main__":
     parser.add_argument("--wq-treereduction", type=int, choices=(5, 10, 20))
     parser.add_argument("--wq-processing-cores", type=int, choices=(1,),
                         help="Opt in to a one-core processing-category reservation maximum")
+    parser.add_argument("--wq-accumulating-memory-mb", type=int,
+                        help="Opt in to an accumulating-category minimum memory reservation in MB")
+    parser.add_argument("--wq-accumulating-cores", type=int,
+                        help="Opt in to an accumulating-category minimum core reservation")
     parser.add_argument(
         "--wq-log-dir",
         default=None,
@@ -1495,6 +1508,13 @@ if __name__ == "__main__":
 
     if args.wq_processing_cores is not None and executor_name != "work_queue":
         raise SystemExit("--wq-processing-cores requires Work Queue")
+    if (args.wq_accumulating_memory_mb is None) != (args.wq_accumulating_cores is None):
+        raise SystemExit("accumulating memory and core minima must be supplied together")
+    if args.wq_accumulating_memory_mb is not None:
+        if executor_name != "work_queue":
+            raise SystemExit("accumulating category minima require Work Queue")
+        if args.wq_accumulating_memory_mb <= 0 or args.wq_accumulating_cores <= 0:
+            raise SystemExit("accumulating category minima must be positive")
     port = port[0]
     # Figure out which hists to include
     if hist_list == ["ana"]:
@@ -2260,8 +2280,14 @@ if __name__ == "__main__":
             if not args.wq_guard:
                 raise SystemExit("--wq-treereduction requires --wq-guard")
             executor_args["treereduction"] = args.wq_treereduction
-        if args.wq_processing_cores == 1:
-            executor_args["custom_init"] = _request_one_processing_core
+        if args.wq_processing_cores == 1 or args.wq_accumulating_memory_mb is not None:
+            from functools import partial
+            executor_args["custom_init"] = partial(
+                _configure_wq_categories,
+                processing_cores=args.wq_processing_cores,
+                accumulating_memory_mb=args.wq_accumulating_memory_mb,
+                accumulating_cores=args.wq_accumulating_cores,
+            )
 
     # Run the processor and get the output
     tstart = time.time()

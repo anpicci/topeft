@@ -75,7 +75,7 @@ matrix_parse_args() {
         fi
         ;;
       --resume) matrix_resume=true; index=$((index + 1)) ;;
-      --wq-staging-base|--wq-quota-root|--wq-free-warning-bytes|--wq-min-free-bytes|--wq-poll-seconds|--wq-treereduction|--wq-processing-cores)
+      --wq-staging-base|--wq-quota-root|--wq-free-warning-bytes|--wq-min-free-bytes|--wq-poll-seconds|--wq-treereduction|--wq-processing-cores|--wq-accumulating-memory-mb|--wq-accumulating-cores)
         if (( index + 1 >= ${#args[@]} )) || [[ "${args[index + 1]}" == -* ]]; then
           matrix_parse_errors+=("${args[index]} requires a value")
           index=$((index + 1))
@@ -457,6 +457,8 @@ Usage: ./run_cr.sh [--dry-run]
   [--output-dir PATH] [--campaign-tag TAG] [--env-file PATH] [--resume] \
   [--reviewed-topeft-manager-head SHA] \
   [--reviewed-topcoffea-manager-head SHA] [--selected-fragment ID] \
+  [--chunksize N] [--wq-processing-cores 1] \
+  [--wq-accumulating-memory-mb MB --wq-accumulating-cores CORES] \
   [--sr-plan JSON] [--activate-pending-plan JSON --expected-plan-revision ID]
 
 Public PROFILE values:
@@ -487,6 +489,8 @@ supplies a JSON plan for a fresh campaign. --selected-fragment filters one
 ordinary unit without reducing the persisted plan. For a quiescent campaign,
 --resume --activate-pending-plan JSON --expected-plan-revision ID atomically
 repartitions only untouched pending coverage in the same output directory.
+An occupied schema-6 SR campaign needs the explicit sr_reco_manifest.py
+upgrade-runtime-policy transition before pending units can change chunksize.
 EOF
 }
 
@@ -506,6 +510,8 @@ profile_wq_min_free_bytes=""
 profile_wq_poll_seconds=""
 profile_wq_treereduction=""
 profile_wq_processing_cores=""
+profile_wq_accumulating_memory_mb=""
+profile_wq_accumulating_cores=""
 profile_selected_fragment=""
 profile_sr_plan=""
 profile_activate_pending_plan=""
@@ -549,7 +555,7 @@ while (( $# > 0 )); do
       profile_env_file="$2"
       shift 2
       ;;
-    --chunksize|--wq-staging-base|--wq-quota-root|--wq-free-warning-bytes|--wq-min-free-bytes|--wq-poll-seconds|--wq-treereduction|--wq-processing-cores)
+    --chunksize|--wq-staging-base|--wq-quota-root|--wq-free-warning-bytes|--wq-min-free-bytes|--wq-poll-seconds|--wq-treereduction|--wq-processing-cores|--wq-accumulating-memory-mb|--wq-accumulating-cores)
       if (( $# < 2 )) || [[ -z "$2" || "$2" == -* ]]; then
         echo "ERROR: $1 requires a value." >&2
         exit 1
@@ -563,6 +569,8 @@ while (( $# > 0 )); do
         --wq-poll-seconds) profile_wq_poll_seconds="$2" ;;
         --wq-treereduction) profile_wq_treereduction="$2" ;;
         --wq-processing-cores) profile_wq_processing_cores="$2" ;;
+        --wq-accumulating-memory-mb) profile_wq_accumulating_memory_mb="$2" ;;
+        --wq-accumulating-cores) profile_wq_accumulating_cores="$2" ;;
       esac
       if [[ "$1" == "--wq-processing-cores" && "$2" != "1" ]]; then
         echo "ERROR: --wq-processing-cores currently accepts only 1." >&2
@@ -646,7 +654,7 @@ is_t0_statonly_profile() {
 }
 
 script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
-repository_root=$(git -C "${script_dir}" rev-parse --show-toplevel)
+repository_root=$(cd -- "${script_dir}/../.." && pwd -P)
 cd -- "${script_dir}"
 
 validation_backend="${SRPLOT009_VALIDATION_BACKEND:-}"
@@ -654,8 +662,9 @@ validation_root="${SRPLOT009_VALIDATION_ROOT:-}"
 validation_scenario="${SRPLOT009_VALIDATION_SCENARIO:-success}"
 native_wq_log_dir=""
 if [[ -n "${validation_backend}" ]]; then
-  case "${validation_root}" in /tmp/*) ;; *) echo "ERROR: SRPLOT009_VALIDATION_ROOT must be below /tmp." >&2; exit 1 ;; esac
-  case "${validation_backend}" in /tmp/*) ;; *) echo "ERROR: SRPLOT009_VALIDATION_BACKEND must be below /tmp." >&2; exit 1 ;; esac
+  diagnostics_root=$(cd -- "${repository_root}/../reports/diagnostics" && pwd -P)
+  case "${validation_root}" in /tmp/*|"${diagnostics_root}"/*) ;; *) echo "ERROR: SRPLOT009_VALIDATION_ROOT must be in an isolated validation namespace." >&2; exit 1 ;; esac
+  case "${validation_backend}" in /tmp/*|"${diagnostics_root}"/*) ;; *) echo "ERROR: SRPLOT009_VALIDATION_BACKEND must be in an isolated validation namespace." >&2; exit 1 ;; esac
   [[ -x "${validation_backend}" ]] || { echo "ERROR: validation backend is not executable." >&2; exit 1; }
 fi
 
@@ -680,9 +689,16 @@ if [[ -n "${profile_wq_staging_base}" ]]; then
     "${profile_wq_min_free_bytes}" "${profile_wq_poll_seconds}"; do
     [[ -n "${guard_value}" ]] || { echo "ERROR: guarded staging requires quota, free-space warning/minimum and poll values." >&2; exit 1; }
   done
-elif [[ -n "${profile_wq_quota_root}${profile_wq_warning_bytes}${profile_wq_min_free_bytes}${profile_wq_poll_seconds}${profile_wq_treereduction}${profile_wq_processing_cores}" ]]; then
+elif [[ -n "${profile_wq_quota_root}${profile_wq_warning_bytes}${profile_wq_min_free_bytes}${profile_wq_poll_seconds}${profile_wq_treereduction}${profile_wq_processing_cores}${profile_wq_accumulating_memory_mb}${profile_wq_accumulating_cores}" ]]; then
   echo "ERROR: Work Queue guard options require --wq-staging-base." >&2
   exit 1
+fi
+if [[ -n "${profile_wq_accumulating_memory_mb}" || -n "${profile_wq_accumulating_cores}" ]]; then
+  if [[ ! "${profile_wq_accumulating_memory_mb}" =~ ^[1-9][0-9]*$ \
+    || ! "${profile_wq_accumulating_cores}" =~ ^[1-9][0-9]*$ ]]; then
+    echo "ERROR: accumulating memory and core minima require positive integer values together." >&2
+    exit 1
+  fi
 fi
 if [[ -n "${profile_selected_fragment}" && "${production_profile}" != run?_sr_ext ]]; then
   echo "ERROR: --selected-fragment is supported only for SR extension profiles." >&2
@@ -1219,7 +1235,7 @@ import os
 import re
 import sys
 from pathlib import Path
-from sr_reco_manifest import capture_receipt, check_state, decorate_initial_state
+from sr_reco_manifest import capture_receipt, check_state, decorate_initial_state, source_runtime
 
 
 VALID_STATUSES = {
@@ -1489,9 +1505,9 @@ if mode == "historical_source_commit":
                 f"recorded={state.get(key)!r} requested={expected!r}"
             )
     source_commit = state.get("topeft_git_commit")
-    if not isinstance(source_commit, str) or re.fullmatch(
-        r"[0-9a-f]{40}", source_commit
-    ) is None:
+    if (not isinstance(source_commit, str) or not source_commit or
+            (state.get("production_profile") not in {"run2_sr_ext", "run3_sr_ext"} and
+             re.fullmatch(r"[0-9a-f]{40}", source_commit) is None)):
         fail("campaign state does not contain a valid historical topeft source commit")
     print(source_commit)
     raise SystemExit(0)
@@ -1574,6 +1590,8 @@ if mode == "status":
 if mode == "mark":
     block_id, stage, stage_status, exit_code, detail = sys.argv[3:8]
     extra = sys.argv[8:]
+    if stage == "source" and stage_status == "running" and extra[:1] == ["--"]:
+        extra = extra[1:]
     postprocessor_provenance = None
     if stage == "source" and stage_status not in VALID_SOURCE_STATUSES:
         fail(f"invalid requested source status {stage_status!r}")
@@ -1608,6 +1626,10 @@ if mode == "mark":
         fail("T0 stat-only nonprompt recovery requires postprocessor provenance")
     for block in state.get("blocks", []):
         if block.get("id") == block_id:
+            if state.get("schema_version") == 7 and stage == "source" and stage_status == "running":
+                runtime = source_runtime(state, block, extra)
+                block.setdefault("source_runtime_attempts", []).append(runtime)
+                block["source_runtime"] = runtime
             parsed_exit_code = None if exit_code == "none" else int(exit_code)
             timestamp = now_utc()
             if stage == "source":
@@ -2085,8 +2107,8 @@ validate_resume_manager_compatibility() {
   local topcoffea_repository_root="${repository_root}/../topcoffea"
   local current_topcoffea_commit=""
 
-  if [[ -n "${validation_backend}" && "${production_profile}" == run?_sr_ext ]]; then
-    echo "Validation backend: synthetic manager provenance; live repository compatibility is not asserted."
+  if [[ "${production_profile}" == run?_sr_ext ]]; then
+    echo "SR manager provenance: historical commit is retained as metadata; native input and receipt checks govern resume."
     return 0
   fi
 
@@ -2094,6 +2116,7 @@ validate_resume_manager_compatibility() {
     TOPEFT "${repository_root}" "${recorded_topeft_commit}" "${production_git_commit}" \
     "${profile_reviewed_topeft_manager_head}" \
     analysis/topeft_run2/run_cr.sh \
+    analysis/topeft_run2/sr_reco_manifest.py \
     analysis/topeft_run2/fullR2_run.sh \
     analysis/topeft_run2/fullR3_run.sh \
     analysis/topeft_run2/run_analysis.py \
@@ -2130,11 +2153,15 @@ prepare_production_campaign() {
   if [[ "${production_profile}" == run?_sr_ext ]]; then
     schema_version=6
   fi
-  production_git_commit=$(git -C "${repository_root}" rev-parse HEAD)
+  if [[ "${production_profile}" == run?_sr_ext ]]; then
+    production_git_commit="not_observed_no_git"
+  else
+    production_git_commit=$(git -C "${repository_root}" rev-parse HEAD)
+  fi
   resolve_t0_postprocessor_provenance
   production_state_path="${output_dir}/${production_state_filename}"
   if [[ "${dry_run}" == "true" ]]; then
-    production_plan_file=$(mktemp "/tmp/${production_profile}_plan.XXXXXX")
+    production_plan_file=$(mktemp "${TMPDIR:-/tmp}/${production_profile}_plan.XXXXXX")
   else
     if [[ "${profile_resume}" == "false" ]]; then
       mkdir -- "${output_dir}"
@@ -2500,6 +2527,12 @@ append_guard_options() {
   fi
   if [[ -n "${profile_wq_processing_cores}" ]]; then
     guarded_cmd_ref+=(--wq-processing-cores "${profile_wq_processing_cores}")
+  fi
+  if [[ -n "${profile_wq_accumulating_memory_mb}" ]]; then
+    guarded_cmd_ref+=(
+      --wq-accumulating-memory-mb "${profile_wq_accumulating_memory_mb}"
+      --wq-accumulating-cores "${profile_wq_accumulating_cores}"
+    )
   fi
 }
 
@@ -3167,7 +3200,8 @@ run_sr_block() {
       assert_native_wq_logs_clean
       production_state_tool mark \
         "${production_state_path}" "${production_block}" \
-        "source" "running" "none" "source_child_started" "${source_cmd[@]}"
+        "source" "running" "none" "source_child_started" \
+        -- "${source_cmd[@]}"
     fi
     if [[ "${dry_run}" == "true" && "${production_profile}" == "run2_full" ]]; then
       printf 'SRPLOT009_BLOCK_COMMAND\t%s\t' "${production_block}"

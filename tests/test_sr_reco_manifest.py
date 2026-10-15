@@ -3,7 +3,9 @@ import csv
 import fcntl
 import hashlib
 import json
+import os
 import subprocess
+import sys
 from collections import Counter
 from pathlib import Path
 
@@ -44,6 +46,468 @@ def _replacement_units():
         {**unit, "id": f"v2_{unit['id']}"}
         for unit in pending if unit["id"] not in {"b_1", "b_2"}
     ] + [merged]
+
+
+def _guard_accepted_payloads(tmp_path, environment, paths):
+    """Make native child Python fail if it opens an accepted PKL for reading."""
+    guard_root = tmp_path / "payload_read_guard"
+    guard_root.mkdir()
+    (guard_root / "sitecustomize.py").write_text(
+        "import os\n"
+        "from pathlib import Path\n"
+        "original_open = Path.open\n"
+        "blocked = set(os.environ['SR_ACCEPTED_PKLS'].split(os.pathsep))\n"
+        "Path(os.environ['SR_PAYLOAD_GUARD_MARKER']).write_text('loaded')\n"
+        "def guarded_open(self, *args, **kwargs):\n"
+        "    mode = args[0] if args else kwargs.get('mode', 'r')\n"
+        "    if str(self) in blocked and 'r' in mode and 'b' in mode:\n"
+        "        raise RuntimeError('accepted PKL content read: ' + str(self))\n"
+        "    return original_open(self, *args, **kwargs)\n"
+        "Path.open = guarded_open\n",
+        encoding="utf-8",
+    )
+    guarded = environment.copy()
+    guarded["SR_ACCEPTED_PKLS"] = os.pathsep.join(paths)
+    guarded["SR_PAYLOAD_GUARD_MARKER"] = str(guard_root / "loaded.txt")
+    guarded["PYTHONPATH"] = f"{guard_root}{os.pathsep}{environment.get('PYTHONPATH', '')}"
+    return guarded
+
+
+def test_first_capture_hashes_source_and_nonprompt_payloads(tmp_path, monkeypatch):
+    source = tmp_path / "source.pkl.gz"
+    nonprompt = tmp_path / "nonprompt.pkl.gz"
+    state = {
+        "schema_version": 7,
+        "sr_reco_plan_revisions": [{"id": "r1"}],
+        "sr_reco_scientific_contract_sha256": "a" * 64,
+    }
+    block = {
+        "expected_nominal_path": str(source), "expected_np_path": str(nonprompt),
+        "plan_revision": "r1",
+    }
+    actual_digest_file = manifest.digest_file
+    payload_reads = []
+
+    def record_payload_read(path):
+        if Path(path) in {source, nonprompt}:
+            payload_reads.append(str(path))
+        return actual_digest_file(path)
+
+    monkeypatch.setattr(manifest, "digest_file", record_payload_read)
+    for stage, path in (("source", source), ("nonprompt", nonprompt)):
+        path.write_bytes(f"tiny {stage} payload".encode())
+        sidecar = path.with_name(f"{path.name}.metadata.json")
+        artifact = {
+            "pkl_basename": path.name,
+            "pkl_size_bytes": path.stat().st_size,
+            "pkl_sha256": "0" * 64,
+        }
+        sidecar.write_text(json.dumps({"artifact": artifact, "synthetic": True}), encoding="utf-8")
+        with pytest.raises(ValueError, match="artifact sidecar identity mismatch"):
+            manifest.capture_receipt(state, block, stage)
+        assert f"{stage}_receipt" not in block
+        artifact["pkl_sha256"] = actual_digest_file(path)
+        sidecar.write_text(json.dumps({"artifact": artifact, "synthetic": True}), encoding="utf-8")
+        manifest.capture_receipt(state, block, stage)
+        assert block[f"{stage}_receipt"]["sha256"] == artifact["pkl_sha256"]
+    assert payload_reads == [str(source), str(source), str(nonprompt), str(nonprompt)]
+
+
+@pytest.mark.parametrize("profile", ("run2_sr_ext", "run3_sr_ext"))
+def test_legacy_receipt_and_pending_runtime_transition(tmp_path, profile, monkeypatch, capsys):
+    git_bin = tmp_path / "reject_git"
+    git_bin.mkdir()
+    git_command = git_bin / "git"
+    git_command.write_text("#!/bin/sh\nprintf 'git attempted\\n' >> \"$GIT_ATTEMPTS\"\nexit 88\n", encoding="utf-8")
+    git_command.chmod(0o755)
+    git_attempts = tmp_path / "git_attempts.txt"
+    monkeypatch.setenv("GIT_ATTEMPTS", str(git_attempts))
+    monkeypatch.setenv("PATH", f"{git_bin}{os.pathsep}{os.environ['PATH']}")
+    validation_root = tmp_path / profile
+    validation_root.mkdir()
+    _write_backend(validation_root / "backend.sh")
+    environment = _backend_environment(validation_root)
+    output_root = validation_root / "output"
+    tag = f"mixed-runtime-{profile}"
+    first_id = f"{profile}_a_1"
+    second_id = f"{profile}_a_2"
+    first = _run(
+        profile, output_root, tag, dry_run=False, environment=environment,
+        extra_args=("--selected-fragment", first_id, "--chunksize", "50000"),
+    )
+    assert first.returncode == 0, first.stdout
+    state_path = output_root / f".{profile}_campaign_state.json"
+    legacy = _campaign_state(output_root, profile)
+    legacy_bytes = state_path.read_bytes()
+    first_block = copy.deepcopy(legacy["blocks"][0])
+    first_artifacts = {
+        name: Path(name).read_bytes()
+        for output in first_block["expected_outputs"]
+        for name in (output, f"{output}.metadata.json")
+    }
+    head = legacy["topeft_git_commit"]
+    monkeypatch.setenv("SRPLOT009_VALIDATION_BACKEND", str(validation_root / "backend.sh"))
+    interrupted = copy.deepcopy(legacy)
+    interrupted["blocks"][1].update(status="source_running", source_status="running")
+    state_path.write_text(json.dumps(interrupted), encoding="utf-8")
+    with pytest.raises(ValueError, match="in-flight|ambiguous"):
+        manifest.upgrade_runtime_policy(state_path, head)
+    state_path.write_bytes(legacy_bytes)
+    pending_path = Path(legacy["blocks"][1]["expected_nominal_path"])
+    pending_path.write_bytes(b"collision")
+    with pytest.raises(ValueError, match="collision"):
+        manifest.upgrade_runtime_policy(state_path, head)
+    assert state_path.read_bytes() == legacy_bytes
+    pending_path.unlink()
+    contract = manifest.upgrade_runtime_policy(state_path, head)
+    upgraded = _campaign_state(output_root, profile)
+    assert upgraded["schema_version"] == 7
+    assert upgraded["sr_reco_contract_sha256"] == legacy["sr_reco_contract_sha256"]
+    assert upgraded["blocks"][0] == first_block
+    assert upgraded["output_dir"] == legacy["output_dir"]
+    assert upgraded["campaign_tag"] == legacy["campaign_tag"]
+    assert upgraded["active_sr_reco_revision"] == legacy["active_sr_reco_revision"]
+    assert len(upgraded["blocks"]) == 12
+    assert [block["status"] for block in upgraded["blocks"]] == ["success"] + ["planned"] * 11
+    assert upgraded["sr_reco_scientific_contract_sha256"] == contract
+    guarded_environment = _guard_accepted_payloads(
+        tmp_path, environment, upgraded["blocks"][0]["expected_outputs"]
+    )
+    pending = _run(
+        profile, output_root, tag, dry_run=False, resume=True, environment=guarded_environment,
+        extra_args=(
+            "--selected-fragment", second_id, "--chunksize", "25000",
+            "--wq-staging-base", str(validation_root / "unused_staging"),
+            "--wq-quota-root", "/groups/klannon",
+            "--wq-free-warning-bytes", "20000000000",
+            "--wq-min-free-bytes", "10000000000",
+            "--wq-poll-seconds", "5", "--wq-treereduction", "10",
+            "--wq-processing-cores", "1", "--wq-accumulating-memory-mb", "80000",
+            "--wq-accumulating-cores", "2",
+        ),
+    )
+    assert pending.returncode == 0, pending.stdout
+    assert Path(guarded_environment["SR_PAYLOAD_GUARD_MARKER"]).read_text() == "loaded"
+    mixed = _campaign_state(output_root, profile)
+    assert mixed["blocks"][0] == first_block
+    assert all(Path(name).read_bytes() == content for name, content in first_artifacts.items())
+    runtime = mixed["blocks"][1]["source_runtime"]
+    assert runtime["chunksize"] == 25000
+    assert runtime["treereduction"] == 10
+    assert runtime["processing_cores_max"] == 1
+    assert runtime["accumulating_memory_min_mb"] == 80000
+    assert runtime["accumulating_cores_min"] == 2
+    assert runtime["plan_revision"] == mixed["active_sr_reco_revision"]
+    assert mixed["blocks"][1]["receipt_runtime_sha256"] == manifest.canonical_digest(runtime)
+    valid_command = list(mixed["blocks"][1]["source_command_argv"])
+    selectable = copy.deepcopy(mixed["blocks"][1])
+    selectable["status"] = "planned"
+    cases = {
+        "do_systs missing": (lambda argv: argv.remove("--do-systs"), "--do-systs"),
+        "do_systs duplicate": (lambda argv: argv.append("--do-systs"), "--do-systs"),
+        "do_systs malformed": (lambda argv: argv.append("--do-systs=false"), "malformed.*--do-systs"),
+        "do_np missing": (lambda argv: argv.remove("--do-np"), "--do-np"),
+        "do_np duplicate": (lambda argv: argv.append("--do-np"), "--do-np"),
+        "sr missing": (lambda argv: argv.remove("--sr"), "--sr"),
+        "all-analysis missing": (lambda argv: argv.remove("--all-analysis"), "--all-analysis"),
+        "executor mismatch": (lambda argv: argv.__setitem__(argv.index("work_queue"), "local"), "-x"),
+        "executor duplicate": (lambda argv: argv.extend(("-x", "local")), "-x"),
+        "snapshot missing": (lambda argv: argv.remove("--snapshot"), "--snapshot"),
+        "snapshot duplicate": (lambda argv: argv.append("--snapshot"), "--snapshot"),
+        "conflicting analysis selector": (lambda argv: argv.append("--tau-h-analysis"), "conflicting SR"),
+    }
+    for label, (mutate, expected_error) in cases.items():
+        invalid_command = list(valid_command)
+        mutate(invalid_command)
+        with pytest.raises(ValueError, match=expected_error):
+            manifest.source_runtime(mixed, selectable, invalid_command)
+    no_np_state = copy.deepcopy(mixed)
+    no_np_state["do_np"] = False
+    no_np_command = [
+        item for item in valid_command
+        if item not in {"--do-np", "--defer-np", "--np-postprocess=inline"}
+    ]
+    assert manifest.source_runtime(no_np_state, selectable, no_np_command)["chunksize"] == 25000
+    current_resolved = copy.deepcopy(mixed)
+    current_resolved["environment_mode"] = "current_resolved"
+    current_command = [item for item in valid_command if item != "--snapshot"]
+    manifest.validate_source_command_contract(current_resolved, current_command)
+    with pytest.raises(ValueError, match="--snapshot"):
+        manifest.validate_source_command_contract(
+            current_resolved, [*current_command, "--snapshot"]
+        )
+
+    redigested = copy.deepcopy(mixed)
+    redigested_block = redigested["blocks"][1]
+    redigested_block["source_command_argv"].remove("--do-systs")
+    redigested_runtime = copy.deepcopy(redigested_block["source_runtime"])
+    redigested_runtime["source_command_sha256"] = manifest.canonical_digest(
+        redigested_block["source_command_argv"]
+    )
+    redigested_block["source_runtime"] = redigested_runtime
+    redigested_block["source_runtime_attempts"][-1] = copy.deepcopy(redigested_runtime)
+    redigested_block["receipt_runtime_sha256"] = manifest.canonical_digest(
+        redigested_runtime
+    )
+    with pytest.raises(ValueError, match="switch contradicts campaign contract: --do-systs"):
+        manifest.check_state(redigested)
+    assert manifest.check_state(mixed)[1]["status"] == "success"
+    assert manifest.check_state(mixed)[0] == first_block
+    assert "source_runtime" not in mixed["blocks"][0]
+    assert mixed["sr_reco_chunk_size"] == "50000"
+    assert [block["status"] for block in mixed["blocks"]] == ["success", "success"] + ["planned"] * 10
+    assert len(manifest.check_state(mixed)) == len(mixed["blocks"])
+    accepted_paths = {path for block in mixed["blocks"][:2] for path in block["expected_outputs"]}
+    real_digest_file = manifest.digest_file
+
+    def reject_accepted_payload_read(path):
+        if str(path) in accepted_paths:
+            raise AssertionError(f"accepted PKL content read: {path}")
+        return real_digest_file(path)
+
+    with monkeypatch.context() as patcher:
+        patcher.setattr(manifest, "digest_file", reject_accepted_payload_read)
+        assert manifest.check_state(mixed)[1]["status"] == "success"
+        rendered = tmp_path / f"{profile}_active.tsv"
+        patcher.setattr(sys, "argv", [
+            "sr_reco_manifest.py", "render-active", str(state_path), str(rendered), "25000",
+        ])
+        manifest.main()
+        assert len(rendered.read_text(encoding="utf-8").splitlines()) == 12
+        patcher.setattr(sys, "argv", ["sr_reco_manifest.py", "consumer-summary", str(state_path)])
+        manifest.main()
+        summary = json.loads(capsys.readouterr().out.splitlines()[-1])
+        assert [unit["status"] for unit in summary["units"][:2]] == ["success", "success"]
+        assert summary["target_coverage_count"] == 849
+    guarded_environment["SR_ACCEPTED_PKLS"] = os.pathsep.join(sorted(accepted_paths))
+    repeated = _run(profile, output_root, tag, dry_run=True, resume=True,
+                    environment=guarded_environment)
+    assert repeated.returncode == 0, repeated.stdout
+    assert f"Skipping validated {profile} block: {first_id}" in repeated.stdout
+    assert f"Skipping validated {profile} block: {second_id}" in repeated.stdout
+    assert _campaign_state(output_root, profile)["blocks"][0] == first_block
+    assert not git_attempts.exists()
+
+    wrong_selection = list(mixed["blocks"][1]["source_command_argv"])
+    wrong_selection[wrong_selection.index("--category-groups") + 1] = "3l_fwd"
+    with pytest.raises(ValueError, match="source selection"):
+        manifest.source_runtime(upgraded, upgraded["blocks"][1], wrong_selection)
+    changed_command = copy.deepcopy(mixed)
+    changed_command["blocks"][1]["source_command_argv"] = wrong_selection
+    with pytest.raises(ValueError, match="runtime receipt"):
+        manifest.check_state(changed_command)
+    with pytest.raises(ValueError, match="scientific/input"):
+        with pytest.MonkeyPatch.context() as patcher:
+            patcher.setattr(manifest, "scientific_files", lambda state: {"changed": "input"})
+            manifest.check_state(mixed)
+    bound_input = next(name for name in upgraded["sr_reco_scientific_files"]
+                       if name.startswith("input_samples/"))
+    real_digest_file = manifest.digest_file
+    with pytest.raises(ValueError, match="scientific/input"):
+        with pytest.MonkeyPatch.context() as patcher:
+            patcher.setattr(
+                manifest, "digest_file",
+                lambda path: "0" * 64 if str(path).endswith(bound_input) else real_digest_file(path),
+            )
+            manifest.check_state(mixed)
+    changed_receipt = copy.deepcopy(mixed)
+    changed_receipt["blocks"][1]["receipt_runtime_sha256"] = "0" * 64
+    with pytest.raises(ValueError, match="runtime receipt"):
+        manifest.check_state(changed_receipt)
+    second_sidecar = Path(f"{mixed['blocks'][1]['expected_nominal_path']}.metadata.json")
+    sidecar_bytes = second_sidecar.read_bytes()
+    second_sidecar.write_bytes(b"{}")
+    with pytest.raises(ValueError, match="sidecar"):
+        manifest.check_state(mixed)
+    second_sidecar.write_bytes(sidecar_bytes)
+    assert len(manifest.check_state(manifest.load_state(state_path))) == 12
+
+    source_path = Path(mixed["blocks"][1]["expected_nominal_path"])
+    source_bytes = source_path.read_bytes()
+    source_receipt = mixed["blocks"][1]["source_receipt"]
+    for key, value, error in (
+        ("sha256", "0" * 64, "receipt|identity"),
+        ("size_bytes", source_receipt["size_bytes"] + 1, "receipt"),
+    ):
+        stale = copy.deepcopy(mixed)
+        stale["blocks"][1]["source_receipt"][key] = value
+        with pytest.raises(ValueError, match=error):
+            manifest.check_state(stale, require_contract=False)
+    for key, value, error in (
+        ("receipt_contract_sha256", "0" * 64, "contract/revision"),
+        ("receipt_plan_revision", "wrong_revision", "contract/revision"),
+    ):
+        stale = copy.deepcopy(mixed)
+        stale["blocks"][1][key] = value
+        with pytest.raises(ValueError, match=error):
+            manifest.check_state(stale, require_contract=False)
+
+    source_path.unlink()
+    try:
+        with pytest.raises(ValueError, match="required artifact"):
+            manifest.check_state(mixed, require_contract=False)
+        source_path.symlink_to(second_sidecar)
+        with pytest.raises(ValueError, match="required artifact"):
+            manifest.check_state(mixed, require_contract=False)
+    finally:
+        source_path.unlink(missing_ok=True)
+        source_path.write_bytes(source_bytes)
+    try:
+        source_path.write_bytes(source_bytes + b"x")
+        with pytest.raises(ValueError, match="receipt|identity"):
+            manifest.check_state(mixed, require_contract=False)
+    finally:
+        source_path.write_bytes(source_bytes)
+
+    second_sidecar.unlink()
+    try:
+        with pytest.raises(ValueError, match="required artifact"):
+            manifest.check_state(mixed, require_contract=False)
+    finally:
+        second_sidecar.write_bytes(sidecar_bytes)
+    try:
+        second_sidecar.write_text("not JSON", encoding="utf-8")
+        with pytest.raises(json.JSONDecodeError):
+            manifest.check_state(mixed, require_contract=False)
+    finally:
+        second_sidecar.write_bytes(sidecar_bytes)
+
+    nonprompt_sidecar = Path(f"{mixed['blocks'][1]['expected_np_path']}.metadata.json")
+    nonprompt_sidecar_bytes = nonprompt_sidecar.read_bytes()
+    broken_lineage = json.loads(nonprompt_sidecar_bytes)
+    broken_lineage["synthetic"] = False
+    broken_lineage["lineage"] = {"inputs": [{"pkl_sha256": "0" * 64}]}
+    try:
+        nonprompt_sidecar.write_text(json.dumps(broken_lineage), encoding="utf-8")
+        stale = copy.deepcopy(mixed)
+        stale["blocks"][1]["nonprompt_receipt"]["sidecar_sha256"] = manifest.digest_file(nonprompt_sidecar)
+        with pytest.raises(ValueError, match="lineage does not bind source"):
+            manifest.check_state(stale, require_contract=False)
+    finally:
+        nonprompt_sidecar.write_bytes(nonprompt_sidecar_bytes)
+
+    mutated = bytes([source_bytes[0] ^ 1]) + source_bytes[1:]
+    try:
+        source_path.write_bytes(mutated)
+        assert source_path.stat().st_size == len(source_bytes)
+        assert manifest.check_state(mixed, require_contract=False)[1]["status"] == "success"
+        with pytest.raises(ValueError, match="identity mismatch"):
+            manifest.check_state(mixed, require_contract=False, verify_payload_sha256=True)
+        with monkeypatch.context() as patcher:
+            patcher.setattr(sys, "argv", ["sr_reco_manifest.py", "audit-integrity", str(state_path)])
+            with pytest.raises(SystemExit) as audit_error:
+                manifest.main()
+            assert audit_error.value.code == 1
+    finally:
+        source_path.write_bytes(source_bytes)
+    assert manifest.check_state(mixed, require_contract=False, verify_payload_sha256=True)[1]["status"] == "success"
+    with monkeypatch.context() as patcher:
+        patcher.setattr(sys, "argv", ["sr_reco_manifest.py", "audit-integrity", str(state_path)])
+        manifest.main()
+    assert "Full SR payload integrity audit passed" in capsys.readouterr().out
+
+
+def test_historical_run3_source_ready_finishes_separate_np_after_upgrade(tmp_path, monkeypatch, capsys):
+    git_bin = tmp_path / "reject_git"
+    git_bin.mkdir()
+    git_command = git_bin / "git"
+    git_command.write_text("#!/bin/sh\nprintf 'git attempted\\n' >> \"$GIT_ATTEMPTS\"\nexit 88\n", encoding="utf-8")
+    git_command.chmod(0o755)
+    git_attempts = tmp_path / "git_attempts.txt"
+    monkeypatch.setenv("GIT_ATTEMPTS", str(git_attempts))
+    monkeypatch.setenv("PATH", f"{git_bin}{os.pathsep}{os.environ['PATH']}")
+    profile = "run3_sr_ext"
+    validation_root = tmp_path / profile
+    validation_root.mkdir()
+    _write_backend(validation_root / "backend.sh")
+    environment = _backend_environment(validation_root)
+    output_root = validation_root / "output"
+    tag = "historical-run3-source-ready"
+    block_id = f"{profile}_a_1"
+    first = _run(profile, output_root, tag, dry_run=False, environment=environment,
+                 extra_args=("--selected-fragment", block_id, "--chunksize", "50000"))
+    assert first.returncode == 0, first.stdout
+    state_path = output_root / f".{profile}_campaign_state.json"
+    state = manifest.load_state(state_path)
+    block = state["blocks"][0]
+    source_receipt = copy.deepcopy(block["source_receipt"])
+    source_bytes = Path(block["expected_nominal_path"]).read_bytes()
+    source_sidecar = Path(f"{block['expected_nominal_path']}.metadata.json").read_bytes()
+    Path(block["expected_np_path"]).unlink()
+    Path(f"{block['expected_np_path']}.metadata.json").unlink()
+    block["status"] = "source_ready"
+    block["nonprompt_status"] = "planned"
+    block["nonprompt_exit_code"] = None
+    block.pop("nonprompt_receipt")
+    for key in ("nonprompt_command_argv", "nonprompt_started_at_utc", "nonprompt_ended_at_utc",
+                "nonprompt_duration_seconds", "nonprompt_signal"):
+        block[key] = None
+    block["transitions"] = block["transitions"][:3]
+    block["last_transition_utc"] = block["transitions"][-1]["timestamp_utc"]
+    block["last_transition_detail"] = block["transitions"][-1]["detail"]
+    block["expected_output_readback"][1].update(
+        exists=False, regular_file=False, size_bytes=None, nonempty=False
+    )
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+    assert manifest.check_state(state)[0]["status"] == "source_ready"
+    old_digest_file = manifest.digest_file
+    with monkeypatch.context() as patcher:
+        patcher.setattr(
+            manifest, "digest_file",
+            lambda path: (_ for _ in ()).throw(AssertionError("accepted source PKL reread"))
+            if str(path) == block["expected_nominal_path"] else old_digest_file(path),
+        )
+        assert manifest.check_state(state)[0]["status"] == "source_ready"
+    manifest.upgrade_runtime_policy(state_path, state["topeft_git_commit"])
+    upgraded = manifest.load_state(state_path)
+    assert upgraded["blocks"][0] == block
+    assert upgraded["blocks"][0]["receipt_contract_sha256"] == state["sr_reco_contract_sha256"]
+    with monkeypatch.context() as patcher:
+        patcher.setattr(
+            manifest, "digest_file",
+            lambda path: (_ for _ in ()).throw(AssertionError("accepted source PKL reread"))
+            if str(path) == block["expected_nominal_path"] else old_digest_file(path),
+        )
+        rendered = tmp_path / "run3_source_ready_active.tsv"
+        patcher.setattr(sys, "argv", [
+            "sr_reco_manifest.py", "render-active", str(state_path), str(rendered), "25000",
+        ])
+        manifest.main()
+        assert len(rendered.read_text(encoding="utf-8").splitlines()) == 12
+        patcher.setattr(sys, "argv", ["sr_reco_manifest.py", "consumer-summary", str(state_path)])
+        manifest.main()
+        summary = json.loads(capsys.readouterr().out.splitlines()[-1])
+        assert summary["units"][0]["status"] == "source_ready"
+    nonprompt_path = Path(block["expected_np_path"])
+    nonprompt_path.write_bytes(b"premature nonprompt")
+    try:
+        with pytest.raises(ValueError, match="ambiguous deferred nonprompt output"):
+            manifest.check_state(upgraded)
+    finally:
+        nonprompt_path.unlink()
+    guarded_environment = _guard_accepted_payloads(
+        tmp_path, environment, [block["expected_nominal_path"]]
+    )
+    resumed = _run(profile, output_root, tag, dry_run=False, resume=True,
+                   environment=guarded_environment, extra_args=("--selected-fragment", block_id))
+    assert resumed.returncode == 0, resumed.stdout
+    assert Path(guarded_environment["SR_PAYLOAD_GUARD_MARKER"]).read_text() == "loaded"
+    completed = manifest.load_state(state_path)
+    completed_block = completed["blocks"][0]
+    assert completed_block["status"] == "success"
+    assert completed_block["source_receipt"] == source_receipt
+    assert completed_block["receipt_contract_sha256"] == state["sr_reco_contract_sha256"]
+    assert "source_runtime" not in completed_block
+    assert completed_block["nonprompt_command_argv"]
+    assert Path(block["expected_nominal_path"]).read_bytes() == source_bytes
+    assert Path(f"{block['expected_nominal_path']}.metadata.json").read_bytes() == source_sidecar
+    assert manifest.check_state(completed)[0]["status"] == "success"
+    guarded_environment["SR_ACCEPTED_PKLS"] = os.pathsep.join(completed_block["expected_outputs"])
+    repeated = _run(profile, output_root, tag, dry_run=False, resume=True,
+                    environment=guarded_environment, extra_args=("--selected-fragment", block_id))
+    assert repeated.returncode == 0, repeated.stdout
+    assert f"Skipping validated {profile} block: {block_id}" in repeated.stdout
+    assert not git_attempts.exists()
 
 
 @pytest.mark.parametrize("profile", ("run2_sr_ext", "run3_sr_ext"))

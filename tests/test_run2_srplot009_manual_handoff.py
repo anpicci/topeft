@@ -1843,6 +1843,78 @@ def test_processing_core_callback_only_sets_processing_category(monkeypatch):
                          ("default", "preprocessing", "processing", "accumulating")]
 
 
+def test_accumulating_minimum_composes_after_category_declarations(monkeypatch):
+    from coffea.processor import work_queue_tools
+
+    monkeypatch.syspath_prepend(str(RUN_DIRECTORY))
+    spec = importlib.util.spec_from_file_location("run_analysis_accumulating_test", RUN_ANALYSIS)
+    run_analysis = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(run_analysis)
+    calls = []
+
+    class fake_queue:
+        executor = SimpleNamespace(cores=None, memory=None, disk=None, gpus=None,
+                                   resource_monitor="measure", resources_mode="auto",
+                                   fast_terminate_workers=0)
+        def tune(self, *_):
+            pass
+        def enable_monitoring(self, *, watchdog):
+            assert watchdog is False
+        def specify_category_max_resources(self, category, resources):
+            calls.append(("max", category, dict(resources)))
+        def specify_category_min_resources(self, category, resources):
+            calls.append(("min", category, dict(resources)))
+        def specify_category_mode(self, *_):
+            pass
+
+    queue = fake_queue()
+    work_queue_tools.CoffeaWQ._declare_resources(queue)
+    declaration_count = len(calls)
+    run_analysis._configure_wq_categories(
+        queue, processing_cores=1, accumulating_memory_mb=80000, accumulating_cores=2,
+    )
+    assert calls[declaration_count:] == [
+        ("max", "processing", {"cores": 1}),
+        ("min", "accumulating", {"memory": 80000, "cores": 2}),
+    ]
+
+
+def test_accumulating_cli_forwards_pair_and_rejects_invalid_values(tmp_path):
+    profile = "run2_sr_ext"
+    base_options = (
+        "--selected-fragment", f"{profile}_a_2",
+        "--wq-staging-base", str(tmp_path / "unused_staging"),
+        "--wq-quota-root", "/groups/klannon",
+        "--wq-free-warning-bytes", "20000000000",
+        "--wq-min-free-bytes", "10000000000",
+        "--wq-poll-seconds", "5",
+    )
+    selected, output_root, _ = _stubbed_run(
+        tmp_path, profile, "success", name="accumulating", dry_run=True,
+        extra_args=base_options + (
+            "--wq-processing-cores", "1",
+            "--wq-accumulating-memory-mb", "80000",
+            "--wq-accumulating-cores", "2",
+        ),
+    )
+    assert selected.returncode == 0, selected.stdout
+    source = _commands(selected.stdout)[0]
+    assert _option_values(source, "--wq-accumulating-memory-mb", 1) == ["80000"]
+    assert _option_values(source, "--wq-accumulating-cores", 1) == ["2"]
+    assert not output_root.exists()
+    for index, invalid in enumerate((
+        ("--wq-accumulating-memory-mb", "80000"),
+        ("--wq-accumulating-memory-mb", "0", "--wq-accumulating-cores", "2"),
+        ("--wq-accumulating-memory-mb", "80000", "--wq-accumulating-cores", "no"),
+    )):
+        blocked, blocked_root, _ = _stubbed_run(
+            tmp_path, profile, "success", name=f"invalid_accumulating_{index}", dry_run=True,
+            extra_args=base_options + invalid,
+        )
+        assert blocked.returncode != 0
+        assert not blocked_root.exists()
+
+
 @pytest.mark.parametrize("profile", ("run2_sr_ext", "run2_full_CR"))
 def test_real_work_queue_launcher_requires_guarded_staging(tmp_path, profile):
     output_root = tmp_path / profile

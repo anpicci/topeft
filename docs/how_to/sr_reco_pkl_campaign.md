@@ -46,6 +46,48 @@ that same state. A source or `_np` PKL's existence alone is not completion
 proof. Keep the state, both sidecars, native Work Queue logs, output paths and
 command transcript together for review.
 
+When a new source or `_np` output is accepted, the native owner hashes its PKL
+bytes and checks the digest and size against its sidecar before recording a
+receipt. Ordinary `render-active`, `consumer-summary`, and same-campaign resume
+check the stored receipts against file type, size, sidecars, lineage and bound
+state without reading accepted PKL payloads again. This fast readback cannot
+detect a same-size change to accepted PKL bytes. For a deliberate full-byte
+integrity check, run `python ./sr_reco_manifest.py audit-integrity
+/absolute/existing/campaign/.<profile>_campaign_state.json` from
+`analysis/topeft_run2`. It rehashes every accepted source and `_np` PKL and
+fails if any payload differs from its recorded receipt. A full audit is not a
+condition for ordinary resume or summary.
+
+An occupied schema-6 campaign can opt into per-pending-unit runtime choices
+through one explicit state transition in the native manifest owner. With the
+campaign quiescent, the exact historical commit string recorded in the state,
+unchanged bound input/sample/channel/axis files and worker archive, valid
+completed receipts, and collision-free pending outputs must pass before the
+atomic transition. The commit string is an identity check against the state,
+not a live Git check:
+
+```text
+python ./sr_reco_manifest.py upgrade-runtime-policy \
+  /absolute/existing/campaign/.run2_sr_ext_campaign_state.json \
+  HISTORICAL_TOPEFT_COMMIT_FROM_STATE
+```
+
+Run this command from `analysis/topeft_run2` in the normal production shell.
+It takes the existing campaign lock and keeps the original schema-6 contract,
+completed receipts, plan revisions, source commands and output names unchanged.
+The upgraded state records a separate scientific/input contract for new units.
+The original `sr_reco_chunk_size` remains historical provenance. A selected
+untouched pending unit may then use `--chunksize 25000` while another uses the
+earlier chunk size. Each new source attempt retains its runtime snapshot; the
+receipt binds the latest successful attempt's resolved chunk size,
+tree reduction, processing core maximum, accumulating minima, worker archive
+identity, manager file hashes and plan revision. These manager hashes describe
+the new attempt; they do not claim a historical commit or freeze later pending
+units. Resume still checks the historical source and `_np` sidecars and
+their lineage. A historical Run 3 `source_ready` unit keeps its original source
+receipt and contract while its separate `_np` stage records its own command and
+completion provenance. Changed bound inputs are rejected.
+
 ## Repartition only untouched coverage
 
 Prepare a JSON plan containing **only** still-uncovered units. Any valid
@@ -90,8 +132,14 @@ base must be an existing owned writable directory on a non-root filesystem;
 implicit `/tmp` and root-backed staging are rejected by mount identity.
 `--wq-treereduction` is optional and requires separate resource review.
 `--wq-processing-cores 1` is a separate opt-in processing-category reservation
-maximum. It does not change accumulation resources, set CPU affinity, or
-establish worker packing or throughput.
+maximum. `--wq-accumulating-memory-mb 80000 --wq-accumulating-cores 2`
+optionally sets an accumulating-category minimum after Coffea declares its
+categories. Both positive integer values are required together. This does not
+change automatic resource mode, processing reservations, or the default tree
+reduction of 10. Two reserved cores isolate a reducer on a fully two-core
+worker; a four-core worker may still run another task. Minimum memory is not a
+peak RSS cap or an OOM guarantee. Worker eligibility and packing depend on
+actual advertised resources.
 
 Before launch, the guard requires effective available bytes strictly above the
 selected minimum, calculated as the smaller of filesystem free availability
@@ -118,7 +166,8 @@ module/axis qualification and path selection before this campaign can run.
 The first manual canary also needs an isolated non-root staging mount with
 measured quota/inode/free-space budget, scheduler readiness, a conservative
 worker memory/concurrency and tree-reduction bound, and a fresh initial
-campaign namespace. No historical aborted root should be reused.
+campaign namespace. An occupied campaign is resumed only after its native
+state, receipts, staging and collision checks pass.
 
 `--dry-run` resolves commands without creating a campaign root or submitting
 workers. It does not qualify an archive, site capacity, physics content or
