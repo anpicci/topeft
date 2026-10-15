@@ -3599,19 +3599,34 @@ def test_sr_ttbar_draw_view_preserves_signed_total_variance_and_full_band(negati
             original._topeft_data_intervals["central_counts"],
         )
         np.testing.assert_allclose(
+            split._topeft_ratio_values, original._topeft_ratio_values,
+        )
+        np.testing.assert_allclose(
             sum(split._topeft_plot_view["raw_grouped_centrals"].values()),
             sum(original._topeft_plot_view["raw_grouped_centrals"].values()),
         )
         assert view["fallback"] is negative
-        assert split._topeft_plot_summary["sr_ttbar_companion_panel"] is negative
-        assert len(split.axes) == (3 if negative else 2)
+        assert len(split.axes) == len(original.axes) == 2
+        assert [axis.get_title() for axis in split.axes] == ["", ""]
+        assert "sr_ttbar_companion_panel" not in split._topeft_plot_summary
+        labels = [text.get_text() for legend in split.legends for text in legend.get_texts()]
+        assert "ttbar" in labels
+        assert "ttll (ttbar excluded)" in labels
+        assert "ttll" not in labels
+        assert "ttbar (existing ttll)" not in labels
+        assert "other former-ttll members" not in labels
         if negative:
             assert list(split._topeft_plot_view["raw_grouped_centrals"]) == list(
                 original._topeft_plot_view["raw_grouped_centrals"]
             )
             assert view["split_visible_ttll"][1] > view["original_visible_ttll"][1]
+            assert {"ttbar", "ttll (ttbar excluded)"}.issubset(
+                {artist.get_label() for artist in split.axes[0].patches}
+            )
+            assert any(text.get_text() == "-3" for text in split.axes[0].texts)
+            np.testing.assert_allclose(split.axes[0].get_ylim(), original.axes[0].get_ylim())
         else:
-            assert make_cr_and_sr_plots.SR_GROUP_INFO["ttll"]["display_split"]["ttbar_label"] in split._topeft_plot_view[
+            assert "ttbar" in split._topeft_plot_view[
                 "raw_grouped_centrals"
             ]
         np.testing.assert_array_equal(h_mc.values(flow=True), before_mc)

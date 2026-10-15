@@ -9543,6 +9543,25 @@ def make_region_stacked_ratio_fig(
             rax.set_xlim(set_x_lim)
     box = ax.get_position()
     ax.set_position([box.x0, box.y0, box.width, box.height])
+    if sr_ttbar_display_view is not None and sr_ttbar_display_view["fallback"]:
+        split_config = SR_GROUP_INFO["ttll"]["display_split"]
+        original_y_limits = ax.get_ylim()
+        bin_centers = (plot_bins[:-1] + plot_bins[1:]) / 2.0
+        for component_index, (values, label, color, line_style) in enumerate((
+            (sr_ttbar_display_view["ttbar_values"], split_config["ttbar_label"],
+             CR_GROUP_INFO[split_config["ttbar_group"]]["color"], "--"),
+            (sr_ttbar_display_view["remainder_values"], split_config["remainder_label"],
+             SR_GROUP_INFO["ttll"]["color"], ":"),
+        )):
+            ax.stairs(values, plot_bins, label=label, color=color,
+                      linestyle=line_style, linewidth=1.5)
+            for bin_center, value in zip(bin_centers, values):
+                if value < 0:
+                    ax.text(bin_center, 0.04 + component_index * 0.06,
+                            f"{value:g}", transform=ax.get_xaxis_transform(),
+                            ha="center", va="bottom", color=color, fontsize=8,
+                            clip_on=True)
+        ax.set_ylim(*original_y_limits)
     # Build a figure-anchored legend with a measured inset from the top edge
     legend_handles, legend_labels = ax.get_legend_handles_labels()
     legend = None
@@ -9550,6 +9569,8 @@ def make_region_stacked_ratio_fig(
         filtered = OrderedDict()
         for handle, label in zip(legend_handles, legend_labels):
             if label == '_nolegend_':
+                continue
+            if sr_ttbar_display_view is not None and sr_ttbar_display_view["fallback"] and label == "ttll":
                 continue
             if label not in filtered:
                 filtered[label] = handle
@@ -9697,32 +9718,6 @@ def make_region_stacked_ratio_fig(
 
     if sr_ttbar_display_view is not None:
         fig._topeft_sr_ttbar_display_view = sr_ttbar_display_view
-        if sr_ttbar_display_view["fallback"]:
-            for panel_axis in tuple(fig.axes):
-                position = panel_axis.get_position()
-                panel_axis.set_position(
-                    [position.x0, 0.27 + 0.70 * position.y0,
-                     position.width, 0.70 * position.height]
-                )
-            component_axis = fig.add_axes([0.14, 0.07, 0.82, 0.16])
-            component_axis.stairs(
-                sr_ttbar_display_view["ttbar_values"], plot_bins,
-                label=SR_GROUP_INFO["ttll"]["display_split"]["ttbar_label"],
-                color=CR_GROUP_INFO[SR_GROUP_INFO["ttll"]["display_split"]["ttbar_group"]]["color"],
-            )
-            component_axis.stairs(
-                sr_ttbar_display_view["remainder_values"], plot_bins,
-                label=SR_GROUP_INFO["ttll"]["display_split"]["remainder_label"],
-                color=SR_GROUP_INFO["ttll"]["color"],
-            )
-            component_axis.axhline(0.0, color="black", linewidth=0.8)
-            component_axis.set_ylabel("Signed events")
-            component_axis.set_xlabel(display_label)
-            component_axis.set_title("Original stack retained; signed former-ttll components")
-            component_axis.legend(fontsize=8)
-            fig._topeft_plot_summary["sr_ttbar_companion_panel"] = True
-        else:
-            fig._topeft_plot_summary["sr_ttbar_companion_panel"] = False
 
     return fig
 
