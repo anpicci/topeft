@@ -1576,6 +1576,70 @@ def test_unit_normalization_skips_empty_histograms(monkeypatch):
     assert any("Skipping data unit normalization" in msg for msg in logged_messages)
 
 
+@pytest.mark.parametrize(
+    ("process_label", "family"),
+    [
+        ("DY10to50_centralUL17", "DY"),
+        ("DY50_centralUL17", "DY"),
+        ("DYJetsToLL_MLL-10to50_central2022", "DY"),
+        ("DYJetsToLL_MLL-50_central2023BPix", "DY"),
+        ("ZGToLLG_centralUL18", "ZGamma"),
+        ("ZG_MLL-4to50_PTG-100to200_central2022EE", "ZGamma"),
+        ("ZG_MLL-50_PTG-600_central2023", "ZGamma"),
+        ("ST_top_t-channel_centralUL16", "Single top"),
+        ("tW_centralUL17", "Single top"),
+        ("tbarW_centralUL18", "Single top"),
+        ("ST_tW_Leptonic_central2022", "Single top"),
+        ("ST_tbarW_Semileptonic_central2023BPix", "Single top"),
+        ("WJetsToLNu_centralUL16APV", "Singleboson"),
+        ("WJetsToLNu_central2023", "Singleboson"),
+    ],
+)
+def test_excluded_mc_labels_use_native_cr_sr_metadata_once(process_label, family):
+    for pattern_map in (
+        make_cr_and_sr_plots.CR_GRP_PATTERNS,
+        make_cr_and_sr_plots.SR_GRP_PATTERNS,
+    ):
+        group_map = make_cr_and_sr_plots.populate_group_map(
+            [process_label], pattern_map
+        )
+        assert [
+            group for group, members in group_map.items() if process_label in members
+        ] == [family]
+
+    canonical_name = make_cr_and_sr_plots.tc_utils.canonicalize_process_name(
+        process_label
+    )
+    matching_patterns = [
+        (group, pattern)
+        for group, patterns in make_cr_and_sr_plots.SR_GRP_PATTERNS.items()
+        for pattern in patterns
+        if pattern in canonical_name or pattern in process_label
+    ]
+    assert len(matching_patterns) == 1
+    assert matching_patterns[0][0] == family
+
+
+@pytest.mark.parametrize(
+    ("process_label", "group"),
+    [
+        ("TTTo2L2Nu_centralUL17", "ttll"),
+        ("TTGJets_centralUL18", "Conv"),
+        ("WWW_central2022", "Triboson"),
+        ("TWZ_central2023", "tWZ"),
+        ("WZTo3LNu_centralUL16", "Diboson"),
+        ("ttH_central2022EE", "ttH"),
+    ],
+)
+def test_excluded_mc_sr_metadata_preserves_baseline_groups(process_label, group):
+    group_map = make_cr_and_sr_plots.populate_group_map(
+        [process_label], make_cr_and_sr_plots.SR_GRP_PATTERNS
+    )
+    assert [
+        name for name, members in group_map.items() if process_label in members
+    ] == [group]
+
+
 def test_unmatched_sample_is_skipped_from_group_map(monkeypatch):
     process_axis = hist.axis.StrCategory([], name="process", growth=True)
     value_axis = hist.axis.Regular(2, 0.0, 2.0, name="lj0pt")

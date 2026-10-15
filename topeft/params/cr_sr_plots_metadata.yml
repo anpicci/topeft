@@ -546,6 +546,24 @@ SR_GRP_MAP:
     - ZZTo2e2tau
     - ZZTo2e2mu
     - ggToZZ
+  DY:
+    color: tab:blue
+    patterns:
+    - DY
+  ZGamma:
+    color: tab:orange
+    patterns:
+    - ZG
+  Single top:
+    color: tab:pink
+    patterns:
+    - ST_
+    - tW_centralUL
+    - tbarW_centralUL
+  Singleboson:
+    color: tan
+    patterns:
+    - WJets
 WCPT_EXAMPLE:
   ctW: -0.74
   ctZ: -0.86
