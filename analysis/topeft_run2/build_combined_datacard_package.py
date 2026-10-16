@@ -26,6 +26,10 @@ _source_provenance_names = {
 _legacy_output_names = {"cards", "scalings.json", "ordered_card_inputs.txt", "combined_mapping_manifest.json", "package-provenance.json", "README.md"}
 _output_names = _legacy_output_names | {"config"}
 _fit_config_logical_path = "config/TOP_26_006.yml"
+_missing_fit_config_guidance = (
+    "package-local fit config is missing: config/TOP_26_006.yml. For legacy/historical package certification only, "
+    "run certify --allow-legacy-missing-fit-config. This does not make the package EFTFit-portable "
+    "and does not bypass current/new package requirements.")
 _provenance_names = {
     "schema", "artifact_type", "analysis", "package_version", "package_date", "package_root",
     "assembler_commit", "assembler_source_sha256", "manifest_sha256", "ordered_card_inputs_sha256",
@@ -404,10 +408,14 @@ def _certify_details(package_root, run2_package, run3_package, output, result,
     else:
         if observed_names == _legacy_output_names:
             result["missing_paths"].append(_fit_config_logical_path)
+        if not config.exists():
+            _require(False, _missing_fit_config_guidance)
         _require(_plain_directory(config), "combined fit config directory is missing or invalid")
         config_names = {entry.name for entry in config.iterdir()}
         result["missing_paths"].extend("config/" + name for name in sorted({"TOP_26_006.yml"} - config_names))
         result["extra_paths"].extend("config/" + name for name in sorted(config_names - {"TOP_26_006.yml"}))
+        if "TOP_26_006.yml" not in config_names:
+            _require(False, _missing_fit_config_guidance)
         _require(config_names == {"TOP_26_006.yml"}, "combined fit config inventory differs")
         _require(_plain_file(config_file), "combined fit config is not a regular readable file")
         _require(bool(config_file.read_bytes()), "combined fit config is empty")

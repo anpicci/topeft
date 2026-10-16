@@ -136,8 +136,16 @@ def test_missing_config_fails_default_and_legacy_requires_old_layout(tmp_path, s
     selected.write_bytes(b"fit: selected\n")
     output = tmp_path / "legacy_layout"
     _build(sources, output, selected)
+    current_result = combined.certify_combined_package(output, *sources)
+    assert current_result["result"] == "pass"
+    assert current_result["checks"]["fit_config"]["evidence"]["portability"] is True
+    assert current_result["checks"]["fit_config"]["evidence"]["legacy_missing_fit_config"] is False
     (output / "config/TOP_26_006.yml").unlink()
-    assert combined.certify_combined_package(output, *sources)["checks"]["fit_config"]["result"] == "fail"
+    missing_file_result = combined.certify_combined_package(output, *sources)
+    assert missing_file_result["result"] == "fail"
+    assert missing_file_result["checks"]["fit_config"]["result"] == "fail"
+    assert "certify --allow-legacy-missing-fit-config" in (
+        missing_file_result["checks"]["fit_config"]["failures"][0])
     (output / "config").rmdir()
     provenance_path = output / "package-provenance.json"
     provenance = json.loads(provenance_path.read_text())
@@ -146,7 +154,15 @@ def test_missing_config_fails_default_and_legacy_requires_old_layout(tmp_path, s
     readme_path = output / "README.md"
     readme_path.write_text(readme_path.read_text().replace(
         "Package-local fit configuration: `config/TOP_26_006.yml`.", ""), encoding="utf-8")
-    assert combined.certify_combined_package(output, *sources)["result"] == "fail"
+    assert combined.main([
+        "certify", "--package-root", str(output), "--run2-package", str(sources[0]),
+        "--run3-package", str(sources[1]),
+    ]) == 1
+    normal_output = capsys.readouterr().out
+    assert "certify --allow-legacy-missing-fit-config" in normal_output
+    assert "legacy/historical package certification only" in normal_output
+    assert "does not make the package EFTFit-portable" in normal_output
+    assert "does not bypass current/new package requirements" in normal_output
     result = combined.certify_combined_package(output, *sources, allow_legacy_missing_fit_config=True)
     assert result["result"] == "pass"
     assert result["checks"]["fit_config"]["evidence"]["legacy_missing_fit_config"] is True
