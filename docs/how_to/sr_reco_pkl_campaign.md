@@ -32,11 +32,14 @@ adopted from another root.
 A selected-unit invocation uses the complete persisted plan. For example,
 `--selected-fragment run2_sr_ext_a_1` runs one ordinary unit in the default
 Run 2 plan. A later `--resume` uses the same root and skips verified completed
-units. Run 2 writes source and inline `_np` artifacts in one source invocation.
-Run 3 writes the source artifact first and performs `_np` in a separate local
-stage. A verified Run 3 source can remain `source_ready` until that stage
-finishes. The campaign is complete only after both stages have verified
-receipts for all applicable coverage.
+units. Run 2 and Run 3 now write the source artifact first and perform `_np`
+in a separate local child. The source child retains `--do-np` to certify the
+nonprompt product and sumw2 policy; `--defer-np` changes when postprocessing
+runs. A normal successful source child publishes a checked source receipt
+before `_np` starts. A failed `_np` leaves that receipt and source attempt
+unchanged, and a selected-unit resume retries only `_np`. The campaign is
+complete only after both stages have verified receipts for all applicable
+coverage.
 
 The state file is `.<profile>_campaign_state.json` in the campaign root. It
 stores immutable plan snapshots, the active revision, per-unit source and
@@ -87,6 +90,35 @@ units. Resume still checks the historical source and `_np` sidecars and
 their lineage. A historical Run 3 `source_ready` unit keeps its original source
 receipt and contract while its separate `_np` stage records its own command and
 completion provenance. Changed bound inputs are rejected.
+
+New SR campaigns use schema 8 and record the supported separate-stage policy.
+The historical `nonprompt_mode` and its contract hash remain unchanged when an
+older campaign is explicitly activated. The current scientific contract
+excludes only that technical timing choice; it still binds the campaign,
+environment, sample inputs, selections and coverage. Schema 6 and 7 states
+remain readable. An older inline campaign must be quiescent and activate the
+stage policy before resume:
+
+```text
+python ./sr_reco_manifest.py activate-stage-policy \
+  /absolute/existing/campaign/.run2_sr_ext_campaign_state.json \
+  EXACT_ACTIVE_PLAN_REVISION
+```
+
+Activation takes the campaign lock, checks historical contracts, accepted
+receipts and output collisions, then atomically publishes schema 8. Repeating
+the same activation leaves state bytes unchanged. It does not adopt a failed
+source or launch a child. A source produced by a failed historical inline
+command requires a separate explicit `adopt-source` transition, with an
+owner-accepted JSON evidence record binding campaign, revision, unit, command,
+attempt, runtime, environment, scientific contract, source receipt, completed
+publication and historical composite outcome. The transition verifies the
+source and sidecar, CFG identities, namespace and absence of `_np` output;
+the evidence may request a fresh full payload SHA-256 check. It preserves the
+historical composite exit and signal while recording the independently
+unobserved source-only exit as unknown. Adoption never starts source or `_np`.
+An incomplete or conflicting record leaves state unchanged. Production
+recovery still needs its own authorization and selected-unit resume decision.
 
 ## Repartition only untouched coverage
 

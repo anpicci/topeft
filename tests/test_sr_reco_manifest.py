@@ -19,6 +19,7 @@ from test_run2_srplot009_manual_handoff import (
     _clean_environment,
     _run,
     _write_backend,
+    _write_test_environment,
 )
 
 
@@ -113,6 +114,373 @@ def test_first_capture_hashes_source_and_nonprompt_payloads(tmp_path, monkeypatc
     assert payload_reads == [str(source), str(source), str(nonprompt), str(nonprompt)]
 
 
+def _legacy_inline_adoption_fixture(tmp_path):
+    output_root = tmp_path / "campaign"
+    output_root.mkdir()
+    env_file = _write_test_environment(tmp_path)
+    units = manifest.load_plan(manifest.DEFAULT_PLAN_PATH)
+    revision = f"r1_{manifest.canonical_digest(units)[:12]}"
+    specs = manifest.plan_blocks(units, "run2_sr_ext", "fixture-campaign", str(output_root), revision)
+    state = {
+        "schema_version": 6, "production_profile": "run2_sr_ext",
+        "campaign_tag": "fixture-campaign", "output_dir": str(output_root),
+        "topeft_git_commit": "not_observed_no_git", "env_file": str(env_file),
+        "env_file_sha256": manifest.digest_file(env_file), "environment_fingerprint": f"{9:064d}",
+        "environment_mode": "explicit_snapshot", "topcoffea_git_commit": f"{8:040d}",
+        "topcoffea_relevant_source_fingerprint": f"{7:064d}",
+        "ttgamma_sample_role_policy": "split", "do_systs": True, "do_np": True,
+        "region": "SR", "nonprompt_mode": "inline",
+        "blocks": [manifest.new_pending_block(spec) for spec in specs],
+    }
+    manifest.decorate_initial_state(state, "25000")
+    files = manifest.scientific_files(state)
+    state["schema_version"] = 7
+    state["sr_reco_scientific_files"] = files
+    state["sr_reco_scientific_contract_sha256"] = manifest.scientific_contract(state, files)
+    block = state["blocks"][0]
+    command = [
+        "./fullR3_run.sh", "-y", "run2", "-t", block["output_tag"], "-s", "25000",
+        "--sr", "--hist-vars", *block["histograms"],
+        "--category-groups", *block["category_groups"],
+        "--ttgamma-sample-role-policy", "split", "--do-systs", "--do-np",
+        "--np-postprocess=inline", "-p", str(output_root), "--all-analysis",
+        "--env-file", state["env_file"], "--snapshot", "-x", "work_queue",
+    ]
+    runtime = manifest.source_runtime(state, block, command)
+    block.update({
+        "status": "source_failed", "source_status": "failed", "source_exit_code": 137,
+        "source_signal": 9, "source_command_argv": command, "source_runtime": runtime,
+        "source_runtime_attempts": [copy.deepcopy(runtime)],
+        "nonprompt_status": "blocked", "source_started_at_utc": "2026-10-15T21:42:06Z",
+        "source_ended_at_utc": "2026-10-16T18:25:22Z",
+    })
+    block["transitions"].extend([
+        {"stage": "source", "status": "running", "exit_code": None},
+        {"stage": "source", "status": "failed", "exit_code": 137, "signal": 9},
+    ])
+    source = Path(block["expected_nominal_path"])
+    source.write_bytes(b"small published processor output")
+    cfg_identities = [
+        {"basename": Path(name).name, "content_sha256": digest, "input_kind": "cfg"}
+        for name, digest in state["sr_reco_contract_files"].items()
+        if name.startswith("input_samples/cfgs/")
+    ]
+    sidecar = {
+        "metadata_schema_version": 2,
+        "artifact": {
+            "pkl_basename": source.name, "pkl_size_bytes": source.stat().st_size,
+            "pkl_sha256": manifest.digest_file(source), "artifact_kind": "processor_output",
+            "merged": False,
+            "nominal_container_schema_version": 2,
+            "nominal_container_layout": "split_sibling_v1",
+        },
+        "lineage": {"inputs": []}, "histogram_applicability": {
+            "contract_version": 1, "analysis_mode": "all",
+            "producer_query": "AnalysisProcessor.histogram_fill_is_applicable",
+            "families": {family: {} for family in block["histograms"]},
+        },
+        "production_sample_contract": {
+            "contract_version": 1, "resolved_mode": "production",
+            "wrapper_identity": "run_cr.sh -> fullR3_run.sh", "cfg_identities": cfg_identities,
+        },
+    }
+    sidecar_path = Path(f"{source}.metadata.json")
+    sidecar_path.write_text(json.dumps(sidecar), encoding="utf-8")
+    state_path = output_root / ".run2_sr_ext_campaign_state.json"
+    lock_path = output_root / ".run2_sr_ext_campaign.lock"
+    lock_path.touch()
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+    assert manifest.check_state(manifest.load_state(state_path))[0]["status"] == "source_failed"
+    manifest.activate_stage_policy(state_path, revision)
+    activated = state_path.read_bytes()
+    manifest.activate_stage_policy(state_path, revision)
+    assert state_path.read_bytes() == activated
+    state = manifest.load_state(state_path)
+    block = state["blocks"][0]
+    evidence = {
+        "version": 1, "accepted_by": "fixture-owner", "evidence_ref": "fixture-validation-001",
+        "validation_basis": "accepted_prior_validation", "campaign_tag": state["campaign_tag"],
+        "production_profile": state["production_profile"], "output_dir": state["output_dir"],
+        "block_id": block["id"], "plan_revision": revision,
+        "source_attempt": block["source_runtime"]["attempt"],
+        "source_command_sha256": manifest.canonical_digest(block["source_command_argv"]),
+        "source_runtime_sha256": manifest.canonical_digest(block["source_runtime"]),
+        "scientific_contract_sha256": block["source_runtime"]["scientific_contract_sha256"],
+        "environment_file_sha256": state["env_file_sha256"],
+        "source_receipt": manifest.artifact_receipt(source),
+        "historical_composite_outcome": {
+            "exit_code": 137, "signal": 9, "cause": "OOM_CONFIRMED",
+        },
+        "source_publication_complete": True,
+    }
+    evidence_path = tmp_path / "accepted_evidence.json"
+    evidence_path.write_text(json.dumps(evidence), encoding="utf-8")
+    return state_path, evidence_path, evidence, source, sidecar_path, revision
+
+
+def test_guarded_adoption_preserves_historical_failure_and_source_identity(tmp_path):
+    state_path, evidence_path, evidence, source, _, revision = _legacy_inline_adoption_fixture(tmp_path)
+    before_source = source.read_bytes()
+    before = manifest.load_state(state_path)
+    assert before["nonprompt_mode"] == "inline"
+    assert before["sr_stage_policy"]["effective_nonprompt_mode"] == "separate"
+    assert before["sr_reco_contract_sha256"] == before["sr_stage_policy"]["historical_contract_sha256"]
+    assert manifest.adopt_source(state_path, evidence["block_id"], evidence_path, revision) == evidence["source_receipt"]["sha256"]
+    adopted_bytes = state_path.read_bytes()
+    assert manifest.adopt_source(state_path, evidence["block_id"], evidence_path, revision) == evidence["source_receipt"]["sha256"]
+    assert state_path.read_bytes() == adopted_bytes
+    reopened = manifest.load_state(state_path)
+    block = reopened["blocks"][0]
+    assert block["status"] == "source_ready" and block["source_status"] == "ready"
+    assert block["source_exit_code"] == 137 and block["source_signal"] == 9
+    assert block["source_adoption"]["historical_composite_outcome"] == evidence["historical_composite_outcome"]
+    assert block["source_adoption"]["source_only_exit_code"] is None
+    assert any(item.get("exit_code") == 137 and item.get("signal") == 9 for item in block["transitions"])
+    assert block["source_runtime"] == before["blocks"][0]["source_runtime"]
+    assert block["source_receipt"] == evidence["source_receipt"]
+    assert source.read_bytes() == before_source
+    assert all(item["status"] == "planned" for item in reopened["blocks"][1:])
+    assert manifest.check_state(reopened)[0]["status"] == "source_ready"
+
+
+def test_stage_policy_keeps_historical_hash_and_scientific_inputs_distinct(tmp_path):
+    state_path, _, _, _, _, _ = _legacy_inline_adoption_fixture(tmp_path)
+    state = manifest.load_state(state_path)
+    historical_hash = state["sr_reco_scientific_contract_sha256"]
+    current_hash = state["sr_reco_current_scientific_contract_sha256"]
+    technical_only = copy.deepcopy(state)
+    technical_only["nonprompt_mode"] = "separate"
+    assert manifest.scientific_contract(
+        technical_only, state["sr_reco_scientific_files"], include_execution_mode=False
+    ) == current_hash
+    assert manifest.scientific_contract(
+        technical_only, state["sr_reco_scientific_files"]
+    ) != historical_hash
+    with pytest.raises(ValueError, match="historical campaign contract|stage policy"):
+        manifest.check_state(technical_only)
+    changed_science = copy.deepcopy(state)
+    changed_science["do_systs"] = False
+    assert manifest.scientific_contract(
+        changed_science, state["sr_reco_scientific_files"], include_execution_mode=False
+    ) != current_hash
+    with pytest.raises(ValueError, match="scientific contract|historical campaign contract"):
+        manifest.check_state(changed_science)
+    unknown_policy = copy.deepcopy(state)
+    unknown_policy["sr_stage_policy"]["version"] = 2
+    with pytest.raises(ValueError, match="stage policy"):
+        manifest.check_state(unknown_policy)
+    legacy_with_policy = copy.deepcopy(state)
+    legacy_with_policy["schema_version"] = 7
+    with pytest.raises(ValueError, match="stage policy requires SR schema 8"):
+        manifest.check_state(legacy_with_policy)
+
+
+def test_schema_six_stage_activation_is_explicit_and_idempotent(tmp_path):
+    output_root = tmp_path / "campaign"
+    output_root.mkdir()
+    units = manifest.load_plan(manifest.DEFAULT_PLAN_PATH)
+    revision = f"r1_{manifest.canonical_digest(units)[:12]}"
+    state = manifest.decorate_initial_state({
+        "schema_version": 6, "production_profile": "run2_sr_ext",
+        "campaign_tag": "legacy-inline", "output_dir": str(output_root),
+        "topeft_git_commit": "historical", "env_file": str(tmp_path / "environment.tar.gz"),
+        "env_file_sha256": "a" * 64, "environment_fingerprint": "b" * 64,
+        "environment_mode": "explicit_snapshot", "topcoffea_git_commit": "c" * 40,
+        "topcoffea_relevant_source_fingerprint": "d" * 64,
+        "ttgamma_sample_role_policy": "split", "do_systs": True, "do_np": True,
+        "region": "SR", "nonprompt_mode": "inline",
+        "blocks": [manifest.new_pending_block(spec) for spec in manifest.plan_blocks(
+            units, "run2_sr_ext", "legacy-inline", str(output_root), revision
+        )],
+    }, "25000")
+    state_path = output_root / ".run2_sr_ext_campaign_state.json"
+    (output_root / ".run2_sr_ext_campaign.lock").touch()
+    original = json.dumps(state).encode()
+    state_path.write_bytes(original)
+    migrated_hash = manifest.activate_stage_policy(state_path, revision)
+    activated_bytes = state_path.read_bytes()
+    migrated = manifest.load_state(state_path)
+    assert migrated["schema_version"] == 8
+    assert migrated["nonprompt_mode"] == "inline"
+    assert migrated["sr_stage_policy"]["activated_from_schema"] == 6
+    assert migrated["sr_stage_policy"]["effective_nonprompt_mode"] == "separate"
+    assert migrated["sr_reco_contract_sha256"] == state["sr_reco_contract_sha256"]
+    assert migrated_hash == migrated["sr_reco_current_scientific_contract_sha256"]
+    assert manifest.check_state(migrated) == migrated["blocks"]
+    assert manifest.activate_stage_policy(state_path, revision) == migrated_hash
+    assert state_path.read_bytes() == activated_bytes
+    state_path.write_bytes(original)
+    changed = copy.deepcopy(state)
+    changed["do_systs"] = False
+    state_path.write_text(json.dumps(changed), encoding="utf-8")
+    rejected_bytes = state_path.read_bytes()
+    with pytest.raises(ValueError, match="historical campaign contract"):
+        manifest.activate_stage_policy(state_path, revision)
+    assert state_path.read_bytes() == rejected_bytes
+
+
+def test_adoption_atomic_replace_failure_preserves_state_bytes(tmp_path, monkeypatch):
+    state_path, evidence_path, evidence, _, _, revision = _legacy_inline_adoption_fixture(tmp_path)
+    before = state_path.read_bytes()
+    def interrupted_replace(*_args):
+        raise OSError("simulated atomic replacement interruption")
+    monkeypatch.setattr(manifest.os, "replace", interrupted_replace)
+    with pytest.raises(OSError, match="interruption"):
+        manifest.adopt_source(state_path, evidence["block_id"], evidence_path, revision)
+    assert state_path.read_bytes() == before
+    assert not list(state_path.parent.glob(f".{state_path.name}.tmp.*"))
+
+
+def test_adopted_legacy_source_resumes_nonprompt_only_for_selected_unit(tmp_path):
+    state_path, evidence_path, evidence, source, _, revision = _legacy_inline_adoption_fixture(tmp_path)
+    _write_backend(tmp_path / "backend.sh")
+    environment = _backend_environment(tmp_path)
+    source_bytes = source.read_bytes()
+    manifest.adopt_source(state_path, evidence["block_id"], evidence_path, revision)
+    before = manifest.load_state(state_path)
+    source_runtime = copy.deepcopy(before["blocks"][0]["source_runtime"])
+    resumed = _run(
+        "run2_sr_ext", state_path.parent, before["campaign_tag"], dry_run=False,
+        resume=True, environment=environment,
+        extra_args=("--selected-fragment", evidence["block_id"]),
+    )
+    assert resumed.returncode == 0, resumed.stdout
+    assert not (tmp_path / "block_calls.tsv").exists()
+    assert (tmp_path / "nonprompt_calls.tsv").read_text().splitlines() == [evidence["block_id"]]
+    after = manifest.load_state(state_path)
+    block = after["blocks"][0]
+    assert block["status"] == "success"
+    assert block["source_runtime"] == source_runtime
+    assert block["source_receipt"] == before["blocks"][0]["source_receipt"]
+    assert block["source_exit_code"] == 137 and block["source_signal"] == 9
+    assert block["source_adoption"]["source_only_exit_code"] is None
+    assert source.read_bytes() == source_bytes
+    assert all(item["status"] == "planned" for item in after["blocks"][1:])
+    assert after["campaign_status"] == "blocked_incomplete"
+    assert manifest.check_state(after)[0]["status"] == "success"
+
+
+def test_guarded_adoption_rejects_mismatched_evidence_without_mutation(tmp_path):
+    state_path, evidence_path, evidence, source, sidecar_path, revision = _legacy_inline_adoption_fixture(tmp_path)
+    original_state = state_path.read_bytes()
+    wrong_values = {
+        "version": 2, "accepted_by": "", "evidence_ref": "",
+        "validation_basis": "unknown", "campaign_tag": "wrong", "production_profile": "wrong",
+        "output_dir": str(tmp_path), "block_id": "run2_sr_ext_e_2", "plan_revision": "wrong",
+        "source_attempt": 2, "source_command_sha256": "0" * 64,
+        "source_runtime_sha256": "0" * 64, "scientific_contract_sha256": "0" * 64,
+        "environment_file_sha256": "0" * 64, "source_publication_complete": False,
+    }
+    for key, value in wrong_values.items():
+        altered = copy.deepcopy(evidence)
+        altered[key] = value
+        evidence_path.write_text(json.dumps(altered), encoding="utf-8")
+        with pytest.raises(ValueError):
+            manifest.adopt_source(state_path, evidence["block_id"], evidence_path, revision)
+        assert state_path.read_bytes() == original_state
+    for change in (
+        {"source_receipt": {**evidence["source_receipt"], "sha256": "0" * 64}},
+        {"historical_composite_outcome": {"exit_code": 0, "signal": None, "cause": "wrong"}},
+    ):
+        evidence_path.write_text(json.dumps({**evidence, **change}), encoding="utf-8")
+        with pytest.raises(ValueError):
+            manifest.adopt_source(state_path, evidence["block_id"], evidence_path, revision)
+        assert state_path.read_bytes() == original_state
+    evidence_path.write_text(json.dumps(evidence), encoding="utf-8")
+    original_sidecar = sidecar_path.read_bytes()
+    sidecar = json.loads(original_sidecar)
+    sidecar["production_sample_contract"]["cfg_identities"][0]["content_sha256"] = "0" * 64
+    sidecar_path.write_text(json.dumps(sidecar), encoding="utf-8")
+    with pytest.raises(ValueError):
+        manifest.adopt_source(state_path, evidence["block_id"], evidence_path, revision)
+    assert state_path.read_bytes() == original_state
+    sidecar_path.write_bytes(original_sidecar)
+    np_path = Path(manifest.load_state(state_path)["blocks"][0]["expected_np_path"])
+    np_path.write_bytes(b"collision")
+    with pytest.raises(ValueError, match="collision"):
+        manifest.adopt_source(state_path, evidence["block_id"], evidence_path, revision)
+    assert state_path.read_bytes() == original_state
+    np_path.unlink()
+    parked = source.with_name("parked_source.pkl.gz")
+    source.rename(parked)
+    source.symlink_to(parked)
+    with pytest.raises(ValueError):
+        manifest.adopt_source(state_path, evidence["block_id"], evidence_path, revision)
+    assert state_path.read_bytes() == original_state
+    source.unlink()
+    parked.rename(source)
+    in_flight = manifest.load_state(state_path)
+    in_flight["blocks"][0]["status"] = "source_running"
+    in_flight["blocks"][0]["source_status"] = "running"
+    state_path.write_text(json.dumps(in_flight), encoding="utf-8")
+    in_flight_bytes = state_path.read_bytes()
+    with pytest.raises(ValueError, match="failed active composite source"):
+        manifest.adopt_source(state_path, evidence["block_id"], evidence_path, revision)
+    assert state_path.read_bytes() == in_flight_bytes
+    state_path.write_bytes(original_state)
+    evidence_path.unlink()
+    with pytest.raises(ValueError, match="evidence path"):
+        manifest.adopt_source(state_path, evidence["block_id"], evidence_path, revision)
+    assert state_path.read_bytes() == original_state
+    evidence_path.write_text(json.dumps(evidence), encoding="utf-8")
+    foreign_root = tmp_path / "foreign"
+    foreign_root.mkdir()
+    foreign_state = foreign_root / state_path.name
+    foreign_state.write_bytes(original_state)
+    (foreign_root / ".run2_sr_ext_campaign.lock").touch()
+    with pytest.raises(ValueError, match="foreign or symbolic"):
+        manifest.adopt_source(foreign_state, evidence["block_id"], evidence_path, revision)
+    assert foreign_state.read_bytes() == original_state
+
+
+@pytest.mark.parametrize("profile", ("run2_sr_ext", "run3_sr_ext"))
+def test_nonprompt_failure_retries_without_source_replay(tmp_path, profile):
+    validation_root = tmp_path / profile
+    validation_root.mkdir()
+    _write_backend(validation_root / "backend.sh")
+    environment = _backend_environment(validation_root)
+    environment["SRPLOT009_VALIDATION_SCENARIO"] = "sr_np_failure_once"
+    output_root = validation_root / "output"
+    tag = f"separate-{profile}"
+    selected = f"{profile}_a_1"
+    extra = ("--selected-fragment", selected)
+    first = _run(profile, output_root, tag, dry_run=False, environment=environment, extra_args=extra)
+    assert first.returncode == 1, first.stdout
+    failed = _campaign_state(output_root, profile)
+    block = failed["blocks"][0]
+    source = Path(block["expected_nominal_path"])
+    source_bytes = source.read_bytes()
+    source_identity = (copy.deepcopy(block["source_receipt"]), copy.deepcopy(block["source_runtime"]),
+                       copy.deepcopy(block["source_runtime_attempts"]), block["source_command_argv"])
+    assert failed["schema_version"] == 8
+    assert failed["sr_stage_policy"]["effective_nonprompt_mode"] == "separate"
+    assert block["status"] == "nonprompt_failed" and block["source_status"] == "ready"
+    assert block["nonprompt_exit_code"] == 137
+    assert manifest.check_state(failed)[0]["status"] == "nonprompt_failed"
+    assert all(item["status"] == "planned" for item in failed["blocks"][1:])
+    assert len((validation_root / "block_calls.tsv").read_text().splitlines()) == 1
+    assert (validation_root / "nonprompt_calls.tsv").read_text().splitlines() == [selected]
+    resumed = _run(profile, output_root, tag, dry_run=False, resume=True,
+                   environment=environment, extra_args=extra)
+    assert resumed.returncode == 0, resumed.stdout
+    completed = _campaign_state(output_root, profile)
+    block = completed["blocks"][0]
+    assert block["status"] == "success" and block["nonprompt_exit_code"] == 0
+    assert (block["source_receipt"], block["source_runtime"], block["source_runtime_attempts"],
+            block["source_command_argv"]) == source_identity
+    assert source.read_bytes() == source_bytes
+    assert len((validation_root / "block_calls.tsv").read_text().splitlines()) == 1
+    assert (validation_root / "nonprompt_calls.tsv").read_text().splitlines() == [selected, selected]
+    assert all(item["status"] == "planned" for item in completed["blocks"][1:])
+    assert completed["campaign_status"] == "blocked_incomplete"
+    assert manifest.check_state(completed)[0]["status"] == "success"
+    skipped = _run(profile, output_root, tag, dry_run=False, resume=True,
+                   environment=environment, extra_args=extra)
+    assert skipped.returncode == 0, skipped.stdout
+    assert len((validation_root / "block_calls.tsv").read_text().splitlines()) == 1
+    assert (validation_root / "nonprompt_calls.tsv").read_text().splitlines() == [selected, selected]
+
+
 @pytest.mark.parametrize("profile", ("run2_sr_ext", "run3_sr_ext"))
 def test_legacy_receipt_and_pending_runtime_transition(tmp_path, profile, monkeypatch, capsys):
     git_bin = tmp_path / "reject_git"
@@ -138,6 +506,19 @@ def test_legacy_receipt_and_pending_runtime_transition(tmp_path, profile, monkey
     assert first.returncode == 0, first.stdout
     state_path = output_root / f".{profile}_campaign_state.json"
     legacy = _campaign_state(output_root, profile)
+    # Recreate the supported pre-runtime schema from a tiny new-format fixture.
+    # The completed artifact and its historical receipt remain unchanged.
+    legacy["schema_version"] = 6
+    for key in (
+        "sr_stage_policy", "sr_reco_current_scientific_contract_sha256",
+        "sr_reco_scientific_contract_sha256", "sr_reco_scientific_files",
+    ):
+        legacy.pop(key)
+    completed = legacy["blocks"][0]
+    for key in ("source_runtime", "source_runtime_attempts", "receipt_runtime_sha256"):
+        completed.pop(key)
+    completed["receipt_contract_sha256"] = legacy["sr_reco_contract_sha256"]
+    state_path.write_text(json.dumps(legacy), encoding="utf-8")
     legacy_bytes = state_path.read_bytes()
     first_block = copy.deepcopy(legacy["blocks"][0])
     first_artifacts = {

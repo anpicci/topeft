@@ -302,6 +302,20 @@ case "$action" in
     nonprompt_path="$3"
     shift 3
     printf '%s\\n' "$block_id" >> "${{SRPLOT009_VALIDATION_ROOT}}/nonprompt_calls.tsv"
+    if [[ "$scenario" == sr_np_failure_once ]]; then
+      if [[ "$block_id" == run2_sr_ext_* ]]; then
+        state_profile=run2_sr_ext
+      else
+        state_profile=run3_sr_ext
+      fi
+      state_path="$(dirname -- "$source_path")/.$state_profile"_campaign_state.json
+      grep -Fq '"source_status": "ready"' "$state_path" || exit 96
+      grep -Fq '"source_receipt": {{' "$state_path" || exit 97
+      if [[ ! -e "${{SRPLOT009_VALIDATION_ROOT}}/.np_failed_once" ]]; then
+        : > "${{SRPLOT009_VALIDATION_ROOT}}/.np_failed_once"
+        exit 137
+      fi
+    fi
     [[ "$scenario" != nonprompt_failure_2 || "$block_id" != *_b ]] || exit 25
     [[ -s "$source_path" ]] || exit 26
     printf 'synthetic nonprompt\\n' > "$nonprompt_path"
@@ -1301,17 +1315,20 @@ def test_stubbed_run3_source_failure_skips_its_nonprompt_and_continues(tmp_path)
     assert (validation_root / "run3_full_e.started").exists()
 
 
-def test_stubbed_nonprompt_failure_preserves_source_and_continues(tmp_path):
+@pytest.mark.parametrize("profile", ("run2_full", "run3_full"))
+def test_stubbed_nonprompt_failure_preserves_source_and_continues(tmp_path, profile):
     result, output_root, validation_root = _stubbed_run(
-        tmp_path, "run3_full", "nonprompt_failure_2"
+        tmp_path, profile, "nonprompt_failure_2"
     )
     assert result.returncode == 1, result.stdout
-    state = _campaign_state(output_root, "run3_full")
+    state = _campaign_state(output_root, profile)
     failed = state["blocks"][1]
+    assert state["schema_version"] == 6 and state["nonprompt_mode"] == "separate"
     assert failed["status"] == "nonprompt_failed"
     assert failed["source_status"] == "ready"
     assert failed["nonprompt_exit_code"] == 25
-    assert (validation_root / "run3_full_c.started").exists()
+    assert failed["source_receipt"]["path"] == failed["expected_nominal_path"]
+    assert (validation_root / f"{profile}_c.started").exists()
 
 
 @pytest.mark.parametrize(
@@ -1330,12 +1347,8 @@ def test_native_wq_logs_are_campaign_owned_copy_verified_and_attributed(
     for block in state["blocks"]:
         command = block["source_command_argv"]
         log_dir = Path(command[command.index("--wq-log-dir") + 1])
-        if profile == "run2_sr_ext":
-            assert "--np-postprocess=inline" in command
-            assert "--defer-np" not in command
-        else:
-            assert "--defer-np" in command
-            assert "--np-postprocess=inline" not in command
+        assert "--defer-np" in command
+        assert "--np-postprocess=inline" not in command
         expected_log_dir = (
             output_root
             / "work_queue_logs"
@@ -1782,7 +1795,7 @@ def test_selected_canonical_fragment_dry_run_has_no_output_root(tmp_path, profil
 
 
 @pytest.mark.parametrize(("profile", "np_option"),
-                         (("run2_sr_ext", "--np-postprocess=inline"),
+                         (("run2_sr_ext", "--np-postprocess=defer"),
                           ("run3_sr_ext", "--np-postprocess=defer")))
 def test_processing_core_option_is_opt_in_and_reaches_selected_source(tmp_path, profile, np_option):
     base_options = ("--selected-fragment", f"{profile}_a_3",

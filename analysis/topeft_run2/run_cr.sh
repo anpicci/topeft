@@ -848,7 +848,7 @@ case "${production_profile}" in
     run_cr=false
     run_sr=true
     production_region="SR"
-    production_np_mode="inline"
+    production_np_mode="separate"
     production_component="run2"
     ;;
   run3_full|run3_sr_ext)
@@ -1235,7 +1235,7 @@ import os
 import re
 import sys
 from pathlib import Path
-from sr_reco_manifest import capture_receipt, check_state, decorate_initial_state, source_runtime
+from sr_reco_manifest import artifact_receipt, capture_receipt, check_state, decorate_initial_state, source_runtime
 
 
 VALID_STATUSES = {
@@ -1397,6 +1397,32 @@ def validate_state(state, desired, allow_manager_provenance_delta=False):
         }[recorded["status"]]
         if (recorded["source_status"], recorded["nonprompt_status"]) != expected_stage_statuses:
             fail(f"campaign state has contradictory stage statuses for block {expected['id']}")
+    validate_full_receipts(state)
+
+
+def validate_full_receipts(state):
+    if state.get("production_profile") not in {"run2_full", "run3_full"} or state.get("schema_version") != 6:
+        return
+    if state.get("nonprompt_mode") != "separate":
+        fail("new full-profile state requires separate nonprompt")
+    for block in state["blocks"]:
+        if block["status"] not in {"source_ready", "nonprompt_running", "nonprompt_failed", "success"}:
+            continue
+        if block.get("source_status") != "ready" or block.get("source_exit_code") != 0:
+            fail("full-profile source receipt lacks a successful source child")
+        artifact_receipt(block["expected_nominal_path"], stored_receipt=block.get("source_receipt"), verify_payload_sha256=False)
+        if block["status"] == "success":
+            if block.get("nonprompt_status") != "success" or block.get("nonprompt_exit_code") != 0:
+                fail("full-profile nonprompt completion is inconsistent")
+            artifact_receipt(block["expected_np_path"], stored_receipt=block.get("nonprompt_receipt"), verify_payload_sha256=False)
+            sidecar = json.loads(Path(f"{block['expected_np_path']}.metadata.json").read_text(encoding="utf-8"))
+            if not sidecar.get("synthetic") and not any(
+                isinstance(item, dict) and item.get("pkl_sha256") == block["source_receipt"]["sha256"]
+                for item in sidecar["lineage"]["inputs"]
+            ):
+                fail("full-profile nonprompt lineage does not bind source")
+        elif block.get("nonprompt_receipt") is not None:
+            fail("full-profile nonprompt receipt precedes success")
 
 
 mode = sys.argv[1]
@@ -1510,6 +1536,17 @@ if mode == "historical_source_commit":
              re.fullmatch(r"[0-9a-f]{40}", source_commit) is None)):
         fail("campaign state does not contain a valid historical topeft source commit")
     print(source_commit)
+    raise SystemExit(0)
+
+if mode == "historical_full_execution_policy":
+    expected_profile = sys.argv[3]
+    if state.get("production_profile") != expected_profile or state.get("schema_version") not in {5, 6}:
+        fail("unsupported historical full-profile state")
+    if state["schema_version"] == 6 and state.get("nonprompt_mode") != "separate":
+        fail("unsupported full-profile stage policy")
+    if state.get("nonprompt_mode") not in {"inline", "separate"}:
+        fail("invalid historical full-profile execution mode")
+    print(f"{state['schema_version']}\t{state['nonprompt_mode']}")
     raise SystemExit(0)
 
 if mode == "legacy_context_summary":
@@ -1626,7 +1663,7 @@ if mode == "mark":
         fail("T0 stat-only nonprompt recovery requires postprocessor provenance")
     for block in state.get("blocks", []):
         if block.get("id") == block_id:
-            if state.get("schema_version") == 7 and stage == "source" and stage_status == "running":
+            if state.get("schema_version") in {7, 8} and stage == "source" and stage_status == "running":
                 runtime = source_runtime(state, block, extra)
                 block.setdefault("source_runtime_attempts", []).append(runtime)
                 block["source_runtime"] = runtime
@@ -1687,6 +1724,11 @@ if mode == "mark":
                     capture_receipt(state, block, "source")
                 if stage == "nonprompt" and stage_status == "success":
                     capture_receipt(state, block, "nonprompt")
+            elif state.get("production_profile") in {"run2_full", "run3_full"} and state.get("schema_version") == 6:
+                if stage == "source" and stage_status == "ready":
+                    block["source_receipt"] = artifact_receipt(block["expected_nominal_path"])
+                if stage == "nonprompt" and stage_status == "success":
+                    block["nonprompt_receipt"] = artifact_receipt(block["expected_np_path"])
             block["last_transition_utc"] = timestamp
             block["last_transition_detail"] = detail
             if postprocessor_provenance is not None:
@@ -1706,6 +1748,10 @@ if mode == "mark":
                 ]
             block.setdefault("transitions", []).append(transition)
             state["updated_at_utc"] = now_utc()
+            if state.get("production_profile") in {"run2_sr_ext", "run3_sr_ext"}:
+                check_state(state)
+            else:
+                validate_full_receipts(state)
             atomic_write(state_path, state)
             raise SystemExit(0)
     fail(f"campaign state does not contain block {block_id}")
@@ -2151,6 +2197,8 @@ prepare_production_campaign() {
 
   production_assert_live_plan
   if [[ "${production_profile}" == run?_sr_ext ]]; then
+    schema_version=8
+  elif [[ "${production_profile}" == run?_full ]]; then
     schema_version=6
   fi
   if [[ "${production_profile}" == run?_sr_ext ]]; then
@@ -2160,6 +2208,11 @@ prepare_production_campaign() {
   fi
   resolve_t0_postprocessor_provenance
   production_state_path="${output_dir}/${production_state_filename}"
+  if [[ "${profile_resume}" == "true" && "${production_profile}" == run?_full ]]; then
+    IFS=$'\t' read -r schema_version production_np_mode < <(
+      production_state_tool historical_full_execution_policy "${production_state_path}" "${production_profile}"
+    )
+  fi
   if [[ "${dry_run}" == "true" ]]; then
     production_plan_file=$(mktemp "${TMPDIR:-/tmp}/${production_profile}_plan.XXXXXX")
   else
