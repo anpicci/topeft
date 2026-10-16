@@ -15,6 +15,101 @@ from matplotlib.transforms import Bbox
 from analysis.topeft_run2 import make_cr_and_sr_plots
 
 
+def test_sr_njets_selectors_reach_native_loader_before_materialization(monkeypatch, tmp_path):
+    parser = make_cr_and_sr_plots.build_arg_parser()
+    args = parser.parse_args([
+        "-f", "synthetic.pkl.gz", "-o", str(tmp_path), "-n", "bounded",
+        "--sr", "--variables", "njets", "--merge-only",
+    ])
+    captured = {}
+
+    def capture_load(_paths, **kwargs):
+        captured.update(kwargs)
+        return {}, {"schema": "split_sibling_v1", "runtime_histogram_families": ["njets"]}
+
+    monkeypatch.setattr(make_cr_and_sr_plots, "load_and_merge_histogram_pkls", capture_load)
+    assert make_cr_and_sr_plots.run_with_args(args, parser) == 0
+    assert captured["selected_families"] == ["njets"]
+    assert any(re.search(pattern, "3l_onZ_2b_4j") for pattern in captured["channel_patterns"])
+    assert any(re.search(pattern, "3l_onZ_2b") for pattern in captured["channel_patterns"])
+    assert not any(re.search(pattern, "2lss_ee_CR_1j") for pattern in captured["channel_patterns"])
+
+
+def test_sr_njets_selected_consumer_matches_unselected_synthetic_multi_pkl(tmp_path, monkeypatch):
+    from tests.test_make_cards_selective_loading import _payload, _assert_histograms_equal
+    from tests.test_split_nominal_loader import _policy_for_families, _write_versioned, _scalar
+    from topeft.modules import datacard_tools, nominal_schema
+    from topeft.modules.nominal_schema import materialize_scalar_histogram_dict
+
+    channels = ("3l_onZ_2b_4j", "2lss_ee_CR_1j")
+    first_payload = _payload(channels=channels, signal=False)
+    second_payload = _payload(channels=channels, background=False)
+    data_samples = {
+        "background_dataset": {"histAxisName": "background", "isData": False, "WCnames": []},
+        "signal_dataset": {"histAxisName": "signal", "isData": False, "WCnames": ["ctG"]},
+        "data_dataset": {"histAxisName": "data", "isData": True, "WCnames": []},
+    }
+    first_payload[nominal_schema.scalar_nominal_key("njets")] += _scalar(
+        "data", 7.0, channel=channels[0]
+    )
+    first_payload[nominal_schema.sumw2_key("njets")] += _scalar(
+        "data", 7.0, companion=True, channel=channels[0]
+    )
+    first, second = tmp_path / "first.pkl.gz", tmp_path / "second.pkl.gz"
+    policy = _policy_for_families(("njets", "ptz_wtau"), samples=data_samples)
+    _write_versioned(first, first_payload, policy, samples=data_samples)
+    _write_versioned(second, second_payload, policy, samples=data_samples)
+    paths = [str(first), str(second)]
+    eager, eager_report = datacard_tools.load_and_merge_histogram_pkls(paths)
+    expected = {
+        key: histogram.prune("channel", [channels[0]])
+        for key, histogram in eager.items() if key.startswith("njets")
+    }
+    expected_view = materialize_scalar_histogram_dict(
+        expected, runtime_families=["njets"], wc_values={},
+    )
+    captured = {}
+    original_loader = make_cr_and_sr_plots.load_and_merge_histogram_pkls
+
+    def capture_loader(*args, **kwargs):
+        result = original_loader(*args, **kwargs)
+        captured["report"] = result[1]
+        return result
+
+    monkeypatch.setattr(make_cr_and_sr_plots, "load_and_merge_histogram_pkls", capture_loader)
+    monkeypatch.setattr(
+        make_cr_and_sr_plots, "run_plots_for_region",
+        lambda _region, histograms, *_args, **_kwargs: captured.update(view=histograms),
+    )
+    parser = make_cr_and_sr_plots.build_arg_parser()
+    args = parser.parse_args([
+        "-f", str(first), "-f", str(second), "-o", str(tmp_path),
+        "-n", "selected", "--sr", "--variables", "njets",
+    ])
+    assert make_cr_and_sr_plots.run_with_args(args, parser) == 0
+    assert set(captured["view"]) == {"njets", "njets_sumw2"}
+    assert "ptz_wtau__scalar_nominal" in captured["report"]["files"][0]["discarded_keys"]
+    assert channels[1] not in captured["report"]["files"][0]["resolved_channels"]
+    _assert_histograms_equal(captured["view"], expected_view)
+    assert "data" in list(captured["view"]["njets"].axes["process"])
+    assert "data" in list(eager[nominal_schema.scalar_nominal_key("njets")].axes["process"])
+    assert eager_report["schema"] == captured["report"]["schema"]
+
+
+def test_sr_njets_selected_loader_preserves_collision_rejection(tmp_path):
+    from tests.test_make_cards_selective_loading import _write_fixture
+    from topeft.modules.datacard_tools import load_and_merge_histogram_pkls
+
+    first, second = tmp_path / "first.pkl.gz", tmp_path / "second.pkl.gz"
+    _write_fixture(first, signal=False)
+    _write_fixture(second, signal=False)
+    with pytest.raises(RuntimeError, match="Duplicate histogram contribution support"):
+        load_and_merge_histogram_pkls(
+            [str(first), str(second)], selected_families=["njets"],
+            channel_patterns=make_cr_and_sr_plots._sr_njets_channel_patterns(),
+        )
+
+
 class _DummyHist:
     def __init__(self):
         self.scale_factors = []

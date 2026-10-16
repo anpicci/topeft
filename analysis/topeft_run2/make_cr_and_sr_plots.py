@@ -10154,6 +10154,18 @@ def _resolve_pkl_paths(args, parser):
     return pkl_paths
 
 
+def _sr_njets_channel_patterns():
+    """Select physical SR channels accepted by the njets plot configuration."""
+    bases = set(SR_CHAN_DICT)
+    producer_presets = _load_producer_channel_presets()
+    compatible_names = set(_region_compatible_producer_preset_names("SR", producer_presets))
+    for preset_name, subgroups in producer_presets:
+        if preset_name in compatible_names:
+            for _subgroup_name, producer_bases in subgroups:
+                bases.update(producer_bases)
+    return [rf"^{re.escape(base)}(?:_[0-9]+j)?$" for base in sorted(bases)]
+
+
 def _emit_merge_report(report_obj, report_path, out_dir):
     if report_path == "-":
         print("Merge report:")
@@ -10324,10 +10336,17 @@ def run_with_args(args, parser):
         print(
             f"[{load_start_time:%H:%M:%S}] Loading histograms from {len(pkl_paths)} input file(s): {preview_msg}"
         )
+    selected_load = {}
+    if resolved_region == "SR" and selected_variables == ["njets"]:
+        selected_load = {
+            "selected_families": ["njets"],
+            "channel_patterns": _sr_njets_channel_patterns(),
+        }
     hin_dict, merge_report = load_and_merge_histogram_pkls(
         pkl_paths,
         require_sumw2=True,
         year_coverage_policy=args.year_coverage_policy,
+        **selected_load,
     )
     _emit_merge_report(merge_report, args.merge_report, save_dir_path)
     if args.cache_merged_pkl:
