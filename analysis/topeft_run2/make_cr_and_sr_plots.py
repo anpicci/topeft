@@ -50,9 +50,19 @@ from topeft.modules.get_rate_systs import (
     get_syst as te_get_syst,
     get_syst_lst as te_get_syst_lst,
 )
-from topeft.modules.datacard_tools import load_and_merge_histogram_pkls
-from topeft.modules.histogram_artifact import write_histogram_artifact
-from topeft.modules.nominal_schema import materialize_scalar_histogram_dict
+from topeft.modules.datacard_tools import (
+    _reject_cross_run_histogram_composition,
+    load_and_merge_histogram_pkls,
+)
+from topeft.modules.histogram_artifact import (
+    metadata_sidecar_path,
+    read_histogram_sidecar,
+    write_histogram_artifact,
+)
+from topeft.modules.nominal_schema import (
+    materialize_scalar_histogram_dict,
+    validate_histogram_compatibility,
+)
 
 
 _logger = logging.getLogger(__name__)
@@ -10166,6 +10176,195 @@ def _sr_njets_channel_patterns():
     return [rf"^{re.escape(base)}(?:_[0-9]+j)?$" for base in sorted(bases)]
 
 
+def _mixed_stage_sidecars(pkl_paths):
+    """Recognize the supported stage combination without changing artifact kinds."""
+    if len(pkl_paths) < 2 or not all(
+        os.path.isfile(metadata_sidecar_path(path)) for path in pkl_paths
+    ):
+        return None
+    sidecars = [read_histogram_sidecar(path) for path in pkl_paths]
+    kinds = [sidecar["artifact"]["artifact_kind"] for sidecar in sidecars]
+    if len(set(kinds)) == 1:
+        return None
+    if kinds.count("nonprompt_output") != 1 or set(kinds) != {
+        "nonprompt_output", "processor_output"
+    }:
+        raise ValueError(
+            "Unsupported mixed-stage plot inputs: expected exactly one "
+            "nonprompt_output primary and one or more processor_output auxiliaries."
+        )
+    return sidecars
+
+
+def _selected_processes(histograms):
+    return {
+        str(coordinate.process)
+        for histogram in histograms.values()
+        for coordinate in histogram.categorical_keys
+    }
+
+
+def _selected_channels(histograms):
+    return {
+        str(coordinate.channel)
+        for histogram in histograms.values()
+        for coordinate in histogram.categorical_keys
+    }
+
+
+def _project_auxiliary_sr_histogram(histogram, key):
+    """Use the maintained channel-aware appl selector on each physical channel."""
+    if "appl" not in histogram.categorical_axes.name:
+        raise ValueError(
+            f"Mixed-stage processor component {key!r} lacks the appl axis; "
+            "its SR stage cannot be established."
+        )
+    projected = None
+    selected_labels = {}
+    for channel in sorted(str(value) for value in histogram.axes["channel"]):
+        channel_view = histogram.prune("channel", [channel])
+        coordinates = tuple(channel_view.categorical_keys)
+        if not coordinates:
+            continue
+        sr_label = yt.get_appl_sr_bin(channel)
+        present_labels = {str(coordinate.appl) for coordinate in coordinates}
+        sr_states = {label for label in present_labels if label.startswith("isSR")}
+        if sr_states != {sr_label}:
+            raise ValueError(
+                f"Mixed-stage component {key!r} channel {channel!r} has "
+                f"ambiguous or missing source-defined SR appl state: "
+                f"expected={sr_label!r}, observed={sorted(sr_states)!r}."
+            )
+        selected_labels[channel] = sr_label
+        channel_sr = yt.integrate_out_appl(channel_view, channel)
+        if projected is None:
+            projected = channel_sr
+        else:
+            validate_histogram_compatibility(projected, channel_sr, key=key)
+            projected += channel_sr
+    if projected is None:
+        raise ValueError(f"Mixed-stage processor component {key!r} has no SR channels.")
+    return projected, selected_labels
+
+
+def _load_mixed_stage_sr_plot_view(pkl_paths, sidecars, *, selected_load,
+                                   year_coverage_policy):
+    """Compose validated source artifacts as a non-cacheable in-memory SR view."""
+    _reject_cross_run_histogram_composition(
+        pkl_paths, [None] * len(pkl_paths), sidecars
+    )
+    primary_index = next(
+        index for index, sidecar in enumerate(sidecars)
+        if sidecar["artifact"]["artifact_kind"] == "nonprompt_output"
+    )
+    primary_path = pkl_paths[primary_index]
+    primary_sidecar = sidecars[primary_index]
+    view, primary_report = load_and_merge_histogram_pkls(
+        [primary_path], require_sumw2=True,
+        year_coverage_policy=year_coverage_policy, **selected_load,
+    )
+    if primary_report.get("schema") != "split_sibling_v1":
+        raise ValueError("Mixed-stage SR view requires versioned input sidecars.")
+    if any("appl" in histogram.categorical_axes.name for histogram in view.values()):
+        raise ValueError("Mixed-stage nonprompt_output primary still carries appl.")
+    primary_processes = _selected_processes(view)
+    primary_channels = _selected_channels(view)
+    if not primary_processes or not primary_channels:
+        raise ValueError("Mixed-stage primary has no selected SR content.")
+    report = {
+        "schema": "sr_plot_view_composition",
+        "identity": "sr_plot_view_composition",
+        "primary": {
+            "path": primary_path,
+            "sidecar_path": os.fspath(metadata_sidecar_path(primary_path)),
+            "artifact_kind": primary_sidecar["artifact"]["artifact_kind"],
+            "pkl_sha256": primary_sidecar["artifact"]["pkl_sha256"],
+        },
+        "auxiliaries": [],
+        "selected_families": list(selected_load.get("selected_families", ())),
+        "primary_channels": sorted(primary_channels),
+        "process_collision_result": "none",
+        "data_ownership_result": "primary_only",
+        "required_sumw2_result": "validated_per_input",
+        "generic_sidecar_merge_bypassed": True,
+        "cacheable": False,
+        "persistent_artifact": False,
+        "runtime_histogram_families": primary_report["runtime_histogram_families"],
+    }
+    occupied_processes = set(primary_processes)
+    for index, (path, sidecar) in enumerate(zip(pkl_paths, sidecars)):
+        if index == primary_index:
+            continue
+        requested_contract = sidecar.get("requested_data_driven_products")
+        if requested_contract is None:
+            raise ValueError(
+                f"Mixed-stage auxiliary {path!r} lacks a declared "
+                "data-driven product request; prompt-only provenance is unproven."
+            )
+        requested = requested_contract["products"]
+        if any(product["enabled"] for product in requested.values()):
+            raise ValueError(
+                f"Mixed-stage auxiliary {path!r} requests data-driven products."
+            )
+        auxiliary, auxiliary_report = load_and_merge_histogram_pkls(
+            [path], require_sumw2=True,
+            year_coverage_policy=year_coverage_policy, **selected_load,
+        )
+        if auxiliary_report.get("schema") != "split_sibling_v1":
+            raise ValueError("Mixed-stage auxiliary requires a versioned sidecar.")
+        processes = _selected_processes(auxiliary)
+        if not processes:
+            raise ValueError(f"Mixed-stage auxiliary {path!r} has no selected processes.")
+        forbidden = sorted(
+            process for process in processes
+            if process.lower().startswith(
+                ("data", "nonprompt", "flips", "fake")
+            )
+        )
+        if forbidden:
+            raise ValueError(
+                f"Mixed-stage auxiliary {path!r} contains Data or data-driven "
+                f"processes: {forbidden!r}."
+            )
+        collisions = sorted(occupied_processes & processes)
+        if collisions:
+            raise ValueError(
+                f"Mixed-stage process identity collision in {path!r}: {collisions!r}."
+            )
+        auxiliary_channels = _selected_channels(auxiliary)
+        if not auxiliary_channels <= primary_channels:
+            raise ValueError(
+                f"Mixed-stage auxiliary {path!r} has channels outside primary: "
+                f"{sorted(auxiliary_channels - primary_channels)!r}."
+            )
+        labels_by_key = {}
+        for key, histogram in auxiliary.items():
+            auxiliary[key], labels_by_key[key] = _project_auxiliary_sr_histogram(
+                histogram, key
+            )
+        for key, histogram in auxiliary.items():
+            if key in view:
+                validate_histogram_compatibility(view[key], histogram, key=key)
+                view[key] += histogram
+            else:
+                view[key] = histogram
+        occupied_processes.update(processes)
+        report["auxiliaries"].append({
+            "path": path,
+            "sidecar_path": os.fspath(metadata_sidecar_path(path)),
+            "artifact_kind": sidecar["artifact"]["artifact_kind"],
+            "pkl_sha256": sidecar["artifact"]["pkl_sha256"],
+            "appl_projection": "source_defined_sr",
+            "sr_labels_by_component_and_channel": labels_by_key,
+            "channels": sorted(auxiliary_channels),
+            "processes": sorted(processes),
+            "required_sumw2_processes": sidecar[
+                "sumw2_content_manifest"
+            ]["families"].get("njets", {}).get("required_sumw2_processes", []),
+        })
+    return view, report
+
+
 def _emit_merge_report(report_obj, report_path, out_dir):
     if report_path == "-":
         print("Merge report:")
@@ -10301,6 +10500,19 @@ def run_with_args(args, parser):
             normalized_variables.append(cleaned)
     selected_variables = normalized_variables if normalized_variables else None
 
+    mixed_stage_sidecars = _mixed_stage_sidecars(pkl_paths)
+    if mixed_stage_sidecars is not None:
+        if resolved_region != "SR":
+            raise ValueError(
+                "Mixed-stage nonprompt_output plus processor_output inputs "
+                "are supported only for the SR plot view."
+            )
+        if args.cache_merged_pkl:
+            raise ValueError(
+                "Mixed-stage SR plot view is in-memory and not cacheable as "
+                "a merged PKL artifact."
+            )
+
 
     # Whether or not to unit norm the plots
     unit_norm_bool = args.unit_norm
@@ -10342,12 +10554,18 @@ def run_with_args(args, parser):
             "selected_families": ["njets"],
             "channel_patterns": _sr_njets_channel_patterns(),
         }
-    hin_dict, merge_report = load_and_merge_histogram_pkls(
-        pkl_paths,
-        require_sumw2=True,
-        year_coverage_policy=args.year_coverage_policy,
-        **selected_load,
-    )
+    if mixed_stage_sidecars is None:
+        hin_dict, merge_report = load_and_merge_histogram_pkls(
+            pkl_paths,
+            require_sumw2=True,
+            year_coverage_policy=args.year_coverage_policy,
+            **selected_load,
+        )
+    else:
+        hin_dict, merge_report = _load_mixed_stage_sr_plot_view(
+            pkl_paths, mixed_stage_sidecars, selected_load=selected_load,
+            year_coverage_policy=args.year_coverage_policy,
+        )
     _emit_merge_report(merge_report, args.merge_report, save_dir_path)
     if args.cache_merged_pkl:
         _cache_merged_histograms(
@@ -10365,7 +10583,9 @@ def run_with_args(args, parser):
         print("Merge-only mode enabled, stopping after successful merge validation.")
         return 0
 
-    if merge_report.get("schema") == "split_sibling_v1":
+    if merge_report.get("schema") in {
+        "split_sibling_v1", "sr_plot_view_composition"
+    }:
         # Plotting still performs several HistEFT-aware transforms.  Build one
         # consumer-local, non-serialized view only after schema-aware merging
         # and cache handling have completed.

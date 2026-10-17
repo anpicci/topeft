@@ -15,6 +15,253 @@ from matplotlib.transforms import Bbox
 from analysis.topeft_run2 import make_cr_and_sr_plots
 
 
+def _mixed_sr_histogram(process, *, companion=False, auxiliary=False,
+                        sr_weight=1.0, ar_weight=0.0, shape=False):
+    from topcoffea.modules.sparseHist import SparseHist
+
+    dense_name = "njets_sumw2" if companion else "njets"
+    axes = [
+        hist.axis.StrCategory([], name="process", growth=True),
+        hist.axis.StrCategory([], name="channel", growth=True),
+        hist.axis.StrCategory([], name="systematic", growth=True),
+    ]
+    if auxiliary:
+        axes.append(hist.axis.StrCategory([], name="appl", growth=True))
+    axes.append(hist.axis.Regular(2, 0, 2, name=dense_name))
+    output = SparseHist(*axes, storage="Double")
+    for channel, sr_label, ar_label in (
+        ("2lss_p", "isSR_2lSS", "isAR_2lSS"),
+        ("3l_onZ_2b", "isSR_3l", "isAR_3l"),
+    ):
+        variations = [("nominal", sr_weight)]
+        if shape:
+            variations += [("shapeUp", sr_weight * 1.2),
+                           ("shapeDown", sr_weight * 0.8)]
+        for systematic, weight in variations:
+            values = {
+                "process": process, "channel": channel,
+                "systematic": systematic, dense_name: np.asarray([0.5]),
+                "weight": np.asarray([weight]),
+            }
+            if auxiliary:
+                values["appl"] = sr_label
+            output.fill(**values)
+        if auxiliary and ar_weight:
+            output.fill(
+                process=process, channel=channel, systematic="nominal",
+                appl=ar_label, **{dense_name: np.asarray([0.5])},
+                weight=np.asarray([ar_weight]),
+            )
+    return output
+
+
+def _mixed_sr_fixture(monkeypatch, *, auxiliary_process="DY50_centralUL18",
+                      auxiliary_histogram=None):
+    from topeft.modules.nominal_schema import scalar_nominal_key
+
+    scalar_key = scalar_nominal_key("njets")
+    primary = {
+        scalar_key: _mixed_sr_histogram("dataUL18", sr_weight=7),
+        "njets_sumw2": _mixed_sr_histogram("baselineUL18", companion=True,
+                                           sr_weight=16),
+    }
+    primary[scalar_key] += _mixed_sr_histogram(
+        "baselineUL18", sr_weight=4, shape=True
+    )
+    auxiliary = {
+        scalar_key: auxiliary_histogram or _mixed_sr_histogram(
+            auxiliary_process, auxiliary=True, sr_weight=2, ar_weight=30
+        ),
+        "njets_sumw2": _mixed_sr_histogram(
+            auxiliary_process, auxiliary=True, companion=True,
+            sr_weight=5, ar_weight=900,
+        ),
+    }
+    sidecars = [
+        {"artifact": {"artifact_kind": "nonprompt_output",
+                      "pkl_sha256": "a" * 64},
+         "sumw2_storage_provenance": {"resolved_processes": [
+             "dataUL18", "baselineUL18"]}},
+        {"artifact": {"artifact_kind": "processor_output",
+                      "pkl_sha256": "b" * 64},
+         "sumw2_storage_provenance": {"resolved_processes": [
+             auxiliary_process]},
+         "requested_data_driven_products": {"products": {
+             "nonprompt": {"enabled": False}, "flips": {"enabled": False}}},
+         "sumw2_content_manifest": {"families": {"njets": {
+             "required_sumw2_processes": [auxiliary_process]}}}},
+    ]
+    def load_one(paths, **_kwargs):
+        return (
+            primary if paths == ["primary.pkl.gz"] else auxiliary,
+            {"schema": "split_sibling_v1",
+             "runtime_histogram_families": ["njets"]},
+        )
+    monkeypatch.setattr(make_cr_and_sr_plots, "load_and_merge_histogram_pkls",
+                        load_one)
+    return sidecars
+
+
+def _mixed_sr_total(histogram, process, systematic="nominal"):
+    selected = histogram[{"process": process, "systematic": systematic}]
+    return float(np.sum(selected.values(flow=True)))
+
+
+def test_mixed_stage_sr_view_projects_sr_and_preserves_data_sumw2_and_provenance(
+    monkeypatch,
+):
+    sidecars = _mixed_sr_fixture(monkeypatch)
+    grouping_before = dict(make_cr_and_sr_plots.SR_GRP_PATTERNS)
+    view, report = make_cr_and_sr_plots._load_mixed_stage_sr_plot_view(
+        ["primary.pkl.gz", "auxiliary.pkl.gz"], sidecars,
+        selected_load={"selected_families": ["njets"]},
+        year_coverage_policy="off",
+    )
+    assert _mixed_sr_total(view["njets__scalar_nominal"], "dataUL18") == 14
+    assert _mixed_sr_total(view["njets__scalar_nominal"], "baselineUL18") == 8
+    assert _mixed_sr_total(view["njets__scalar_nominal"], "DY50_centralUL18") == 4
+    assert _mixed_sr_total(view["njets_sumw2"], "DY50_centralUL18") == 10
+    assert "appl" not in view["njets_sumw2"].axes.name
+    assert report["auxiliaries"][0]["sr_labels_by_component_and_channel"][
+        "njets_sumw2"
+    ] == {"2lss_p": "isSR_2lSS", "3l_onZ_2b": "isSR_3l"}
+    assert report["primary"]["artifact_kind"] == "nonprompt_output"
+    assert report["auxiliaries"][0]["artifact_kind"] == "processor_output"
+    assert report["generic_sidecar_merge_bypassed"]
+    assert report["cacheable"] is False and report["persistent_artifact"] is False
+    assert make_cr_and_sr_plots.SR_GRP_PATTERNS == grouping_before
+    shape_histo = view["njets__scalar_nominal"].prune("channel", ["2lss_p"])
+    (_, shape_up), details = make_cr_and_sr_plots.get_shape_syst_arrs(
+        shape_histo, group_type="SR", return_details=True
+    )
+    assert details["evaluated_bases"] == ("shape",)
+    assert np.max(np.asarray(shape_up)) == pytest.approx(0.8**2)
+
+
+@pytest.mark.parametrize("process, error", [
+    ("baselineUL18", "process identity collision"),
+    ("dataUL18", "Data or data-driven"),
+])
+def test_mixed_stage_rejects_collision_and_auxiliary_data(monkeypatch, process, error):
+    sidecars = _mixed_sr_fixture(monkeypatch, auxiliary_process=process)
+    with pytest.raises(ValueError, match=error):
+        make_cr_and_sr_plots._load_mixed_stage_sr_plot_view(
+            ["primary.pkl.gz", "auxiliary.pkl.gz"], sidecars,
+            selected_load={"selected_families": ["njets"]},
+            year_coverage_policy="off",
+        )
+
+
+def test_mixed_stage_rejects_missing_sr_appl(monkeypatch):
+    auxiliary = _mixed_sr_histogram(
+        "DY50_centralUL18", auxiliary=True, sr_weight=2, ar_weight=30
+    )
+    auxiliary = auxiliary.remove("appl", ["isSR_2lSS", "isSR_3l"])
+    sidecars = _mixed_sr_fixture(monkeypatch, auxiliary_histogram=auxiliary)
+    with pytest.raises(ValueError, match="missing source-defined SR appl"):
+        make_cr_and_sr_plots._load_mixed_stage_sr_plot_view(
+            ["primary.pkl.gz", "auxiliary.pkl.gz"], sidecars,
+            selected_load={"selected_families": ["njets"]},
+            year_coverage_policy="off",
+        )
+
+
+def test_mixed_stage_automatic_sr_dispatch_uses_single_input_validation(
+    monkeypatch, tmp_path,
+):
+    sidecars = _mixed_sr_fixture(monkeypatch)
+    monkeypatch.setattr(make_cr_and_sr_plots, "_mixed_stage_sidecars",
+                        lambda _paths: sidecars)
+    calls = []
+    loader = make_cr_and_sr_plots.load_and_merge_histogram_pkls
+
+    def record_loader(paths, **kwargs):
+        calls.append(paths)
+        return loader(paths, **kwargs)
+
+    monkeypatch.setattr(make_cr_and_sr_plots, "load_and_merge_histogram_pkls",
+                        record_loader)
+    parser = make_cr_and_sr_plots.build_arg_parser()
+    args = parser.parse_args([
+        "-f", "primary.pkl.gz", "-f", "auxiliary.pkl.gz",
+        "-o", str(tmp_path), "-n", "mixed", "--sr",
+        "--variables", "njets", "--merge-only",
+    ])
+    assert make_cr_and_sr_plots.run_with_args(args, parser) == 0
+    assert calls == [["primary.pkl.gz"], ["auxiliary.pkl.gz"]]
+
+
+def test_mixed_stage_kind_classifier_requires_one_final_primary(
+    monkeypatch, tmp_path,
+):
+    paths = [str(tmp_path / "primary.pkl.gz"),
+             str(tmp_path / "auxiliary.pkl.gz")]
+    for path in paths:
+        make_cr_and_sr_plots.metadata_sidecar_path(path).touch()
+    kinds = ["nonprompt_output", "processor_output"]
+    monkeypatch.setattr(
+        make_cr_and_sr_plots, "read_histogram_sidecar",
+        lambda path: {"artifact": {"artifact_kind": kinds[paths.index(path)]}},
+    )
+    assert make_cr_and_sr_plots._mixed_stage_sidecars(paths) is not None
+    kinds[0] = "flips_output"
+    with pytest.raises(ValueError, match="exactly one nonprompt_output"):
+        make_cr_and_sr_plots._mixed_stage_sidecars(paths)
+
+
+def test_mixed_stage_rejects_cross_run_and_unproven_prompt_only(monkeypatch):
+    sidecars = _mixed_sr_fixture(monkeypatch)
+    sidecars[1]["sumw2_storage_provenance"]["resolved_processes"] = [
+        "DY50_central2022"
+    ]
+    with pytest.raises(RuntimeError, match=r"Run 2 \+ Run 3"):
+        make_cr_and_sr_plots._load_mixed_stage_sr_plot_view(
+            ["primary.pkl.gz", "auxiliary.pkl.gz"], sidecars,
+            selected_load={"selected_families": ["njets"]},
+            year_coverage_policy="off",
+        )
+    sidecars[1]["sumw2_storage_provenance"]["resolved_processes"] = [
+        "DY50_centralUL18"
+    ]
+    del sidecars[1]["requested_data_driven_products"]
+    with pytest.raises(ValueError, match="prompt-only provenance is unproven"):
+        make_cr_and_sr_plots._load_mixed_stage_sr_plot_view(
+            ["primary.pkl.gz", "auxiliary.pkl.gz"], sidecars,
+            selected_load={"selected_families": ["njets"]},
+            year_coverage_policy="off",
+        )
+
+
+@pytest.mark.parametrize("extra_args, error", [
+    (["--cr"], "only for the SR plot view"),
+    (["--sr", "--cache-merged-pkl", "cached"], "not cacheable"),
+])
+def test_mixed_stage_wrong_region_and_cache_fail_before_load(
+    monkeypatch, tmp_path, extra_args, error,
+):
+    sidecars = _mixed_sr_fixture(monkeypatch)
+    monkeypatch.setattr(make_cr_and_sr_plots, "_mixed_stage_sidecars",
+                        lambda _paths: sidecars)
+    parser = make_cr_and_sr_plots.build_arg_parser()
+    args = parser.parse_args([
+        "-f", "primary.pkl.gz", "-f", "auxiliary.pkl.gz",
+        "-o", str(tmp_path), "-n", "mixed", "--variables", "njets",
+        *extra_args,
+    ])
+    with pytest.raises(ValueError, match=error):
+        make_cr_and_sr_plots.run_with_args(args, parser)
+
+
+def test_generic_sidecar_merge_rejects_mixed_kinds():
+    from topeft.modules.histogram_artifact import merge_histogram_sidecars
+
+    with pytest.raises(Exception, match="incompatible histogram artifact kinds"):
+        merge_histogram_sidecars([
+            {"artifact": {"artifact_kind": "nonprompt_output"}},
+            {"artifact": {"artifact_kind": "processor_output"}},
+        ])
+
+
 def test_sr_njets_selectors_reach_native_loader_before_materialization(monkeypatch, tmp_path):
     parser = make_cr_and_sr_plots.build_arg_parser()
     args = parser.parse_args([
