@@ -3549,8 +3549,20 @@ if [[ "${run_sr}" == "true" ]]; then
       run_sr_block "${production_plan_year_exprs[plan_index]}" \
         "${production_plan_var_sets[plan_index]}" "${cats[@]}"
       if [[ -n "${profile_wq_staging_base}" ]] && (( run_failure_count > 0 )); then
-        echo "Guarded campaign stopped after the first failed fragment; remaining fragments were not started." >&2
-        break
+        if [[ "${dry_run}" == "true" ]]; then
+          echo "Guarded campaign stopped after the first failed dry-run fragment; remaining fragments were not started." >&2
+          break
+        else
+          current_status_line=$(production_state_tool status "${production_state_path}" "${current_fragment}")
+          IFS=$'\t' read -r _ current_source_status _ <<< "${current_status_line}"
+          if [[ "${current_source_status}" == "failed" ]]; then
+            echo "Guarded campaign stopped after a source-stage failure; remaining fragments were not started." >&2
+            break
+          elif [[ "${current_source_status}" != "ready" ]]; then
+            echo "ERROR: ${current_fragment} has an unexpected post-block source status: ${current_source_status}." >&2
+            exit 1
+          fi
+        fi
       fi
     done
   else

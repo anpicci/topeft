@@ -16,6 +16,7 @@ from pathlib import Path
 import pytest
 from topcoffea.modules import remote_environment
 from analysis.topeft_run2 import wq_staging_guard as staging_guard
+from analysis.topeft_run2 import sr_reco_manifest as sr_manifest
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
@@ -315,6 +316,13 @@ case "$action" in
         : > "${{SRPLOT009_VALIDATION_ROOT}}/.np_failed_once"
         exit 137
       fi
+    fi
+    if [[ "$scenario" == sr_np_failure_e1 && "$block_id" == *_e_1 ]]; then
+      exit 137
+    fi
+    if [[ "$scenario" == sr_np_partial_failure_e1 && "$block_id" == *_e_1 ]]; then
+      printf 'partial synthetic nonprompt\\n' > "$nonprompt_path"
+      exit 137
     fi
     [[ "$scenario" != nonprompt_failure_2 || "$block_id" != *_b ]] || exit 25
     [[ -s "$source_path" ]] || exit 26
@@ -2003,6 +2011,153 @@ def test_guarded_sr_failure_stops_before_next_fragment(tmp_path):
     assert state["blocks"][1]["source_status"] == "failed"
     assert state["blocks"][2]["status"] == "planned"
     assert not (validation_root / f"{profile}_a_3.started").exists()
+
+
+def test_guarded_run2_resume_continues_from_e1_nonprompt_to_e2(tmp_path):
+    profile = "run2_sr_ext"
+    validation_root = tmp_path / "validation"
+    validation_root.mkdir()
+    backend = validation_root / "backend.sh"
+    _write_backend(backend)
+    output_root = validation_root / "output"
+    staging_root = tmp_path / "staging"
+    staging_root.mkdir()
+    guard_options = (
+        "--wq-staging-base", str(staging_root),
+        "--wq-quota-root", "/groups/klannon",
+        "--wq-free-warning-bytes", "20000000000",
+        "--wq-min-free-bytes", "10000000000",
+        "--wq-poll-seconds", "5",
+    )
+    environment = _clean_environment()
+    environment.update({
+        "SRPLOT009_VALIDATION_BACKEND": str(backend),
+        "SRPLOT009_VALIDATION_ROOT": str(validation_root),
+        "SRPLOT009_VALIDATION_SCENARIO": "success",
+    })
+    tag = "resume-e1-e2"
+    prepared = _run(
+        profile, output_root, tag, dry_run=False, environment=environment,
+        extra_args=guard_options,
+    )
+    assert prepared.returncode == 0, prepared.stdout
+    state_path = output_root / f".{profile}_campaign_state.json"
+    state = _campaign_state(output_root, profile)
+    assert [block["id"] for block in state["blocks"][-2:]] == [
+        f"{profile}_e_1", f"{profile}_e_2"
+    ]
+    # Preserve the completed earlier receipts, then model the native source-ready
+    # and planned statuses for the two fragments under test.
+    e1, e2 = state["blocks"][-2:]
+    for artifact in (e1["expected_np_path"], e2["expected_nominal_path"],
+                     e2["expected_np_path"]):
+        Path(artifact).unlink()
+        Path(f"{artifact}.metadata.json").unlink()
+    e1["status"] = "source_ready"
+    e1["exit_code"] = None
+    e1["nonprompt_status"] = "planned"
+    e1["nonprompt_exit_code"] = None
+    e1["nonprompt_signal"] = None
+    e1["nonprompt_command_argv"] = None
+    e1["nonprompt_started_at_utc"] = None
+    e1["nonprompt_ended_at_utc"] = None
+    e1["nonprompt_duration_seconds"] = None
+    e1["transitions"] = [
+        transition for transition in e1["transitions"]
+        if transition["stage"] != "nonprompt"
+    ]
+    e1["last_transition_detail"] = "synthetic_source_ready_fixture"
+    e1.pop("nonprompt_receipt")
+    e2_spec = state["sr_reco_plan_revisions"][-1]["blocks"][-1]
+    state["blocks"][-1] = sr_manifest.new_pending_block(e2_spec)
+    state["campaign_status"] = "blocked_incomplete"
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+    assert sr_manifest.check_state(_campaign_state(output_root, profile))
+    before = _campaign_state(output_root, profile)
+    assert all(block["status"] == "success" for block in before["blocks"][:-2])
+    e1_before = before["blocks"][-2]
+    assert e1_before["source_status"] == "ready"
+    assert before["blocks"][-1]["status"] == "planned"
+    source_identity = (
+        copy.deepcopy(e1_before["source_receipt"]),
+        copy.deepcopy(e1_before["source_runtime"]),
+        copy.deepcopy(e1_before["source_runtime_attempts"]),
+        e1_before["source_command_argv"],
+    )
+    source_path = Path(e1_before["expected_nominal_path"])
+    source_bytes = source_path.read_bytes()
+    source_sidecar_bytes = Path(f"{source_path}.metadata.json").read_bytes()
+    prepared_state = state_path.read_bytes()
+    for resume_scenario, expected_e1_status in (
+        ("success", "success"),
+        ("sr_np_failure_e1", "nonprompt_failed"),
+        ("sr_np_partial_failure_e1", "nonprompt_failed"),
+    ):
+        state_path.write_bytes(prepared_state)
+        for artifact in (e1_before["expected_np_path"],
+                         before["blocks"][-1]["expected_nominal_path"],
+                         before["blocks"][-1]["expected_np_path"]):
+            for path in (Path(artifact), Path(f"{artifact}.metadata.json")):
+                if path.exists():
+                    path.unlink()
+        assert sr_manifest.check_state(_campaign_state(output_root, profile))
+        source_calls_before = (validation_root / "block_calls.tsv").read_text().splitlines()
+        nonprompt_calls_before = (validation_root / "nonprompt_calls.tsv").read_text().splitlines()
+        environment["SRPLOT009_VALIDATION_SCENARIO"] = resume_scenario
+        resumed = _run(
+            profile, output_root, tag, dry_run=False, resume=True,
+            environment=environment, extra_args=guard_options,
+        )
+        after = _campaign_state(output_root, profile)
+        e1_after, e2_after = after["blocks"][-2:]
+        source_calls_after = (validation_root / "block_calls.tsv").read_text().splitlines()
+        nonprompt_calls_after = (validation_root / "nonprompt_calls.tsv").read_text().splitlines()
+        assert source_calls_after[len(source_calls_before):][0].startswith(f"{profile}_e_2\t")
+        assert len(source_calls_after) == len(source_calls_before) + 1
+        assert nonprompt_calls_after[len(nonprompt_calls_before):] == [
+            f"{profile}_e_1", f"{profile}_e_2"
+        ]
+        assert (validation_root / f"{profile}_e_2.started").exists()
+        assert (e1_after["source_receipt"], e1_after["source_runtime"],
+                e1_after["source_runtime_attempts"], e1_after["source_command_argv"]) == source_identity
+        assert source_path.read_bytes() == source_bytes
+        assert Path(f"{source_path}.metadata.json").read_bytes() == source_sidecar_bytes
+        assert all(block["status"] == "success" for block in after["blocks"][:-2])
+        assert e1_after["status"] == expected_e1_status
+        assert e2_after["status"] == "success"
+        if expected_e1_status == "success":
+            assert resumed.returncode == 0, resumed.stdout
+            assert after["campaign_status"] == "success"
+        else:
+            assert resumed.returncode == 1, resumed.stdout
+            assert e1_after["nonprompt_exit_code"] == 137
+            assert e1_after["source_status"] == "ready"
+            assert after["campaign_status"] == "complete_with_known_failures"
+            assert after["known_failed_block_count"] == 1
+        if resume_scenario == "sr_np_partial_failure_e1":
+            assert Path(e1_after["expected_np_path"]).read_bytes() == b"partial synthetic nonprompt\n"
+            assert e1_after.get("nonprompt_receipt") is None
+
+
+def test_guarded_run3_nonprompt_failure_still_starts_later_source(tmp_path):
+    profile = "run3_sr_ext"
+    result, output_root, validation_root = _stubbed_run(
+        tmp_path, profile, "sr_np_failure_e1",
+        extra_args=(
+            "--wq-staging-base", str(tmp_path / "staging"),
+            "--wq-quota-root", "/groups/klannon",
+            "--wq-free-warning-bytes", "20000000000",
+            "--wq-min-free-bytes", "10000000000",
+            "--wq-poll-seconds", "5",
+        ),
+    )
+    assert result.returncode == 1, result.stdout
+    state = _campaign_state(output_root, profile)
+    assert state["blocks"][-2]["status"] == "nonprompt_failed"
+    assert state["blocks"][-2]["source_status"] == "ready"
+    assert state["blocks"][-1]["status"] == "success"
+    assert (validation_root / f"{profile}_e_2.started").exists()
+    assert state["campaign_status"] == "complete_with_known_failures"
 
 
 def test_staging_guard_rejects_root_and_symlink_paths(tmp_path):
