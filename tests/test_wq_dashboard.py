@@ -355,6 +355,85 @@ class DashboardTests(unittest.TestCase):
 class AutodiscoveryTests(unittest.TestCase):
     now = 1800000000
 
+    def test_numeric_conversion_boundary(self):
+        for value in (10**400, -(10**400), None, {}, 'invalid', -1,
+                      float('inf'), float('-inf'), float('nan')):
+            with self.subTest(value=value):
+                self.assertIsNone(dashboard.number(value))
+                self.assertEqual(dashboard.fmt(value), '?')
+        for value, expected in ((0, 0.0), (2.5, 2.5), ('7', 7.0), (True, 1.0)):
+            with self.subTest(value=value):
+                self.assertEqual(dashboard.number(value), expected)
+
+    def test_numeric_overflow_alias_precedence(self):
+        for primary, alias in (('tasks_done', 'tasks_complete'),
+                               ('workers_connected', 'workers')):
+            for value, fallback, expected in ((10**400, 7, 7),
+                                               (10**400, -(10**400), None),
+                                               (3, 7, 3)):
+                with self.subTest(primary=primary, value=value, fallback=fallback):
+                    row = dashboard.normalized_summary(dashboard.decode_records(
+                        json.dumps([{primary: value, alias: fallback}]))[0])
+                    self.assertEqual(dashboard.number(row.get(primary)), expected)
+
+    def test_numeric_overflow_manager_views(self):
+        for field in ('tasks_waiting', 'tasks_running', 'tasks_done'):
+            with self.subTest(field=field):
+                records = dashboard.decode_records(json.dumps([
+                    self.record('a-malformed'), self.record('z-good', 1027)]))
+                bad = dashboard.decode_records(json.dumps([
+                    self.summary('a-malformed', **{field: 10**400})]))
+                self.assertIsInstance(bad[0][field], int)
+                self.assertEqual(bad[0][field], 10**400)
+                text, calls, _, _ = self.invoke(records, {
+                    ('fixture-host', '1026'): (bad, 'OK'),
+                    ('fixture-host', '1027'): ([self.summary('z-good')], 'OK')})
+                self.assertCountEqual(self.endpoints(calls),
+                                      [('fixture-host', '1026'), ('fixture-host', '1027')])
+                first, healthy = text.split('=== manager project=z-good', 1)
+                self.assertIn('category-z-good', healthy)
+                self.assertEqual(text.count('=== condor_queue ==='), 1)
+                self.assertEqual(sum(args[0] == 'condor_q' for args, _ in calls), 1)
+                if field in ('tasks_waiting', 'tasks_running'):
+                    self.assertIn('direct_query: INVALID_RESPONSE', first)
+                    self.assertIn('summary_source: CATALOG', first)
+                    self.assertNotIn('category-a-malformed', first)
+                    self.assertNotIn('summary_source: DIRECT', first)
+                else:
+                    self.assertIn('summary_source: DIRECT', first)
+                    self.assertIn('category-a-malformed', first)
+                    queue = first.split('=== work_queue ===', 1)[1]
+                    row = queue.split('workers_idle\n', 1)[1].splitlines()[0].split()
+                    self.assertEqual(row[4], '?')
+
+    def test_numeric_overflow_catalog_and_condor(self):
+        records = dashboard.decode_records(json.dumps([
+            self.record('a-old', lastheardfrom=10**400), self.record('z-good', 1027)]))
+        jobs = dashboard.decode_records(json.dumps([
+            dict(worker(), RequestMemory=10**400), worker(cores=4)]))
+        self.assertEqual(dashboard.resource_profile(jobs[0]), ('2', '?', '8000'))
+        text, calls, _, _ = self.invoke(records, {
+            ('fixture-host', '1027'): ([self.summary('z-good')], 'OK')}, jobs=jobs)
+        self.assertEqual(self.endpoints(calls), [('fixture-host', '1027')])
+        self.assertIn('CATALOG age=unknown STALE/UNKNOWN_AGE', text)
+        self.assertIn('category-z-good', text)
+        self.assertEqual(text.count('=== condor_queue ==='), 1)
+        profiles = text.split('=== condor_worker_profiles ===', 1)[1]
+        self.assertIn('2  ?  8000', '  '.join(profiles.split()))
+        self.assertIn('4  8000  8000', '  '.join(profiles.split()))
+
+    def test_numeric_valid_json_control(self):
+        records = [self.record('a'), self.record('z', 1027)]
+        summaries = {('fixture-host', str(r['port'])):
+                     ([self.summary(r['project'], tasks_done=5)], 'OK') for r in records}
+        jobs = [worker()]
+        original = self.invoke(records, summaries, jobs=jobs)[0]
+        decoded = self.invoke(dashboard.decode_records(json.dumps(records)),
+            {key: (dashboard.decode_records(json.dumps(value[0])), value[1])
+             for key, value in summaries.items()},
+            jobs=dashboard.decode_records(json.dumps(jobs)))[0]
+        self.assertEqual(decoded, original)
+
     def record(self, project='project-a', port=1026, **values):
         return dict({'owner': 'operator', 'project': project, 'name': 'fixture-host',
                      'port': port, 'lastheardfrom': self.now, 'tasks_waiting': 3,
