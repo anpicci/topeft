@@ -27,6 +27,94 @@ def worker(origin='/scratch/a', selector='^project-.*', status=2, cores=2):
 
 
 class DashboardTests(unittest.TestCase):
+    def supply_output(self, jobs, factories=(), visibility='NOT_VISIBLE', queues=()):
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            dashboard.render_supply(jobs, 'OK' if jobs is not None else 'TIMEOUT',
+                                    queues, factories, visibility, 'host PID namespace may be hidden')
+        return output.getvalue()
+
+    def test_consolidated_static_cohorts_keep_shapes_and_all_states(self):
+        jobs = [worker(origin='/static/a', status=s) for s in (2, 1, 5, 3, 6)]
+        jobs += [worker(origin='/static/b', cores=48)] * 2
+        text = self.supply_output(jobs)
+        block = text.split('=== CONDOR SUPPLY ===')[1].split('=== FACTORIES ===')[0]
+        rows = [line.split() for line in block.splitlines() if line.startswith('/static/')]
+        self.assertEqual(rows[0][:5], ['/static/a', '^project-.*', '2', '8000', '8000'])
+        self.assertEqual(rows[0][5:12], ['1', '1', '1', '1', '1', '5', 'UNKNOWN'])
+        self.assertEqual(rows[1][2:12], ['48', '8000', '8000', '2', '0', '0', '0', '0', '2', 'UNKNOWN'])
+        self.assertEqual(sum(int(row[10]) for row in rows), len(jobs))
+        self.assertEqual(text.count('/static/a'), 1)
+        self.assertEqual(text.count('/static/b'), 1)
+        self.assertNotIn('condor_worker_profiles', text)
+        self.assertNotIn('condor_worker_pools', text)
+
+    def test_visible_factory_correlation_is_not_static_identity_or_connection(self):
+        factory = dashboard.factory_from_process(
+            '123 /bin/work_queue_factory -M dynamic-selector -S /dynamic --min-workers 0 --max-workers 8')
+        text = self.supply_output([worker(origin='/dynamic'), worker(origin='/static')],
+                                  [factory], 'VISIBLE')
+        rows = [line.split() for line in text.splitlines() if line.startswith(('/dynamic ', '/static '))]
+        self.assertEqual(rows[0][-1], 'LIVE_FACTORY_BOUND')
+        self.assertEqual(rows[1][-1], 'NO_LIVE_FACTORY_MATCH')
+        self.assertNotEqual(rows[0][0], rows[1][0])
+        self.assertIn('not a factory state', text)
+        self.assertIn('not proof of WQ connection', text)
+        factories = text.split('=== FACTORIES ===')[1]
+        self.assertEqual(factories.count('dynamic-selector'), 1)
+        self.assertNotIn('/static', factories)
+        self.assertIn('factories: VISIBLE', factories)
+        factory['scratch'] = None
+        unknown = self.supply_output([worker()], [factory], 'VISIBLE').split('=== FACTORIES ===')[1]
+        row = next(line.split() for line in unknown.splitlines() if line.startswith('123 ') and 'dynamic-selector' in line)
+        self.assertEqual(row[-4:], ['?', '?', '?', '?'])
+
+    def test_factory_invisibility_is_unknown_binding_not_absence(self):
+        text = self.supply_output([worker()])
+        self.assertIn('factories: NOT_VISIBLE', text)
+        self.assertIn('reason: host PID namespace may be hidden', text)
+        row = next(line.split() for line in text.splitlines() if line.startswith('/scratch/a '))
+        self.assertEqual(row[-1], 'UNKNOWN')
+
+    def test_supply_owner_total_preserves_nonworkers_and_partial_wq_scope(self):
+        jobs = [worker(status=1), {'Owner': 'operator', 'Cmd': '/bin/other', 'JobStatus': 5}]
+        text = self.supply_output(jobs, queues=[{'workers_connected': 19}, {'workers_connected': 32}])
+        row = next(line.split() for line in text.splitlines() if line.startswith('OWNER TOTAL'))
+        self.assertEqual(row, ['OWNER', 'TOTAL', '2', '0', '1', '1', '0', '0', '0', '0', '0', '51'])
+        self.assertIn('other_or_unclassified=1', text)
+        self.assertIn('successful direct summaries only', text)
+        unknown = self.supply_output(None, queues=[{'workers_connected': 19}, {}])
+        self.assertIn('OWNER TOTAL  ?', unknown)
+        self.assertIn('UNAVAILABLE: TIMEOUT', unknown)
+        self.assertNotIn('OWNER TOTAL  0', unknown)
+
+    def test_manager_tables_keep_category_columns_unknowns_and_manager_identity(self):
+        contexts = []
+        for project, port, value in [('manager-a', '1024', '11'), ('manager-b', '1026', '22')]:
+            record = {'project': project, '_age': 33, '_fresh': True}
+            queue = {'tasks_waiting': 1, 'tasks_running': 2, 'tasks_done': 3,
+                     'workers_connected': 4, 'workers_idle': 1,
+                     'categories': [{'category': 'processing-' + project, 'tasks_waiting': value,
+                                     'tasks_running': 2, 'tasks_on_workers': 2, 'workers_able': 4,
+                                     'max_cores': '~4.000', 'max_memory': 'na'}]}
+            contexts.append({'row': record, 'endpoint': ('host', port), 'selection': 'OK',
+                             'result': ([queue], 'OK', None, 'DISABLED')})
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            dashboard.render_automatic_managers(contexts)
+        text = output.getvalue()
+        self.assertIn('host:1024', text)
+        self.assertIn('host:1026', text)
+        for project, value in [('manager-a', '11'), ('manager-b', '22')]:
+            block = text.split('=== WORK_QUEUE_CATEGORIES: %s ===' % project)[1].split('===')[0]
+            header = next(line for line in block.splitlines() if line.startswith('category ')).split()
+            self.assertEqual(header, ['category', 'waiting', 'running', 'on_workers', 'fit_reported',
+                                      'max_cores', 'max_memory', 'max_disk'])
+            row = next(line.split() for line in block.splitlines() if line.startswith('processing-'))
+            self.assertEqual(row, ['processing-' + project, value, '2', '2', '4', '~4.000', 'na', '?'])
+            self.assertNotIn('processing-' + ('manager-b' if project == 'manager-a' else 'manager-a'), block)
+        self.assertEqual(text.count('fit_reported: manager estimate, not a count of idle slots available now.'), 2)
+
     def test_catalog_owner_normalization_and_freshness(self):
         now = time.time()
         records = [{'owner': 'operator', 'project': 'a', 'name': 'h', 'port': 1,
@@ -294,7 +382,8 @@ class DashboardTests(unittest.TestCase):
         self.assertEqual(history_timeouts, [20.0])
         if getpass.getuser() != 'operator':
             run_mock.assert_not_called()
-            self.assertIn('NOT_OBSERVABLE_FOR_SELECTED_OWNER', output.getvalue())
+            self.assertIn('factories: NOT_VISIBLE', output.getvalue())
+            self.assertIn('reason: OWNER differs from current user', output.getvalue())
         self.assertIn('=== recent_worker_exits ===\nquery_status: TIMEOUT', output.getvalue())
         self.assertIn('recent_history: UNAVAILABLE', output.getvalue())
         self.assertIn('=== active_work_queue_tasks ===\nquery_status: DISABLED', output.getvalue())
@@ -335,6 +424,7 @@ class DashboardTests(unittest.TestCase):
         self.assertEqual(dashboard.held_job_attribution(held, {'/scratch/a'}),
                          ('/scratch/a', 'LIVE_FACTORY_BOUND', '^project-.*'))
         self.assertEqual(dashboard.held_job_attribution(held, set())[1], 'NO_LIVE_FACTORY_MATCH')
+        self.assertEqual(dashboard.held_job_attribution(held, set(), False)[1], 'UNKNOWN')
         rows = dashboard.owner_catalog([{'owner': 'operator', 'project': 'p',
                                          'tasks_waiting': 5, 'workers': 0,
                                          'lastheardfrom': time.time()}],
@@ -354,6 +444,11 @@ class DashboardTests(unittest.TestCase):
 
 class AutodiscoveryTests(unittest.TestCase):
     now = 1800000000
+
+    def manager_rows(self, text, source=None):
+        block = text.split('=== MANAGERS ===', 1)[1].split('age: catalog snapshot.', 1)[0]
+        rows = [line.split() for line in block.splitlines()[2:] if line.strip() and not line.startswith('project ')]
+        return [row for row in rows if source is None or row[3] == source]
 
     def test_numeric_conversion_boundary(self):
         for value in (10**400, -(10**400), None, {}, 'invalid', -1,
@@ -390,21 +485,19 @@ class AutodiscoveryTests(unittest.TestCase):
                     ('fixture-host', '1027'): ([self.summary('z-good')], 'OK')})
                 self.assertCountEqual(self.endpoints(calls),
                                       [('fixture-host', '1026'), ('fixture-host', '1027')])
-                first, healthy = text.split('=== manager project=z-good', 1)
+                first, healthy = text.split('=== WORK_QUEUE_CATEGORIES: z-good', 1)
                 self.assertIn('category-z-good', healthy)
-                self.assertEqual(text.count('=== condor_queue ==='), 1)
+                self.assertEqual(text.count('=== SUPPLY SUMMARY ==='), 1)
                 self.assertEqual(sum(args[0] == 'condor_q' for args, _ in calls), 1)
                 if field in ('tasks_waiting', 'tasks_running'):
                     self.assertIn('direct_query: INVALID_RESPONSE', first)
-                    self.assertIn('summary_source: CATALOG', first)
+                    self.assertEqual(self.manager_rows(text, 'CATALOG')[0][0], 'a-malformed')
                     self.assertNotIn('category-a-malformed', first)
-                    self.assertNotIn('summary_source: DIRECT', first)
+                    self.assertEqual(len(self.manager_rows(text, 'DIRECT')), 1)
                 else:
-                    self.assertIn('summary_source: DIRECT', first)
+                    self.assertEqual(len(self.manager_rows(text, 'DIRECT')), 2)
                     self.assertIn('category-a-malformed', first)
-                    queue = first.split('=== work_queue ===', 1)[1]
-                    row = queue.split('workers_idle\n', 1)[1].splitlines()[0].split()
-                    self.assertEqual(row[4], '?')
+                    self.assertEqual(self.manager_rows(text, 'DIRECT')[0][7], '?')
 
     def test_numeric_overflow_catalog_and_condor(self):
         records = dashboard.decode_records(json.dumps([
@@ -417,8 +510,8 @@ class AutodiscoveryTests(unittest.TestCase):
         self.assertEqual(self.endpoints(calls), [('fixture-host', '1027')])
         self.assertIn('CATALOG age=unknown STALE/UNKNOWN_AGE', text)
         self.assertIn('category-z-good', text)
-        self.assertEqual(text.count('=== condor_queue ==='), 1)
-        profiles = text.split('=== condor_worker_profiles ===', 1)[1]
+        self.assertEqual(text.count('=== SUPPLY SUMMARY ==='), 1)
+        profiles = text.split('=== CONDOR SUPPLY ===', 1)[1]
         self.assertIn('2  ?  8000', '  '.join(profiles.split()))
         self.assertIn('4  8000  8000', '  '.join(profiles.split()))
 
@@ -491,11 +584,12 @@ class AutodiscoveryTests(unittest.TestCase):
         self.assertIn('AUTO_OWNER_DISCOVERY', text)
         for r in records:
             self.assertIn('category-' + r['project'], text)
-            self.assertIn('project=' + r['project'] + ' endpoint=fixture-host:' + str(r['port']), text)
-        self.assertEqual(text.count('summary_source: DIRECT'), 2)
+            self.assertIn([r['project'], 'fixture-host:' + str(r['port'])],
+                          [row[:2] for row in self.manager_rows(text)])
+        self.assertEqual(len(self.manager_rows(text, 'DIRECT')), 2)
         self.assertEqual(text.count('owner_jobs=4 identified_wq_jobs=3 other_or_unclassified=1'), 1)
-        for section in ('condor_queue', 'condor_worker_profiles', 'condor_worker_pools',
-                        'held_jobs', 'work_queue_factories', 'recent_worker_exits', 'worker_supply_alerts'):
+        for section in ('SUPPLY SUMMARY', 'CONDOR SUPPLY',
+                        'held_jobs', 'FACTORIES', 'recent_worker_exits', 'worker_supply_alerts'):
             self.assertEqual(text.count('=== ' + section + ' ==='), 1)
         self.assertIn('/scratch/topup', text)
         for command in ('condor_q', 'condor_history'):
@@ -539,7 +633,7 @@ class AutodiscoveryTests(unittest.TestCase):
                 text, calls, _, _ = self.invoke([self.record(**values)])
                 self.assertEqual(self.endpoints(calls), [])
                 self.assertIn('FRESH_RECORD_WITHOUT_ENDPOINT', text)
-                self.assertIn('summary_source: CATALOG', text)
+                self.assertEqual(len(self.manager_rows(text, 'CATALOG')), 1)
         for port in (1, 65535, '1026'):
             with self.subTest(valid_port=port):
                 _, calls, _, _ = self.invoke([self.record(port=port)],
@@ -552,7 +646,7 @@ class AutodiscoveryTests(unittest.TestCase):
         text, calls, _, _ = self.invoke(records,
             {('fixture-host', '1026'): ([self.summary('project-a')], 'OK')})
         self.assertEqual(self.endpoints(calls), [('fixture-host', '1026')])
-        self.assertEqual(text.count('summary_source: DIRECT'), 1)
+        self.assertEqual(len(self.manager_rows(text, 'DIRECT')), 1)
         self.assertIn('CATALOG age=300s STALE/UNKNOWN_AGE', text)
         self.assertIn('CATALOG age=unknown STALE/UNKNOWN_AGE', text)
 
@@ -570,7 +664,7 @@ class AutodiscoveryTests(unittest.TestCase):
                 text, calls, _, _ = self.invoke([self.record(), self.record(port=second_port)])
                 self.assertEqual(self.endpoints(calls), [])
                 self.assertIn('AMBIGUOUS_FRESH_MATCH', text)
-                self.assertEqual(text.count('summary_source: CATALOG'), 2)
+                self.assertEqual(len(self.manager_rows(text, 'CATALOG')), 2)
 
     def test_direct_failures_are_isolated_and_identity_checked(self):
         failures = [(None, 'TIMEOUT'), ([], 'OK'),
@@ -585,14 +679,14 @@ class AutodiscoveryTests(unittest.TestCase):
                     {('fixture-host', '1026'): response,
                      ('fixture-host', '1027'): ([self.summary('good')], 'OK')})
                 self.assertEqual(len(self.endpoints(calls)), 2)
-                self.assertEqual(text.count('summary_source: DIRECT'), 1)
+                self.assertEqual(len(self.manager_rows(text, 'DIRECT')), 1)
                 self.assertIn('category-good', text)
                 self.assertNotIn('category-bad', text)
                 self.assertNotIn('category-wrong-project', text)
                 self.assertIn('direct_query: ' + status, text)
-                self.assertIn('summary_source: CATALOG', text)
+                self.assertEqual(len(self.manager_rows(text, 'CATALOG')), 1)
                 self.assertIn('No zero-task, deadlock or completion conclusion from a timeout.', text)
-                self.assertEqual(text.count('=== condor_queue ==='), 1)
+                self.assertEqual(text.count('=== SUPPLY SUMMARY ==='), 1)
 
     def test_empty_and_failed_catalog_are_distinct_without_legacy_fallback(self):
         empty, empty_calls, _, _ = self.invoke([])
@@ -622,12 +716,12 @@ class AutodiscoveryTests(unittest.TestCase):
         text, calls, _, _ = self.invoke(records, direct_fn=direct)
         self.assertCountEqual(self.endpoints(calls), [('fixture-host', str(1100 + i)) for i in range(4)])
         self.assertEqual(max(peaks), 2)
-        self.assertEqual(text.count('summary_source: DIRECT'), 4)
+        self.assertEqual(len(self.manager_rows(text, 'DIRECT')), 4)
         self.assertIn('SUMMARY_BUDGET_EXCEEDED', text)
         for i in range(7):
-            self.assertIn('project=project-%d endpoint=fixture-host:%d' % (i, 1100 + i), text)
-        positions = [text.index('project=project-%d endpoint=' % i) for i in range(7)]
-        self.assertEqual(positions, sorted(positions))
+            self.assertIn(['project-%d' % i, 'fixture-host:%d' % (1100 + i)],
+                          [row[:2] for row in self.manager_rows(text)])
+        self.assertEqual([row[0] for row in self.manager_rows(text)], ['project-%d' % i for i in range(7)])
 
     def test_task_and_log_inputs_unbound_without_explicit_manager(self):
         for records in ([], [self.record()]):

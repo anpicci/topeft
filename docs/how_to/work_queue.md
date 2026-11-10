@@ -42,8 +42,8 @@ From `analysis/topeft_run2`, run `python3 wq_dashboard.py`, or refresh it with
 `watch -n 10 python3 wq_dashboard.py`. It uses only the Python 3.9+ standard
 library and read-only Work Queue, Condor, history and local process queries.
 Set `OWNER` and `SCHEDD` when their defaults are unsuitable. Local factory
-inspection is available only when `OWNER` is the current user. The global catalog
-section lists records that explicitly name that owner, with each record's age;
+inspection is available only when `OWNER` is the current user. The manager
+table lists records that explicitly name that owner, with each catalog record's age;
 stale and incomplete records are labeled and remain visible.
 
 With no manager configuration, each invocation discovers fresh owner projects
@@ -80,13 +80,27 @@ and never enumerates automatically discovered managers. Likewise a global
 managers. Explicit mode retains log freshness and manager-start-time checks;
 the operator must provide logs compatible with the selected manager/run.
 `MAX_ACTIVE_TASKS` limits displayed rows only and does not bound the RPC
-payload. Condor worker profiles and pools cover identified owner WQ jobs across
-all managers and are collected/rendered once per invocation. A wrapped worker is identified by its `condor.sh` or
+payload. The automatic view has one `MANAGERS` table, followed by a separate
+`WORK_QUEUE_CATEGORIES: <project>` table for every successful direct summary.
+Category `fit_reported` is the manager's estimate, not idle slots available now.
+Unknown quantities remain unknown. `SUPPLY SUMMARY` uses `OWNER TOTAL` because
+the maintained inventory cannot safely assign jobs to managers; its WQ count
+covers only successful direct summaries and may be incomplete. `CONDOR SUPPLY`
+consolidates worker profiles and pools by origin, selector and exact resource
+shape, including static cohorts and factory-correlated jobs. It preserves all
+job states, with less common states grouped as `other`, and renders each cohort
+once. `FACTORIES` shows visible process identities and their settings separately.
+These owner-wide observations are collected once per invocation. A wrapped worker is identified by its `condor.sh` or
 `with_oasis_certs` invocation, regardless of scratch-directory naming. Pool
 origin matching a visible factory scratch directory is provenance correlation,
 not proof of a worker's Work Queue connection. Condor `RUNNING` likewise does
 not prove connection or task activity. A missing
-visible factory PID may reflect process-namespace isolation.
+visible factory PID may reflect process-namespace isolation; `NOT_VISIBLE`
+does not mean no factory exists. Cohort binding is `LIVE_FACTORY_BOUND` for
+origin/scratch equality, `NO_LIVE_FACTORY_MATCH` for no match among visible
+factories, or `UNKNOWN` when factory visibility is unavailable. These are
+provenance observations, not factory states. Static versus dynamic launch kind
+is not inferred from a missing factory process or a scratch-directory name.
 
 Recent worker exits come from an owner-scoped history query with default
 `HISTORY_LOOKBACK_SECONDS=300` and `HISTORY_MAX_JOBS=500`; the query also has

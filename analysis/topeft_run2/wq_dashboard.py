@@ -269,11 +269,12 @@ def pool_counts(jobs):
     return pools
 
 
-def held_job_attribution(job, factory_scratch):
+def held_job_attribution(job, factory_scratch, factory_visible=True):
     origin = worker_origin(job)
     if origin is None:
         return '?', '?', '?'
-    binding = 'LIVE_FACTORY_BOUND' if origin in factory_scratch else 'NO_LIVE_FACTORY_MATCH'
+    binding = ('LIVE_FACTORY_BOUND' if origin in factory_scratch else
+               'NO_LIVE_FACTORY_MATCH' if factory_visible else 'UNKNOWN')
     return origin, binding, worker_selector(job)
 
 
@@ -457,6 +458,121 @@ def stats_tail(path):
     if earlier is None and len(rows) > 1:
         earlier = rows[0]
     return last, earlier, stamp
+
+
+def render_categories(queue, project):
+    section('WORK_QUEUE_CATEGORIES: %s' % clean(project))
+    categories = queue.get('categories')
+    if isinstance(categories, list) and all(isinstance(c, dict) for c in categories):
+        table(['category', 'waiting', 'running', 'on_workers', 'fit_reported',
+               'max_cores', 'max_memory', 'max_disk'],
+              [[c.get(k, '?') for k in ('category', 'tasks_waiting', 'tasks_running',
+                'tasks_on_workers', 'workers_able', 'max_cores', 'max_memory', 'max_disk')]
+               for c in categories])
+    else:
+        print('UNAVAILABLE: direct summary categories not reported')
+    print('fit_reported: manager estimate, not a count of idle slots available now.')
+
+
+def render_automatic_managers(contexts):
+    """Keep direct and dated catalog observations distinct in one owner table."""
+    section('MANAGERS')
+    rows, details, direct = [], [], []
+    for context in contexts:
+        record = context['row']
+        summaries, status, _, _ = context['result']
+        queue = normalized_summary(summaries[0]) if summaries and len(summaries) == 1 else None
+        if queue is not None and (number(queue.get('tasks_waiting')) is None
+                                  or number(queue.get('tasks_running')) is None):
+            queue = None
+        if queue is None and status == 'OK':
+            status = 'INVALID_RESPONSE: expected one manager summary'
+        if queue is not None and status == 'OK':
+            direct.append((record.get('project', '?'), queue))
+            if (number(queue.get('tasks_running')) or 0) > 0 or (number(queue.get('tasks_on_workers')) or 0) > 0:
+                health = 'ACTIVE'
+            elif (number(queue.get('tasks_waiting')) or 0) > 0:
+                health = 'WAITING'
+            else:
+                health = 'QUIET/UNKNOWN'
+            source = 'DIRECT'
+        else:
+            queue = record
+            source, health = 'CATALOG', 'SNAPSHOT'
+            details.append('project=%s direct_query: %s; selection: %s; CATALOG age=%s %s' %
+                           (clean(record.get('project', '?')), clean(status), context['selection'],
+                            'unknown' if record['_age'] is None else '%.0fs' % record['_age'],
+                            'RECENT' if record['_fresh'] else 'STALE/UNKNOWN_AGE'))
+        endpoint = context['endpoint']
+        rows.append([record.get('project', '?'), '%s:%s' % endpoint if endpoint else '?',
+                     '?' if record['_age'] is None else '%.0fs' % record['_age'],
+                     source, health] + [fmt(queue.get(k)) for k in
+                     ('tasks_waiting', 'tasks_running', 'tasks_done', 'workers_connected', 'workers_idle',
+                      'tasks_on_workers', 'tasks_with_results')])
+    table(['project', 'endpoint', 'age', 'source', 'status', 'waiting', 'running', 'done', 'workers', 'idle',
+           'on_workers', 'results'], rows)
+    print('age: catalog snapshot. DIRECT status: activity snapshot, not progress or completion.')
+    print('Catalog presence is a snapshot, not direct manager liveness.')
+    for detail in details:
+        print(detail)
+    if details:
+        print('No zero-task, deadlock or completion conclusion from a timeout.')
+    for project, queue in direct:
+        render_categories(queue, project)
+    return [queue for _, queue in direct]
+
+
+def render_supply(jobs, condor_status, manager_queues, factories, visibility, reason):
+    """Render the maintained owner inventory once, without guessing manager lineage."""
+    workers = [j for j in jobs or [] if worker_origin(j) is not None]
+    section('SUPPLY SUMMARY')
+    print('query_status:', condor_status)
+    counts = collections.Counter(j.get('JobStatus') for j in jobs or [])
+    connected = [number(q.get('workers_connected')) for q in manager_queues]
+    wq_total = fmt(sum(connected)) if connected and all(n is not None for n in connected) else '?'
+    table(['scope', 'Condor_jobs', 'RUNNING', 'IDLE', 'HELD', 'REMOVING', 'COMPLETED', 'XFER', 'SUSP', 'other', 'WQ_workers'],
+          [['OWNER TOTAL'] + ([str(len(jobs))] + [str(counts[s]) for s in (2, 1, 5, 3, 4, 6, 7)] +
+            [str(sum(v for s, v in counts.items() if s not in (1, 2, 3, 4, 5, 6, 7)))] if jobs is not None
+             else ['?'] * 9) + [wq_total]])
+    if jobs is not None:
+        print('owner_jobs=%d identified_wq_jobs=%d other_or_unclassified=%d' %
+              (len(jobs), len(workers), len(jobs) - len(workers)))
+    print('WQ_workers: successful direct summaries only; discovery/selection may be incomplete.')
+    print('Condor RUNNING is not WQ busy; IDLE is not WQ workers_idle. No manager/job attribution inferred.')
+
+    section('CONDOR SUPPLY')
+    if jobs is None:
+        print('UNAVAILABLE:', condor_status)
+    else:
+        scratch = {f['scratch'] for f in factories if f['scratch']}
+        table(['origin', 'selector', 'cores', 'memory_MiB', 'disk_MiB', 'RUNNING', 'IDLE',
+               'HELD', 'REMOVING', 'other', 'TOTAL', 'binding'],
+              [list(key) + [str(counts[s]) for s in (2, 1, 5, 3)] +
+               [str(sum(v for s, v in counts.items() if s not in (2, 1, 5, 3))), str(sum(counts.values())),
+                'LIVE_FACTORY_BOUND' if key[0] in scratch else
+                'NO_LIVE_FACTORY_MATCH' if visibility == 'VISIBLE' else 'UNKNOWN']
+               for key, counts in sorted(pool_counts(workers).items())])
+    print('Cohorts include static and dynamic worker jobs; launch kind is UNKNOWN unless independently observed.')
+    print('LIVE_FACTORY_BOUND: origin/scratch equality only; selector is reported separately.')
+    print('NO_LIVE_FACTORY_MATCH is a binding observation, not a factory state; UNKNOWN: factory visibility unavailable.')
+    print('Scratch equality and selector matches are provenance correlation, not proof of WQ connection.')
+
+    section('FACTORIES')
+    print('factories:', visibility)
+    if not factories:
+        print('reason:', clean(reason))
+    else:
+        table(['pid', 'selector', 'scratch', 'config', 'config_status', 'active_jobs', 'RUNNING', 'IDLE', 'HELD'],
+              [[f['pid'], f['selector'], f['scratch'] or '?', f['config_path'] or '?', f['config_status']] +
+               ([str(sum(c.values()))] + [str(c[s]) for s in (2, 1, 5)]
+                if jobs is not None and f['scratch'] else ['?'] * 4)
+               for f in factories for c, _ in [factory_warnings(f, workers)]])
+        table(['pid', 'min', 'max', 'per_cycle', 'worker_timeout', 'factory_timeout', 'cores', 'memory', 'disk'],
+              [[f['pid']] + [fmt(f['settings'].get(k)) for k in
+                ('min-workers', 'max-workers', 'workers-per-cycle', 'worker_timeout', 'factory_timeout',
+                 'cores', 'memory', 'disk')] for f in factories])
+        print('active_jobs: origin/scratch-correlated Condor jobs, excluding completed; not WQ workers.')
+        print('Visible factory processes/settings; configured limits are not connected WQ worker counts.')
 
 
 def render_manager(host, port, project, selection_status, selected, result,
@@ -722,11 +838,12 @@ No completion or monitor-deadlock diagnosis is inferred from inactivity.''')
                    number(j.get('CompletionDate')) >= now - lookback]
     owner_managers = owner_catalog(catalog, owner, time.time(), age_limit)
     selection_status = 'AUTO_OWNER_DISCOVERY'
-    section('managers_catalog')
+    if not automatic:
+        section('managers_catalog')
     print('query_status:', catalog_status)
     if catalog is None:
         print('UNAVAILABLE')
-    else:
+    elif not automatic:
         print('owner_records=%d omitted_missing_or_other_owner=%d' %
               (len(owner_managers), len(catalog) - len(owner_managers)))
         table(['project', 'host', 'port', 'age', 'freshness', 'waiting', 'running', 'done', 'workers', 'workers_idle'],
@@ -739,11 +856,14 @@ No completion or monitor-deadlock diagnosis is inferred from inactivity.''')
         print('Catalog presence is a snapshot, not direct manager liveness.')
 
     tasks, task_status, active = None, 'DISABLED', []
+    manager_queues = []
     if automatic:
         section('manager_discovery')
         print('selection: AUTO_OWNER_DISCOVERY')
         print('summary_budget: %d managers, %d concurrent, no retries' %
               (AUTO_SUMMARY_LIMIT, AUTO_SUMMARY_CONCURRENCY))
+        print('owner_records=%d omitted_missing_or_other_owner=%d' %
+              (len(owner_managers), len(catalog or []) - len(owner_managers)))
         if catalog is None:
             print('CATALOG_UNAVAILABLE:', catalog_status)
         elif not owner_managers:
@@ -753,14 +873,7 @@ No completion or monitor-deadlock diagnosis is inferred from inactivity.''')
             print('task_details:', task_status)
         if os.environ.get('LOGDIR'):
             print('LOGDIR UNBOUND; not used for per-manager progress')
-        for context in automatic_managers(owner_managers, timeout, task_timeout):
-            row = context['row']
-            endpoint = context['endpoint'] or (None, None)
-            result = context['result']
-            if task_details:
-                result = result[:3] + (task_status,)
-            render_manager(*endpoint, row.get('project'), context['selection'], [row], result,
-                           catalog_status, age_limit, limit, condor_status, automatic=True)
+        manager_queues = render_automatic_managers(automatic_managers(owner_managers, timeout, task_timeout))
     else:
         if project is not None:
             endpoint, selection_status = select_project(owner_managers, project)
@@ -775,8 +888,8 @@ No completion or monitor-deadlock diagnosis is inferred from inactivity.''')
         tasks, task_status, active = render_manager(
             host, port, project, selection_status, selected, result,
             catalog_status, age_limit, limit, condor_status, os.environ.get('LOGDIR'))
-    section('condor_queue')
-    print('query_status:', condor_status)
+        if result[1] == 'OK' and result[0] and len(result[0]) == 1:
+            manager_queues = [normalized_summary(result[0][0])]
     worker_jobs = [j for j in jobs or [] if worker_origin(j) is not None]
     current_user = pwd.getpwuid(os.getuid()).pw_name
     if owner == current_user:
@@ -785,11 +898,11 @@ No completion or monitor-deadlock diagnosis is inferred from inactivity.''')
         rc, process_out, process_err = None, '', 'OWNER differs from current user'
     factories = [f for f in (factory_from_process(line) for line in process_out.splitlines()) if f] if rc == 0 else []
     factory_scratch = {f['scratch'] for f in factories if f['scratch']}
-    if jobs is not None:
-        print('owner_jobs=%d identified_wq_jobs=%d other_or_unclassified=%d' % (len(jobs), len(worker_jobs), len(jobs) - len(worker_jobs)))
-        counts = collections.Counter(j.get('JobStatus') for j in jobs)
-        print(' '.join('%s=%d' % (label, counts[state]) for state, label in
-                      [(1,'idle'),(2,'running'),(3,'removing'),(4,'completed'),(5,'held'),(6,'transferring'),(7,'suspended')]))
+    visibility = 'VISIBLE' if factories else 'NOT_VISIBLE'
+    reason = ('OWNER differs from current user' if owner != current_user else
+              'no factory process visible; host PID namespace may be hidden' if rc in (0, 1) else
+              'process query unavailable: ' + clean(process_err))
+    render_supply(jobs, condor_status, manager_queues, factories, visibility, reason)
     section('explicit_cgroup_probes')
     if not cgroup_ids.strip():
         print('DISABLED: CGROUP_JOB_IDS unset')
@@ -804,36 +917,6 @@ No completion or monitor-deadlock diagnosis is inferred from inactivity.''')
             print('job=%s status=%s' % (job_id, 'OK' if probe_rc == 0 else
                                         'TIMEOUT' if probe_rc == 124 else 'FAILED'))
             print(clean(probe_out).strip() if probe_rc == 0 else probe_err)
-    section('condor_worker_profiles')
-    print('Scope: identified WQ jobs of this owner across ALL managers; Condor RUNNING is not WQ busy.')
-    profiles = collections.defaultdict(collections.Counter)
-    origins = collections.Counter()
-    for j in worker_jobs:
-        profile = resource_profile(j)
-        profiles[profile][j.get('JobStatus')] += 1
-        origins[worker_origin(j)] += 1
-    if jobs is None:
-        print('<UNKNOWN>')
-    else:
-        table(['cores', 'memory_MiB', 'disk_MiB', 'running', 'idle', 'held', 'removing', 'other', 'total'],
-              [list(p) + [str(c[s]) for s in (2,1,5,3)] + [str(sum(v for k,v in c.items() if k not in (2,1,5,3))), str(sum(c.values()))]
-               for p,c in sorted(profiles.items())])
-        for origin, count in sorted(origins.items()):
-            print('origin jobs=%d %s' % (count, clean(origin)))
-
-    section('condor_worker_pools')
-    print('Scratch equality is provenance correlation, not proof of WQ connection.')
-    if jobs is None:
-        print('UNAVAILABLE:', condor_status)
-    else:
-        pools = pool_counts(worker_jobs)
-        table(['binding', 'origin', 'selector', 'cores', 'memory_MiB', 'disk_MiB',
-               'running', 'idle', 'held', 'removing', 'total'],
-              [[('LIVE_FACTORY_BOUND' if key[0] in factory_scratch else 'NO_LIVE_FACTORY_MATCH'),
-                key[0], key[1], key[2], key[3], key[4]] +
-               [str(counts[state]) for state in (2, 1, 5, 3)] + [str(sum(counts.values()))]
-               for key, counts in sorted(pools.items())])
-
     section('active_task_condor_candidates')
     print('Host-only candidates; no exact worker/job identity or resource-fit claim.')
     if task_status == 'DISABLED':
@@ -853,23 +936,9 @@ No completion or monitor-deadlock diagnosis is inferred from inactivity.''')
     else:
         table(['job', 'kind', 'origin', 'binding', 'selector', 'memory_MiB', 'usage_MiB', 'last_host', 'reason'],
               [['%s.%s' % (j.get('ClusterId'),j.get('ProcId')), 'WQ' if worker_origin(j) else 'other/unknown',
-                *held_job_attribution(j, factory_scratch), fmt(j.get('RequestMemory')),
+                *held_job_attribution(j, factory_scratch, visibility == 'VISIBLE'), fmt(j.get('RequestMemory')),
                 fmt(j.get('MemoryUsage')), j.get('LastRemoteHost', '?'), j.get('HoldReason','?')]
                for j in held])
-
-    section('work_queue_factories')
-    print('visibility:', 'VISIBLE' if factories else
-          'NOT_OBSERVABLE_FOR_SELECTED_OWNER' if owner != current_user else
-          'NO_VISIBLE_FACTORY; host PID namespace may be hidden' if rc == 1 else 'UNAVAILABLE')
-    table(['pid', 'selector', 'config_path', 'config_status', 'scratch', 'min_workers', 'max_workers',
-           'workers_per_cycle', 'worker_timeout', 'factory_timeout', 'cores', 'memory', 'disk', 'active_condor_jobs',
-           'running', 'idle', 'held', 'warning'],
-          [[f['pid'], f['selector'], f['config_path'] or '?', f['config_status'], f['scratch'] or '?'] +
-           [fmt(f['settings'].get(k)) for k in ('min-workers', 'max-workers', 'workers-per-cycle',
-                                             'worker_timeout', 'factory_timeout', 'cores', 'memory', 'disk')] +
-           ([str(sum(counts.values())), str(counts[2]), str(counts[1]), str(counts[5]),
-             warning or '-'] if jobs is not None else ['?', '?', '?', '?', 'CONDOR_UNAVAILABLE'])
-           for f in factories for counts, warning in [factory_warnings(f, worker_jobs)]])
 
     section('recent_worker_exits')
     print('query_status:', history_status)
