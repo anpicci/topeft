@@ -565,8 +565,15 @@ def build_corrected_jet_view(
     syst_var,
     jet_systematics,
     lazy_cache,
+    build_reuse=None,
+    reuse_key=None,
 ):
-    """Build one corrected jet view from its own explicit input collection."""
+    """Prepare every request, then select an isolated view of its jet base.
+
+    build_reuse is owned by one process(events) invocation. Only explicitly
+    qualified inputs receive a reuse_key; singleton builds are never retained.
+    Shared numerical buffers are read-only to downstream consumers.
+    """
 
     jet_pt_name = "pt_nom" if hasattr(jets, "pt_nom") else "pt"
     jets["pt_raw"] = (1 - jets.rawFactor) * jets.pt
@@ -577,7 +584,16 @@ def build_corrected_jet_view(
             ak.fill_none(jets.matched_gen.pt, 0), np.float32
         )
 
-    corrected_jets = correction_factory.build(jets, lazy_cache=lazy_cache)
+    if build_reuse is not None and reuse_key is not None and reuse_key in build_reuse:
+        corrected_jets = build_reuse[reuse_key]
+    else:
+        corrected_jets = correction_factory.build(jets, lazy_cache=lazy_cache)
+        if build_reuse is not None and reuse_key is not None:
+            build_reuse[reuse_key] = corrected_jets
+    if build_reuse is not None:
+        # Isolate field replacement/annotations, preserving lazy nodes and RNG.
+        # This does not protect shared buffers against NumPy in-place writes.
+        corrected_jets = copy.copy(corrected_jets)
     corrected_jets = apply_maintained_jet_systematic(
         year, corrected_jets, syst_var, jet_systematics
     )
@@ -598,22 +614,30 @@ def build_analysis_and_hem_jet_views(
     syst_var,
     jet_systematics,
     analysis_lazy_cache,
+    build_reuse=None,
+    reuse_analysis=False,
 ):
-    """Build analysis-cleaned and independent full-jet HEM correction views."""
+    """Build cleaned/full views with optional invocation-local base reuse."""
 
     analysis_raw_jets = get_analysis_cleaned_jets(
         full_jets, leptons, cleaning_taus
     )
-    correction_factory = ApplyJetCorrections(
-        year,
-        corr_type="jets",
-        isData=is_data,
-        era=run_era,
-        run=run,
-        suppress_forward_eta_stochastic_jer=(
-            suppress_forward_eta_stochastic_jer
-        ),
+    correction_factory = (
+        build_reuse.get("correction_factory") if build_reuse is not None else None
     )
+    if correction_factory is None:
+        correction_factory = ApplyJetCorrections(
+            year,
+            corr_type="jets",
+            isData=is_data,
+            era=run_era,
+            run=run,
+            suppress_forward_eta_stochastic_jer=(
+                suppress_forward_eta_stochastic_jer
+            ),
+        )
+        if build_reuse is not None:
+            build_reuse["correction_factory"] = correction_factory
     analysis_corrected_jets, jet_pt_name = build_corrected_jet_view(
         analysis_raw_jets,
         jets_rho,
@@ -623,10 +647,16 @@ def build_analysis_and_hem_jet_views(
         syst_var=syst_var,
         jet_systematics=jet_systematics,
         lazy_cache=analysis_lazy_cache,
+        build_reuse=build_reuse,
+        reuse_key="analysis_base" if reuse_analysis else None,
     )
 
     if year == "2018":
-        # Keep HEM lazy products isolated from the historical analysis cache.
+        # Keep full-HEM products in their own live cache, never the analysis one.
+        hem_lazy_cache = (
+            build_reuse.setdefault("hem_lazy_cache", {})
+            if build_reuse is not None else {}
+        )
         hem_corrected_jets, _ = build_corrected_jet_view(
             full_jets,
             jets_rho,
@@ -635,7 +665,9 @@ def build_analysis_and_hem_jet_views(
             correction_factory=correction_factory,
             syst_var=syst_var,
             jet_systematics=jet_systematics,
-            lazy_cache={},
+            lazy_cache=hem_lazy_cache,
+            build_reuse=build_reuse,
+            reuse_key="hem_base",
         )
     else:
         hem_corrected_jets = analysis_corrected_jets
@@ -1664,9 +1696,10 @@ class AnalysisProcessor(processor.ProcessorABC):
                 year, isData=isData, era=run_era
             )
             obj_correction_syst_lst = list(jet_correction_syst_lst)
-            obj_correction_syst_lst.extend(
-                get_supported_met_systematics(year, isData=isData, era=run_era)
+            met_correction_syst_lst = get_supported_met_systematics(
+                year, isData=isData, era=run_era
             )
+            obj_correction_syst_lst.extend(met_correction_syst_lst)
             obj_correction_syst_lst.extend(
                 get_supported_muon_momentum_systematics(year, isData=isData)
             )
@@ -1795,6 +1828,16 @@ class AnalysisProcessor(processor.ProcessorABC):
         # Loop over the list of systematic variations we've constructed
         met_raw=met
         
+        # Positive classification from the maintained, already-built lists.
+        # Tau and muon requests keep their own builds at their original callsite.
+        nominal_cleaning_systematics = {
+            "nominal", *jet_correction_syst_lst, *met_correction_syst_lst
+        }
+        last_shared_jet_iteration = max(
+            index for index, label in enumerate(syst_var_list)
+            if label in nominal_cleaning_systematics
+        )
+        jet_build_reuse = {}
         iteration_entered_count = iteration_completed_count = 0
         for iteration_index, syst_var in enumerate(syst_var_list):
             iteration_entered_count += 1
@@ -1995,6 +2038,8 @@ class AnalysisProcessor(processor.ProcessorABC):
                         syst_var=syst_var,
                         jet_systematics=jet_correction_syst_lst,
                         analysis_lazy_cache=events_cache,
+                        build_reuse=jet_build_reuse,
+                        reuse_analysis=syst_var in nominal_cleaning_systematics,
                     )
                 )
 
@@ -3237,6 +3282,12 @@ class AnalysisProcessor(processor.ProcessorABC):
                                 if dense_axis_name == "njets":
                                     break
         
+            # Release our base references after their last reached consumers.
+            # Existing event-cache entries remain owned by events, untouched.
+            if iteration_index == last_shared_jet_iteration:
+                jet_build_reuse.pop("analysis_base", None)
+            if iteration_index + 1 == len(syst_var_list):
+                jet_build_reuse.clear()
             iteration_completed_count += 1
             if telemetry is not None:
                 telemetry.mark("processor_nominal_fills_complete" if syst_var == "nominal"
