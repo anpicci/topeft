@@ -247,6 +247,11 @@ for an equivalent worker-node environment.
 Wrappers such as `fullR3_run.sh` and `run_cr.sh` ultimately forward executor
 selection to `run_analysis.py`. They do not launch workers.
 
+The separate `--phase-telemetry` opt-in records processor and manager phase
+observations; it is disabled by default and distinct from `admission.jsonl`.
+See [phase telemetry](production.md#optional-phase-telemetry) for its
+`phase_telemetry.jsonl` persistence and attempt archive paths.
+
 ## Launch workers
 
 Launch workers from another terminal using the manager identity and resource
@@ -391,12 +396,14 @@ production optimum. The parameters are independent of manager and campaign
 names and do not change native `q.tune` options.
 
 The invocation log directory contains a bounded `admission.jsonl` file with
-schema version 1. Each record identifies the invocation, elapsed time,
-configuration, compatible-capacity estimate and quality, ready/running/native
-retrieval states, held grouping inputs, estimated remaining input, admission
-and recovery counts, retained/predicted bytes, effective quota headroom,
-measurement age, and pause reason/duration. Frequent unchanged decisions are
-coalesced; the sink stops at 2 MiB and never certifies scientific success.
+schema version 3, as described under guarded processing admission above.
+Each record identifies the invocation, elapsed time, configuration,
+compatible-capacity estimate and quality, ready/running/native retrieval
+states, held grouping inputs, estimated remaining input, admission and recovery
+counts, retained/predicted bytes, effective quota headroom, measurement age,
+and pause reason/duration. Frequent unchanged decisions are coalesced; a
+2 MiB current file rotates to one `.previous` file. An I/O error disables
+this diagnostic sink without certifying or changing scientific task success.
 Compare these records with native transfer and task logs by timestamp. A full
 ready reserve with idle compatible capacity points to native dispatch or
 transfer delay; low headroom with growing retained bytes points to downstream

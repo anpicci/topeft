@@ -29,8 +29,11 @@ Historical attempts lacking this field retain their original wrapper-command
 identity for recovery verification only. They are not dispatched through it.
 The backend writes one lifecycle receipt; only the controller determines campaign
 success from that evidence, observed PNGs and collision-safe canonical materialization.
-Submission ambiguity, unknown job identity, missing terminal evidence and held jobs
-block further execution. Resume observes existing attempts and never resubmits them.
+Submission ambiguity, unknown job identity and missing terminal evidence
+prevent retry of the affected attempt. Independent planned Condor units can
+still dispatch. A held job needs bound lifecycle evidence to establish a
+terminal worker failure. Resume observes active attempts and selects only the
+bounded recovery paths below; it does not blindly resubmit an attempt.
 An exclusive worker-start marker prevents another renderer on a scheduler restart.
 
 `plot_output_layout.py` alone defines human paths:
@@ -345,9 +348,11 @@ component root. Statuses are `planned`, `running`, `success`, `failed`, and
 `interrupted`. Attempts bind ID, times, child argv identity, private root,
 stored provenance through the state, guard/child/tee results, receipt
 identity, materialization status, result, and failure classification. State
-writes are atomic. A planned unit has no attempt; every other status has exactly
-one attempt with the matching result. Success also requires a completion receipt
-identity and complete materialization. Incoherent persisted state fails closed
+writes are atomic. A planned unit has no attempt; other statuses have one
+attempt, or two after the sole verified failed-Condor replacement. In the latter
+case, `attempt_0001` remains failed and `attempt_0002` carries the current
+result; no third attempt is permitted. Success also requires a completion
+receipt identity and complete materialization. Incoherent persisted state fails closed
 without retry. The root coordinator binds the full plan; combined status
 is derived from separate component states.
 
@@ -386,9 +391,13 @@ a verified receipt. Unit success requires a terminal lifecycle or separately
 verified missing-lifecycle recovery provenance, a valid receipt, and completed
 materialization. Recovery leaves unavailable lifecycle fields null and never
 creates a lifecycle receipt. Existing root or private directories
-alone never promote status. Resume skips success and does not retry failed or
-interrupted units. Revision N+1 appends units and retains all earlier bindings
-and history; it fails closed on revision mismatch or rewrite.
+alone never promote status. Resume skips success. A failed Condor unit may
+receive its sole replacement only after the nonzero lifecycle, old scheduler
+identity and unchanged qualified input pass the recovery checks. A proven
+local submit rejection may rearm the same attempt. A terminal interrupted
+unit with missing lifecycle evidence can use the separate no-launch recovery
+proof; ambiguity permits no retry. Revision N+1 appends units and retains
+all earlier bindings and history; it fails closed on revision mismatch or rewrite.
 
 New campaigns record a provenance-not-collected marker in the existing state
 field. Older Git/source-manifest values are preserved as historical provenance;
@@ -401,7 +410,7 @@ pending units. The JSON summary reports `campaign_status`, total
 `running_count`, `pending_count`, and `waiting_on_active_child`.
 `active_child_present` and `dispatch_blocked` are separate; `waiting` means
 the selected local dispatch is blocked by an active child. Neither full nor
-selected mode silently retries failed or interrupted units.
+selected mode permits a retry without the bounded recovery proofs above.
 
 The local backend runs one child at a time with one renderer worker, fitting
 binning, merged channels, total uncertainty, PNG output, SR/unblind flags and

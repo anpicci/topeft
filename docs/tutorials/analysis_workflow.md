@@ -170,11 +170,13 @@ you what each actor owns and, equally importantly, what it does not own.
 
 ### Validation and statistical-model inputs
 
-- **Plotting and validation layer.** `run_plotter.sh` is reusable shell
-  automation over the direct `make_cr_and_sr_plots.py` CLI. They consume a
-  coherent artifact family, apply the requested processing or fitting view,
-  group processes, and render distributions and diagnostic reports. They do
-  not modify the PKL or produce cards. See the
+- **Plotting and validation layer.** `run_plotter.sh` bootstraps
+  `plot_campaign_manifest.py`, which normalizes ordinary arguments and owns
+  persistent campaign state, recovery and plot materialization. Its backend
+  dispatches the direct `make_cr_and_sr_plots.py` renderer. The renderer
+  consumes a coherent artifact family, applies the requested processing or
+  fitting view, groups processes, and renders distributions and diagnostic
+  reports. These components do not modify the PKL or produce cards. See the
   [plotting how-to](../how_to/plotting.md) and
   [plotting reference](../reference/plotting.md).
 
@@ -319,18 +321,17 @@ final precedence. The
 failure boundaries.
 
 The remainder begins at the common source publication and is route-neutral.
-An ordinary clone can continue with the reviewed Route B command without
-`--dry-run`, or with Route C after removing `--pretend` and recording the
-omitted orchestration decisions. In the configured correction-lib workspace,
-Route A can instead automate the multi-block source/nonprompt lifecycle. All
-three routes ultimately reach the same `run_analysis.py` and processor
-boundary.
+Continue with the reviewed Route A campaign, Route B command without
+`--dry-run`, or Route C after removing `--pretend` and recording the
+omitted orchestration decisions. Route A locates its checkout from the script
+path and automates the multi-block source/nonprompt lifecycle. All three
+routes ultimately reach the same `run_analysis.py` and processor boundary.
 
 ## 4. Reach a source artifact from any route
 
-Choose the launch command that matches your checkout. In an ordinary clone,
-execute the reviewed `fullR3_run.sh` command without `--dry-run`, or the direct
-`run_analysis.py` command without `--pretend`. In the managed workspace,
+Choose the route that matches your request and environment. Execute the
+reviewed campaign, `fullR3_run.sh` command without `--dry-run`, or direct
+`run_analysis.py` command without `--pretend`. For a campaign,
 `run_cr.sh` delegates each profile block through `fullR3_run.sh`. In every
 case, `run_analysis.py` constructs `AnalysisProcessor` and publishes the same
 kind of source artifact.

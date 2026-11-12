@@ -383,7 +383,7 @@ once; later resumes need only the root:
   --backend condor --resource-observer cgroup_v2 --hard-limit-bytes 192000000000
 ```
 
-`analysis/topeft_run2/run_plotter.sh` owns three persistent profiles:
+The three persistent CR-like profiles of `analysis/topeft_run2/run_plotter.sh` are:
 `sr_crlike_run2`, `sr_crlike_run3`, and `sr_crlike_run2_run3`. A fresh plan is a
 JSON object with `schema_version: 1`, `campaign_profile`, `campaign_tag`,
 `plan_revision: 1`, and a nonempty `units` array. Each unit has exactly

@@ -87,6 +87,15 @@ memo-clearing bounded-memory path, not user-facing tuning knobs. Use
 `--legacy-dict-mode` only to compare or recover the historical materialized
 implementation, accepting its higher peak memory.
 
+## Optional phase diagnostics
+
+`run_data_driven.py --phase-telemetry` explicitly enables phase diagnostics;
+the default is off. It writes scalar phase/clock/RSS records beside the named
+output, separately from the required artifact metadata. See
+[phase telemetry](production.md#optional-phase-telemetry) for persistence,
+latest-invocation behavior and interpretation limits. A telemetry persistence
+warning does not replace the transformation's artifact and lineage checks.
+
 ## Understand applicability
 
 Products are selected from the source histogram's application-axis contract:

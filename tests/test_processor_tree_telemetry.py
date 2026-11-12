@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import resource
+import re
 import sys
 import time
 from types import SimpleNamespace
@@ -380,6 +381,21 @@ def test_manager_final_and_runner_return(telemetry, coordinator, tmp_path, raise
 
 
 def test_archive_surface_preserved():
-    archive = (SOURCE / "run_cr.sh").read_text()
-    assert 'cp -- "${native_wq_log_dir}/phase_telemetry.jsonl" "${archive_dir}/phase_telemetry.jsonl"' in archive
-    assert 'cmp -s -- "${native_wq_log_dir}/phase_telemetry.jsonl" "${archive_dir}/phase_telemetry.jsonl"' in archive
+    source = (SOURCE / "run_cr.sh").read_text()
+    archive = source.split("archive_native_wq_logs() {", 1)[1].split("\n}\n", 1)[0]
+    regular, optional = archive.split(
+        'source_path="${native_wq_log_dir}/phase_telemetry.jsonl"', 1)
+    # Regular native logs still require a checked copy before source removal.
+    assert 'for name in "${native_wq_log_names[@]}"; do' in regular
+    assert 'if ! cp -- "${source_path}" "${destination_path}"; then' in regular
+    assert '"${source_size}" != "${destination_size}"' in regular
+    assert '[[ ! -f "${destination_path}"' in regular
+    # Behavioral coverage stays in test_telemetry_persistence.archive_shell:
+    # attempt separation, inode/readability, failure retention and archive_logs.
+    assert "os.rename(source, target)" in optional
+    assert "os.symlink(os.path.relpath(target, archive), link)" in optional
+    assert 'with link.open("rb"):' in optional
+    assert "WARNING: optional phase telemetry archive failed" in optional
+    assert not re.search(r"\b(?:cp|cmp|sha256sum)\b", optional)
+    assert 'production_state_tool archive ' in optional
+    assert 'rm -- "${source_path}"' in optional

@@ -309,18 +309,21 @@ before a transformed product is certified. See the
 
 ### `run_plotter.sh`
 
-**Why it exists.** The plotting wrapper supplies common filename-driven
-region convenience, Run 2/Run 3 year aliases, blinding defaults, and option
-forwarding.
+**Why it exists.** The public shell wrapper bootstraps Python and forwards
+arguments to `plot_campaign_manifest.py`.
 
-**Consumes and produces.** It consumes an artifact path, output directory,
-years, region intent, variables, and forwarded plotter options. It constructs
-one `make_cr_and_sr_plots.py` command and produces no independent metadata
-registry.
+**Consumes and produces.** The controller accepts ordinary plotting arguments
+or a persistent campaign request. It owns CLI normalization, campaign plans,
+state, recovery, receipts and canonical plot materialization. It dispatches
+a renderer command through `plot_campaign_backend.py`; the Condor adapter
+owns scheduler mechanics.
 
-**Owns and does not own.** It owns shell convenience and validation of its own
-arguments. It delegates artifact compatibility, channel resolution, binning,
-plot configuration, and rendering to the direct plotter.
+**Owns and does not own.** The shell owns bootstrap and forwarding. The
+controller owns orchestration; the direct `make_cr_and_sr_plots.py` renderer
+owns artifact compatibility, channel resolution, binning, plot configuration
+and rendering. A lifecycle receipt establishes operational completion,
+not visual or scientific acceptance. See the
+[plotting reference](../reference/plotting.md) for the recovery boundaries.
 
 ### `make_cr_and_sr_plots.py`
 

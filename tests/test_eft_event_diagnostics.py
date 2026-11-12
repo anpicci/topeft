@@ -148,7 +148,9 @@ def test_r6c4_negative_loose_not_medium_and_native_zero_guard():
         ak.Array([[rows[0]["eM"]]]), ak.Array([[rows[0]["eL"]]]),
         ak.Array([[rows[0]["SFM"]]]), ak.Array([[rows[0]["SFL"]]]),
         ak.Array([[False]]), ak.Array([[True]]), ak.Array([[False]]))
-    assert float(data[0] / mc[0]) == pytest.approx(result["btagSF"], rel=1e-14)
+    # The diagnostic preserves the historical raw interval; the current helper
+    # applies the accepted negative-data Loose-not-Medium fallback for this jet.
+    assert float(data[0] / mc[0]) == pytest.approx(1.0, rel=1e-14)
     zero = dict(rows[0], eM=0.5, eL=0.5)
     assert diag.btag_decomposition([zero])["subgroups"]["bc"]["mc_after_guard"] == 1
 

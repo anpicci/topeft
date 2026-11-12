@@ -279,6 +279,43 @@ For exact options and defaults, use the
 [entry-point reference](../reference/entrypoints.md). For why the three layers
 are separated, see the [architecture explanation](../explanation/architecture.md).
 
+## Optional phase telemetry
+
+Phase telemetry is disabled by default. Add `--phase-telemetry` explicitly
+to `run_cr.sh`, `run_analysis.py`, or `run_data_driven.py` to request
+diagnostics. The campaign launcher forwards it to both source and separate
+data-driven stages, including through combined profiles. The direct analysis
+YAML key `phase_telemetry` accepts a boolean and follows the normal
+YAML-over-CLI precedence.
+
+Processor stdout records start with `[phase_telemetry]`. They contain
+process-local wall/CPU clocks and RSS observations, reached phases and
+object-systematic iterations. Fill counters are grouped by histogram family,
+weight label and lepton category; selection counts are category memberships,
+not unique event totals. Submitted fill entries can count jets rather than
+events. Operation timing includes synchronous shared correction calls:
+inclusive totals overlap children, exclusive totals subtract immediate timed
+children, and deferred lazy work is not forced or attributed.
+
+For Work Queue, the manager persists accepted scalar `processor_*` records
+from successful processing tasks, plus manager-local observations, in
+`phase_telemetry.jsonl` beside its native logs. Task identity and local clock
+domains must be respected when comparing rows. During campaign log archival,
+the telemetry inode is renamed within `source_native/` to an attempt-specific
+name and the `source/` or `source_resume_N/` archive receives a relative
+symlink. Keep the archive and native target together. This optional stream
+does not use the regular native-log copy path.
+
+The direct data-driven helper also writes
+`<output-pkl>.phase_telemetry.jsonl` for the latest enabled invocation.
+That file retains fixed phase/clock/RSS fields; stdout carries additional
+context. These diagnostics are separate from the required
+`.metadata.json` artifact sidecar. Optional persistence or telemetry-archive
+errors warn and do not replace scientific stage status; required artifact,
+receipt and regular native-log checks retain their failure contracts.
+Telemetry presence, timing or absence does not establish scientific success,
+physical equivalence or production qualification.
+
 ## Route physics-policy changes to their owner
 
 Do not extend a wrapper merely to avoid the owning analysis contract:

@@ -89,30 +89,22 @@ The native producer owns PKL and sidecar creation, archive validation, Work
 Queue staging, and native logs. A terminal Ctrl-C reaches the foreground
 process group as it does for `run_cr.sh`; partial products remain for review.
 
-## Immediate Run3 campaign identity
+## Campaign identity and preflight
 
-The planned tag is
-`top26006-excludedmc-cross-era-njets-20261018-001`. Derived managers are
-`top26006-excludedmc-cross-era-njets-20261018-001-run3-block-a` and
-`top26006-excludedmc-cross-era-njets-20261018-001-run3-block-d`; the selector
-is `^top26006-excludedmc-cross-era-njets-20261018-001-run3-block-(a|d)$`.
-These are the identities for the owner-run replacement of the interrupted
-attempt. Lane HTCondor's existing factory selector matches these two names.
+The caller selects `--campaign-tag` and `--output-root` for each campaign.
+`run_excluded_mc.sh` derives a manager name
+`<campaign-tag>-<run>-block-<a|d>` and writes
+`<output-root>/<run>/excluded_mc_<run>_block_<a|d>_njets.pkl.gz`
+with its adjacent metadata sidecar. Native logs belong below that run's
+`work_queue_logs/<outname>/source_native/` directory. The tag must satisfy
+the launcher's safe-name checks, include `excludedmc` in the derived manager
+name, and avoid the current user name. `--manager-name` is an assertion of
+this derived identity, not an override.
 
-The prospective output root is
-`/groups/klannon/apiccine/top26006_excluded_mc_njets_corrected_20261018_run3_001/`.
-The central-only attempt and its staging are owner-managed; their current
-state is not established by this document. The owner will terminate it and
-verify the exact output, staging, process, listener and catalog state before
-reusing this tag, output root, manager names and ports. Capacity, environment
-binding, staging/quota paths, free-space thresholds and worker/factory
-readiness require fresh production preflight. The prior
-`top26006_excluded_mc_ul18_njets_probe_001/cross_era` products are immutable
-historical evidence and are not part of this corrected campaign.
-
-The existing archive and adjacent manifest currently reside under
-`/groups/klannon/apiccine/top26006_excluded_mc_env_build_20261019_001/topeft-envs/`.
-The desired `analysis/topeft_run2/topeft-envs/` location is a separate storage
-follow-up. Neither archive nor manifest was moved for this launcher change.
-The owner runs the campaign manually from `analysis/topeft_run2` in the active
-Conda environment. Lane HTCondor owns its worker factory.
+Choose the archive and adjacent manifest explicitly; no historical campaign
+path is a default. Before execution, inspect the dry-run commands, exact output
+collisions, environment binding, staging/quota thresholds, manager names,
+ports, and externally provisioned worker resources. An interrupted attempt
+requires a separate inspection of its processes, artifacts, logs and staging
+before any recovery decision. This interface does not report the live state
+or completion of a particular campaign.

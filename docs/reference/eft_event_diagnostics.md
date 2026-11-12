@@ -182,6 +182,14 @@ before scientific acceptance. An I/O failure must never be passed as absence.
 | `btag-decompose` | Serialized per-jet Method-1a table; reconstructs medium, loose-not-medium and not-loose factors, subgroup products and the native zero-denominator guard. |
 | `readback` | Frozen R6C1/R6C2/R6C4 evidence directory; checks event products, SM sumw2, per-era sums, preserved ordinary factors and the negative loose-not-medium fixture. |
 
+`btag-decompose` reconstructs the serialized raw Method1a factors, including
+`eL * SFL - eM * SFM` for Loose-not-Medium and the zero-MC guard.
+The frozen `readback` evidence retains that historical negative interval.
+Neither operation applies the selected `topcoffea` helper's bounded
+negative-data interval fallback, so these reconstructions do not establish
+parity with the current runtime b-tag weight. For current processor use, see
+[the Method1a consumer](../how_to/corrections_weights_and_systematics.md#understand-the-b-tag-method1a-consumer).
+
 `discover` consumes the accepted diagnostic ownership schema (negative row IDs,
 source groups, native bins and WC names). It is not a generic ROOT analyzer.
 The prior filenames are part of this version's explicit input interface.

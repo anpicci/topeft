@@ -102,6 +102,7 @@ arbitrary keywords.
 | `suppress_forward_eta_stochastic_jer` | Boolean; default `False` at class level | Processor-level forward stochastic-JER suppression control. The direct CLI resolves and passes its own maintained default. |
 | `fwd_eta_band_pt_apply` | `auto`, `on`, or `off`; default `auto` | Controls forward-band jet-pT tightening. |
 | `ttgamma_sample_role_policy` | Registered policy string; default `split` | Resolves conversion-overlap sample roles; invalid values fail through the policy owner. |
+| `phase_telemetry` | Boolean; default `False` | Enables scalar processor phase, iteration, fill and operation diagnostics; output/persistence limits are in [phase telemetry](../how_to/production.md#optional-phase-telemetry). |
 | `sumw2_policy` | Optional `resolved_sumw2_policy` | Concrete runtime family/target authority. Its family order must equal the processor family order. |
 
 Construction returns an `AnalysisProcessor` instance and allocates an

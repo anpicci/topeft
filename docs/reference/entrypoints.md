@@ -13,7 +13,7 @@ layer retains. It is a lookup page, not a production recipe. See the
 | `analysis/topeft_run2/fullR3_run.sh` | Maintained command/configuration wrapper | Years, exactly one of `--cr` or `--sr`, optional histogram/input/output overrides, and forwarded analysis options | Year/config-dependent `run_analysis.py` command | Rejects conflicting input overrides, missing cfg/JSON inputs, and unsupported region/year combinations |
 | `analysis/topeft_run2/run_analysis.py` | Direct developer CLI | Sample JSON/cfg expression and CLI or YAML options | Executor `work_queue`; 8 workers; chunksize 100000; `histos/plotsTopEFT.pkl.gz` | Validates executor, active sample universe, categories, environment, policies, and artifact contracts at their owning boundaries |
 | `analysis/topeft_run2/run_data_driven.py` | Direct transformed-artifact CLI | A validated source PKL/sidecar and requested data-driven product | Streaming input; output name derived from the input when omitted | Rejects missing/incompatible sidecars, uncertified input policy, invalid product requests, and incomplete transformed companions |
-| `analysis/topeft_run2/run_plotter.sh` | Maintained plotting wrapper | Readable PKL, output directory, and years | Forwards to the direct plotter; can infer CR/SR from the filename; dry-run prints the resolved command without creating the output directory | Rejects missing inputs/years; the direct plotter owns artifact and metadata validation |
+| `analysis/topeft_run2/run_plotter.sh` | Public plotting control bootstrap | Ordinary plotting arguments or a persistent campaign request | Forwards to `plot_campaign_manifest.py` for CLI normalization, campaign state and backend dispatch | Controller checks request/state; renderer owns artifact and metadata validation |
 | `analysis/topeft_run2/make_cr_and_sr_plots.py` | Direct plotting CLI | Repeatable `-f` inputs or a list file, output, years, and plot controls | Processing binning; merged channels; one worker; year coverage `warn` | Rejects incoherent artifacts, ambiguous channel authority, invalid binning, and mixed Run 2/Run 3 inputs |
 | `analysis/topeft_run2/make_cards.py` | Direct card CLI; no manifest required | Positional PKLs or a list file, variables/channels, and card controls including optional Tau-shape suppression and `--unblind` | Fitting binning; year coverage `warn`; Asimov data | Rejects incoherent artifacts, invalid exact aggregation, incomplete shape pairs, missing selected-channel data in observed mode, and selected-WC/coverage failures according to options |
 | `analysis/topeft_run2/validate_datacard_correlation.py` | Read-only card correlation validator | Source PKL, final TXT/ROOT pair, variable, channel, source periods, explicit groups, nuisance prefix, and exact card process | Writes one JSON report; returns nonzero on mismatch | Independently sums source-period nominal and directional arrays; rejects missing, extra, duplicate, or numerically mismatched final identities |
@@ -93,6 +93,7 @@ pair.
 | Scope | Optional years, histogram list, category groups, WC list | Filters the resolved input/processor family universe. Names are validated before or during processor construction. |
 | Analysis flags | Off-Z, tau, forward, or all-analysis; default none | Mutually exclusive mode selectors. `--analysis-mode` accepts `standard` or `taufitter`, default `standard`. |
 | Sumw2/systematics | Modern YAML `sumw2_storage`; deprecated `--no-sumw2`; `--do-systs` | Modern policy is resolved before processing. Legacy statistical inputs have explicit compatibility/conflict handling. |
+| Phase telemetry | `--phase-telemetry`; YAML `phase_telemetry`; boolean, default false | Optional processor/manager observations; see [phase telemetry](../how_to/production.md#optional-phase-telemetry). The same flag is accepted by `run_cr.sh` and `run_data_driven.py`. |
 | Raw-count diagnostics | `--record-raw-count`; YAML `record_raw_count`; default false | Records per-bin selected nominal-MC event counts. Maintained `stat_diagnostic` profiles enable it; `prod` and `sr_ext` leave it disabled. |
 | Nonprompt | `--do-np`; `--np-postprocess` in `inline`, `defer`, `skip`, default `inline` | Inline publishes a transformed artifact; defer prints a direct follow-up command; skip omits transformation. |
 | Environment | Optional archive/rebuild/prepare/snapshot/no-remote controls | Owns worker-environment preparation/validation, not package installation. |
@@ -136,10 +137,12 @@ cfg files, and histogram family, then constructs `run_analysis.py`. Calling a
 lower layer transfers its omitted responsibilities to the user; it does not
 silently reconstruct the higher-level campaign record.
 
-`run_plotter.sh` is a convenience layer over `make_cr_and_sr_plots.py`.
-Dry-run validates and prints the resolved Python command without creating the
-requested output directory; normal execution creates it immediately before
-launching the plotter.
+`run_plotter.sh` bootstraps `plot_campaign_manifest.py`. The controller
+normalizes ordinary arguments or manages persistent campaign state, then
+dispatches `make_cr_and_sr_plots.py` through the selected backend.
+Dry-run prints resolved commands without rendering or creating the requested
+output namespace. Campaign execution, recovery and canonical materialization
+follow the [plotting contract](plotting.md).
 `make_cards.py` is the manifest-free direct card interface and delegates
 card/template construction to `topeft.modules.datacard_tools.DatacardMaker`.
 For a focused correlation check, run
