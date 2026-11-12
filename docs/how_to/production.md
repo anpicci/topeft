@@ -15,6 +15,13 @@ The wrappers delegate downward; they do not become alternate owners of sample
 definitions, channel registries, histogram definitions, sumw2 policy, or
 processor behavior.
 
+Worker supply has a separate lifecycle from these producer entrypoints. The
+[Run 2 and Run 3 dynamic factory specifications](../reference/work_queue_factories.md)
+define independently maintained resource profiles and their operator contract.
+They require explicit campaign binding and activation authorization; preparing
+the specs or starting a producer does not activate a factory or replace current
+static supply.
+
 ## Know which layer owns a setting
 
 | Concern | Owner | Derived or hard-coded behavior | Protected by |

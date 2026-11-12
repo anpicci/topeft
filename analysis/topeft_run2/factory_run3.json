@@ -1,0 +1,9 @@
+{
+  "cores": 60,
+  "memory": 240000,
+  "disk": 300000,
+  "min-workers": 10,
+  "max-workers": 50,
+  "workers-per-cycle": 5,
+  "timeout": 900
+}
