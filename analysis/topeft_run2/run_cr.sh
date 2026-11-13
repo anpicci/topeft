@@ -263,10 +263,6 @@ if [[ "${profile_wq_manager_prefix_provided}" == "true" ]]; then
     echo "ERROR: --wq-manager-prefix requires a prefix of letters, digits, dots, underscores or hyphens." >&2
     exit 1
   fi
-  if [[ "${profile_dry_run}" == "true" && "${profile_resume}" == "false" ]]; then
-    echo "ERROR: fresh --wq-manager-prefix requires initialized campaign state; --dry-run does not initialize state." >&2
-    exit 1
-  fi
 fi
 if [[ "${profile_run2_wq_manager_prefix_provided}" == "true" ]]; then
   for paired_prefix in "${profile_run2_wq_manager_prefix}" "${profile_run3_wq_manager_prefix}"; do
@@ -475,7 +471,7 @@ if [[ "${output_dir}" != /* ]]; then
   exit 1
 fi
 
-if [[ "${profile_resume}" == "false" && -e "${output_dir}" ]]; then
+if [[ "${profile_resume}" == "false" && ( -e "${output_dir}" || -L "${output_dir}" ) ]]; then
   echo "ERROR: ${production_profile} output directory already exists; refusing overwrite: ${output_dir}" >&2
   exit 1
 fi
@@ -1917,7 +1913,11 @@ run_campaign_unit() {
   source_attempt_number=1
   if [[ "${profile_wq_manager_prefix_provided}" == "true" \
     && "${source_reusable}" == "false" ]]; then
-    source_attempt_number=$(production_state_tool next-source-attempt "${production_state_path}" "${block_id}")
+    # Fresh previews have no state: attempt 1 is prospective, never recorded.
+    # Resumes and real launches retain the native state-owned attempt number.
+    if [[ "${dry_run}" == "false" || "${profile_resume}" == "true" ]]; then
+      source_attempt_number=$(production_state_tool next-source-attempt "${production_state_path}" "${block_id}")
+    fi
   elif [[ "${dry_run}" == "false" ]]; then
     source_attempt_number=$(production_state_tool next-attempt "${production_state_path}" "${block_id}" source)
   fi
